@@ -1,0 +1,997 @@
+
+========================================================================
+Function RVA0xcfaf50 (sub_140CFAF50)
+========================================================================
+  total lines: 190
+      0: bool __fastcall sub_140CFAF50(_QWORD *a1, __int64 a2, char a3, char a4)
+      1: {
+      2:   bool v8; // r15
+      3:   __int64 v9; // rcx
+      4:   _DWORD *v10; // rax
+      5:   __int64 v11; // rbx
+      6:   __int64 v12; // rdi
+      7:   _DWORD *v13; // rax
+      8:   __int64 v14; // rcx
+      9:   __int64 v15; // rdi
+     10:   __int64 v16; // r13
+     11:   __int64 v17; // rax
+     12:   __int64 v18; // rcx
+     13:   __int64 v19; // rax
+     14:   __int64 v20; // rax
+     15:   __int64 v21; // rcx
+     16:   __int64 v22; // rcx
+     17:   __int64 v23; // rax
+     18:   int v25; // eax
+     19:   int v26; // [rsp+30h] [rbp-D0h] BYREF
+     20:   int v27; // [rsp+34h] [rbp-CCh] BYREF
+     21:   __int64 v28; // [rsp+38h] [rbp-C8h] BYREF
+     22:   __int64 v29; // [rsp+40h] [rbp-C0h] BYREF
+     23:   _BYTE v30[4]; // [rsp+48h] [rbp-B8h] BYREF
+     24:   _BYTE v31[4]; // [rsp+4Ch] [rbp-B4h] BYREF
+     25:   _QWORD v32[5]; // [rsp+50h] [rbp-B0h] BYREF
+     26:   _BYTE v33[8]; // [rsp+78h] [rbp-88h] BYREF
+     27:   _BYTE v34[8]; // [rsp+80h] [rbp-80h] BYREF
+     28:   int v35; // [rsp+88h] [rbp-78h]
+     29:   __int128 v36; // [rsp+90h] [rbp-70h]
+     30:   int v37; // [rsp+A0h] [rbp-60h]
+     31:   int v38; // [rsp+A8h] [rbp-58h]
+     32:   _QWORD v39[5]; // [rsp+B0h] [rbp-50h] BYREF
+     33:   _BYTE v40[8]; // [rsp+D8h] [rbp-28h] BYREF
+     34:   _BYTE v41[8]; // [rsp+E0h] [rbp-20h] BYREF
+     35:   int v42; // [rsp+E8h] [rbp-18h]
+     36:   __int128 v43; // [rsp+F0h] [rbp-10h]
+     37:   int v44; // [rsp+100h] [rbp+0h]
+     38:   int v45; // [rsp+108h] [rbp+8h]
+     39:   _QWORD v46[5]; // [rsp+110h] [rbp+10h] BYREF
+     40:   _BYTE v47[8]; // [rsp+138h] [rbp+38h] BYREF
+     41:   _BYTE v48[8]; // [rsp+140h] [rbp+40h] BYREF
+     42:   int v49; // [rsp+148h] [rbp+48h]
+     43:   __int128 v50; // [rsp+150h] [rbp+50h]
+     44:   int v51; // [rsp+160h] [rbp+60h]
+     45:   int v52; // [rsp+168h] [rbp+68h]
+     46: 
+     47:   v8 = 1;
+     48:   if ( !a1[1] )
+     49:     return !v8;
+     50:   v9 = a1[2];
+     51:   if ( v9 )
+     52:   {
+     53:     if ( *(_DWORD *)(v9 + 376) != dword_1430DA180 )
+     54:       return !v8;
+     55:   }
+     56:   v10 = (_DWORD *)sub_140CF0D70(a1, v30);
+     57:   v28 = 0;
+     58:   sub_14022CD40(v10, &v28);
+     59:   v11 = v28;
+     60:   if ( a4 )
+     61:   {
+     62:     if ( v28 )
+     63:     {
+     64:       v12 = *(_QWORD *)(v28 + 224);
+     65:       if ( *(_BYTE *)(v12 + 26) == 49 )
+     66:       {
+     67:         if ( *(_QWORD *)(v12 + 216) )
+     68:           sub_140BB1FF0(a2, 0);
+     69:         if ( *(_QWORD *)(v12 + 224) )
+     70:           sub_140BB1FF0(a2, 0);
+     71:       }
+     72:     }
+     73:   }
+     74:   *(_BYTE *)(a1[1] + 1202LL) = 0;
+     75:   v13 = (_DWORD *)sub_140CF0D50(a1, v31);
+     76:   v29 = 0;
+     77:   sub_14022CD40(v13, &v29);
+     78:   v14 = a1[21];
+     79:   v15 = v29;
+
+  lines mentioning DSS-relevant keywords:
+
+========================================================================
+Function RVA0x102c820 (sub_14102C820)
+========================================================================
+  total lines: 422
+      0: __int64 __fastcall sub_14102C820(__int64 a1)
+      1: {
+      2:   __int64 v2; // rax
+      3:   char v3; // cl
+      4:   float v4; // xmm0_4
+      5:   float v5; // xmm1_4
+      6:   int v6; // xmm0_4
+      7:   float v7; // xmm0_4
+      8:   __int64 v8; // rsi
+      9:   __int64 v9; // rcx
+     10:   _QWORD *ThreadLocalStoragePointer; // rax
+     11:   __int64 v11; // rax
+     12:   __int64 v12; // rbx
+     13:   float v13; // xmm6_4
+     14:   float v14; // xmm6_4
+     15:   __int128 v15; // xmm0
+     16:   __int64 v16; // rax
+     17:   float v17; // xmm6_4
+     18:   float v18; // xmm9_4
+     19:   float v19; // xmm15_4
+     20:   float v20; // xmm8_4
+     21:   float v21; // xmm6_4
+     22:   float v22; // xmm7_4
+     23:   float v23; // xmm11_4
+     24:   float v24; // xmm12_4
+     25:   float v25; // xmm13_4
+     26:   float v26; // xmm3_4
+     27:   float v27; // xmm4_4
+     28:   float v28; // xmm2_4
+     29:   __m128 v29; // xmm0
+     30:   __m128 v30; // xmm0
+     31:   __m128 v31; // xmm0
+     32:   __m128 v32; // xmm0
+     33:   __m128 v33; // xmm1
+     34:   float v34; // xmm11_4
+     35:   float v35; // xmm12_4
+     36:   float v36; // xmm13_4
+     37:   float v37; // xmm3_4
+     38:   float v38; // xmm11_4
+     39:   float v39; // xmm12_4
+     40:   float v40; // xmm13_4
+     41:   float v41; // xmm3_4
+     42:   float v42; // xmm0_4
+     43:   float v43; // xmm9_4
+     44:   float v44; // xmm15_4
+     45:   float v45; // xmm0_4
+     46:   float v46; // xmm7_4
+     47:   float v47; // xmm8_4
+     48:   float v48; // xmm6_4
+     49:   float v49; // xmm3_4
+     50:   float v50; // xmm4_4
+     51:   float v51; // xmm5_4
+     52:   float v52; // xmm0_4
+     53:   float v53; // xmm15_4
+     54:   float v54; // xmm14_4
+     55:   __int64 v55; // rcx
+     56:   __m128 v56; // xmm1
+     57:   __m128 v57; // xmm4
+     58:   __m128 v58; // xmm1
+     59:   __m128 v59; // xmm4
+     60:   __m128 v60; // xmm1
+     61:   __m128 v61; // xmm4
+     62:   __m128 v62; // xmm1
+     63:   __m128 v63; // xmm1
+     64:   __m128 v64; // xmm1
+     65:   __m128 v65; // xmm5
+     66:   __m128 v66; // xmm3
+     67:   __int64 v67; // rax
+     68:   float v68; // xmm0_4
+     69:   char v69; // cl
+     70:   __int64 v70; // rbx
+     71:   float v71; // xmm2_4
+     72:   float v72; // xmm0_4
+     73:   __int64 v73; // rdx
+     74:   __int64 v74; // rcx
+     75:   __m128 *v75; // rax
+     76:   __m128 *v76; // rcx
+     77:   __m128 *v77; // rcx
+     78:   __int64 result; // rax
+     79:   __m128 *v79; // rcx
+
+  lines mentioning DSS-relevant keywords:
+
+========================================================================
+Function RVA0x184c1e0 (sub_14184C1E0)
+========================================================================
+  total lines: 145
+      0: // Hidden C++ exception states: #wind=27
+      1: __int64 __fastcall sub_14184C1E0(__int64 a1, __int64 a2, int a3, float a4, __int64 a5)
+      2: {
+      3:   __int64 v8; // rax
+      4:   __int64 v9; // r13
+      5:   __int64 v11; // r12
+      6:   int v12; // ebx
+      7:   unsigned int v13; // r15d
+      8:   __int64 v14; // rax
+      9:   unsigned int *v15; // r14
+     10:   __int64 v16; // rbp
+     11:   __int64 v17; // rbx
+     12:   __int64 v18; // rcx
+     13:   int v19; // esi
+     14:   int v20; // [rsp+40h] [rbp-B8h] BYREF
+     15:   __int64 v21; // [rsp+48h] [rbp-B0h] BYREF
+     16:   _QWORD v22[2]; // [rsp+50h] [rbp-A8h] BYREF
+     17:   _QWORD v23[14]; // [rsp+60h] [rbp-98h] BYREF
+     18: 
+     19:   v22[1] = -2;
+     20:   v8 = sub_14183FA50();
+     21:   v9 = v8;
+     22:   if ( !v8 )
+     23:     return 2147500034LL;
+     24:   v11 = 0;
+     25:   v21 = 0;
+     26:   v12 = (*(__int64 (__fastcall **)(__int64, __int64 *))(*(_QWORD *)v8 + 80LL))(v8, &v21);
+     27:   if ( v12 >= 0 )
+     28:   {
+     29:     v20 = 0;
+     30:     if ( (*(int (__fastcall **)(__int64, __int128 *, __int64, int *))(*(_QWORD *)v21 + 72LL))(
+     31:            v21,
+     32:            &xmmword_14269DED0,
+     33:            a2,
+     34:            &v20) >= 0
+     35:       && v20 )
+     36:     {
+     37:       v23[0] = 0;
+     38:       v23[1] = 0;
+     39:       v23[9] = 0;
+     40:       v23[10] = 0;
+     41:       v13 = 1;
+     42:       v12 = sub_141845DB0((unsigned int)v23, 2, *(_QWORD *)a1, *(_QWORD *)(a1 + 8), 1, 1);
+     43:       if ( v12 >= 0 )
+     44:       {
+     45:         v14 = sub_1418468C0(v23, 0, 0, 0);
+     46:         v15 = (unsigned int *)v14;
+     47:         if ( v14 )
+     48:         {
+     49:           v16 = *(_QWORD *)(a1 + 40);
+     50:           if ( v16 )
+     51:           {
+     52:             v17 = *(_QWORD *)(v14 + 40);
+     53:             if ( v17 )
+     54:             {
+     55:               if ( *(_QWORD *)(a1 + 8) )
+     56:               {
+     57:                 v18 = *(_QWORD *)(a1 + 24);
+     58:                 while ( (unsigned __int8)sub_141847B20(v17, *(_QWORD *)a1, v16, v18, *(_DWORD *)(a1 + 16)) )
+     59:                 {
+     60:                   sub_14184B270(v17, *(_QWORD *)a1, 2, *(_DWORD *)(a1 + 16), a3);
+     61:                   v18 = *(_QWORD *)(a1 + 24);
+     62:                   LODWORD(v16) = v18 + v16;
+     63:                   v17 += *((_QWORD *)v15 + 3);
+     64:                   if ( (unsigned __int64)++v11 >= *(_QWORD *)(a1 + 8) )
+     65:                     goto LABEL_17;
+     66:                 }
+     67:                 v12 = -2147467259;
+     68:               }
+     69:               else
+     70:               {
+     71: LABEL_17:
+     72:                 v22[0] = 0;
+     73:                 v12 = (*(__int64 (__fastcall **)(__int64, _QWORD, _QWORD, __int128 *, unsigned int, unsigned int, _QWORD, _QWORD *))(*(_QWORD *)v9 + 160LL))(
+     74:                         v9,
+     75:                         *v15,
+     76:                         v15[2],
+     77:                         &xmmword_14269DED0,
+     78:                         v15[6],
+     79:                         v15[8],
+
+  lines mentioning DSS-relevant keywords:
+
+========================================================================
+Function RVA0x1858200 (sub_141858200)
+========================================================================
+  total lines: 231
+      0: // Hidden C++ exception states: #wind=56
+      1: __int64 __fastcall sub_141858200(__int64 a1, unsigned int a2, unsigned __int64 a3, _QWORD *a4, __int64 a5, __int64 a6)
+      2: {
+      3:   __int64 v8; // rsi
+      4:   __int64 v9; // rax
+      5:   __int64 v10; // r14
+      6:   unsigned __int64 v12; // r13
+      7:   unsigned __int64 v13; // r12
+      8:   int v14; // ebx
+      9:   __int64 v15; // rax
+     10:   __int64 v16; // rsi
+     11:   __int64 v17; // rbx
+     12:   __int64 v18; // r15
+     13:   unsigned __int64 v19; // r13
+     14:   unsigned __int64 v20; // r9
+     15:   unsigned __int64 v21; // rdx
+     16:   __int64 v22; // r15
+     17:   unsigned __int64 v23; // rdi
+     18:   unsigned __int64 v24; // rbx
+     19:   __int64 v25; // rsi
+     20:   unsigned __int64 v26; // rbx
+     21:   __int64 v27; // rdi
+     22:   int v28; // eax
+     23:   __int64 *v29; // rbx
+     24:   __int64 v30; // rdi
+     25:   unsigned int v31; // eax
+     26:   __int64 *v32; // [rsp+48h] [rbp-49h] BYREF
+     27:   unsigned __int64 v33; // [rsp+50h] [rbp-41h] BYREF
+     28:   __int64 v34; // [rsp+58h] [rbp-39h] BYREF
+     29:   __int64 v35; // [rsp+60h] [rbp-31h] BYREF
+     30:   _QWORD v36[2]; // [rsp+68h] [rbp-29h] BYREF
+     31:   _QWORD v37[12]; // [rsp+78h] [rbp-19h] BYREF
+     32:   int v38; // [rsp+E8h] [rbp+57h] BYREF
+     33:   unsigned int v39; // [rsp+F0h] [rbp+5Fh]
+     34:   unsigned __int64 v40; // [rsp+F8h] [rbp+67h]
+     35:   _QWORD *v41; // [rsp+100h] [rbp+6Fh]
+     36: 
+     37:   v41 = a4;
+     38:   v40 = a3;
+     39:   v39 = a2;
+     40:   v36[1] = -2;
+     41:   if ( !*(_QWORD *)(a1 + 40) )
+     42:     return 2147500035LL;
+     43:   v8 = a5;
+     44:   if ( !*(_QWORD *)(a5 + 80) )
+     45:     return 2147500035LL;
+     46:   v9 = sub_14183FA50();
+     47:   v10 = v9;
+     48:   if ( !v9 )
+     49:     return 2147500034LL;
+     50:   v12 = *(_QWORD *)a1;
+     51:   v33 = v12;
+     52:   v13 = *(_QWORD *)(a1 + 8);
+     53:   v36[0] = 0;
+     54:   v14 = (*(__int64 (__fastcall **)(__int64, _QWORD, _QWORD, _QWORD *, _DWORD, _DWORD, _QWORD, _QWORD *))(*(_QWORD *)v9 + 160LL))(
+     55:           v9,
+     56:           (unsigned int)v12,
+     57:           (unsigned int)v13,
+     58:           a4,
+     59:           *(_DWORD *)(a1 + 24),
+     60:           *(_DWORD *)(a1 + 32),
+     61:           *(_QWORD *)(a1 + 40),
+     62:           v36);
+     63:   if ( v14 < 0 )
+     64:     goto LABEL_49;
+     65:   v15 = sub_1418468C0(v8, 0, a6, 0);
+     66:   v16 = v15;
+     67:   if ( !v15 )
+     68:   {
+     69:     v14 = -2147467261;
+     70:     goto LABEL_49;
+     71:   }
+     72:   v17 = *(_QWORD *)(v15 + 40);
+     73:   if ( !v17 )
+     74:   {
+     75:     v14 = -2147467261;
+     76:     goto LABEL_49;
+     77:   }
+     78:   v18 = *(_QWORD *)(a1 + 40);
+     79:   if ( v13 )
+
+  lines mentioning DSS-relevant keywords:
+
+========================================================================
+Function RVA0x1b74270 (sub_141B74270)
+========================================================================
+  total lines: 234
+      0: __int64 __fastcall sub_141B74270(_QWORD *a1, __int64 *a2)
+      1: {
+      2:   _QWORD *v2; // rbx
+      3:   __int64 *v3; // rsi
+      4:   unsigned __int64 v4; // r12
+      5:   _QWORD *v5; // rdi
+      6:   unsigned __int64 v6; // r13
+      7:   _QWORD *v7; // rbx
+      8:   __int64 v8; // r15
+      9:   unsigned __int64 v9; // r13
+     10:   __int64 v10; // rcx
+     11:   __int64 v11; // rax
+     12:   _QWORD *v12; // rsi
+     13:   unsigned __int64 v13; // r14
+     14:   unsigned __int64 v14; // rdi
+     15:   unsigned __int64 v15; // r8
+     16:   __int64 v16; // rbx
+     17:   __int64 v17; // r9
+     18:   __int64 v18; // rax
+     19:   __int64 v19; // rdx
+     20:   unsigned int v20; // eax
+     21:   __int64 v21; // rax
+     22:   _QWORD *v22; // rsi
+     23:   unsigned __int64 v23; // r14
+     24:   unsigned __int64 v24; // rdi
+     25:   unsigned __int64 v25; // r8
+     26:   __int64 v26; // rbx
+     27:   __int64 v27; // r9
+     28:   __int64 v28; // rcx
+     29:   __int64 v29; // rdx
+     30:   unsigned int v30; // eax
+     31:   __int64 v31; // rcx
+     32:   const CHAR *v32; // rdx
+     33:   __int64 v33; // rbx
+     34:   __int64 v34; // rcx
+     35:   bool v35; // zf
+     36:   _QWORD *v37; // [rsp+38h] [rbp-49h]
+     37:   unsigned __int64 v38; // [rsp+40h] [rbp-41h]
+     38:   __int64 v39; // [rsp+48h] [rbp-39h] BYREF
+     39:   unsigned __int64 v40; // [rsp+50h] [rbp-31h]
+     40:   __int64 v41; // [rsp+58h] [rbp-29h]
+     41:   __int64 v42; // [rsp+60h] [rbp-21h]
+     42:   _QWORD v43[6]; // [rsp+68h] [rbp-19h] BYREF
+     43:   _QWORD *v46; // [rsp+F8h] [rbp+77h]
+     44:   unsigned __int64 v47; // [rsp+100h] [rbp+7Fh]
+     45: 
+     46:   v2 = a1;
+     47:   v3 = a2;
+     48:   v4 = 0;
+     49:   v5 = *(_QWORD **)(a1[5] + 128LL);
+     50:   v6 = a1[12];
+     51:   v37 = v5;
+     52:   v42 = v5[6];
+     53:   v47 = v6;
+     54:   v39 = 0;
+     55:   v40 = 0;
+     56:   v41 = 0;
+     57:   if ( v6 )
+     58:   {
+     59:     v7 = (_QWORD *)a1[8];
+     60:     v8 = v5[53];
+     61:     v46 = v7;
+     62:     if ( v7 )
+     63:     {
+     64:       while ( !(unsigned __int8)sub_141AD2970(v7) )
+     65:       {
+     66:         if ( (unsigned __int8)sub_141AD2900(v7) )
+     67:         {
+     68:           v9 = 0;
+     69:           v38 = v7[12];
+     70:           if ( v38 )
+     71:           {
+     72:             do
+     73:             {
+     74:               v10 = *(_QWORD *)(v7[11] + 8 * v9);
+     75:               v11 = (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)v10 + 160LL))(v10);
+     76:               v12 = (_QWORD *)v11;
+     77:               if ( v11 )
+     78:               {
+     79:                 v13 = *(_QWORD *)(v11 + 8);
+
+  lines mentioning DSS-relevant keywords:
+
+========================================================================
+Function RVA0x1cad6d0 (sub_141CAD6D0)
+========================================================================
+  total lines: 209
+      0: __int64 __fastcall sub_141CAD6D0(_QWORD *a1, _QWORD *a2)
+      1: {
+      2:   __int64 v4; // r8
+      3:   double v5; // xmm8_8
+      4:   double v6; // xmm11_8
+      5:   int v7; // esi
+      6:   double v8; // xmm15_8
+      7:   int v9; // r14d
+      8:   int v10; // ecx
+      9:   __int64 v11; // rax
+     10:   double v12; // xmm13_8
+     11:   double v13; // xmm14_8
+     12:   float v14; // xmm0_4
+     13:   __int64 v15; // rax
+     14:   unsigned int v16; // ebp
+     15:   __int64 v17; // rax
+     16:   const char *v18; // rdx
+     17:   __int64 v19; // rax
+     18:   _QWORD *v20; // rbx
+     19:   __int64 v21; // r15
+     20:   unsigned int v22; // r12d
+     21:   unsigned int v23; // r12d
+     22:   float v24; // xmm7_4
+     23:   float v25; // xmm8_4
+     24:   __int64 v26; // rdi
+     25:   float v27; // xmm6_4
+     26:   float v28; // xmm0_4
+     27:   __int64 v29; // rax
+     28:   float v30; // xmm8_4
+     29:   float v31; // xmm7_4
+     30:   float *v32; // rdi
+     31:   float v33; // xmm6_4
+     32:   float v34; // xmm0_4
+     33:   __int64 v35; // rax
+     34:   __int64 v36; // rax
+     35:   char v37; // cl
+     36:   __int64 v38; // rax
+     37:   double v39; // xmm0_8
+     38:   char v40; // cl
+     39:   float v41; // xmm6_4
+     40:   int v42; // edi
+     41:   __int64 v43; // rax
+     42:   __int64 v44; // rcx
+     43:   __int64 v45; // rdx
+     44:   char v46; // al
+     45:   __int64 v47; // rax
+     46:   __int64 v48; // rcx
+     47:   char v49; // al
+     48:   __int64 v50; // rax
+     49:   char v51; // al
+     50:   __int64 v52; // rcx
+     51:   __int64 v53; // rax
+     52:   _QWORD *v54; // rcx
+     53:   int v55; // eax
+     54:   __int64 result; // rax
+     55:   __int64 *v57; // rcx
+     56:   int v59; // [rsp+20h] [rbp-D8h] BYREF
+     57:   __int64 v60; // [rsp+28h] [rbp-D0h]
+     58:   __int64 *v61; // [rsp+100h] [rbp+8h] BYREF
+     59:   _QWORD *v62; // [rsp+108h] [rbp+10h] BYREF
+     60:   double v63; // [rsp+110h] [rbp+18h]
+     61:   double v64; // [rsp+118h] [rbp+20h]
+     62: 
+     63:   sub_141CAC9A0(&v62, a1[5]);
+     64:   v4 = *(_QWORD *)(*(_QWORD *)(*(_QWORD *)(a1[5] + 128LL) + 16LL) + 520LL);
+     65:   v61 = (__int64 *)(v4 + 64);
+     66:   ++*(_DWORD *)(v4 + 88);
+     67:   v5 = (float)(*(float *)((*(__int64 (__fastcall **)(_QWORD *))(*a1 + 160LL))(a1) + 60) * 0.050000001);
+     68:   v6 = *(float *)((*(__int64 (__fastcall **)(_QWORD *))(*a1 + 160LL))(a1) + 64) * 180.0 / 3.141592653589793;
+     69:   v7 = *(_DWORD *)((*(__int64 (__fastcall **)(_QWORD *))(*a1 + 160LL))(a1) + 56) & 0xFFFFFF;
+     70:   v8 = (double)*(unsigned __int8 *)((*(__int64 (__fastcall **)(_QWORD *))(*a1 + 160LL))(a1) + 59) / 255.0;
+     71:   v9 = *(_DWORD *)((*(__int64 (__fastcall **)(_QWORD *))(*a1 + 160LL))(a1) + 52) & 0xFFFFFF;
+     72:   v10 = *(unsigned __int8 *)((*(__int64 (__fastcall **)(_QWORD *))(*a1 + 160LL))(a1) + 55);
+     73:   v11 = *a1;
+     74:   v63 = (double)v10 / 255.0;
+     75:   v12 = (float)(*(float *)((*(__int64 (__fastcall **)(_QWORD *))(v11 + 160))(a1) + 32) * 0.050000001);
+     76:   v13 = (float)(*(float *)((*(__int64 (__fastcall **)(_QWORD *))(*a1 + 160LL))(a1) + 36) * 0.050000001);
+     77:   v14 = *(float *)((*(__int64 (__fastcall **)(_QWORD *))(*a1 + 160LL))(a1) + 48);
+     78:   v15 = *a1;
+     79:   v64 = v14;
+
+  lines mentioning DSS-relevant keywords:
+      64:   v4 = *(_QWORD *)(*(_QWORD *)(*(_QWORD *)(a1[5] + 128LL) + 16LL) + 520LL);
+     167:       v52 = *(_QWORD *)(*(_QWORD *)(v20[5] + 128LL) + 32LL);
+
+========================================================================
+Function RVA0x1caf000 (sub_141CAF000)
+========================================================================
+  total lines: 9
+      0: __int64 __fastcall sub_141CAF000(__int64 a1, _DWORD *a2)
+      1: {
+      2:   __int64 result; // rax
+      3: 
+      4:   result = (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)a1 + 160LL))(a1);
+      5:   *a2 = *(_DWORD *)(result + 28);
+      6:   return result;
+      7: }
+      8: 
+
+  lines mentioning DSS-relevant keywords:
+
+========================================================================
+Function RVA0x1caf050 (sub_141CAF050)
+========================================================================
+  total lines: 13
+      0: __int64 __fastcall sub_141CAF050(__int64 a1, __int64 a2, unsigned int a3)
+      1: {
+      2:   int v3; // ebx
+      3:   __int64 result; // rax
+      4: 
+      5:   v3 = 15;
+      6:   if ( a3 < 0xF )
+      7:     v3 = a3;
+      8:   result = (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)a1 + 160LL))(a1);
+      9:   *(_DWORD *)(result + 28) = v3;
+     10:   return result;
+     11: }
+     12: 
+
+  lines mentioning DSS-relevant keywords:
+
+========================================================================
+Function RVA0x1caf160 (sub_141CAF160)
+========================================================================
+  total lines: 9
+      0: __int64 __fastcall sub_141CAF160(__int64 a1, double *a2)
+      1: {
+      2:   __int64 result; // rax
+      3: 
+      4:   result = (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)a1 + 160LL))(a1);
+      5:   *a2 = (double)*(unsigned __int8 *)(result + 55) / 255.0;
+      6:   return result;
+      7: }
+      8: 
+
+  lines mentioning DSS-relevant keywords:
+
+========================================================================
+Function RVA0x1caf190 (sub_141CAF190)
+========================================================================
+  total lines: 9
+      0: __int64 __fastcall sub_141CAF190(__int64 a1, __int64 a2, double a3)
+      1: {
+      2:   __int64 result; // rax
+      3: 
+      4:   result = (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)a1 + 160LL))(a1);
+      5:   *(_BYTE *)(result + 55) = (int)(a3 * 255.0);
+      6:   return result;
+      7: }
+      8: 
+
+  lines mentioning DSS-relevant keywords:
+
+========================================================================
+Function RVA0x1caf340 (sub_141CAF340)
+========================================================================
+  total lines: 56
+      0: __int64 __fastcall sub_141CAF340(_QWORD *a1, __int64 a2, __int64 **a3)
+      1: {
+      2:   __int64 v4; // r9
+      3:   __int64 result; // rax
+      4:   __int64 v6; // r8
+      5:   char v7; // dl
+      6:   __int64 v8; // rdx
+      7:   char v9; // cl
+      8:   char v10; // cl
+      9:   __int64 v11; // rcx
+     10: 
+     11:   v4 = **a3;
+     12:   result = 0;
+     13:   v6 = 0;
+     14:   while ( 1 )
+     15:   {
+     16:     v7 = *(_BYTE *)(v4 + v6++);
+     17:     if ( v7 != aInner[v6 - 1] )
+     18:       break;
+     19:     if ( v6 == 6 )
+     20:     {
+     21:       result = (*(__int64 (__fastcall **)(_QWORD *))(*a1 + 160LL))(a1);
+     22:       *(_DWORD *)(result + 24) |= 0x20u;
+     23:       return result;
+     24:     }
+     25:   }
+     26:   v8 = 0;
+     27:   while ( 1 )
+     28:   {
+     29:     v9 = *(_BYTE *)(v4 + v8++);
+     30:     if ( v9 != aOuter[v8 - 1] )
+     31:       break;
+     32:     if ( v8 == 6 )
+     33:     {
+     34:       result = (*(__int64 (__fastcall **)(_QWORD *, __int64, const char *))(*a1 + 160LL))(a1, 6, "outer");
+     35:       *(_DWORD *)(result + 24) &= ~0x20u;
+     36:       return result;
+     37:     }
+     38:   }
+     39:   while ( 1 )
+     40:   {
+     41:     v10 = *(_BYTE *)(v4 + result++);
+     42:     if ( v10 != aFull[result - 1] )
+     43:       break;
+     44:     if ( result == 5 )
+     45:     {
+     46:       v11 = *(_QWORD *)(*(_QWORD *)(a1[5] + 128LL) + 32LL);
+     47:       return (*(__int64 (__fastcall **)(__int64, __int64, const char *))(*(_QWORD *)v11 + 8LL))(
+     48:                v11,
+     49:                2,
+     50:                "The method instance::BevelFilter::typeSet() - full is not implemented\n");
+     51:     }
+     52:   }
+     53:   return result;
+     54: }
+     55: 
+
+  lines mentioning DSS-relevant keywords:
+      46:       v11 = *(_QWORD *)(*(_QWORD *)(a1[5] + 128LL) + 32LL);
+
+========================================================================
+Function RVA0x1992470 (sub_141992470)
+========================================================================
+  total lines: 63
+      0: bool __fastcall sub_141992470(__m128 *a1, __m128 *a2)
+      1: {
+      2:   __int64 v4; // rax
+      3:   unsigned __int64 v5; // rax
+      4:   int v6; // eax
+      5:   __int32 v7; // eax
+      6:   int v8; // eax
+      7:   __int64 v9; // rbx
+      8:   __int64 v10; // rcx
+      9:   __int64 v11; // rcx
+     10: 
+     11:   v4 = (*(__int64 (__fastcall **)(__m128 *))(a2->m128_u64[0] + 16))(a2);
+     12:   if ( !(unsigned __int8)sub_1412921A0(&unk_143D976B0, v4)
+     13:     || (*(float (__fastcall **)(__m128 *))(a2->m128_u64[0] + 160))(a2) != a1[7].m128_f32[3]
+     14:     || (*(float (__fastcall **)(__m128 *))(a2->m128_u64[0] + 144))(a2) != a1[7].m128_f32[2] )
+     15:   {
+     16:     return 0;
+     17:   }
+     18:   v5 = a2[1].m128_u64[0] & 0xFFFFFFFFFFFFFFFEuLL;
+     19:   if ( (a1[1].m128_u64[0] & 0xFFFFFFFFFFFFFFFEuLL) != 0 )
+     20:   {
+     21:     if ( !v5 )
+     22:       return 0;
+     23:     v6 = sub_14133A120(a1[1].m128_u64[0] & 0xFFFFFFFFFFFFFFFEuLL, a2[1].m128_u64[0] & 0xFFFFFFFFFFFFFFFEuLL);
+     24:   }
+     25:   else
+     26:   {
+     27:     v6 = -(v5 != 0);
+     28:   }
+     29:   if ( !v6 )
+     30:   {
+     31:     v7 = a1[2].m128_i32[0];
+     32:     if ( v7 == a2[2].m128_i32[0] )
+     33:     {
+     34:       v8 = v7 - 1;
+     35:       v9 = v8;
+     36:       if ( v8 < 0 )
+     37:         return _mm_movemask_ps(
+     38:                  _mm_and_ps(
+     39:                    _mm_and_ps(_mm_cmpeq_ps(a2[6], a1[6]), _mm_cmpeq_ps(a2[5], a1[5])),
+     40:                    _mm_and_ps(_mm_cmpeq_ps(a2[4], a1[4]), _mm_cmpeq_ps(a2[3], a1[3])))) == 15;
+     41:       while ( 1 )
+     42:       {
+     43:         v10 = *(_QWORD *)(a1[1].m128_u64[1] + 8 * v9);
+     44:         if ( !v10 || (*(unsigned int (__fastcall **)(__int64))(*(_QWORD *)v10 + 112LL))(v10) != 12 )
+     45:         {
+     46:           v11 = *(_QWORD *)(a1[1].m128_u64[1] + 8 * v9);
+     47:           if ( !(*(unsigned __int8 (__fastcall **)(__int64, _QWORD))(*(_QWORD *)v11 + 152LL))(
+     48:                   v11,
+     49:                   *(_QWORD *)(a2[1].m128_u64[1] + 8 * v9)) )
+     50:             break;
+     51:         }
+     52:         if ( --v9 < 0 )
+     53:           return _mm_movemask_ps(
+     54:                    _mm_and_ps(
+     55:                      _mm_and_ps(_mm_cmpeq_ps(a2[6], a1[6]), _mm_cmpeq_ps(a2[5], a1[5])),
+     56:                      _mm_and_ps(_mm_cmpeq_ps(a2[4], a1[4]), _mm_cmpeq_ps(a2[3], a1[3])))) == 15;
+     57:       }
+     58:     }
+     59:   }
+     60:   return 0;
+     61: }
+     62: 
+
+  lines mentioning DSS-relevant keywords:
+
+========================================================================
+Function RVA0x1b872b0 (sub_141B872B0)
+========================================================================
+  total lines: 15
+      0: __int64 __fastcall sub_141B872B0(__int64 a1)
+      1: {
+      2:   __int64 v1; // rdi
+      3:   __int64 v3; // rcx
+      4: 
+      5:   v1 = *(_QWORD *)(a1 + 256);
+      6:   if ( *(_BYTE *)(v1 + 64) )
+      7:     return *(_QWORD *)(a1 + 256);
+      8:   (*(void (__fastcall **)(_QWORD))(*(_QWORD *)v1 + 160LL))(*(_QWORD *)(a1 + 256));
+      9:   v3 = *(_QWORD *)(*(_QWORD *)(v1 + 40) + 128LL);
+     10:   if ( !*(_BYTE *)(v3 + 168) )
+     11:     sub_141AB6C90(v3, 1);
+     12:   return *(_QWORD *)(a1 + 256);
+     13: }
+     14: 
+
+  lines mentioning DSS-relevant keywords:
+       9:   v3 = *(_QWORD *)(*(_QWORD *)(v1 + 40) + 128LL);
+
+========================================================================
+Function RVA0xca2f50 (sub_140CA2F50)
+========================================================================
+  total lines: 176
+      0: __int64 __fastcall sub_140CA2F50(__int64 a1)
+      1: {
+      2:   unsigned __int8 v2; // bl
+      3:   __int64 v3; // rax
+      4:   bool v5; // di
+      5:   char v6; // bl
+      6:   __int64 v7; // r12
+      7:   __int64 v8; // rax
+      8:   int v9; // r9d
+      9:   __int64 v10; // rdx
+     10:   __int64 v11; // r8
+     11:   __int64 v12; // rax
+     12:   __int64 v13; // r14
+     13:   __int64 v14; // r15
+     14:   __int64 v15; // rax
+     15:   __int64 v16; // r9
+     16:   __int64 v17; // rax
+     17:   __int64 v18; // rdx
+     18:   __int64 v19; // rcx
+     19:   int v20; // ebx
+     20:   __int64 v21; // rax
+     21:   __int64 v22; // rdx
+     22:   __int64 v23; // r14
+     23:   __int64 v24; // rcx
+     24:   __int64 v25; // rdi
+     25:   __int64 v26; // rax
+     26:   __int64 v27; // rcx
+     27:   __int64 v28; // rcx
+     28:   __int64 v29; // rcx
+     29:   bool v30; // [rsp+30h] [rbp-29h] BYREF
+     30:   int v31; // [rsp+31h] [rbp-28h]
+     31:   __int64 v32; // [rsp+38h] [rbp-21h] BYREF
+     32:   _BYTE v33[24]; // [rsp+40h] [rbp-19h] BYREF
+     33:   _BYTE v34[40]; // [rsp+58h] [rbp-1h] BYREF
+     34:   int v35; // [rsp+C8h] [rbp+6Fh] BYREF
+     35:   int v36; // [rsp+D0h] [rbp+77h] BYREF
+     36:   char v37; // [rsp+D8h] [rbp+7Fh] BYREF
+     37: 
+     38:   v2 = 0;
+     39:   if ( (unsigned __int8)sub_14046E360(a1) && (*(_DWORD *)(a1 + 1084) & 8) == 0 )
+     40:   {
+     41:     v3 = *(_QWORD *)(a1 + 768);
+     42:     if ( v3 && *(_BYTE *)(v3 + 223) > 1u )
+     43:     {
+     44:       sub_140DBEF80(a1);
+     45:       return 0;
+     46:     }
+     47:     v5 = 0;
+     48:     v32 = 0;
+     49:     if ( (unsigned __int8)sub_140CDC4A0(a1, &v32) )
+     50:     {
+     51:       v6 = sub_140CDCA90(v32);
+     52:       if ( v6 )
+     53:       {
+     54:         v7 = *((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex);
+     55:         if ( dword_1432F4C90 > *(_DWORD *)(v7 + 5488) )
+     56:         {
+     57:           sub_1422B7498(&dword_1432F4C90);
+     58:           if ( dword_1432F4C90 == -1 )
+     59:           {
+     60:             sub_14167BDC0(&unk_1432F4C88, "bInJumpState");
+     61:             sub_1422B70BC(sub_1423FE2C0);
+     62:             sub_1422B7438(&dword_1432F4C90);
+     63:           }
+     64:         }
+     65:         v8 = *(_QWORD *)(a1 + 72);
+     66:         v36 = 0;
+     67:         if ( (*(unsigned __int8 (__fastcall **)(__int64, void *, int *))(v8 + 160))(a1 + 72, &unk_1432F4C88, &v36) )
+     68:           v6 = v36 == 0;
+     69:         if ( v6 )
+     70:         {
+     71:           if ( a1 == qword_1431E2D50 && !(unsigned __int8)sub_140CDD0E0(a1) )
+     72:           {
+     73:             sub_140D378E0(
+     74:               *(_QWORD *)(a1 + 768),
+     75:               a1,
+     76:               v32,
+     77:               v9,
+     78:               *(_DWORD *)(*(_QWORD *)(v32 + 1048) + 492LL),
+     79:               *(_DWORD *)(*(_QWORD *)(v32 + 1048) + 496LL));
+
+  lines mentioning DSS-relevant keywords:
+
+========================================================================
+Function RVA0xe0d9c0 (sub_140E0D9C0)
+========================================================================
+  total lines: 39
+      0: char __fastcall sub_140E0D9C0(__int64 a1)
+      1: {
+      2:   __int64 v2; // rax
+      3:   __int64 v3; // rdi
+      4:   __int64 v4; // r8
+      5:   int v6; // [rsp+38h] [rbp+10h] BYREF
+      6: 
+      7:   if ( (*(_DWORD *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex) + 2236LL) & 8) == 0 )
+      8:   {
+      9:     if ( (*(_DWORD *)(a1 + 304) & 0x1E00000) != 0xC00000 && (*(_BYTE *)(a1 + 308) & 1) == 0 )
+     10:       sub_140E0DAF0(a1);
+     11:     (*(void (__fastcall **)(__int64, void *, int *))(*(_QWORD *)(a1 + 72) + 160LL))(a1 + 72, &unk_1430E1B60, &v6);
+     12:     if ( (*(unsigned __int8 (__fastcall **)(__int64))(*(_QWORD *)a1 + 720LL))(a1) )
+     13:     {
+     14:       v2 = sub_140C5C830(a1);
+     15:       if ( v2 )
+     16:         sub_1418946E0(v2, a1 + 208);
+     17:     }
+     18:     v3 = sub_140C58B40(a1);
+     19:     sub_140C46BB0(qword_1432F46F8, v3);
+     20:     if ( v6 )
+     21:     {
+     22:       if ( (unsigned int)(v6 - 1) <= 1 )
+     23:       {
+     24:         LOBYTE(v4) = 1;
+     25:         sub_140C463D0(qword_1432F46F8, a1, v4);
+     26:         return 1;
+     27:       }
+     28:     }
+     29:     else
+     30:     {
+     31:       sub_140CE2860(a1);
+     32:       sub_140C46D70(qword_1432F46F8, v3, 8);
+     33:       sub_140C46C80(qword_1432F46F8, v3, 2);
+     34:     }
+     35:   }
+     36:   return 1;
+     37: }
+     38: 
+
+  lines mentioning DSS-relevant keywords:
+
+========================================================================
+Function RVA0xe0daf0 (sub_140E0DAF0)
+========================================================================
+  total lines: 96
+      0: char __fastcall sub_140E0DAF0(__int64 a1)
+      1: {
+      2:   __int64 v2; // rcx
+      3:   __int64 v3; // rdi
+      4:   __int64 v4; // rbp
+      5:   __int64 v5; // rax
+      6:   __int64 v6; // rsi
+      7:   unsigned __int64 v7; // xmm0_8
+      8:   __int64 v8; // r8
+      9:   int v9; // edi
+     10:   __int64 v10; // rax
+     11:   char result; // al
+     12:   __int64 v12; // [rsp+20h] [rbp-28h] BYREF
+     13:   int v13; // [rsp+28h] [rbp-20h]
+     14:   unsigned __int32 v14; // [rsp+2Ch] [rbp-1Ch]
+     15:   int v15; // [rsp+50h] [rbp+8h] BYREF
+     16: 
+     17:   (*(void (__fastcall **)(__int64, void *, int *))(*(_QWORD *)(a1 + 72) + 160LL))(a1 + 72, &unk_1430E1B60, &v15);
+     18:   v2 = *(_QWORD *)(a1 + 184);
+     19:   v3 = 0;
+     20:   if ( v2 )
+     21:     v4 = sub_1404CA730(v2);
+     22:   else
+     23:     v4 = 0;
+     24:   v5 = sub_140C5C830(a1);
+     25:   v6 = v5;
+     26:   if ( v5 )
+     27:   {
+     28:     *(_QWORD *)(v5 + 820) = 0;
+     29:     *(double *)&v7 = sub_1422B7640();
+     30:     v13 = v7;
+     31:     LOBYTE(v8) = 1;
+     32:     v14 = _mm_shuffle_ps((__m128)v7, (__m128)v7, 1).m128_u32[0];
+     33:     v12 = 0;
+     34:     sub_141896D10(v6, &v12, v8);
+     35:     sub_1418946E0(v6, a1 + 208);
+     36:     if ( v4 )
+     37:     {
+     38:       if ( !*(_BYTE *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex) + 5433LL) )
+     39:       {
+     40:         v3 = *(_QWORD *)(v4 + 96);
+     41:         if ( v3 )
+     42:           sub_141872A40(*(_QWORD *)(v4 + 96));
+     43:       }
+     44:       sub_1418800F0(v6, &xmmword_142F31510);
+     45:       if ( sub_141896BB0(v6) )
+     46:         sub_140818D80(a1 + 72, &unk_1430E1D48, 0);
+     47:       if ( v3 )
+     48:         sub_141872A60(v3);
+     49:     }
+     50:     *(_DWORD *)(v6 + 788) = dword_142F44A50;
+     51:     v9 = 2;
+     52:     if ( !(unsigned __int8)sub_1409890A0(a1) )
+     53:     {
+     54:       v10 = *(_QWORD *)(a1 + 1048);
+     55:       if ( v10 && (*(_DWORD *)(v10 + 472) & 4) != 0 )
+     56:       {
+     57:         v9 = 6;
+     58:         sub_141895140(v6, 6);
+     59:       }
+     60:       else if ( v15 == 2 )
+     61:       {
+     62:         if ( a1 == qword_1431E2D50 )
+     63:           sub_14052F670();
+     64:         v9 = 5;
+     65:       }
+     66:     }
+     67:     *(_DWORD *)(v6 + 772) = v9;
+     68:     sub_140C48A80(qword_1432F46F8, a1, v4);
+     69:   }
+     70:   if ( v15 )
+     71:   {
+     72:     if ( v15 == 1 )
+     73:     {
+     74:       *(_DWORD *)(a1 + 304) &= 0xFEDFFFFF;
+     75:       *(_DWORD *)(a1 + 304) |= 0xC00000u;
+     76:       return 1;
+     77:     }
+     78:     else
+     79:     {
+
+  lines mentioning DSS-relevant keywords:
+
+========================================================================
+Raw DSS desc blobs examination
+========================================================================
+
+-- near 0x1430E1990/1998: 0x1430e1960..0x1430e1a00 --
+  0x1430e1960: ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff
+  0x1430e1980: ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff
+  0x1430e19a0: ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff
+  0x1430e19c0: ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff
+  0x1430e19e0: ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff
+
+-- near 0x14326F2F0: 0x14326f2e0..0x14326f380 --
+  0x14326f2e0: ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff
+  0x14326f300: ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff
+  0x14326f320: ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff
+  0x14326f340: ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff
+  0x14326f360: ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff
+
+-- near 0x143074440 maybe: 0x14307440..0x14307500 --
+  0x14307440: ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff
+  0x14307460: ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff
+  0x14307480: ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff
+  0x143074a0: ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff
+  0x143074c0: ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff
+  0x143074e0: ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff ffffffff
+
+[DONE]

@@ -1,0 +1,152 @@
+[+] Image base: 0x140000000
+
+
+==== '.fos'  (0 occurrence(s))
+
+==== 'LoadGame'  (1 occurrence(s))
+  string @ 0x1424BB210 (RVA 0x24BB210)
+    xref 0x142EF1680 in <no func>
+
+==== 'Load a saved game'  (0 occurrence(s))
+
+==== 'load'  (0 occurrence(s))
+
+==== 'coc'  (0 occurrence(s))
+
+==== 'Game.Load'  (0 occurrence(s))
+
+==== 'Save'  (0 occurrence(s))
+
+==== 'NewGame'  (0 occurrence(s))
+
+==== 'StartNewGame'  (1 occurrence(s))
+  string @ 0x142537AC0 (RVA 0x2537AC0)
+    xref 0x140B012D8 in RVA 0xB01290
+__int64 __fastcall sub_140B01290(__int64 a1)
+{
+  sub_141B1A340(a1, "onContinuePress", 0);
+  sub_141B1A340(a1, "onNewPress", 1);
+  sub_141B1A340(a1, "ContinueGame", 2);
+  sub_141B1A340(a1, "StartNewGame", 3);
+  sub_141B1A340(a1, "RegisterSaveLoadPanel", 4);
+  sub_141B1A340(a1, "PopulateSaveList", 6);
+  sub_141B1A340(a1, "PopulateLoadList", 8);
+  sub_141B1A340(a1, "InitialPopulateLoadList", 5);
+  sub_141B1A340(a1, "FinishSaveGame", 9);
+  sub_141B1A340(a1, "ShowContinueSecondPanel", 10);
+  sub_141B1A340(a1, "FinishLoadGame", 11);
+  sub_141B1A340(a1, "PrepSaveGameScreenshot", 12);
+  sub_141B1A340(a1, "onDisabledLoadPress", 14);
+  sub_141B1A340(a1, "requestLoadGame", 13);
+  sub_141B1A340(a1, "onQuitPress", 15);
+  sub_141B1A340(a1, "PlayOKSound", 16);
+  sub_141B1A340(a1, "PlayCancelSound", 17);
+  sub_141B1A340(a1, "PlayFocusSound", 18);
+  sub_141B1A340(a1, "DeleteSave", 19);
+  sub_141B1A340(a1, "SetBackgroundVisible", 20);
+  sub_141B1A340(a1, "RequestGameplayOptions", 21);
+  sub_141B1A340(a1, "RequestDisplayOptions", 22);
+  sub_141B1A340(a1, "RequestAudioOptions", 23);
+  sub_141B1A340(a1, "RequestInputMappings", 24);
+  sub_141B1A340(a1, "ResetControlsToDefaults", 25);
+  sub_141B1A340(a1, "StartRemapMode", 26);
+  sub_141B1A340(a1, "SaveSettings", 27);
+  sub_141B1A340(a1, "onSettingsValueChange", 28);
+  sub_141B1A340(a1, "onHUDColorUpdate", 29);
+  sub_141B1A340(a1, "onPipboyColorUpdate", 30);
+  sub_141B1A340(a1, "GetShowBethesdaNetOption", 31);
+  sub_141B1A340(a1, "GetShowCreationClubOption", 32);
+  sub_141B1A340(a1, "SetToMenu", 33);
+  sub_141B1A340(a1, "PopulateCharacterList", 7);
+  sub_141B1A340(a1, "SetCurrentCharacter", 34);
+  sub_141B1A340(a1, "IsMainMenuReady", 35);
+  sub_141B1A340(a1, "GetHasSavedGames", 36);
+  sub_141B1A340(a1, "GetCurrentCharacter", 37);
+  sub_141B1A340(a1, "HasMoreThanOneCharacter", 38);
+  sub_141B1A340(a1, "onFinishInit", 39);
+  sub_141B1A340(a1, "endModMusic", 40);
+  sub_141B1A340(a1, "AreModsLoaded", 41);
+  sub_141B1A340(a1, "GetHasInstalledContent", 42);
+  sub_141B1A340(a1, "UseMinimalModMenu", 43);
+  sub_141B1A340(a1, "EnterCreationClub", 44);
+  sub_141B1A340(a1, "onLoginScreenOpen", 45);
+  sub_141B1A340(a1, "onLoginScreenClose", 46);
+  sub_141B1A340(a1, "startEditText", 49);
+  sub_141B1A340(a1, "endEditText", 50);
+  sub_141B1A340(a1, "attemptLogin", 47);
+  sub_141B1A340(a1, "PopulateEULA", 48);
+  sub_141B1A340(a1, "createQuickAccount", 51);
+  sub_141B1A340(a1, "AcceptLegalDoc", 52);
+  return sub_140A87F90(a1);
+}
+
+    ---
+
+==== 'bLoadGame'  (0 occurrence(s))
+
+==== 'sStartingSave'  (0 occurrence(s))
+
+==== 'requestLoadGame'  (1 occurrence(s))
+  string @ 0x142537B98 (RVA 0x2537B98)
+    xref 0x140B013AA in RVA 0xB01290
+__int64 __fastcall sub_140B01290(__int64 a1)
+{
+  sub_141B1A340(a1, "onContinuePress", 0);
+  sub_141B1A340(a1, "onNewPress", 1);
+  sub_141B1A340(a1, "ContinueGame", 2);
+  sub_141B1A340(a1, "StartNewGame", 3);
+  sub_141B1A340(a1, "RegisterSaveLoadPanel", 4);
+  sub_141B1A340(a1, "PopulateSaveList", 6);
+  sub_141B1A340(a1, "PopulateLoadList", 8);
+  sub_141B1A340(a1, "InitialPopulateLoadList", 5);
+  sub_141B1A340(a1, "FinishSaveGame", 9);
+  sub_141B1A340(a1, "ShowContinueSecondPanel", 10);
+  sub_141B1A340(a1, "FinishLoadGame", 11);
+  sub_141B1A340(a1, "PrepSaveGameScreenshot", 12);
+  sub_141B1A340(a1, "onDisabledLoadPress", 14);
+  sub_141B1A340(a1, "requestLoadGame", 13);
+  sub_141B1A340(a1, "onQuitPress", 15);
+  sub_141B1A340(a1, "PlayOKSound", 16);
+  sub_141B1A340(a1, "PlayCancelSound", 17);
+  sub_141B1A340(a1, "PlayFocusSound", 18);
+  sub_141B1A340(a1, "DeleteSave", 19);
+  sub_141B1A340(a1, "SetBackgroundVisible", 20);
+  sub_141B1A340(a1, "RequestGameplayOptions", 21);
+  sub_141B1A340(a1, "RequestDisplayOptions", 22);
+  sub_141B1A340(a1, "RequestAudioOptions", 23);
+  sub_141B1A340(a1, "RequestInputMappings", 24);
+  sub_141B1A340(a1, "ResetControlsToDefaults", 25);
+  sub_141B1A340(a1, "StartRemapMode", 26);
+  sub_141B1A340(a1, "SaveSettings", 27);
+  sub_141B1A340(a1, "onSettingsValueChange", 28);
+  sub_141B1A340(a1, "onHUDColorUpdate", 29);
+  sub_141B1A340(a1, "onPipboyColorUpdate", 30);
+  sub_141B1A340(a1, "GetShowBethesdaNetOption", 31);
+  sub_141B1A340(a1, "GetShowCreationClubOption", 32);
+  sub_141B1A340(a1, "SetToMenu", 33);
+  sub_141B1A340(a1, "PopulateCharacterList", 7);
+  sub_141B1A340(a1, "SetCurrentCharacter", 34);
+  sub_141B1A340(a1, "IsMainMenuReady", 35);
+  sub_141B1A340(a1, "GetHasSavedGames", 36);
+  sub_141B1A340(a1, "GetCurrentCharacter", 37);
+  sub_141B1A340(a1, "HasMoreThanOneCharacter", 38);
+  sub_141B1A340(a1, "onFinishInit", 39);
+  sub_141B1A340(a1, "endModMusic", 40);
+  sub_141B1A340(a1, "AreModsLoaded", 41);
+  sub_141B1A340(a1, "GetHasInstalledContent", 42);
+  sub_141B1A340(a1, "UseMinimalModMenu", 43);
+  sub_141B1A340(a1, "EnterCreationClub", 44);
+  sub_141B1A340(a1, "onLoginScreenOpen", 45);
+  sub_141B1A340(a1, "onLoginScreenClose", 46);
+  sub_141B1A340(a1, "startEditText", 49);
+  sub_141B1A340(a1, "endEditText", 50);
+  sub_141B1A340(a1, "attemptLogin", 47);
+  sub_141B1A340(a1, "PopulateEULA", 48);
+  sub_141B1A340(a1, "createQuickAccount", 51);
+  sub_141B1A340(a1, "AcceptLegalDoc", 52);
+  return sub_140A87F90(a1);
+}
+
+    ---
+
+==== done ====

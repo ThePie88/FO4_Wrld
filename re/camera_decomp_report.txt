@@ -1,0 +1,1061 @@
+[+] Image base 0x140000000
+
+==== PlayerCamera singleton @ 0x1430DBD58 ====
+   runtime value (will be 0 offline): 0xFFFFFFFFFFFFFFFF
+
+-- xrefs TO PlayerCamera singleton @ 0x1430DBD58 (RVA 0x30DBD58) --
+   total: 406
+     from 0x14022D371  RVA 0x22D371  func=sub_14022D360
+     from 0x140395D8E  RVA 0x395D8E  func=sub_140395D70
+     from 0x140395DBD  RVA 0x395DBD  func=sub_140395D70
+     from 0x140395DCF  RVA 0x395DCF  func=sub_140395D70
+     from 0x1403A19FF  RVA 0x3A19FF  func=sub_1403A1750
+     from 0x1403A1B6C  RVA 0x3A1B6C  func=sub_1403A1750
+     from 0x140413927  RVA 0x413927  func=sub_1404136F0
+     from 0x140415748  RVA 0x415748  func=sub_140414F50
+     from 0x1404422F0  RVA 0x4422F0  func=sub_1404421B0
+     from 0x14044CC31  RVA 0x44CC31  func=sub_14044C710
+     from 0x1404796AB  RVA 0x4796AB  func=sub_140479680
+     from 0x1404B08F9  RVA 0x4B08F9  func=sub_1404B0280
+     from 0x1404FEE77  RVA 0x4FEE77  func=sub_1404FEA30
+     from 0x1404FEEA4  RVA 0x4FEEA4  func=sub_1404FEA30
+     from 0x1404FF0F8  RVA 0x4FF0F8  func=sub_1404FEA30
+     from 0x1405142BA  RVA 0x5142BA  func=sub_140514180
+     from 0x1405813D7  RVA 0x5813D7  func=sub_140580720
+     from 0x14058143C  RVA 0x58143C  func=sub_140580720
+     from 0x140581BB3  RVA 0x581BB3  func=sub_1405819B0
+     from 0x1405A305A  RVA 0x5A305A  func=sub_1405A3030
+     from 0x1405A7292  RVA 0x5A7292  func=sub_1405A7280
+     from 0x1405A7394  RVA 0x5A7394  func=sub_1405A7380
+     from 0x1405AD851  RVA 0x5AD851  func=sub_1405AD830
+     from 0x1405BFE65  RVA 0x5BFE65  func=sub_1405BFC50
+     from 0x1405BFE71  RVA 0x5BFE71  func=sub_1405BFC50
+     from 0x1405BFE81  RVA 0x5BFE81  func=sub_1405BFC50
+     from 0x1405E7E1E  RVA 0x5E7E1E  func=sub_1405E7D10
+     from 0x1405EC2A4  RVA 0x5EC2A4  func=sub_1405EC2A0
+     from 0x1405ED161  RVA 0x5ED161  func=sub_1405ED0C0
+     from 0x1405ED177  RVA 0x5ED177  func=sub_1405ED0C0
+     from 0x1405ED1AE  RVA 0x5ED1AE  func=sub_1405ED0C0
+     from 0x1405ED1D4  RVA 0x5ED1D4  func=sub_1405ED0C0
+     from 0x1405ED25D  RVA 0x5ED25D  func=sub_1405ED220
+     from 0x1405ED28C  RVA 0x5ED28C  func=sub_1405ED220
+     from 0x1405ED2A6  RVA 0x5ED2A6  func=sub_1405ED220
+     from 0x1405EF437  RVA 0x5EF437  func=sub_1405EF400
+     from 0x1405EF543  RVA 0x5EF543  func=sub_1405EF400
+     from 0x1405F0261  RVA 0x5F0261  func=sub_1405F0140
+     from 0x1405F0277  RVA 0x5F0277  func=sub_1405F0140
+     from 0x1405F9326  RVA 0x5F9326  func=sub_1405F92C0
+[+] PlayerCamera ctor resolved: 0x141024A50
+
+======== PlayerCamera::ctor func_start=0x141024A50 (RVA 0x1024A50) ========
+__int64 __fastcall sub_141024A50(__int64 a1)
+{
+  __int64 v2; // rdx
+  bool v3; // zf
+
+  sub_140827730();
+  *(_DWORD *)(a1 + 64) = -1;
+  v2 = 0;
+  if ( a1 != -96 )
+    v2 = a1;
+  qword_1430DBD58 = v2;
+  *(_QWORD *)a1 = off_1425A25D8;
+  *(_QWORD *)(a1 + 56) = &off_1425A2600;
+  *(_QWORD *)(a1 + 72) = off_1425A2610;
+  *(_QWORD *)(a1 + 80) = off_1425A2628;
+  *(_QWORD *)(a1 + 88) = off_1425A2640;
+  *(_DWORD *)(a1 + 100) = dword_1430DA180;
+  *(_DWORD *)(a1 + 104) = 0x80000000;
+  sub_141659470((_DWORD *)(a1 + 216));
+  *(_QWORD *)(a1 + 224) = 0;
+  *(_QWORD *)(a1 + 232) = 0;
+  *(_QWORD *)(a1 + 240) = 0;
+  *(_QWORD *)(a1 + 248) = 0;
+  *(_QWORD *)(a1 + 256) = 0;
+  *(_QWORD *)(a1 + 264) = 0;
+  *(_QWORD *)(a1 + 272) = 0;
+  *(_QWORD *)(a1 + 280) = 0;
+  *(_QWORD *)(a1 + 288) = 0;
+  *(_QWORD *)(a1 + 296) = 0;
+  *(_QWORD *)(a1 + 304) = 0;
+  *(_QWORD *)(a1 + 312) = 0;
+  *(_QWORD *)(a1 + 320) = 0;
+  *(_QWORD *)(a1 + 336) = 0;
+  *(_QWORD *)(a1 + 344) = 0;
+  *(_DWORD *)(a1 + 352) = 0;
+  *(_DWORD *)(a1 + 356) = dword_1430DA180;
+  *(_DWORD *)(a1 + 360) = dword_142F41F20;
+  *(_DWORD *)(a1 + 364) = dword_142F41F38;
+  *(_QWORD *)(a1 + 368) = 0;
+  *(_QWORD *)(a1 + 376) = 0;
+  *(_DWORD *)(a1 + 384) = 1065353216;
+  *(_DWORD *)(a1 + 388) = 1065353216;
+  *(_QWORD *)(a1 + 404) = 0;
+  *(_DWORD *)(a1 + 412) = 0;
+  *(_DWORD *)(a1 + 416) = -1;
+  v3 = byte_142F2E170 == 0;
+  *(_DWORD *)(a1 + 421) = 256;
+  *(_DWORD *)(a1 + 425) = 16777217;
+  *(_BYTE *)(a1 + 420) = v3;
+  sub_140826E80();
+  sub_140AE8130(qword_143262940 + 32, a1 + 72);
+  sub_1416682C0(qword_1430DD7B0, a1 + 80);
+  sub_141668360(qword_1430DD7B0, a1 + 88);
+  return a1;
+}
+
+
+-- walking PlayerCamera ctor near 0x141024A50 --
+   calls from ctor: 6
+     0x141024A6D  call  0x140827730  (sub_140827730)
+     0x141024ADF  call  0x141659470  (sub_141659470)
+     0x141024BE7  call  0x140826E80  (sub_140826E80)
+     0x141024BFB  call  0x140AE8130  (sub_140AE8130)
+     0x141024C0B  call  0x1416682C0  (sub_1416682C0)
+     0x141024C1B  call  0x141668360  (sub_141668360)
+   stores into [r14+...]: 35
+     0x141024A72  mov dword ptr [r14+40h], 0FFFFFFFFh
+     0x141024A9E  mov [r14], rax
+     0x141024AA8  mov [r14+38h], rax
+     0x141024AB3  mov [r14+48h], rax
+     0x141024ABE  mov [r14+50h], rax
+     0x141024AC9  mov [r14+58h], rax
+     0x141024AD3  mov [r14+64h], eax
+     0x141024AD7  mov dword ptr [r14+68h], 80000000h
+     0x141024AE4  mov [r14+0E0h], rbp
+     0x141024AEB  mov [r14+0E8h], rbp
+     0x141024AF2  mov [r14+0F0h], rbp
+     0x141024AF9  mov [r14+0F8h], rbp
+     0x141024B00  mov [r14+100h], rbp
+     0x141024B07  mov [r14+108h], rbp
+     0x141024B0E  mov [r14+110h], rbp
+     0x141024B15  mov [r14+118h], rbp
+     0x141024B1C  mov [r14+120h], rbp
+     0x141024B23  mov [r14+128h], rbp
+     0x141024B2A  mov [r14+130h], rbp
+     0x141024B31  mov [r14+138h], rbp
+     0x141024B38  mov [r14+140h], rbp
+     0x141024B3F  mov [r14+150h], rbp
+     0x141024B46  mov [r14+158h], rbp
+     0x141024B4D  mov [r14+160h], ebp
+     0x141024B5A  mov [r14+164h], eax
+     0x141024B83  mov [r14+170h], rbp
+     0x141024B8A  mov [r14+178h], rbp
+     0x141024B91  mov dword ptr [r14+180h], 3F800000h
+     0x141024B9C  mov dword ptr [r14+184h], 3F800000h
+     0x141024BA7  mov [r14+194h], rbp
+     0x141024BAE  mov [r14+19Ch], ebp
+     0x141024BB5  mov dword ptr [r14+1A0h], 0FFFFFFFFh
+     0x141024BC7  mov dword ptr [r14+1A5h], 100h
+     0x141024BD5  mov dword ptr [r14+1A9h], 1000001h
+     0x141024BE0  mov [r14+1A4h], al
+
+---- VTABLE PlayerCamera primary @ RVA 0x25A25D8 ----
+  [ 0] -> 0x14102B6D0 (RVA 0x102B6D0)  sub_14102B6D0
+  [ 1] -> 0x141024F50 (RVA 0x1024F50)  sub_141024F50
+  [ 2] -> 0x141025EA0 (RVA 0x1025EA0)  sub_141025EA0
+  [ 3] -> 0x140827930 (RVA 0x827930)  sub_140827930
+  [ 4] -> 0x142A4A110 (RVA 0x2A4A110)  unk_142A4A110
+  [ 5] -> 0x141025D70 (RVA 0x1025D70)  sub_141025D70
+  [ 6] -> 0x142A4A138 (RVA 0x2A4A138)  unk_142A4A138
+  [ 7] -> 0x14102B4B8 (RVA 0x102B4B8)  sub_14102B4B8
+  [ 8] -> 0x141025FD0 (RVA 0x1025FD0)  sub_141025FD0
+  [ 9] -> 0x142A4A160 (RVA 0x2A4A160)  unk_142A4A160
+  [10] -> 0x14102B4C4 (RVA 0x102B4C4)  sub_14102B4C4
+  [11] -> 0x141026050 (RVA 0x1026050)  sub_141026050
+  [12] -> 0x142A4A188 (RVA 0x2A4A188)  unk_142A4A188
+  [13] -> 0x14102B4D0 (RVA 0x102B4D0)  sub_14102B4D0
+  [14] -> 0x141026080 (RVA 0x1026080)  sub_141026080
+  [15] -> 0x142A4A1B0 (RVA 0x2A4A1B0)  ??_R4AutoVanityState@@6B@
+  [16] -> 0x14102B4E0 (RVA 0x102B4E0)  sub_14102B4E0
+  [17] -> 0x140373640 (RVA 0x373640)  sub_140373640
+  [18] -> 0x140373550 (RVA 0x373550)  nullsub_4832
+  [19] -> 0x140373540 (RVA 0x373540)  nullsub_4831
+  [20] -> 0x140373570 (RVA 0x373570)  nullsub_4834
+  [21] -> 0x140373530 (RVA 0x373530)  nullsub_4830
+  [22] -> 0x140373560 (RVA 0x373560)  nullsub_4833
+  [23] -> 0x140373520 (RVA 0x373520)  nullsub_4829
+  [24] -> 0x140373510 (RVA 0x373510)  nullsub_4828
+  [25] -> 0x14101EF10 (RVA 0x101EF10)  sub_14101EF10
+  [26] -> 0x14101F100 (RVA 0x101F100)  sub_14101F100
+  [27] -> 0x14101EFA0 (RVA 0x101EFA0)  sub_14101EFA0
+  [28] -> 0x14101F120 (RVA 0x101F120)  sub_14101F120
+  [29] -> 0x14101F140 (RVA 0x101F140)  sub_14101F140
+
+---- VTABLE PlayerCamera sub[0] @ RVA 0x25A2600 ----
+  [ 0] -> 0x141025D70 (RVA 0x1025D70)  sub_141025D70
+  [ 1] -> 0x142A4A138 (RVA 0x2A4A138)  unk_142A4A138
+  [ 2] -> 0x14102B4B8 (RVA 0x102B4B8)  sub_14102B4B8
+  [ 3] -> 0x141025FD0 (RVA 0x1025FD0)  sub_141025FD0
+  [ 4] -> 0x142A4A160 (RVA 0x2A4A160)  unk_142A4A160
+  [ 5] -> 0x14102B4C4 (RVA 0x102B4C4)  sub_14102B4C4
+
+---- VTABLE PlayerCamera sub[1] @ RVA 0x25A2610 ----
+  [ 0] -> 0x14102B4B8 (RVA 0x102B4B8)  sub_14102B4B8
+  [ 1] -> 0x141025FD0 (RVA 0x1025FD0)  sub_141025FD0
+  [ 2] -> 0x142A4A160 (RVA 0x2A4A160)  unk_142A4A160
+  [ 3] -> 0x14102B4C4 (RVA 0x102B4C4)  sub_14102B4C4
+  [ 4] -> 0x141026050 (RVA 0x1026050)  sub_141026050
+  [ 5] -> 0x142A4A188 (RVA 0x2A4A188)  unk_142A4A188
+
+---- VTABLE PlayerCamera sub[2] @ RVA 0x25A2628 ----
+  [ 0] -> 0x14102B4C4 (RVA 0x102B4C4)  sub_14102B4C4
+  [ 1] -> 0x141026050 (RVA 0x1026050)  sub_141026050
+  [ 2] -> 0x142A4A188 (RVA 0x2A4A188)  unk_142A4A188
+  [ 3] -> 0x14102B4D0 (RVA 0x102B4D0)  sub_14102B4D0
+  [ 4] -> 0x141026080 (RVA 0x1026080)  sub_141026080
+  [ 5] -> 0x142A4A1B0 (RVA 0x2A4A1B0)  ??_R4AutoVanityState@@6B@
+
+---- VTABLE PlayerCamera sub[3] @ RVA 0x25A2640 ----
+  [ 0] -> 0x14102B4D0 (RVA 0x102B4D0)  sub_14102B4D0
+  [ 1] -> 0x141026080 (RVA 0x1026080)  sub_141026080
+  [ 2] -> 0x142A4A1B0 (RVA 0x2A4A1B0)  ??_R4AutoVanityState@@6B@
+  [ 3] -> 0x14102B4E0 (RVA 0x102B4E0)  sub_14102B4E0
+  [ 4] -> 0x140373640 (RVA 0x373640)  sub_140373640
+  [ 5] -> 0x140373550 (RVA 0x373550)  nullsub_4832
+
+---- VTABLE TESCamera @ RVA 0x2519158 ----
+  [ 0] -> 0x140827B10 (RVA 0x827B10)  sub_140827B10
+  [ 1] -> 0x140827880 (RVA 0x827880)  sub_140827880
+  [ 2] -> 0x140827920 (RVA 0x827920)  sub_140827920
+  [ 3] -> 0x140827930 (RVA 0x827930)  sub_140827930
+  [ 4] -> 0x6168636564695366 (RVA 0x6168636424695366)  ?
+  [ 5] -> 0x6B63617474416E69 (RVA 0x6B63617334416E69)  ?
+
+---- VTABLE ThirdPersonState @ RVA 0x251AA18 ----
+  [ 0] -> 0x140832460 (RVA 0x832460)  sub_140832460
+  [ 1] -> 0x14102DA90 (RVA 0x102DA90)  sub_14102DA90
+  [ 2] -> 0x140373550 (RVA 0x373550)  nullsub_4832
+  [ 3] -> 0x140373540 (RVA 0x373540)  nullsub_4831
+  [ 4] -> 0x140373570 (RVA 0x373570)  nullsub_4834
+  [ 5] -> 0x140373530 (RVA 0x373530)  nullsub_4830
+  [ 6] -> 0x140373560 (RVA 0x373560)  nullsub_4833
+  [ 7] -> 0x140373520 (RVA 0x373520)  nullsub_4829
+  [ 8] -> 0x14102DB20 (RVA 0x102DB20)  sub_14102DB20
+  [ 9] -> 0x14102C540 (RVA 0x102C540)  sub_14102C540
+  [10] -> 0x14102C740 (RVA 0x102C740)  sub_14102C740
+  [11] -> 0x14102C820 (RVA 0x102C820)  sub_14102C820
+  [12] -> 0x14102D490 (RVA 0x102D490)  sub_14102D490
+  [13] -> 0x14102D4A0 (RVA 0x102D4A0)  sub_14102D4A0
+  [14] -> 0x14102DF10 (RVA 0x102DF10)  sub_14102DF10
+  [15] -> 0x14102E0B0 (RVA 0x102E0B0)  sub_14102E0B0
+  [16] -> 0x14102E1C0 (RVA 0x102E1C0)  sub_14102E1C0
+  [17] -> 0x14102D5A0 (RVA 0x102D5A0)  sub_14102D5A0
+  [18] -> 0x14102D840 (RVA 0x102D840)  sub_14102D840
+  [19] -> 0x14102D870 (RVA 0x102D870)  sub_14102D870
+  [20] -> 0x14102E780 (RVA 0x102E780)  sub_14102E780
+  [21] -> 0x14102ED40 (RVA 0x102ED40)  sub_14102ED40
+  [22] -> 0x142979BA0 (RVA 0x2979BA0)  ??_R4DialogueCameraState@@6B@
+  [23] -> 0x140832420 (RVA 0x832420)  sub_140832420
+  [24] -> 0x14082F820 (RVA 0x82F820)  sub_14082F820
+  [25] -> 0x140373550 (RVA 0x373550)  nullsub_4832
+  [26] -> 0x140373540 (RVA 0x373540)  nullsub_4831
+  [27] -> 0x14082FB70 (RVA 0x82FB70)  sub_14082FB70
+  [28] -> 0x140373530 (RVA 0x373530)  nullsub_4830
+  [29] -> 0x14082FD10 (RVA 0x82FD10)  sub_14082FD10
+
+---- VTABLE FirstPersonState @ RVA 0x25A2A08 ----
+  [ 0] -> 0x14102B5D0 (RVA 0x102B5D0)  sub_14102B5D0
+  [ 1] -> 0x141020EB0 (RVA 0x1020EB0)  sub_141020EB0
+  [ 2] -> 0x140373550 (RVA 0x373550)  nullsub_4832
+  [ 3] -> 0x140373540 (RVA 0x373540)  nullsub_4831
+  [ 4] -> 0x140373570 (RVA 0x373570)  nullsub_4834
+  [ 5] -> 0x140373530 (RVA 0x373530)  nullsub_4830
+  [ 6] -> 0x140373560 (RVA 0x373560)  nullsub_4833
+  [ 7] -> 0x140373520 (RVA 0x373520)  nullsub_4829
+  [ 8] -> 0x141020F20 (RVA 0x1020F20)  sub_141020F20
+  [ 9] -> 0x14101FF00 (RVA 0x101FF00)  sub_14101FF00
+  [10] -> 0x14101FF90 (RVA 0x101FF90)  sub_14101FF90
+  [11] -> 0x14101FFC0 (RVA 0x101FFC0)  sub_14101FFC0
+  [12] -> 0x141020A70 (RVA 0x1020A70)  sub_141020A70
+  [13] -> 0x141020B20 (RVA 0x1020B20)  sub_141020B20
+  [14] -> 0x141021220 (RVA 0x1021220)  sub_141021220
+  [15] -> 0x141021390 (RVA 0x1021390)  sub_141021390
+  [16] -> 0x141021480 (RVA 0x1021480)  sub_141021480
+  [17] -> 0x4D7974696E615666 (RVA 0x4D7974682E615666)  ?
+  [18] -> 0x69446E694D65646F (RVA 0x69446E680D65646F)  ?
+  [19] -> 0x72656D61433A7473 (RVA 0x72656D60033A7473)  ?
+  [20] -> 0x61 (RVA 0x-13FFFFF9F)  ?
+  [21] -> 0x4D7974696E615666 (RVA 0x4D7974682E615666)  ?
+  [22] -> 0x694478614D65646F (RVA 0x694478600D65646F)  ?
+  [23] -> 0x72656D61433A7473 (RVA 0x72656D60033A7473)  ?
+  [24] -> 0x61 (RVA 0x-13FFFFF9F)  ?
+  [25] -> 0x727275436E694D66 (RVA 0x727275422E694D66)  ?
+  [26] -> 0x3A6D6F6F5A746E65 (RVA 0x3A6D6F6E1A746E65)  ?
+  [27] -> 0x6172656D6143 (RVA 0x6171256D6143)  ?
+  [28] -> 0x6962697472655666 (RVA 0x6962697332655666)  ?
+  [29] -> 0x7974696E61566472 (RVA 0x7974696D21566472)  ?
+
+---- VTABLE FreeCameraState @ RVA 0x25A26E8 ----
+  [ 0] -> 0x14102B610 (RVA 0x102B610)  sub_14102B610
+  [ 1] -> 0x141022090 (RVA 0x1022090)  sub_141022090
+  [ 2] -> 0x140373550 (RVA 0x373550)  nullsub_4832
+  [ 3] -> 0x140373540 (RVA 0x373540)  nullsub_4831
+  [ 4] -> 0x1410222A0 (RVA 0x10222A0)  sub_1410222A0
+  [ 5] -> 0x140373530 (RVA 0x373530)  nullsub_4830
+  [ 6] -> 0x140373560 (RVA 0x373560)  nullsub_4833
+  [ 7] -> 0x140373520 (RVA 0x373520)  nullsub_4829
+  [ 8] -> 0x141022120 (RVA 0x1022120)  sub_141022120
+  [ 9] -> 0x141021DA0 (RVA 0x1021DA0)  sub_141021DA0
+  [10] -> 0x141021E40 (RVA 0x1021E40)  sub_141021E40
+  [11] -> 0x141021EA0 (RVA 0x1021EA0)  sub_141021EA0
+  [12] -> 0x141021FF0 (RVA 0x1021FF0)  sub_141021FF0
+  [13] -> 0x141022030 (RVA 0x1022030)  sub_141022030
+  [14] -> 0x1410222F0 (RVA 0x10222F0)  sub_1410222F0
+  [15] -> 0x141022440 (RVA 0x1022440)  sub_141022440
+  [16] -> 0x1410225B0 (RVA 0x10225B0)  sub_1410225B0
+  [17] -> 0x142A4A2D0 (RVA 0x2A4A2D0)  ??_R4IronSightsState@@6B@
+  [18] -> 0x14102B690 (RVA 0x102B690)  sub_14102B690
+  [19] -> 0x140373640 (RVA 0x373640)  sub_140373640
+  [20] -> 0x140373550 (RVA 0x373550)  nullsub_4832
+  [21] -> 0x140373540 (RVA 0x373540)  nullsub_4831
+  [22] -> 0x140373570 (RVA 0x373570)  nullsub_4834
+  [23] -> 0x140373530 (RVA 0x373530)  nullsub_4830
+  [24] -> 0x140373560 (RVA 0x373560)  nullsub_4833
+  [25] -> 0x140373520 (RVA 0x373520)  nullsub_4829
+  [26] -> 0x140373510 (RVA 0x373510)  nullsub_4828
+  [27] -> 0x1410246F0 (RVA 0x10246F0)  sub_1410246F0
+  [28] -> 0x1403734C0 (RVA 0x3734C0)  sub_1403734C0
+  [29] -> 0x141024710 (RVA 0x1024710)  sub_141024710
+
+---- VTABLE VATSCameraState @ RVA 0x25A32A8 ----
+  [ 0] -> 0x141032790 (RVA 0x1032790)  sub_141032790
+  [ 1] -> 0x140373640 (RVA 0x373640)  sub_140373640
+  [ 2] -> 0x140373550 (RVA 0x373550)  nullsub_4832
+  [ 3] -> 0x140373540 (RVA 0x373540)  nullsub_4831
+  [ 4] -> 0x140373570 (RVA 0x373570)  nullsub_4834
+  [ 5] -> 0x140373530 (RVA 0x373530)  nullsub_4830
+  [ 6] -> 0x140373560 (RVA 0x373560)  nullsub_4833
+  [ 7] -> 0x140373520 (RVA 0x373520)  nullsub_4829
+  [ 8] -> 0x140373510 (RVA 0x373510)  nullsub_4828
+  [ 9] -> 0x141031890 (RVA 0x1031890)  sub_141031890
+  [10] -> 0x1410318E0 (RVA 0x10318E0)  sub_1410318E0
+  [11] -> 0x141031910 (RVA 0x1031910)  sub_141031910
+  [12] -> 0x141032320 (RVA 0x1032320)  sub_141032320
+  [13] -> 0x141032730 (RVA 0x1032730)  sub_141032730
+  [14] -> 0x140373630 (RVA 0x373630)  nullsub_4837
+  [15] -> 0x140373580 (RVA 0x373580)  nullsub_4835
+  [16] -> 0x140373620 (RVA 0x373620)  nullsub_4836
+  [17] -> 0x736F506B6F6F4266 (RVA 0x736F506A2F6F4266)  ?
+  [18] -> 0x6550746867696548 (RVA 0x6550746727696548)  ?
+  [19] -> 0x656761746E656372 (RVA 0x656761732E656372)  ?
+  [20] -> 0x61667265746E493A (RVA 0x61667264346E493A)  ?
+  [21] -> 0x6563 (RVA 0x-13FFF9A9D)  ?
+  [22] -> 0x736F506B6F6F4266 (RVA 0x736F506A2F6F4266)  ?
+  [23] -> 0x7265506874646957 (RVA 0x7265506734646957)  ?
+  [24] -> 0x3A656761746E6563 (RVA 0x3A656760346E6563)  ?
+  [25] -> 0x6361667265746E49 (RVA 0x6361667125746E49)  ?
+  [26] -> 0x65 (RVA 0x-13FFFFF9B)  ?
+  [27] -> 0x7369446B6F6F4266 (RVA 0x7369446A2F6F4266)  ?
+  [28] -> 0x6E493A65636E6174 (RVA 0x6E493A64236E6174)  ?
+  [29] -> 0x65636166726574 (RVA 0x65636026726574)  ?
+
+---- VTABLE NiCamera @ RVA 0x267DD50 ----
+  [ 0] -> 0x1416D25F0 (RVA 0x16D25F0)  sub_1416D25F0
+  [ 1] -> 0x1416BA6D0 (RVA 0x16BA6D0)  sub_1416BA6D0
+  [ 2] -> 0x1416D2680 (RVA 0x16D2680)  sub_1416D2680
+  [ 3] -> 0x140239570 (RVA 0x239570)  sub_140239570
+  [ 4] -> 0x140239560 (RVA 0x239560)  sub_140239560
+  [ 5] -> 0x1402395C0 (RVA 0x2395C0)  sub_1402395C0
+  [ 6] -> 0x1402394E0 (RVA 0x2394E0)  sub_1402394E0
+  [ 7] -> 0x140239520 (RVA 0x239520)  sub_140239520
+  [ 8] -> 0x1402394F0 (RVA 0x2394F0)  sub_1402394F0
+  [ 9] -> 0x1402395E0 (RVA 0x2395E0)  sub_1402395E0
+  [10] -> 0x1402395D0 (RVA 0x2395D0)  sub_1402395D0
+  [11] -> 0x1402394D0 (RVA 0x2394D0)  sub_1402394D0
+  [12] -> 0x1402395A0 (RVA 0x2395A0)  sub_1402395A0
+  [13] -> 0x1402395B0 (RVA 0x2395B0)  sub_1402395B0
+  [14] -> 0x140239530 (RVA 0x239530)  sub_140239530
+  [15] -> 0x140239540 (RVA 0x239540)  sub_140239540
+  [16] -> 0x140239550 (RVA 0x239550)  sub_140239550
+  [17] -> 0x140239590 (RVA 0x239590)  sub_140239590
+  [18] -> 0x140239580 (RVA 0x239580)  sub_140239580
+  [19] -> 0x140239510 (RVA 0x239510)  sub_140239510
+  [20] -> 0x140239500 (RVA 0x239500)  sub_140239500
+  [21] -> 0x1402394B0 (RVA 0x2394B0)  sub_1402394B0
+  [22] -> 0x140239490 (RVA 0x239490)  sub_140239490
+  [23] -> 0x1402394C0 (RVA 0x2394C0)  sub_1402394C0
+  [24] -> 0x1402394A0 (RVA 0x2394A0)  sub_1402394A0
+  [25] -> 0x1402395F0 (RVA 0x2395F0)  sub_1402395F0
+  [26] -> 0x1416CFB80 (RVA 0x16CFB80)  sub_1416CFB80
+  [27] -> 0x1416CFE50 (RVA 0x16CFE50)  sub_1416CFE50
+  [28] -> 0x1416D0050 (RVA 0x16D0050)  sub_1416D0050
+  [29] -> 0x1416D0140 (RVA 0x16D0140)  sub_1416D0140
+  [30] -> 0x1416D0150 (RVA 0x16D0150)  sub_1416D0150
+  [31] -> 0x1416D0370 (RVA 0x16D0370)  sub_1416D0370
+  [32] -> 0x1416C8C00 (RVA 0x16C8C00)  sub_1416C8C00
+  [33] -> 0x1416BD640 (RVA 0x16BD640)  j_nullsub_589
+  [34] -> 0x1416BAB30 (RVA 0x16BAB30)  sub_1416BAB30
+  [35] -> 0x1416BAB40 (RVA 0x16BAB40)  sub_1416BAB40
+
+---- VTABLE MainCullingCamera @ RVA 0x255DB08 ----
+  [ 0] -> 0x140C3D8E0 (RVA 0xC3D8E0)  sub_140C3D8E0
+  [ 1] -> 0x140C3E3B0 (RVA 0xC3E3B0)  sub_140C3E3B0
+  [ 2] -> 0x1429C4A60 (RVA 0x29C4A60)  ??_R4VMInitThread@?A0x22dc4458@@6B@
+  [ 3] -> 0x140C3DC30 (RVA 0xC3DC30)  sub_140C3DC30
+  [ 4] -> 0x140C41390 (RVA 0xC41390)  sub_140C41390
+  [ 5] -> 0x685474696E494D56 (RVA 0x685474682E494D56)  ?
+  [ 6] -> 0x64616572 (RVA 0x-DB9E9A8E)  ?
+  [ 7] -> 0x1429C4AE0 (RVA 0x29C4AE0)  ??_R4InitGameDataThread@?A0x22dc4458@@6B@
+  [ 8] -> 0x140C3D850 (RVA 0xC3D850)  sub_140C3D850
+  [ 9] -> 0x140C41320 (RVA 0xC41320)  sub_140C41320
+  [10] -> 0x656D614774696E49 (RVA 0x656D614634696E49)  ?
+  [11] -> 0x6572685461746144 (RVA 0x6572685321746144)  ?
+
+---- VTABLE BSFrustumFOVController @ RVA 0x268BF38 ----
+  [ 0] -> 0x141769F10 (RVA 0x1769F10)  sub_141769F10
+  [ 1] -> 0x1416BA6D0 (RVA 0x16BA6D0)  sub_1416BA6D0
+  [ 2] -> 0x141769F70 (RVA 0x1769F70)  sub_141769F70
+  [ 3] -> 0x140239570 (RVA 0x239570)  sub_140239570
+  [ 4] -> 0x140239560 (RVA 0x239560)  sub_140239560
+  [ 5] -> 0x1402395C0 (RVA 0x2395C0)  sub_1402395C0
+  [ 6] -> 0x1402394E0 (RVA 0x2394E0)  sub_1402394E0
+  [ 7] -> 0x140239520 (RVA 0x239520)  sub_140239520
+  [ 8] -> 0x1402394F0 (RVA 0x2394F0)  sub_1402394F0
+  [ 9] -> 0x1402395E0 (RVA 0x2395E0)  sub_1402395E0
+  [10] -> 0x1402395D0 (RVA 0x2395D0)  sub_1402395D0
+  [11] -> 0x1402394D0 (RVA 0x2394D0)  sub_1402394D0
+
+==== PlayerCamera virtual methods (primary vtable) ====
+
+======== PlayerCamera::vtable[0] func_start=0x14102B6D0 (RVA 0x102B6D0) ========
+__int64 __fastcall sub_14102B6D0(__int64 a1, char a2)
+{
+  sub_141024C50();
+  if ( (a2 & 1) != 0 )
+    sub_1422B6BC8(a1, 432);
+  return a1;
+}
+
+
+======== PlayerCamera::vtable[1] (large 2453 bytes) func_start=0x141024F50 (RVA 0x1024F50) ========
+__int64 __fastcall sub_141024F50(_QWORD *a1, volatile signed __int32 *a2)
+{
+  __int64 v3; // r15
+  int v4; // ebx
+  volatile signed __int32 *v5; // rcx
+  volatile signed __int32 *v6; // rax
+  __int64 v7; // rdi
+  volatile signed __int32 *v8; // rcx
+  volatile signed __int32 *v9; // rax
+  volatile signed __int32 *v10; // rcx
+  void *v11; // rax
+  __int64 v12; // rax
+  __int64 v13; // rcx
+  volatile signed __int32 *v14; // rax
+  volatile signed __int32 *v15; // rcx
+  volatile signed __int32 *v16; // rax
+  volatile signed __int32 *v17; // rcx
+  volatile signed __int32 *v18; // rax
+  volatile signed __int32 *v19; // r14
+  volatile signed __int32 *v20; // rcx
+  volatile signed __int32 *v21; // rax
+  volatile signed __int32 *v22; // rcx
+  void *v23; // rax
+  __int64 v24; // rax
+  __int64 v25; // rcx
+  void *v26; // rax
+  __int64 v27; // rax
+  __int64 v28; // rcx
+  void *v29; // rax
+  __int64 v30; // rax
+  __int64 v31; // rcx
+  void *v32; // rax
+  __int64 v33; // rax
+  __int64 v34; // rcx
+  volatile signed __int32 *v35; // rax
+  volatile signed __int32 *v36; // r14
+  volatile signed __int32 *v37; // rcx
+  void *v38; // rax
+  __int64 v39; // rcx
+  __int64 result; // rax
+
+  v3 = *((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex);
+  v4 = *(_DWORD *)(v3 + 2496);
+  *(_DWORD *)(v3 + 2496) = 86;
+  v5 = (volatile signed __int32 *)a1[4];
+  if ( v5 != a2 )
+  {
+    if ( a2 )
+      _InterlockedIncrement(a2 + 2);
+    a1[4] = a2;
+    if ( v5 && _InterlockedExchangeAdd(v5 + 2, 0xFFFFFFFF) == 1 )
+      (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v5 + 8LL))(v5);
+  }
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v6 = (volatile signed __int32 *)sub_1416579C0((__int64)&unk_143E5E0F0, 0x88u, 0, 0);
+  v7 = 0;
+  if ( v6 )
+  {
+    *((_DWORD *)v6 + 4) = 0;
+    *(_QWORD *)v6 = &FirstPersonState::`vftable';
+    *((_BYTE *)v6 + 8) = 1;
+    *((_QWORD *)v6 + 3) = a1;
+    *((_DWORD *)v6 + 8) = 0;
+    *((_BYTE *)v6 + 3
+... (truncated, total 11326 chars)
+
+======== PlayerCamera::vtable[2] func_start=0x141025EA0 (RVA 0x1025EA0) ========
+__int64 __fastcall sub_141025EA0(__int64 a1, char a2)
+{
+  __int64 result; // rax
+  float *v5; // rsi
+  __int64 v6; // rbx
+  __int64 v7; // rcx
+  __int64 v8; // rdx
+  __int64 v9; // [rsp+20h] [rbp-18h] BYREF
+
+  result = sub_140827920();
+  if ( !a2 )
+  {
+    v5 = *(float **)(a1 + 32);
+    if ( v5 )
+    {
+      v6 = *(_QWORD *)(a1 + 344);
+      if ( v6 )
+      {
+        if ( *(_DWORD *)(a1 + 328) != 0x7FFFFFFF )
+        {
+          v7 = *(_QWORD *)(a1 + 344);
+          if ( *(_BYTE *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex) + 5433LL) )
+          {
+            v6 = 0;
+          }
+          else
+          {
+            sub_141872A40(v6);
+            v7 = *(_QWORD *)(a1 + 344);
+          }
+          v8 = *(unsigned int *)(a1 + 328);
+          *(float *)&v9 = v5[40] * 0.0142875;
+          *((float *)&v9 + 1) = v5[41] * 0.0142875;
+          sub_141872120(v7, v8, &v9, 1, v9, COERCE_UNSIGNED_INT(v5[42] * 0.0142875));
+          result = sub_141872190(
+                     *(_QWORD *)(a1 + 344),
+                     *(unsigned int *)(a1 + 328),
+                     &xmmword_142F31510,
+                     &xmmword_142F31510);
+          if ( v6 )
+            return sub_141872A60(v6);
+        }
+      }
+    }
+  }
+  return result;
+}
+
+
+======== PlayerCamera::vtable[3] func_start=0x140827930 (RVA 0x827930) ========
+void __fastcall sub_140827930(__int64 a1, __int64 a2)
+{
+  _BYTE *v3; // rcx
+  _BYTE *v4; // r8
+  __int64 v5; // rdi
+  __int64 v6; // rcx
+  __int64 v7; // rcx
+  void (__fastcall ***v8)(_QWORD, __int64); // rcx
+  __int64 v9; // [rsp+30h] [rbp+8h] BYREF
+
+  v3 = *(_BYTE **)(a1 + 40);
+  v4 = v3;
+  if ( v3 && !v3[36] )
+  {
+    (*(void (__fastcall **)(_BYTE *, __int64, _BYTE *))(*(_QWORD *)v3 + 72LL))(v3, a2, v3);
+    v4 = *(_BYTE **)(a1 + 40);
+  }
+  if ( v4 && *(_BYTE *)(a1 + 48) )
+  {
+    v9 = 0;
+    (*(void (__fastcall **)(_BYTE *, __int64 *))(*(_QWORD *)v4 + 88LL))(v4, &v9);
+    v5 = v9;
+    if ( v9 )
+    {
+      v6 = *(_QWORD *)(a1 + 40);
+      if ( v6 )
+        (*(void (__fastcall **)(__int64))(*(_QWORD *)v6 + 80LL))(v6);
+      v7 = *(_QWORD *)(a1 + 40);
+      if ( v5 != v7 )
+      {
+        if ( v5 )
+          _InterlockedIncrement((volatile signed __int32 *)(v5 + 16));
+        *(_QWORD *)(a1 + 40) = v5;
+        if ( v7 && _InterlockedExchangeAdd((volatile signed __int32 *)(v7 + 16), 0xFFFFFFFF) == 1 )
+          (**(void (__fastcall ***)(__int64, __int64))v7)(v7, 1);
+      }
+    }
+    v8 = (void (__fastcall ***)(_QWORD, __int64))v9;
+    if ( v9 && _InterlockedExchangeAdd((volatile signed __int32 *)(v9 + 16), 0xFFFFFFFF) == 1 )
+      (**v8)(v8, 1);
+  }
+  *(_DWORD *)(a1 + 8) = dword_142F40B88;
+  *(_DWORD *)(a1 + 12) = dword_142F40B8C;
+  *(_DWORD *)(a1 + 16) = dword_142F40CB0;
+  *(_DWORD *)(a1 + 20) = dword_142F40CB4;
+  *(_QWORD *)(a1 + 24) = (unsigned int)dword_142F40CB8;
+}
+
+
+======== PlayerCamera::vtable[5] func_start=0x141025D70 (RVA 0x1025D70) ========
+void __fastcall sub_141025D70(__int64 a1, __int64 a2)
+{
+  __int64 v2; // rbx
+  _BYTE *v4; // rdi
+
+  v2 = a2;
+  if ( *(_QWORD *)(a1 - 16) && a2 )
+  {
+    do
+    {
+      if ( *(_DWORD *)(v2 + 36) != 2 )
+      {
+        v4 = *(_BYTE **)(a1 - 16);
+        if ( v4[8]
+          && (*(unsigned __int8 (__fastcall **)(_QWORD, __int64))(*(_QWORD *)v4 + 8LL))(*(_QWORD *)(a1 - 16), v2) )
+        {
+          switch ( *(_DWORD *)(v2 + 16) )
+          {
+            case 0:
+              (*(void (__fastcall **)(_BYTE *, __int64))(*(_QWORD *)v4 + 64LL))(v4, v2);
+              break;
+            case 1:
+              (*(void (__fastcall **)(_BYTE *, __int64))(*(_QWORD *)v4 + 48LL))(v4, v2);
+              break;
+            case 2:
+              (*(void (__fastcall **)(_BYTE *, __int64))(*(_QWORD *)v4 + 40LL))(v4, v2);
+              break;
+            case 3:
+              (*(void (__fastcall **)(_BYTE *, __int64))(*(_QWORD *)v4 + 56LL))(v4, v2);
+              break;
+            case 4:
+              (*(void (__fastcall **)(_BYTE *, __int64))(*(_QWORD *)v4 + 32LL))(v4, v2);
+              break;
+            case 5:
+              (*(void (__fastcall **)(_BYTE *, __int64))(*(_QWORD *)v4 + 24LL))(v4, v2);
+              break;
+            case 6:
+              (*(void (__fastcall **)(_BYTE *, __int64))(*(_QWORD *)v4 + 16LL))(v4, v2);
+              break;
+            default:
+              break;
+          }
+        }
+        if ( *(_BYTE *)(a1 + 370) )
+          sub_14102B850(*(_QWORD *)(a1 + 192), v2);
+      }
+      v2 = *(_QWORD *)(v2 + 24);
+    }
+    while ( v2 );
+  }
+}
+
+
+======== PlayerCamera::vtable[7] func_start=0x14102B4B8 (RVA 0x102B4B8) ========
+__int64 __fastcall sub_14102B4B8(__int64 a1, char a2)
+{
+  return sub_14102B6D0(a1 - 72, a2);
+}
+
+
+======== PlayerCamera::vtable[8] func_start=0x141025FD0 (RVA 0x1025FD0) ========
+__int64 __fastcall sub_141025FD0(__int64 a1, _BYTE *a2)
+{
+  __int64 v3; // rcx
+
+  if ( *a2 )
+  {
+    if ( *(_BYTE *)(a1 + 348) )
+    {
+      if ( (unsigned __int8)sub_140DD9F00(qword_1431E5A80) )
+      {
+        v3 = *(_QWORD *)(qword_1430DBD58 + 40);
+        if ( (!v3 || v3 != *(_QWORD *)(qword_1430DBD58 + 248)) && !*(_DWORD *)(qword_1430DD830 + 480) )
+        {
+          sub_14102AF70(a1 - 72);
+          return 0;
+        }
+      }
+    }
+  }
+  else
+  {
+    sub_14102AFE0(a1 - 72);
+  }
+  return 0;
+}
+
+
+======== PlayerCamera::vtable[10] func_start=0x14102B4C4 (RVA 0x102B4C4) ========
+__int64 __fastcall sub_14102B4C4(__int64 a1, char a2)
+{
+  return sub_14102B6D0(a1 - 80, a2);
+}
+
+
+======== PlayerCamera::vtable[11] func_start=0x141026050 (RVA 0x1026050) ========
+__int64 __fastcall sub_141026050(__int64 a1, _BYTE *a2)
+{
+  if ( (a2[4] & 0x20) != 0 && (*a2 & 0x20) == 0 )
+    sub_14102AFE0(qword_1430DBD58);
+  return 0;
+}
+
+
+======== PlayerCamera::vtable[13] func_start=0x14102B4D0 (RVA 0x102B4D0) ========
+__int64 __fastcall sub_14102B4D0(__int64 a1, char a2)
+{
+  return sub_14102B6D0(a1 - 88, a2);
+}
+
+
+======== PlayerCamera::vtable[14] func_start=0x141026080 (RVA 0x1026080) ========
+__int64 __fastcall sub_141026080(__int64 a1, _BYTE *a2)
+{
+  if ( (a2[4] & 8) != 0 && (*a2 & 8) == 0 )
+    sub_14102AFE0(qword_1430DBD58);
+  return 0;
+}
+
+
+==== NiCamera virtual methods (overrides at end of vtable) ====
+
+======== NiCamera::vtable[26] func_start=0x1416CFB80 (RVA 0x16CFB80) ========
+__int64 __fastcall sub_1416CFB80(__int64 a1, __int64 a2)
+{
+  bool v2; // zf
+  __int64 v5; // r14
+  int v6; // ebx
+  void *v7; // rax
+  __int64 v8; // rdi
+  _QWORD *v9; // rax
+
+  v2 = dword_143E5F2D0 == 2;
+  v5 = *((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex);
+  v6 = *(_DWORD *)(v5 + 2496);
+  *(_DWORD *)(v5 + 2496) = 59;
+  if ( !v2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v7 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x1A0u, 0x10u, 1);
+  if ( v7 )
+    v8 = sub_1416D0510(v7);
+  else
+    v8 = 0;
+  sub_1416C7B80(a1, v8, a2);
+  v9 = (_QWORD *)(v8 + 288);
+  if ( v8 == -288 )
+    goto LABEL_10;
+  if ( a1 == -288 )
+  {
+    *v9 = 0;
+    *(_QWORD *)(v8 + 296) = 0;
+    *(_QWORD *)(v8 + 304) = 0;
+    *(_QWORD *)(v8 + 312) = 0;
+    *(_QWORD *)(v8 + 320) = 0;
+    *(_QWORD *)(v8 + 328) = 0;
+    *(_QWORD *)(v8 + 336) = 0;
+    *(_QWORD *)(v8 + 344) = 0;
+LABEL_10:
+    *_errno() = 22;
+    _invalid_parameter_noinfo();
+    goto LABEL_11;
+  }
+  *(_OWORD *)v9 = *(_OWORD *)(a1 + 288);
+  *(_OWORD *)(v8 + 304) = *(_OWORD *)(a1 + 304);
+  *(_OWORD *)(v8 + 320) = *(_OWORD *)(a1 + 320);
+  *(_OWORD *)(v8 + 336) = *(_OWORD *)(a1 + 336);
+LABEL_11:
+  *(_DWORD *)(v8 + 160) = *(_DWORD *)(a1 + 160);
+  *(_DWORD *)(v8 + 164) = *(_DWORD *)(a1 + 164);
+  *(_DWORD *)(v8 + 168) = *(_DWORD *)(a1 + 168);
+  *(_OWORD *)(v8 + 352) = *(_OWORD *)(a1 + 352);
+  *(_QWORD *)(v8 + 368) = *(_QWORD *)(a1 + 368);
+  *(_DWORD *)(v8 + 376) = *(_DWORD *)(a1 + 376);
+  *(_OWORD *)(v8 + 388) = *(_OWORD *)(a1 + 388);
+  *(_DWORD *)(v8 + 404) = *(_DWORD *)(a1 + 404);
+  *(_DWORD *)(v8 + 380) = *(_DWORD *)(a1 + 380);
+  *(_DWORD *)(v8 + 384) = *(_DWORD *)(a1 + 384);
+  *(_DWORD *)(v5 + 2496) = v6;
+  return v8;
+}
+
+
+======== NiCamera::vtable[27] func_start=0x1416CFE50 (RVA 0x16CFE50) ========
+__int64 __fastcall sub_1416CFE50(__int64 a1, __int64 a2)
+{
+  _QWORD *v4; // rbx
+  _QWORD *v5; // rbx
+  _QWORD *v6; // rbx
+  _QWORD *v7; // rbx
+  _QWORD *v8; // rbx
+  _QWORD *v9; // rbx
+  _QWORD *v10; // rbx
+  _QWORD *v11; // rbx
+  _QWORD *v12; // rbx
+  _QWORD *v13; // rbx
+  _QWORD *v14; // rbx
+  _QWORD *v15; // rbx
+  _QWORD *v16; // rbx
+  char v18; // [rsp+30h] [rbp+8h] BYREF
+  char v19; // [rsp+38h] [rbp+10h] BYREF
+
+  sub_1416C7CC0();
+  v4 = *(_QWORD **)(a2 + 920);
+  v4[1] += (*(__int64 (__fastcall **)(_QWORD *, char *, __int64))(*v4 + 40LL))(v4, &v19, 2);
+  v5 = *(_QWORD **)(a2 + 920);
+  v5[1] += (*(__int64 (__fastcall **)(_QWORD *, __int64, __int64))(*v5 + 40LL))(v5, a1 + 352, 4);
+  v6 = *(_QWORD **)(a2 + 920);
+  v6[1] += (*(__int64 (__fastcall **)(_QWORD *, __int64, __int64))(*v6 + 40LL))(v6, a1 + 356, 4);
+  v7 = *(_QWORD **)(a2 + 920);
+  v7[1] += (*(__int64 (__fastcall **)(_QWORD *, __int64, __int64))(*v7 + 40LL))(v7, a1 + 360, 4);
+  v8 = *(_QWORD **)(a2 + 920);
+  v8[1] += (*(__int64 (__fastcall **)(_QWORD *, __int64, __int64))(*v8 + 40LL))(v8, a1 + 364, 4);
+  v9 = *(_QWORD **)(a2 + 920);
+  v9[1] += (*(__int64 (__fastcall **)(_QWORD *, __int64, __int64))(*v9 + 40LL))(v9, a1 + 368, 4);
+  v10 = *(_QWORD **)(a2 + 920);
+  v10[1] += (*(__int64 (__fastcall **)(_QWORD *, __int64, __int64))(*v10 + 40LL))(v10, a1 + 372, 4);
+  v11 = *(_QWORD **)(a2 + 920);
+  v11[1] += (*(__int64 (__fastcall **)(_QWORD *, char *, __int64))(*v11 + 40LL))(v11, &v18, 1);
+  *(_BYTE *)(a1 + 376) = v18 != 0;
+  v12 = *(_QWORD **)(a2 + 920);
+  v12[1] += (*(__int64 (__fastcall **)(_QWORD *, __int64, __int64))(*v12 + 40LL))(v12, a1 + 388, 4);
+  v13 = *(_QWORD **)(a2 + 920);
+  v13[1] += (*(__int64 (__fastcall **)(_QWORD *, __int64, __int64))(*v13 + 40LL))(v13, a1 + 392, 4);
+  v14 = *(_QWORD **)(a2 + 920);
+  v14[1] += (*(__int64 (__fastcall **)(_QWORD *, __int64, __int64))(*v14 + 40LL))(v14, a1 + 396, 4);
+  v15 = *(_QWORD **)(a2 + 920);
+  v15[1] += (*(__int64 (__fastcall **)(_QWORD *, __int64, __int64))(*v15 + 40LL))(v15, a1 + 400, 4);
+  v16 = *(_QWORD **)(a2 + 920);
+  v16[1] += (*(__int64 (__fastcall **)(_QWORD *, __int64, __int64))(*v16 + 40LL))(v16, a1 + 404, 4);
+  sub_1416DDDF0(a2);
+  sub_1416DDE80(a2);
+  return sub_1416DDE80(a2);
+}
+
+
+======== NiCamera::vtable[28] func_start=0x1416D0050 (RVA 0x16D0050) ========
+volatile signed __int32 *__fastcall sub_1416D0050(__int64 a1, __int64 a2)
+{
+  __int64 v3; // rax
+  volatile signed __int32 *v4; // r14
+  unsigned int v5; // eax
+  __int64 v6; // rbx
+  volatile signed __int32 *v7; // rax
+  volatile signed __int32 *result; // rax
+  __int64 v9; // rbx
+
+  sub_1416C7DB0();
+  v3 = sub_1416DE030(a2);
+  v4 = (volatile signed __int32 *)v3;
+  if ( v3 )
+    _InterlockedIncrement((volatile signed __int32 *)(v3 + 8));
+  v5 = sub_1416DE090(a2);
+  if ( v5 )
+  {
+    v6 = v5;
+    do
+    {
+      v7 = (volatile signed __int32 *)sub_1416DE030(a2);
+      if ( v7 )
+      {
+        _InterlockedIncrement(v7 + 2);
+        if ( _InterlockedExchangeAdd(v7 + 2, 0xFFFFFFFF) == 1 )
+          (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v7 + 8LL))(v7);
+      }
+      --v6;
+    }
+    while ( v6 );
+  }
+  result = (volatile signed __int32 *)sub_1416DE090(a2);
+  if ( (_DWORD)result )
+  {
+    v9 = (unsigned int)result;
+    do
+    {
+      result = (volatile signed __int32 *)sub_1416DE030(a2);
+      if ( result )
+      {
+        _InterlockedIncrement(result + 2);
+        if ( _InterlockedExchangeAdd(result + 2, 0xFFFFFFFF) == 1 )
+          result = (volatile signed __int32 *)(*(__int64 (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)result + 8LL))(result);
+      }
+      --v9;
+    }
+    while ( v9 );
+  }
+  if ( v4 )
+  {
+    if ( _InterlockedExchangeAdd(v4 + 2, 0xFFFFFFFF) == 1 )
+      return (volatile signed __int32 *)(*(__int64 (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v4 + 8LL))(v4);
+  }
+  return result;
+}
+
+
+======== NiCamera::vtable[29] func_start=0x1416D0140 (RVA 0x16D0140) ========
+// attributes: thunk
+__int64 sub_1416D0140()
+{
+  return sub_1416C7E40();
+}
+
+
+======== NiCamera::vtable[30] func_start=0x1416D0150 (RVA 0x16D0150) ========
+__int64 __fastcall sub_1416D0150(__int64 a1, _QWORD *a2)
+{
+  _QWORD *v4; // rbx
+  _QWORD *v5; // rbx
+  _QWORD *v6; // rbx
+  _QWORD *v7; // rbx
+  _QWORD *v8; // rbx
+  _QWORD *v9; // rbx
+  _QWORD *v10; // rbx
+  _QWORD *v11; // rbx
+  _QWORD *v12; // rbx
+  _QWORD *v13; // rbx
+  _QWORD *v14; // rbx
+  _QWORD *v15; // rbx
+  _QWORD *v16; // rbx
+  _QWORD *v17; // rbx
+  _QWORD *v18; // rbx
+  __int64 result; // rax
+  char v20; // [rsp+40h] [rbp+8h] BYREF
+  __int16 v21; // [rsp+48h] [rbp+10h] BYREF
+  int v22; // [rsp+50h] [rbp+18h] BYREF
+
+  sub_1416C7E90();
+  v4 = (_QWORD *)a2[116];
+  v21 = 0;
+  v4[1] += (*(__int64 (__fastcall **)(_QWORD *, __int16 *, __int64))(*v4 + 48LL))(v4, &v21, 2);
+  v5 = (_QWORD *)a2[116];
+  v5[1] += (*(__int64 (__fastcall **)(_QWORD *, __int64, __int64))(*v5 + 48LL))(v5, a1 + 352, 4);
+  v6 = (_QWORD *)a2[116];
+  v6[1] += (*(__int64 (__fastcall **)(_QWORD *, __int64, __int64))(*v6 + 48LL))(v6, a1 + 356, 4);
+  v7 = (_QWORD *)a2[116];
+  v7[1] += (*(__int64 (__fastcall **)(_QWORD *, __int64, __int64))(*v7 + 48LL))(v7, a1 + 360, 4);
+  v8 = (_QWORD *)a2[116];
+  v8[1] += (*(__int64 (__fastcall **)(_QWORD *, __int64, __int64))(*v8 + 48LL))(v8, a1 + 364, 4);
+  v9 = (_QWORD *)a2[116];
+  v9[1] += (*(__int64 (__fastcall **)(_QWORD *, __int64, __int64))(*v9 + 48LL))(v9, a1 + 368, 4);
+  v10 = (_QWORD *)a2[116];
+  v10[1] += (*(__int64 (__fastcall **)(_QWORD *, __int64, __int64))(*v10 + 48LL))(v10, a1 + 372, 4);
+  v11 = (_QWORD *)a2[116];
+  v20 = *(_BYTE *)(a1 + 376);
+  v11[1] += (*(__int64 (__fastcall **)(_QWORD *, char *, __int64))(*v11 + 48LL))(v11, &v20, 1);
+  v12 = (_QWORD *)a2[116];
+  v12[1] += (*(__int64 (__fastcall **)(_QWORD *, __int64, __int64))(*v12 + 48LL))(v12, a1 + 388, 4);
+  v13 = (_QWORD *)a2[116];
+  v13[1] += (*(__int64 (__fastcall **)(_QWORD *, __int64, __int64))(*v13 + 48LL))(v13, a1 + 392, 4);
+  v14 = (_QWORD *)a2[116];
+  v14[1] += (*(__int64 (__fastcall **)(_QWORD *, __int64, __int64))(*v14 + 48LL))(v14, a1 + 396, 4);
+  v15 = (_QWORD *)a2[116];
+  v15[1] += (*(__int64 (__fastcall **)(_QWORD *, __int64, __int64))(*v15 + 48LL))(v15, a1 + 400, 4);
+  v16 = (_QWORD *)a2[116];
+  v16[1] += (*(__int64 (__fastcall **)(_QWORD *, __int64, __int64))(*v16 + 48LL))(v16, a1 + 404, 4);
+  (*(void (__fastcall **)(_QWORD *, _QWORD))(*a2 + 88LL))(a2, 0);
+  v17 = (_QWORD *)a2[116];
+  v22 = 0;
+  v17[1] += (*(__int64 (__fastcall **)(_QWORD *, int *, __int64))(*v17 + 48LL))(v17, &v22, 4);
+  v18 = (_QWORD *)a2[116];
+  result = (*(__int64 (__fastcall **)(_QWORD *, int *, __int64))(*v18 + 48LL))(v18, &v22, 4);
+  v18[1] += result;
+  return result;
+}
+
+
+======== NiCamera::vtable[31] func_start=0x1416D0370 (RVA 0x16D0370) ========
+bool __fastcall sub_1416D0370(float *a1, float *a2)
+{
+  return (unsigned __int8)sub_1416C7F30()
+      && a2[88] == a1[88]
+      && a2[89] == a1[89]
+      && a2[90] == a1[90]
+      && a2[91] == a1[91]
+      && a2[92] == a1[92]
+      && a2[93] == a1[93]
+      && a2[97] == a1[97]
+      && a2[98] == a1[98]
+      && a2[99] == a1[99]
+      && a2[100] == a1[100]
+      && a2[101] == a1[101];
+}
+
+
+======== NiCamera::vtable[32] func_start=0x1416C8C00 (RVA 0x16C8C00) ========
+__int64 __fastcall sub_1416C8C00(__int64 a1, __int64 a2)
+{
+  __int64 result; // rax
+  __int64 v5; // rcx
+
+  result = sub_1416BD650();
+  v5 = *(_QWORD *)(a1 + 256);
+  if ( v5 )
+    return (*(__int64 (__fastcall **)(__int64, __int64))(*(_QWORD *)v5 + 256LL))(v5, a2);
+  return result;
+}
+
+
+======== NiCamera::vtable[33] func_start=0x1416BD640 (RVA 0x16BD640) ========
+// attributes: thunk
+__int64 j_nullsub_589()
+{
+  return nullsub_589();
+}
+
+
+======== NiCamera::vtable[34] func_start=0x1416BAB30 (RVA 0x16BAB30) ========
+char sub_1416BAB30()
+{
+  return 0;
+}
+
+
+======== NiCamera::vtable[35] func_start=0x1416BAB40 (RVA 0x16BAB40) ========
+__int64 __fastcall sub_1416BAB40(__int64 a1)
+{
+  return (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)a1 + 16LL))(a1);
+}
+
+
+==== Sample consumers of PlayerCamera singleton ====
+
+======== PlayerCamera consumer @RVA 0x22D371 (size 50) func_start=0x14022D360 (RVA 0x22D360) ========
+char sub_14022D360()
+{
+  char result; // al
+
+  if ( *(_BYTE *)(qword_1430DBD50 + 76) )
+    return 1;
+  result = sub_14102B090(qword_1430DBD58, 12);
+  if ( result )
+    return 1;
+  return result;
+}
+
+
+==== Adjacent global read in ctor: RVA 0x30DA180 ====
+   dword value: 0x0
+
+-- xrefs TO 0x30DA180 (ctor-read int) @ 0x1430DA180 (RVA 0x30DA180) --
+   total: 2219
+     from 0x140076540  RVA 0x76540  func=sub_140076540
+     from 0x140078D30  RVA 0x78D30  func=sub_140078D30
+     from 0x140078D40  RVA 0x78D40  func=sub_140078D40
+     from 0x140078D50  RVA 0x78D50  func=sub_140078D50
+     from 0x140078D60  RVA 0x78D60  func=sub_140078D60
+     from 0x140078D70  RVA 0x78D70  func=sub_140078D70
+     from 0x140078D80  RVA 0x78D80  func=sub_140078D80
+     from 0x140078D90  RVA 0x78D90  func=sub_140078D90
+     from 0x140078DA0  RVA 0x78DA0  func=sub_140078DA0
+     from 0x140078DB0  RVA 0x78DB0  func=sub_140078DB0
+     from 0x14008C9D0  RVA 0x8C9D0  func=sub_14008C9D0
+     from 0x1400E9550  RVA 0xE9550  func=sub_1400E9550
+     from 0x140121450  RVA 0x121450  func=sub_140121450
+     from 0x1401263E4  RVA 0x1263E4  func=sub_1401263E0
+     from 0x140126690  RVA 0x126690  func=sub_140126690
+     from 0x140136840  RVA 0x136840  func=sub_140136840
+     from 0x140143CE0  RVA 0x143CE0  func=sub_140143CE0
+     from 0x14014C3E0  RVA 0x14C3E0  func=sub_14014C3E0
+     from 0x14014DFE0  RVA 0x14DFE0  func=sub_14014DFE0
+     from 0x14014E244  RVA 0x14E244  func=sub_14014E240
+
+==== done ====

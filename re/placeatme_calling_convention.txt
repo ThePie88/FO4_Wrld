@@ -1,0 +1,69 @@
+PlaceAtMe CALLING CONVENTION — Fallout4.exe 1.11.191
+RVA 0x1159C10 = sub_141159C10. All offsets verified against placeatme_decomp.txt.
+
+1) ARGUMENTS
+a1  BSScript::IVirtualMachine*     MVP: 0 (only read on NULL-actor error path, a4 guards)
+a2  uint32 Papyrus stackID         MVP: 0 (only used alongside a1 on error)
+a3  struct { VMHandle h; TESForm* f; }*   (16-byte pair on stack)
+       line 51 reads *a3 (handle); line 96 falls back to a3[1] (direct TESForm*).
+       MVP: { 0, pBaseForm }  — pass TESForm* of base NPC via a3[1], skip handle path.
+a4  TESObjectREFR* anchor          MUST be non-null real REFR (player works).
+       vtable slot 1360 sets parent cell from it; +104 is its 3D-sync lock.
+a5  uint32 count-like              Passed to sub_140284A00(newRef->extras, a5).
+       MVP: 1.
+a6  __int64 persistent-flag        if (a6) sub_140562740(newRef) → marks persistent.
+       MVP: 0 (we want TEMPORARY, avoid save bloat).
+
+2) CONCRETE CALL
+
+  using PlaceAtMeFn = void*(__fastcall*)(void*, uint32_t, void**, void*, uint32_t, uint64_t);
+  constexpr uintptr_t PLACE_AT_ME_RVA   = 0x1159C10;
+  constexpr uintptr_t LOOKUP_FORMID_RVA = 0x311850;
+  constexpr uintptr_t PLAYER_SING_RVA   = 0x32D2260;
+
+  Actor* spawn_test() {
+      HMODULE base = GetModuleHandleW(L"Fallout4.exe");
+      auto Place    = (PlaceAtMeFn)((uint8_t*)base + PLACE_AT_ME_RVA);
+      auto Lookup   = (void*(__fastcall*)(uint32_t))((uint8_t*)base + LOOKUP_FORMID_RVA);
+      void* player  = *(void**)((uint8_t*)base + PLAYER_SING_RVA);   // Actor*
+      void* form    = Lookup(0x0020593F);                             // LCharWorkshopNPC
+      if (!player || !form) return nullptr;
+
+      void* pair[2] = { nullptr, form };   // a3[0]=handle null, a3[1]=TESForm*
+      return (Actor*)Place(
+          nullptr,     // a1 VM          — nulled, guarded by a4
+          0,           // a2 stackID
+          pair,        // a3 form pair
+          player,      // a4 anchor REFR (the "at me")
+          1,           // a5 count
+          0            // a6 persistent-flag (0 = temp, skip save)
+      );
+  }
+
+  Returned pointer = Actor* (raw, 0x490 bytes, vtable = Actor::`vftable`, line 169 returns v21).
+  Still needs: ChangeRace + 3D rebuild before it's visible as a ghost.
+
+3) THREAD-SAFETY: NOT SAFE — main thread only.
+   - sub_1402E4DF0 (PlaceRefIntoWorld) at line 351 of its decomp reads
+     NtCurrentTeb()->ThreadLocalStoragePointer + TlsIndex → main-thread TLS.
+   - sub_1403095C0(a4+104) on line 132 takes the REFR cell-attach lock.
+   - Pool alloc at &unk_143E5E0F0 (line 116) is not MT-guarded for this arena.
+   From D3D11 Present hook: enqueue via ScriptTask qword_1430E0208 OR hand off
+   to main thread via SKSE-style task interface. Direct call from render
+   thread = crash/heap corruption.
+
+4) RETURN VALUE
+   Raw Actor* (__int64 cast). NOT an ObjectRefHandle. Newly-constructed,
+   flags cleared of 0x200000 (line 156), flag 0x1000000 set (line 153) =
+   "created this session". Safe to store in our ghost table.
+
+5) CAVEATS
+   - a4=0 → returns 0 and logs Papyrus error "Cannot place a None actor".
+   - *a3=0 AND a3[1]=0 → v12 stays 0, deref at line 130 (*(v12+184)) crashes.
+     Always populate at least a3[1].
+   - NEW_REFR_DATA flags are HARDCODED to 0x1000000 (line 153). 0x4000
+     TEMPORARY bit is NOT set → save bloat. For ghosts call MarkForDelete
+     or Disable+Delete on disconnect, or patch flag post-return:
+     *(uint32_t*)((uint8_t*)actor + 16) |= 0x4000;
+   - Requires anchor cell loaded — a4's cell drives new REFR's cell.
+   - Safe to call repeatedly; no global "one shot" state.

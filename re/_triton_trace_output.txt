@@ -1,0 +1,322 @@
+
+### sub_142172540 (BSLSP vt[43] SetupGeometry) linear-trace summary
+  instructions         : 878
+  THIS loads (offsets) : 10
+  MAT  loads (offsets) : 1
+  A2   loads (offsets) : 8
+  branches touching taint: 29 / 100
+
+  -- THIS offsets read --
+    +0x0000  @ 0x142172628, 0x1421729c0
+    +0x0028  @ 0x142172967
+    +0x002c  @ 0x14217289a, 0x142172908, 0x142172991
+    +0x0030  @ 0x1421725d2
+    +0x0038  @ 0x1421725c9, 0x14217267a, 0x14217267e, 0x142172727
+    +0x0048  @ 0x1421725fd, 0x142172767, 0x14217325a
+    +0x0050  @ 0x142172e83, 0x142173129
+    +0x0058  @ 0x14217294f
+    +0x00b0  @ 0x1421732e3
+    +0x00d4  @ 0x142172914
+
+  -- MAT (=THIS+0x58) offsets read --
+    +0x0080  @ 0x142172953
+
+  -- A2 (BSGeometry) offsets read --
+    +0x0000  @ 0x142172adb, 0x142172baf, 0x142172eb1, 0x142172fed, 0x14217301d, 0x142173040...
+    +0x00b0  @ 0x142172811
+    +0x00b4  @ 0x142172808
+    +0x00b8  @ 0x14217281a
+    +0x0108  @ 0x142172782, 0x14217324b
+    +0x0130  @ 0x14217265a, 0x142172947, 0x142172d2a
+    +0x0158  @ 0x142172e9e
+    +0x0160  @ 0x1421726d8, 0x142173067
+
+  -- MAT writes --
+
+  -- Branches gated by THIS/MAT/A2 memory --
+    0x142172669  test 'rax', 'rax'  -> je 0x14217267a
+                        L=mem(A2+0x130)                R=mem(A2+0x130)
+    0x14217266f  test '[rax+0x28]', '0x1'  -> je 0x14217267a
+                        L=mem(mem(A2+0x130)+0x28)      R=None
+    0x142172687  test 'rdi', 'rdi'  -> jne 0x1421726ba
+                        L=mem(THIS+0x38)               R=mem(THIS+0x38)
+    0x1421727e9  test 'rax', 'rbp'  -> jne 0x1421728e9
+                        L=imm(0x1)                     R=mem(THIS+0x30)
+    0x1421727f6  cmp 'rcx', '[rip+0x1cd4c42]'  -> jne 0x142172892
+                        L=mem(THIS+0x48)               R=None
+    0x1421728f0  test 'rbp', '0x8004'  -> je 0x142172940
+                        L=mem(THIS+0x30)               R=None
+    0x1421728f5  test 'rax', 'rbp'  -> jne 0x142172940
+                        L=None                         R=mem(THIS+0x30)
+    0x1421728fa  test 'rax', 'rbp'  -> jbe 0x142172900
+                        L=None                         R=mem(THIS+0x30)
+    0x14217295b  cmp '[r14+0x130]', '0x0'  -> jne 0x142172967
+                        L=mem(A2+0x130)                R=None
+    0x142172961  cmp '[r14+0x130]', '0x0'  -> jb 0x142172967
+                        L=mem(A2+0x130)                R=None
+    0x142172980  cmp '[r14+0x130]', '0x0'  -> jne 0x142172996
+                        L=mem(A2+0x130)                R=None
+    0x142172a5d  test 'rbp', '0x8004'  -> je 0x142172b5d
+                        L=mem(THIS+0x30)               R=None
+    0x142172b79  test 'rbp', '0xc000000'  -> jne 0x142172c0d
+                        L=mem(THIS+0x30)               R=None
+    0x142172cc5  test 'rcx', 'rbp'  -> je 0x142172cd6
+                        L=None                         R=mem(THIS+0x30)
+    0x142172d3a  test 'rax', 'rax'  -> je 0x142172d4c
+                        L=mem(A2+0x130)                R=mem(A2+0x130)
+    0x142172e90  test 'rax', 'rax'  -> je 0x142172e9e
+                        L=mem(THIS+0x50)               R=mem(THIS+0x50)
+    0x142172e97  cmp '[rax+0x20]', '0x0'  -> je 0x142172e9e
+                        L=mem(mem(THIS+0x50)+0x20)     R=None
+    0x142172ea6  cmp '[r14+0x158]', '0xf'  -> jne 0x142172eb1
+                        L=mem(A2+0x158)                R=None
+    0x142172eed  test 'rbp', '0xc000000'  -> je 0x142172f29
+                        L=mem(THIS+0x30)               R=None
+    0x142172f06  test 'rax', 'rbp'  -> je 0x142172f29
+                        L=None                         R=mem(THIS+0x30)
+    0x142172f44  test 'rax', 'rbp'  -> jne 0x142172f4a
+                        L=imm(0x3)                     R=mem(THIS+0x30)
+    0x142172f4f  test 'rax', 'rbp'  -> jbe 0x142172f5c
+                        L=imm(0x3)                     R=mem(THIS+0x30)
+    0x1421730f2  test 'rax', 'rbp'  -> je 0x142173129
+                        L=None                         R=mem(THIS+0x30)
+    0x142173130  test 'r12', 'r12'  -> je 0x14217324b
+                        L=mem(THIS+0x50)               R=mem(THIS+0x50)
+    0x14217313b  test 'r12', 'r12'  -> jb 0x14217324b
+                        L=mem(THIS+0x50)               R=mem(THIS+0x50)
+    0x1421731bf  cmp '[r12+0x81]', '0x0'  -> jne 0x1421731d7
+                        L=mem(mem(THIS+0x50)+0x81)     R=None
+    0x142173227  cmp '[r12+0x83]', '0x0'  -> jne 0x14217322d
+                        L=mem(mem(THIS+0x50)+0x83)     R=None
+    0x142173265  cmp '[rax+0x11d]', '0x2'  -> je 0x1421732cb
+                        L=mem(mem(THIS+0x48)+0x11d)    R=None
+    0x14217326e  test 'rbp', '0xc000000'  -> jne 0x1421732cb
+                        L=mem(THIS+0x30)               R=None
+
+  -- Calls made --
+    0x14217262e  call CALL_MEM[rax+0x198]
+    0x1421726b0  call sub_142161090
+    0x1421726d3  call sub_142160F80
+    0x142172709  call sub_142161090
+    0x14217272e  call sub_142160F80
+    0x14217288b  call sub_142161EC0
+    0x1421728c0  call sub_142161F20
+    0x14217292d  call sub_142161F20
+    0x1421729ce  call CALL_MEM[rax+0x10]
+    0x142172ae5  call CALL_MEM[rax+0x1f8]
+    0x142172b11  call sub_1421611A0
+    0x142172b21  call sub_142215990
+    0x142172b39  call sub_1418214C0
+    0x142172b41  call sub_1401E00D0
+    0x142172b50  call sub_14223A6C0
+    0x142172bbb  call CALL_MEM[rax+0x1f8]
+    0x142172beb  call sub_1421611A0
+    0x142172bfb  call sub_142215990
+    0x142172d01  call sub_1416BD0B0
+    0x142172dc4  call sub_1416D5640
+    0x142172eb7  call CALL_MEM[rax+0x1f8]
+    0x142172f80  call sub_1418214C0
+    0x142172f88  call sub_1401E00D0
+    0x142172f97  call sub_142200170
+    0x142172ff3  call CALL_MEM[rax+0x1f8]
+    0x14217300e  call sub_1417E8950
+    0x142173023  call CALL_MEM[rax+0x10]
+    0x142173039  call sub_14223BC70
+    0x142173043  call CALL_MEM[rax+0x10]
+    0x142173058  call CALL_MEM[rax+0x10]
+    0x14217308c  call sub_1421611A0
+    0x142173111  call sub_1421611A0
+    0x142173210  call sub_1421611A0
+    0x142173242  call sub_142215990
+    0x1421732a1  call sub_1421611A0
+    0x1421732b4  call sub_142215990
+    0x1421732d1  call sub_142160FF0
+    0x1421732de  call sub_142173390
+    0x142173343  call sub_1422B7498
+    0x142173363  call sub_14167BDC0
+    0x14217336f  call sub_1422B70BC
+    0x14217337b  call sub_1422B7438
+
+### sub_142174C60 (BSLSP vt[51] returns float) linear-trace summary
+  instructions         : 3
+  THIS loads (offsets) : 1
+  MAT  loads (offsets) : 1
+  A2   loads (offsets) : 0
+  branches touching taint: 0 / 0
+
+  -- THIS offsets read --
+    +0x0058  @ 0x142174c60
+
+  -- MAT (=THIS+0x58) offsets read --
+    +0x0080  @ 0x142174c64
+
+  -- A2 (BSGeometry) offsets read --
+
+  -- MAT writes --
+
+  -- Branches gated by THIS/MAT/A2 memory --
+
+  -- Calls made --
+
+### sub_142174C70 (BSLSP vt[50]) linear-trace summary
+  instructions         : 14
+  THIS loads (offsets) : 1
+  MAT  loads (offsets) : 0
+  A2   loads (offsets) : 0
+  branches touching taint: 0 / 1
+
+  -- THIS offsets read --
+    +0x0058  @ 0x142174c70
+
+  -- MAT (=THIS+0x58) offsets read --
+
+  -- A2 (BSGeometry) offsets read --
+
+  -- MAT writes --
+    +0x0080
+
+  -- Branches gated by THIS/MAT/A2 memory --
+
+  -- Calls made --
+
+### sub_1421C5CE0 (Material ctor) linear-trace summary
+  instructions         : 59
+  THIS loads (offsets) : 0
+  MAT  loads (offsets) : 0
+  A2   loads (offsets) : 0
+  branches touching taint: 0 / 4
+
+  -- THIS offsets read --
+
+  -- MAT (=THIS+0x58) offsets read --
+
+  -- A2 (BSGeometry) offsets read --
+
+  -- MAT writes --
+
+  -- Branches gated by THIS/MAT/A2 memory --
+
+  -- Calls made --
+    0x1421c5ce9  call sub_1421D6700
+
+### sub_1421718C0 (BSLSP vt[42]) linear-trace summary
+  instructions         : 5
+  THIS loads (offsets) : 0
+  MAT  loads (offsets) : 0
+  A2   loads (offsets) : 0
+  branches touching taint: 0 / 0
+
+  -- THIS offsets read --
+
+  -- MAT (=THIS+0x58) offsets read --
+
+  -- A2 (BSGeometry) offsets read --
+
+  -- MAT writes --
+
+  -- Branches gated by THIS/MAT/A2 memory --
+
+  -- Calls made --
+    0x1421718c4  call sub_1421718E0
+
+### sub_142161090 (acquire-effect-state) linear-trace summary
+  instructions         : 92
+  THIS loads (offsets) : 1
+  MAT  loads (offsets) : 0
+  A2   loads (offsets) : 0
+  branches touching taint: 1 / 5
+
+  -- THIS offsets read --
+    +0x0000  @ 0x142161150
+
+  -- MAT (=THIS+0x58) offsets read --
+
+  -- A2 (BSGeometry) offsets read --
+
+  -- MAT writes --
+
+  -- Branches gated by THIS/MAT/A2 memory --
+    0x142161156  test 'rcx', 'rcx'  -> je 0x142161177
+                        L=mem(THIS+0x0)                R=mem(THIS+0x0)
+
+  -- Calls made --
+    0x14216110d  call sub_142215B50
+    0x142161144  call sub_142215810
+    0x142161170  call sub_142215B30
+
+### sub_142160F80 (reset material → abort) linear-trace summary
+  instructions         : 26
+  THIS loads (offsets) : 1
+  MAT  loads (offsets) : 0
+  A2   loads (offsets) : 0
+  branches touching taint: 1 / 2
+
+  -- THIS offsets read --
+    +0x0000  @ 0x142160f8a
+
+  -- MAT (=THIS+0x58) offsets read --
+
+  -- A2 (BSGeometry) offsets read --
+
+  -- MAT writes --
+
+  -- Branches gated by THIS/MAT/A2 memory --
+    0x142160f93  test 'rbx', 'rbx'  -> je 0x142160fd4
+                        L=mem(THIS+0x0)                R=mem(THIS+0x0)
+
+  -- Calls made --
+    0x142160fa7  call sub_142215880
+    0x142160fb4  call sub_142215C30
+
+### sub_1421611A0 (append effect to list) linear-trace summary
+  instructions         : 110
+  THIS loads (offsets) : 0
+  MAT  loads (offsets) : 0
+  A2   loads (offsets) : 0
+  branches touching taint: 1 / 3
+
+  -- THIS offsets read --
+
+  -- MAT (=THIS+0x58) offsets read --
+
+  -- A2 (BSGeometry) offsets read --
+
+  -- MAT writes --
+
+  -- Branches gated by THIS/MAT/A2 memory --
+    0x1421611ad  test 'rdx', 'rdx'  -> jne 0x1421611ec
+                        L=A2                           R=A2
+
+  -- Calls made --
+    0x1421611e2  call sub_142161090
+    0x14216123d  call sub_142215B30
+
+### sub_142215990 (post-acquire state fixup) linear-trace summary
+  instructions         : 35
+  THIS loads (offsets) : 2
+  MAT  loads (offsets) : 0
+  A2   loads (offsets) : 0
+  branches touching taint: 4 / 5
+
+  -- THIS offsets read --
+    +0x0030  @ 0x14221599b
+    +0x0050  @ 0x1422159b0
+
+  -- MAT (=THIS+0x58) offsets read --
+
+  -- A2 (BSGeometry) offsets read --
+
+  -- MAT writes --
+
+  -- Branches gated by THIS/MAT/A2 memory --
+    0x1422159ae  test 'rax', 'rax'  -> je 0x1422159d2
+                        L=mem(THIS+0x30)               R=mem(THIS+0x30)
+    0x1422159b6  cmp 'dl', 'cl'  -> jbe 0x1422159c9
+                        L=A2                           R=mem(THIS+0x50)
+    0x1422159d5  test 'r14b', 'r14b'  -> je 0x142215acb
+                        L=A2                           R=A2
+    0x1422159e4  cmp 'r14b', '0x4'  -> ja 0x142215a74
+                        L=A2                           R=None
+
+  -- Calls made --
+    0x1422159be  call sub_142215E70

@@ -1,0 +1,558 @@
+[+] Image base: 0x140000000
+
+==============================================================================
+== All named symbols containing 'TESObjectREFR'
+==============================================================================
+Total: 1101
+  ??_7IAliasFunctor@TESObjectREFRDef@@6B@ @ 0x142467EF0  RVA=0x2467EF0
+  ??_7ILinkedReferenceFunctor@TESObjectREFRDef@@6B@ @ 0x142467F08  RVA=0x2467F08
+  ??_7?$NiTMapBase@V?$DFALL@V?$NiTMapItem@V?$BSPointerHandle@VTESObjectREFR@@V?$BSUntypedPointerHandle@$0BF@$04@@@@I@@@@V?$BSPointerHandle@VTESObjectREFR@@V?$BSUntypedPointerHandle@$0BF@$04@@@@I@@6B@ @ 0x14246DA98  RVA=0x246DA98
+  ??_7?$NiTMap@V?$BSPointerHandle@VTESObjectREFR@@V?$BSUntypedPointerHandle@$0BF@$04@@@@I@@6B@ @ 0x14246DAD8  RVA=0x246DAD8
+  ??_7TESObjectREFRFactory@?A0xcb013137@@6B@ @ 0x14249BDC8  RVA=0x249BDC8
+  ??_7HandleOutfitItemsFunctor@TESObjectREFR@@6B@ @ 0x14249CBB0  RVA=0x249CBB0
+  ??_7TESObjectREFR@@6B@ @ 0x14249CBC8  RVA=0x249CBC8
+  ??_7TESObjectREFR@@6B@_0 @ 0x14249D200  RVA=0x249D200
+  ??_7TESObjectREFR@@6B@_1 @ 0x14249D218  RVA=0x249D218
+  ??_7TESObjectREFR@@6B@_2 @ 0x14249D230  RVA=0x249D230
+  ??_7TESObjectREFR@@6B@_3 @ 0x14249D248  RVA=0x249D248
+  ??_7TESObjectREFR@@6B@_4 @ 0x14249D260  RVA=0x249D260
+  ??_7TESObjectREFR@@6B@_5 @ 0x14249D338  RVA=0x249D338
+  ??_7TESObjectREFR@@6B@_6 @ 0x14249D358  RVA=0x249D358
+  ??_7?$NiTMapBase@V?$DFALL@V?$NiTMapItem@V?$BSPointerHandle@VTESObjectREFR@@V?$BSUntypedPointerHandle@$0BF@$04@@@@V1@@@@@V?$BSPointerHandle@VTESObjectREFR@@V?$BSUntypedPointerHandle@$0BF@$04@@@@V2@@@6B@ @ 0x14249D820  RVA=0x249D820
+  ??_7?$NiTMap@V?$BSPointerHandle@VTESObjectREFR@@V?$BSUntypedPointerHandle@$0BF@$04@@@@V1@@@6B@ @ 0x14249D860  RVA=0x249D860
+  ??_7REFRSyncController@TESObjectREFRSync@@6B@ @ 0x14249E1C8  RVA=0x249E1C8
+  ??_7MobDialogueFlagResetter@?1??ResetDialogueFlags@Script@@SA_NPEBUSCRIPT_PARAMETER@@PEBDPEAVTESObjectREFR@@2PEAV2@PEAVScriptLocals@@AEAMAEAI@Z@6B@ @ 0x1424B2C40  RVA=0x24B2C40
+  ??_7ReplaceHeadTask@?BN@??ModifyFaceGen@Script@@SA_NPEBUSCRIPT_PARAMETER@@PEBDPEAVTESObjectREFR@@2PEAV2@PEAVScriptLocals@@AEAMAEAI@Z@6B@ @ 0x1424B2D20  RVA=0x24B2D20
+  ??_7?$bhkTTNode@V?$BSPointerHandle@VTESObjectREFR@@V?$BSUntypedPointerHandle@$0BF@$04@@@@@@6B@ @ 0x1424D1F98  RVA=0x24D1F98
+  ??_7?$NativeLinkFunctor@V_lambda_8ee029e02c0d21abb923b5a7c71ab172_@@@TESObjectREFRDef@@6B@ @ 0x142538FA8  RVA=0x2538FA8
+  ??_7?$CombatBlackboardKey@V?$BSTSet@V?$BSPointerHandle@VTESObjectREFR@@V?$BSUntypedPointerHandle@$0BF@$04@@@@UBSTScatterTableDefaultHashPolicy@@@@@@6B@ @ 0x142579710  RVA=0x2579710
+  ??_7?$CombatBlackboardKey@U?$BSTTuple@PEAVTESObjectREFR@@VAITimeStamp@@@@@@6B@ @ 0x14258D0B0  RVA=0x258D0B0
+  ??_7?$CombatBehaviorTreeNodeObject2@VCombatBehaviorMoveToReference@@V?$CombatBehaviorExpression@V?$CombatBehaviorFunc@P6APEAVTESObjectREFR@@XZ@@@@M@@6B@ @ 0x14258E540  RVA=0x258E540
+  ??_7?$CombatBehaviorTreeValueNodeT@IV?$CombatBehaviorExpression@V?$CombatBehaviorBinaryExpression@V?$CombatBehaviorUnaryExpression@V?$CombatBehaviorMemberFunc@VCombatState@@P81@EBA_NXZ@@UOpNot@@@@V?$CombatBehaviorExpression@V?$CombatBehaviorBinaryExpression@V?$CombatBehaviorFunc2@P6AMPEBVTESObjectREFR@@0@ZVCombatBehaviorAttacker@CombatBehaviorTree@@VCombatBehaviorTarget@3@@@MUOpLessThan@@@@@@UOpAnd@@@@@@@@6B@ @ 0x14258F950  RVA=0x258F950
+  ??_7?$_Func_impl@V?$_Binder@U_Unforced@std@@AEAV_lambda_b73afd54d162b51b2052f87b69199594_@@AEBU?$_Ph@$00@2@AEBQEAVTESObjectREFR@@@std@@V?$BSTThreadScrapSTLAllocator@X@@_NAEAV?$BSScrapArray@VVariable@BSScript@@@@@std@@6B@ @ 0x1425AE240  RVA=0x25AE240
+  ??_7?$_Func_impl@V_lambda_8a68b257d57c079109d7ee11c8bcf3d9_@@V?$BSTThreadScrapSTLAllocator@X@@XAEBV?$BSTSmartPointer@VObject@BSScript@@UBSTSmartPointerIntrusiveRefCount@@@@_NPEAVTESObjectREFR@@PEAV4@@std@@6B@ @ 0x1425AE850  RVA=0x25AE850
+  ??_7?$NativeFunction2@VActor@@XAEAVSpellItem@@PEAVTESObjectREFR@@@BSScript@@6B@ @ 0x1425B3540  RVA=0x25B3540
+  ??_7?$NativeFunction0@VActor@@PEAVTESObjectREFR@@@BSScript@@6B@ @ 0x1425B4140  RVA=0x25B4140
+  ??_7?$NativeFunction1@VActor@@_NPEAVTESObjectREFR@@@BSScript@@6B@ @ 0x1425B45C0  RVA=0x25B45C0
+  ??_7?$NativeFunction2@VActor@@_NPEAVTESObjectREFR@@M@BSScript@@6B@ @ 0x1425B4E00  RVA=0x25B4E00
+  ??_7?$NativeLatentFunction2@VActor@@_NPEAVTESObjectREFR@@M@BSScript@@6B@ @ 0x1425B4EC0  RVA=0x25B4EC0
+  ??_7?$NativeFunction2@VActor@@_NPEAVBGSAction@@PEAVTESObjectREFR@@@BSScript@@6B@ @ 0x1425B5040  RVA=0x25B5040
+  ??_7?$NativeFunction2@VActor@@_NPEAVTESIdleForm@@PEAVTESObjectREFR@@@BSScript@@6B@ @ 0x1425B5100  RVA=0x25B5100
+  ??_7?$NativeFunction1@VActor@@XPEAVTESObjectREFR@@@BSScript@@6B@ @ 0x1425B5880  RVA=0x25B5880
+  ??_7?$NativeFunction2@VActor@@XPEAVTESObjectREFR@@_N@BSScript@@6B@ @ 0x1425B5940  RVA=0x25B5940
+  ??_7?$NativeFunction1@VActor@@IPEAVTESObjectREFR@@@BSScript@@6B@ @ 0x1425B6000  RVA=0x25B6000
+  ??_7?$NativeFunction5@VBGSKeyword@@XPEAVBGSLocation@@PEAVTESObjectREFR@@PEAV3@II@BSScript@@6B@ @ 0x1425B6E60  RVA=0x25B6E60
+  ??_7?$NativeFunction5@VBGSKeyword@@_NPEAVBGSLocation@@PEAVTESObjectREFR@@PEAV3@II@BSScript@@6B@ @ 0x1425B6F20  RVA=0x25B6F20
+  ??_7?$NativeLatentFunction5@VBGSKeyword@@_NPEAVBGSLocation@@PEAVTESObjectREFR@@PEAV3@II@BSScript@@6B@ @ 0x1425B6FE0  RVA=0x25B6FE0
+  ??_7?$NativeFunction1@VBGSRefAlias@@XPEAVTESObjectREFR@@@BSScript@@6B@ @ 0x1425B87C8  RVA=0x25B87C8
+  ??_7?$NativeFunction0@VBGSRefAlias@@PEAVTESObjectREFR@@@BSScript@@6B@ @ 0x1425B8948  RVA=0x25B8948
+  ??_7?$NativeFunction1@VBGSRefCollectionAlias@@XPEAVTESObjectREFR@@@BSScript@@6B@ @ 0x1425B8AF0  RVA=0x25B8AF0
+  ??_7?$NativeFunction1@VBGSRefCollectionAlias@@HPEAVTESObjectREFR@@@BSScript@@6B@ @ 0x1425B8BB0  RVA=0x25B8BB0
+  ??_7?$NativeFunction1@VBGSRefCollectionAlias@@PEAVTESObjectREFR@@I@BSScript@@6B@ @ 0x1425B8C70  RVA=0x25B8C70
+  ??_7?$NativeFunction3@VBGSReferenceEffect@@XPEAVTESObjectREFR@@MPEAV2@@BSScript@@6B@ @ 0x1425B9038  RVA=0x25B9038
+  ??_7?$NativeFunction1@VBGSReferenceEffect@@XPEAVTESObjectREFR@@@BSScript@@6B@ @ 0x1425B90F8  RVA=0x25B90F8
+  ??_7?$NativeFunction1@UStaticFunctionTag@BSScript@@XPEAVTESObjectREFR@@@BSScript@@6B@ @ 0x1425BA208  RVA=0x25BA208
+  ??_7?$NativeFunction5@UStaticFunctionTag@BSScript@@PEAVTESObjectREFR@@PEAVTESForm@@MMMM@BSScript@@6B@ @ 0x1425BAF78  RVA=0x25BAF78
+  ??_7?$NativeFunction5@UStaticFunctionTag@BSScript@@PEAVTESObjectREFR@@PEAVBGSListForm@@MMMM@BSScript@@6B@ @ 0x1425BB038  RVA=0x25BB038
+  ??_7?$NativeFunction0@UStaticFunctionTag@BSScript@@PEAVTESObjectREFR@@@BSScript@@6B@ @ 0x1425BB878  RVA=0x25BB878
+  ??_7?$NativeFunction3@UStaticFunctionTag@BSScript@@XPEAVTESObjectREFR@@MM@BSScript@@6B@ @ 0x1425BC2F8  RVA=0x25BC2F8
+  ??_7?$NativeFunction5@UStaticFunctionTag@BSScript@@XPEAVTESObjectREFR@@IPEAV3@PEAV3@PEAV3@@BSScript@@6B@ @ 0x1425BC478  RVA=0x25BC478
+  ??_7?$NativeFunction2@UStaticFunctionTag@BSScript@@XPEAVBGSCameraShot@@PEAVTESObjectREFR@@@BSScript@@6B@ @ 0x1425BC538  RVA=0x25BC538
+  ??_7?$NativeFunction2@VObject@BSScript@@_NPEAVTESObjectREFR@@AEBVBSFixedString@@@BSScript@@6B@ @ 0x1425BF548  RVA=0x25BF548
+  ??_7?$NativeFunction2@VObject@BSScript@@XPEAVActor@@PEAVTESObjectREFR@@@BSScript@@6B@ @ 0x1425BF6C8  RVA=0x25BF6C8
+  ??_7?$NativeFunction4@VObject@BSScript@@XPEAVTESObjectREFR@@PEAV3@AEBVBSFixedString@@AEBV4@@BSScript@@6B@ @ 0x1425BF788  RVA=0x25BF788
+  ??_7?$NativeFunction2@VObject@BSScript@@XPEAVTESObjectREFR@@AEBVBSFixedString@@@BSScript@@6B@ @ 0x1425C0148  RVA=0x25C0148
+  ??_7?$NativeFunction2@VObject@BSScript@@XPEAVTESObjectREFR@@PEAV3@@BSScript@@6B@ @ 0x1425C02C8  RVA=0x25C02C8
+  ??_7?$NativeFunction2@VScrollItem@@_NPEAVTESObjectREFR@@PEAV2@@BSScript@@6B@ @ 0x1425C0CC0  RVA=0x25C0CC0
+  ??_7?$NativeLatentFunction2@VScrollItem@@XPEAVTESObjectREFR@@PEAV2@@BSScript@@6B@ @ 0x1425C0D80  RVA=0x25C0D80
+  ??_7?$NativeFunction2@VSpellItem@@_NPEAVTESObjectREFR@@PEAV2@@BSScript@@6B@ @ 0x1425C1080  RVA=0x25C1080
+  ??_7?$NativeLatentFunction2@VSpellItem@@XPEAVTESObjectREFR@@PEAV2@@BSScript@@6B@ @ 0x1425C1140  RVA=0x25C1140
+  ??_7?$NativeFunction3@VSpellItem@@_NPEAVTESObjectREFR@@PEAVActor@@PEAV2@@BSScript@@6B@ @ 0x1425C1200  RVA=0x25C1200
+  ??_7?$NativeLatentFunction3@VSpellItem@@XPEAVTESObjectREFR@@PEAVActor@@PEAV2@@BSScript@@6B@ @ 0x1425C12C0  RVA=0x25C12C0
+  ??_7?$NativeFunction2@VTESEffectShader@@XPEAVTESObjectREFR@@M@BSScript@@6B@ @ 0x1425C1540  RVA=0x25C1540
+  ??_7?$NativeFunction1@VTESEffectShader@@XPEAVTESObjectREFR@@@BSScript@@6B@ @ 0x1425C1600  RVA=0x25C1600
+  ??_7?$NativeFunction2@VTESObjectREFR@@_NPEAV1@_N@BSScript@@6B@ @ 0x1425C7258  RVA=0x25C7258
+  ??_7?$NativeFunction1@VTESObjectREFR@@_NPEAV1@@BSScript@@6B@ @ 0x1425C7318  RVA=0x25C7318
+  ??_7?$NativeFunction3@VTESObjectREFR@@_NVFormOrInventoryObj@GameScript@@I_N@BSScript@@6B@ @ 0x1425C73D8  RVA=0x25C73D8
+  ??_7?$NativeLatentFunction3@VTESObjectREFR@@XVFormOrInventoryObj@GameScript@@I_N@BSScript@@6B@ @ 0x1425C7498  RVA=0x25C7498
+  ??_7?$NativeFunction1@VTESObjectREFR@@X_N@BSScript@@6B@ @ 0x1425C76D8  RVA=0x25C76D8
+  ??_7?$NativeFunction6@VTESObjectREFR@@XAEBVBSFixedString@@MMM_N_N@BSScript@@6B@ @ 0x1425C7798  RVA=0x25C7798
+  ??_7?$NativeFunction4@VTESObjectREFR@@_NMMMM@BSScript@@6B@ @ 0x1425C7858  RVA=0x25C7858
+  ??_7?$NativeLatentFunction4@VTESObjectREFR@@XMMMM@BSScript@@6B@ @ 0x1425C7918  RVA=0x25C7918
+  ??_7?$NativeFunction6@VTESObjectREFR@@XAEBVBSFixedString@@MMMM_N@BSScript@@6B@ @ 0x1425C79D8  RVA=0x25C79D8
+  ??_7?$NativeFunction0@VTESObjectREFR@@_N@BSScript@@6B@ @ 0x1425C7A98  RVA=0x25C7A98
+  ??_7?$NativeFunction2@VTESObjectREFR@@_NPEAVTESForm@@PEAVMod@Attachment@BGSMod@@@BSScript@@6B@ @ 0x1425C7C18  RVA=0x25C7C18
+  ??_7?$NativeFunction1@VTESObjectREFR@@XPEAV1@@BSScript@@6B@ @ 0x1425C7CD8  RVA=0x25C7CD8
+  ??_7?$NativeFunction2@VTESObjectREFR@@X_N_N@BSScript@@6B@ @ 0x1425C7D98  RVA=0x25C7D98
+
+Runtime vtable @ 0x142564838  name=??_7PlayerCharacter@@6B@
+
+==============================================================================
+== Search all .rdata qword entries for sub_1404F2F70
+==============================================================================
+Total hits: 11
+  0x14249CC78  => ??_7TESObjectREFR@@6B@ slot[0x16] (vtable @ 0x14249CBC8 RVA=0x249CBC8)
+  0x14255AC50  => ??_7ChainExplosion@@6B@ slot[0x16] (vtable @ 0x14255ABA0 RVA=0x255ABA0)
+  0x142571E18  => ??_7ArrowProjectile@@6B@ slot[0x16] (vtable @ 0x142571D68 RVA=0x2571D68)
+  0x142572838  => ??_7BarrierProjectile@@6B@ slot[0x16] (vtable @ 0x142572788 RVA=0x2572788)
+  0x1425732A0  => ??_7BeamProjectile@@6B@ slot[0x16] (vtable @ 0x1425731F0 RVA=0x25731F0)
+  0x142573CD8  => ??_7ConeProjectile@@6B@ slot[0x16] (vtable @ 0x142573C28 RVA=0x2573C28)
+  0x1425747A0  => ??_7Explosion@@6B@ slot[0x16] (vtable @ 0x1425746F0 RVA=0x25746F0)
+  0x142575108  => ??_7FlameProjectile@@6B@ slot[0x16] (vtable @ 0x142575058 RVA=0x2575058)
+  0x142575B28  => ??_7GrenadeProjectile@@6B@ slot[0x16] (vtable @ 0x142575A78 RVA=0x2575A78)
+  0x142576F98  => ??_7MissileProjectile@@6B@ slot[0x16] (vtable @ 0x142576EE8 RVA=0x2576EE8)
+  0x142577CA8  => ??_7Projectile@@6B@ slot[0x16] (vtable @ 0x142577BF8 RVA=0x2577BF8)
+
+==============================================================================
+== Runtime REFR vtable @ 0x2564838 slots containing sub_1404F2F70
+==============================================================================
+
+==============================================================================
+== Full decomp sub_1404F2F70 (8000 chars)
+==============================================================================
+__int64 __fastcall sub_1404F2F70(__int64 a1, __int64 a2)
+{
+  __int64 result; // rax
+  __int64 v4; // rax
+  __int64 v5; // rax
+  __int64 v6; // r8
+  __int64 v7; // rax
+  __int64 v8; // rbx
+  __int64 v9; // rcx
+  volatile signed __int32 *v10; // rcx
+  __int64 v11; // rsi
+  __int64 v12; // rdx
+  __int64 v13; // rdx
+  __int64 v14; // rdx
+  __int64 v15; // r8
+  __int64 v16; // rbx
+  float v17; // xmm6_4
+  __int64 v18; // rax
+  float *v19; // rbx
+  __int64 v20; // rax
+  float v21; // xmm8_4
+  float v22; // xmm7_4
+  float v23; // xmm6_4
+  double v24; // xmm0_8
+  __int64 v25; // rax
+  __int64 v26; // rcx
+  __int64 v27; // rax
+  __int64 v28; // rdi
+  __int64 v29; // rax
+  bool v30; // zf
+  __int64 v31; // rbx
+  __int64 v32; // rax
+  __int64 v33; // rdx
+  __int64 v34; // rbx
+  __int64 v35; // rdx
+  __int64 v36; // r8
+  __int64 v37; // rcx
+  float v38; // xmm0_4
+  __int64 v39; // rax
+  __int64 v40; // rdi
+  int v41; // ebx
+  __int64 v42; // rax
+  unsigned int v43; // eax
+  __int64 v44; // rax
+  __int64 v45; // rdi
+  char v46; // si
+  bool v47; // si
+  __int64 v48; // rax
+  __int64 v49; // rbx
+  char v50; // al
+  __int64 v51; // rdx
+  int v52; // eax
+  unsigned int v53; // ecx
+  int v54; // eax
+  __int64 v55; // rcx
+  unsigned __int8 v56; // al
+  __int64 v57; // rdx
+  float v58; // xmm0_4
+  __int64 v59; // rax
+  __int64 v60; // rdi
+  __int64 v61; // rax
+  __int64 v62; // rax
+  __int64 v63; // rax
+  __int64 v64; // rax
+  __int64 v65; // rdi
+  __int64 v66; // rdi
+  __int64 v67; // rcx
+  __int64 v68; // rdx
+  unsigned __int8 v69; // di
+  __int64 v70; // r8
+  __int64 v71; // rdx
+  __int64 v72; // rax
+  char v73; // cl
+  _QWORD *v74; // rcx
+  __int64 v75; // [rsp+28h] [rbp-79h] BYREF
+  volatile signed __int32 *v76; // [rsp+30h] [rbp-71h] BYREF
+  __int128 v77; // [rsp+38h] [rbp-69h] BYREF
+  int v78; // [rsp+48h] [rbp-59h]
+  unsigned int v79; // [rsp+50h] [rbp-51h] BYREF
+  _BYTE v80[4]; // [rsp+58h] [rbp-49h] BYREF
+  _BYTE v81[4]; // [rsp+5Ch] [rbp-45h] BYREF
+  _BYTE v82[8]; // [rsp+60h] [rbp-41h] BYREF
+  __int64 v83; // [rsp+68h] [rbp-39h] BYREF
+  _QWORD v84[2]; // [rsp+70h] [rbp-31h] BYREF
+  int v85; // [rsp+110h] [rbp+6Fh] BYREF
+  char v86; // [rsp+118h] [rbp+77h] BYREF
+  char v87; // [rsp+120h] [rbp+7Fh] BYREF
+
+  result = *(_DWORD *)(a1 + 16) >> 3;
+  if ( (*(_DWORD *)(a1 + 16) & 8) != 0 )
+    return result;
+  v4 = *(_QWORD *)(a1 + 224);
+  if ( v4 && (*(_DWORD *)(v4 + 16) & 0x20) != 0 )
+  {
+    LOBYTE(a2) = 1;
+    (*(void (__fastcall **)(__int64, __int64))(*(_QWORD *)a1 + 320LL))(a1, a2);
+  }
+  if ( !_finite(*(float *)(a1 + 208))
+    || !_finite(*(float *)(a1 + 212))
+    || !_finite(*(float *)(a1 + 216))
+    || _isnan(*(float *)(a1 + 208))
+    || _isnan(*(float *)(a1 + 212))
+    || _isnan(*(float *)(a1 + 216)) )
+  {
+    *(_DWORD *)(a1 + 208) = dword_143437F50;
+    *(_QWORD *)(a1 + 212) = qword_143437F54;
+  }
+  if ( !_finite(*(float *)(a1 + 192))
+    || !_finite(*(float *)(a1 + 196))
+    || !_finite(*(float *)(a1 + 200))
+    || _isnan(*(float *)(a1 + 192))
+    || _isnan(*(float *)(a1 + 196))
+    || _isnan(*(float *)(a1 + 200)) )
+  {
+    *(_DWORD *)(a1 + 192) = dword_143437F50;
+    *(_QWORD *)(a1 + 196) = qword_143437F54;
+  }
+  sub_140278680(*(_QWORD *)(a1 + 256), a1);
+  v5 = sub_1405640E0(a1, &v86);
+  sub_14021E230(&v76, v5);
+  if ( v76 )
+  {
+    sub_140500430(v76, a1, 1u);
+    v7 = sub_1402816B0(*(_QWORD *)(a1 + 256), &v87);
+    sub_14021E230(&v75, v7);
+    v8 = v75;
+    if ( v75 )
+    {
+      if ( (*(_DWORD *)(a1 + 40) & 0x3FF) != 0 )
+        sub_14021E3F0(&v85, a1);
+      else
+        v85 = dword_1430DA180;
+      sub_140281A10(*(_QWORD *)(v8 + 256), &v85);
+      v9 = v8;
+      v8 = 0;
+      v75 = 0;
+      if ( v9 )
+      {
+        v10 = (volatile signed __int32 *)(v9 + 32);
+        if ( (_InterlockedDecrement(v10 + 2) & 0x3FF) == 0 )
+          (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v10 + 8LL))(v10);
+        v8 = v75;
+      }
+    }
+    v11 = *(_QWORD *)(a1 + 256);
+    sub_141659060(v11 + 32);
+    LOBYTE(v12) = -112;
+    sub_1402724E0(v11 + 8, v12);
+    if ( v11 != -32 )
+      sub_1416592C0(v11 + 32);
+    LOBYTE(v13) = 1;
+    (*(void (__fastcall **)(__int64, __int64))(*(_QWORD *)a1 + 320LL))(a1, v13);
+    LOBYTE(v14) = 1;
+    (*(void (__fastcall **)(__int64, __int64))(*(_QWORD *)a1 + 328LL))(a1, v14);
+    LOBYTE(v15) = 1;
+    (*(void (__fastcall **)(__int64, _QWORD, __int64))(*(_QWORD *)a1 + 1088LL))(a1, 0, v15);
+    if ( v8 && (_InterlockedDecrement((volatile signed __int32 *)(v8 + 40)) & 0x3FF) == 0 )
+      (*(void (__fastcall **)(__int64))(*(_QWORD *)(v8 + 32) + 8LL))(v8 + 32);
+  }
+  v16 = *(_QWORD *)(a1 + 224);
+  if ( v16 == qword_1431E2C50 || v16 == qword_1431E2C60 )
+  {
+    v17 = (float)*(unsigned __int16 *)(a1 + 264) * 0.0099999998;
+    if ( v16 && *(_BYTE *)(v16 + 26) == 45 )
+    {
+      v18 = (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)a1 + 1160LL))(a1);
+      v17 = v17 * sub_14065A110(v16, a1, v18);
+    }
+    if ( v17 != 1.0 )
+    {
+      v19 = (float *)sub_140563D10(a1);
+      if ( !v19 )
+      {
+        v20 = sub_1401E0000(12);
+        if ( v20 )
+          v19 = (float *)sub_1402C1060(v20);
+        else
+          v19 = nullptr;
+        sub_140285DD0(*(_QWORD *)(a1 + 256), v19);
+      }
+      v21 = *v19;
+      v22 = v19[1];
+      v23 = v19[2];
+      v24 = sub_1404FF520(a1);
+      *v19 = v21 * *(float *)&v24;
+      v19[1] = v22 * *(float *)&v24;
+      v19[2] = v23 * *(float *)&v24;
+      sub_1404FF590(a1);
+    }
+    v25 = *(_QWORD *)(a1 + 184);
+    if ( (v25 || (v25 = (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)a1 + 1520LL))(a1)) != 0)
+      && (*(_BYTE *)(v25 + 64) & 1) == 0 )
+    {
+      v26 = *(_QWORD *)(v25 + 200);
+      if ( v26 )
+        sub_140575030(v26, a1);
+    }
+  }
+  v27 = *(_QWORD *)(a1 + 224);
+  if ( v27 && *(_BYTE *)(v27 + 26) == 32 && (*(_BYTE *)(v27 + 304) & 2) != 0 && sub_140563170(a1) )
+    sub_140562FC0(a1);
+  LOBYTE(v6) = 1;
+  sub_140254D20(a1, 0, v6);
+  v28 = 0;
+  if ( *(_BYTE *)(a1 + 26) == 65 )
+    v28 = a1;
+  if ( v28 )
+  {
+    if ( !(unsigned __int8)sub_140C5E5E0(v28) )
+      (*(void (__fastcall **)(__int64))(*(_QWORD *)v28 + 2080LL))(v28);
+    if ( v28 != qword_1431E2D50 )
+    {
+      v29 = 0;
+      if ( *(_BYTE *)(a1 + 26) == 65 )
+        v29 = a1;
+      if ( !v29 || *(_DWORD *)(a1 + 20) == 7 )
+        v30 = (*(_DWORD *)(a1 + 16) & 0x800000) == 0;
+      else
+        v30 = (*(_DWORD *)(a1 + 16) & 0x200) == 0;
+      if ( !v30 )
+      {
+        (*(void (__fastcall **)(__int64, __int64))(*(_QWORD *)v28 + 2088LL))(v28, 2);
+        v31 = qword_1430DC0C0;
+        v32 = sub_140C73280(v28, v80);
+        sub_140DA7DC0(v31, v32, 3);
+      }
+    }
+    sub_140CA3A50(v28);
+    sub_140CA3AB0(v28);
+    LOBYTE(v33) = sub_140C8F1F0(v28) && (*(_DWORD *)(sub_140C8F1F0(v28) + 112) & 0x40) != 0;
+    sub_140C92EF0(v28, v33);
+    v34 = sub_140C59100(v28) + 104;
+    if ( (unsigned __int8)sub_1403095C0(v34, 0xFFFFFFFFLL)
+      && !(unsigned __int8)sub_1405636B0(a1)
+      && !(unsigned __int8)sub_140BED9B0(qword_14329D498, *(unsigned int *)(a1 + 20)) )
+    {
+      LOBYTE(v36) = 1;
+      sub_1403097E0(v34, a1, v36);
+    }
+    if ( v28 == qword_1432D2260 )
+    {
+      v37 = qword_1432D2260 + 88;
+      if ( !qword_1432D2260 )
+        v37 = 0;
+      v38 = sub_1406CD980(v37, v35, 0, 0);
+      if ( v38 > 0.0 )
+        dword_142F44A58 = LODWORD(v38);
+    }
+    sub_140E57D30(qword_1430EEED0, v28);
+  }
+  v39 = sub_1403120A0(a1, 0xFFFFFFFFLL);
+  v40 = v39;
+  if ( v39 )
+  {
+    if ( !(unsigned __int8)sub_1402F8E30(v39) )
+    {
+      v41 = *(_DWORD *)(a1 + 20);
+      if ( HIBYTE(v41) != (unsigned __int8)sub_1402F7190(v40) || (unsigned __int8)sub_140564290(a1, 0) )
+      {
+        v42 = sub_140519190(a1, v81);
+        v43 = sub_14049F9A0(v42);
+        v44 = sub_140311850(v43);
+        if ( v44 )
+        {
+          if ( *(_BYTE *)(v44 + 26) == 107 )
+            sub_14049E910(v44, a1);
+        }
+      }
+    }
+  }
+  v45 = *((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex);
+  v46 = *(_BYTE *)(v45 + 2236);
+  *
+...<truncated>
+
+==============================================================================
+== Full decomp sub_140500430 (8000 chars)
+==============================================================================
+void __fastcall sub_140500430(_QWORD *a1, __int64 a2, unsigned int a3)
+{
+  __int64 v5; // rcx
+  int v7; // r12d
+  unsigned int v8; // r12d
+  __int64 v9; // rbp
+  __int64 v10; // r8
+  __int64 v11; // r13
+  bool v12; // si
+  volatile signed __int32 *v13; // rbx
+  __int64 v14; // rax
+  volatile signed __int32 *v15; // rax
+  volatile signed __int32 *v16; // rsi
+  __int64 v17; // r8
+  __int64 v18; // rdx
+  __int64 v19; // rax
+  __int64 v20; // rdx
+  int v21; // [rsp+40h] [rbp-58h] BYREF
+  volatile signed __int32 *v22; // [rsp+48h] [rbp-50h] BYREF
+  __int64 v23; // [rsp+50h] [rbp-48h] BYREF
+  bool v24; // [rsp+A0h] [rbp+8h]
+  int v26; // [rsp+B8h] [rbp+20h] BYREF
+
+  v5 = a1[28];
+  if ( v5 && sub_140313570(v5) && a2 )
+  {
+    if ( a2 == *(_QWORD *)(qword_1432D2260 + 3368) )
+      sub_140D72DE0(qword_1432D2260, 0);
+    v7 = sub_14028D7D0(*(_QWORD *)(a2 + 256));
+    if ( v7 )
+    {
+      sub_14028D800(*(_QWORD *)(a2 + 256), 0);
+      (*(void (__fastcall **)(__int64, __int64))(*(_QWORD *)a2 + 104LL))(a2, 2048);
+    }
+    v8 = a3 * v7;
+    (*(void (__fastcall **)(_QWORD *, __int64))(*a1 + 104LL))(a1, 32);
+    v9 = *(_QWORD *)(a2 + 256);
+    if ( v9 )
+      _InterlockedIncrement((volatile signed __int32 *)v9);
+    else
+      v9 = 0;
+    sub_14028A650(v9);
+    v11 = *(_QWORD *)(a2 + 224);
+    v12 = (*(_DWORD *)(a2 + 16) & 0x400) != 0;
+    v24 = v12;
+    if ( *(_BYTE *)(v11 + 26) != 43 )
+      v11 = 0;
+    v13 = (volatile signed __int32 *)v9;
+    if ( *(_QWORD *)(v9 + 8) )
+    {
+      if ( (*(_DWORD *)(a2 + 16) & 0x400) == 0 )
+      {
+        v14 = sub_1401E0000(40);
+        if ( v14 )
+        {
+          v15 = (volatile signed __int32 *)sub_140272730(v14);
+          v16 = v15;
+          if ( v15 )
+            _InterlockedIncrement(v15);
+        }
+        else
+        {
+          v16 = nullptr;
+        }
+        sub_140275940(v16, v9);
+        if ( (unsigned __int8)sub_14028EB10(v9, 32) )
+        {
+          LOBYTE(v17) = 1;
+          sub_14028E980(v16, 32, v17);
+        }
+        if ( v16 != (volatile signed __int32 *)v9 )
+        {
+          if ( v16 )
+            _InterlockedIncrement(v16);
+          v13 = v16;
+          if ( v9 && _InterlockedExchangeAdd((volatile signed __int32 *)v9, 0xFFFFFFFF) == 1 )
+          {
+            sub_140272770(v9);
+            sub_1422B6BC8(v9, 40);
+          }
+        }
+        sub_140275C40(v13, 0);
+        if ( v16 && _InterlockedExchangeAdd(v16, 0xFFFFFFFF) == 1 )
+        {
+          sub_140272770(v16);
+          sub_1422B6BC8(v16, 40);
+        }
+        v12 = v24;
+      }
+      v18 = *(_QWORD *)(a2 + 224);
+      if ( *(_BYTE *)(v18 + 26) != 44 && (!v11 || (unsigned __int8)(*(_BYTE *)(v11 + 719) - 10) > 1u) )
+      {
+        sub_14027B700(v13);
+        v18 = *(_QWORD *)(a2 + 224);
+      }
+      LOBYTE(v10) = 1;
+      sub_14027EB90(v13, v18, v10);
+    }
+    if ( v12 )
+    {
+      if ( (*(_DWORD *)(a2 + 40) & 0x3FF) != 0 )
+        sub_14021E3F0(&v26, a2);
+      else
+        v26 = dword_1430DA180;
+      sub_14027C060(v13, &v26);
+      if ( (a1[5] & 0x3FF) != 0 )
+        sub_14021E3F0(&v21, a1);
+      else
+        v21 = dword_1430DA180;
+      sub_14027C160(*(_QWORD *)(a2 + 256), &v21);
+      (*(void (__fastcall **)(__int64, __int64))(*(_QWORD *)a2 + 104LL))(a2, 1024);
+    }
+    v22 = v13;
+    if ( v13 )
+      _InterlockedIncrement(v13);
+    sub_140502940(a1, *(_QWORD *)(a2 + 224), (__int64 *)&v22, a3, 0, 0, a2);
+    if ( v8 && v11 )
+    {
+      v23 = 0;
+      v19 = sub_14027ED70(v13);
+      if ( v19 )
+        v20 = *(_QWORD *)(v19 + 104);
+      else
+        v20 = *(_QWORD *)(v11 + 512);
+      sub_140502940(a1, v20, &v23, v8, 0, 0, 0);
+    }
+    if ( v13 )
+    {
+      if ( _InterlockedExchangeAdd(v13, 0xFFFFFFFF) == 1 )
+      {
+        sub_140272770(v13);
+        sub_1422B6BC8(v13, 40);
+      }
+    }
+  }
+}
+
+
+==============================================================================
+== Vtable runtime REFR vtable slots 0x14..0x18 @ 0x142564838  RVA=0x2564838
+==============================================================================
+  slot[0x0] -> sub_140D89150  RVA=0xD89150
+  slot[0x1] -> sub_14024EE50  RVA=0x24EE50
+  slot[0x2] -> nullsub_4767  RVA=0x310BC0
+  slot[0x3] -> sub_140310CB0  RVA=0x310CB0
+  slot[0x4] -> nullsub_4592  RVA=0x24DAB0
+  slot[0x5] -> nullsub_4594  RVA=0x24DAD0
+  slot[0x6] -> sub_140312FD0  RVA=0x312FD0
+  slot[0x7] -> sub_1404F1B80  RVA=0x4F1B80
+  slot[0x8] -> sub_1404F1C20  RVA=0x4F1C20
+  slot[0x9] -> sub_1404F2430  RVA=0x4F2430
+  slot[0xA] -> sub_140262450  RVA=0x262450
+  slot[0xB] -> sub_140262440  RVA=0x262440
+  slot[0xC] -> sub_1404F1F20  RVA=0x4F1F20
+  slot[0xD] -> sub_140311510  RVA=0x311510
+  slot[0xE] -> sub_140311570  RVA=0x311570
+  slot[0xF] -> sub_1403115A0  RVA=0x3115A0
+  slot[0x10] -> sub_1404F56C0  RVA=0x4F56C0
+  slot[0x11] -> sub_140D63490  RVA=0xD63490
+  slot[0x12] -> sub_140D656A0  RVA=0xD656A0
+  slot[0x13] -> sub_140D67C50  RVA=0xD67C50
+  slot[0x14] -> sub_140D67DC0  RVA=0xD67DC0
+  slot[0x15] -> sub_140D682F0  RVA=0xD682F0
+  slot[0x16] -> sub_140C9A400  RVA=0xC9A400
+  slot[0x17] -> sub_1403120D0  RVA=0x3120D0
+  slot[0x18] -> sub_140262150  RVA=0x262150
+
+==== done ====

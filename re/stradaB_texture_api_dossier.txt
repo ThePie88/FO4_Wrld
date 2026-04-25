@@ -1,0 +1,496 @@
+==== Strada B — Texture API actionable dossier ====
+image base = 0x140000000
+Fallout4.exe v1.10.163 (FalloutWorld fork)
+
+TL;DR for the implementor:
+  1. sub_14217A910(pathCstr, 1, &outHandle, 0, 0, 0) returns a refcounted NiSourceTexture*.
+     ANSI path OK; the fn prefixes "textures\\" if missing.
+  2. For BSEffectShaderProperty: our current approach (writing handle at shader[11]+72)
+     is WRONG — that's a color tint, NOT a tex slot. See §3.
+  3. For BSLightingShaderProperty: proper path is BSShaderMaterial @ shader+88 with a
+     BSShaderTextureSet and sub_1421C6870 bind. See §4. RECOMMENDED.
+  4. The raws DO NOT contain an "install DDS into a fresh custom EffectShader" sample.
+     §3 OPEN: confirm effect-shader tex slot via follow-up scan of sub_14221CE70.
+
+
+=========================================
+  §1 — Texture load API
+=========================================
+
+PRIMARY: sub_14217A910   RVA=0x217A910   EA=0x14217A910
+Signature (6 args, __fastcall):
+    NiSourceTexture* __fastcall sub_14217A910(
+        const char* sourcePath,      // rcx: ANSI path, e.g. "Actors\\Character\\BaseHumanMale\\BaseMaleBody_d.DDS"
+                                     //      (missing-textures prefix is added internally)
+                                     //      NOTE: special sentinel values "\bERR...", "\bNOR..." map to
+                                     //      qword_143D709A8 / qword_143D709B0 (error + normal defaults).
+        char blockingFlag,           // dl: 1=queued load via sub_1417A3540, 0=preload via sub_1417A4540
+                                     //     All production callers pass 1.
+        NiSourceTexture** outHandle, // r8: BYREF output. Receives the refcounted handle.
+                                     //     Caller owns one ref; must _InterlockedDecrement
+                                     //     and call vtable[1] (release) when done.
+        char forceSpecialDefault,    // r9b: if 1 on failure, returns qword_143D70978 (special default)
+                                     //      instead of the regular error texture
+        char isEmissiveOrNormalMap,  // stack: controls which default texture is returned on failure
+                                     //        (0→errortex; 1→normalmap default)
+        char tlsSamplerFlag          // stack: passed through; most callers read from
+                                     //        TLS[2496+5440] (per-thread shader config byte)
+    );
+Return value:
+    - Return value (rax) is the current value of *outHandle after the call; can be nullptr
+      if the tex is queued and not yet resident, in which case *outHandle will be populated
+      asynchronously.
+    - Canonical call pattern (from sub_1406BF310 raw3:2019 and Moon sub_1406B6730 raw3:2293):
+          volatile signed __int32* v35 = nullptr;
+          sub_14217A910(pathCstr, 1, &v35, 0, 1, 0);   // now v35 is NiSourceTexture*
+          // install v35 somewhere, add ref, decref the local etc.
+
+Handle type:
+    Opaque NiRefObject* (typedef'd in IDA as volatile signed __int32*). Layout visible in
+    code:
+        offset 0:  vtable ptr
+        offset 8:  refcount (_InterlockedIncrement/Decrement on &obj[2])
+        offset 16+: subclass-specific (NiSourceTexture has tex desc etc.)
+    Release:  if(h){ if(_InterlockedExchangeAdd(h+2, 0xFFFFFFFF)==1) (*(void(**)(...))((*(qword*)h)+8))(h); }
+    (destructor is vtable[1]).
+
+Threading:
+    Callers (raw2 PART I §4157 xrefs) run from: weather ctors (sub_1404AEBE0), Moon init
+    (sub_1406B5950), FogOfWar installer (sub_140372CC0), shader module init (sub_1421792E0),
+    PipBoy-FX init (sub_140A39EC0), menu code (sub_14106E0C0), etc. These are all main-thread
+    Form init/setup contexts. sub_14217A910 itself enters BSTextureDB critical sections
+    (sub_1417A76C0, sub_1417A6E50) and Sleep()s — NOT from render thread. The underlying
+    BSQueuedResourceCollection is thread-safe, but the recommended policy is:
+        → call from main thread only, ideally during scene build / pre-render.
+    The function is safe to call from any "Form init" hook, incl. SetupGame/Actor::Update.
+
+Callees (1st layer):
+    sub_1416C99E0   @ 0x16C99E0  — reads TLS[2792] (some thread-local cookie, passed to load).
+    sub_1417A3540   @ 0x17A3540  — the actual queued-load path; calls into
+                                   qword_1430DD7F8 (ITextureDB singleton, RVA 0x30DD7F8).
+                                   Uses sub_1417A76C0 to hit the resource cache, sub_1417A7160
+                                   to enqueue + block.
+    sub_1417A4540   @ 0x17A4540  — the "preload" (blocking=0) path; just looks up existing.
+
+Global ITextureDB singleton:
+    qword_1430DD7F8   @ 0x1430DD7F8  (RVA 0x30DD7F8)
+    Dereference → ITextureDB* (vtable @ 0x142694458, raw2:2012).
+    sub_14217A910 relies on this global being non-null; it's initialized during
+    BSTextureDB::InitSystem early in engine startup (well before any Update tick).
+
+
+=========================================
+  §2 — Path-string alloc (BSFixedString)
+=========================================
+
+Several engine paths (ShaderTextureSet::SetTexturePath etc.) want a BSFixedString, not a raw
+const char*. sub_14217A910 itself takes a raw char*, so for JUST loading a texture you don't
+need BSFixedString at all. Below is for the cases you do.
+
+BSFixedString layout:
+    offset 0: char** internal (points into a global string pool)
+
+ALLOC (intern + refcount):
+    sub_14167BDC0   RVA=0x167BDC0   (decomp raw2:1920)
+        _QWORD* __fastcall sub_14167BDC0(_QWORD* pFixedString, const char* ansiStr);
+        // *pFixedString = 0 first, then if ansiStr non-null interns via sub_14167D900.
+        // pFixedString must point to a 8-byte local.
+        //
+        // Usage:
+        //    __int64 fs = 0;
+        //    sub_14167BDC0(&fs, "GridTop");   // fs now holds a pooled string ptr
+        //    ... use &fs where BSFixedString* is expected ...
+        //    sub_14167BEF0();  // release
+
+    sub_14167BF00   RVA=0x167BF00   (decomp raw2:1898)
+        BSFixedString::operator=(BSFixedString* self, const char* str)
+        // Used to assign into an existing BSFixedString in a BSShaderTextureSet slot.
+
+    sub_14167BCF0   RVA=0x16BCF0 (inlined initializer)
+        Zeros a BSFixedString. Used by vtable[44]/SetTexturePath when ptr==nullptr.
+
+    sub_14167D900   RVA=0x167D900  (decomp raw3:384)
+        Internal hash-intern primitive. Not called directly; go through sub_14167BDC0.
+
+RELEASE:
+    sub_14167BEF0   RVA=0x167BEF0   (raw2:1931, thunk to sub_14167D080)
+    sub_14167BF60   RVA=0x167BF60   — assign one BSFixedString from another (seen copying
+                                     an interned "GridTop" into the texture-set slot in
+                                     raw3:2801).
+
+Access: sub_14167C070(&fs) returns the raw char* of a BSFixedString.
+
+
+=========================================
+  §3 — Install into BSEffectShaderProperty
+=========================================
+
+CURRENT ASSUMPTION (shader[11] + 72 = tex handle):  *** WRONG ***
+
+The FogOfWar installer in raw.txt:330 writes:
+    *(_QWORD *)(*((_QWORD *)v49 + 11) + 72LL) = qword_1434391A0;   // 8 bytes
+    *(_DWORD *)(*((_QWORD *)v49 + 11) + 80LL) = dword_1434391A8;   // 4 bytes
+where v49 is a freshly-allocated BSEffectShaderProperty (0x88 bytes, see ctor
+sub_14216F9C0 raw.txt:9). The 12 bytes at [11]+72 look like a tex-handle slot,
+but cross-referencing qword_1434391A0:
+    sub_14216F1D0 (raw2:974) parses a color literal "000" → copies qword_1434391A0
+    to the target — that's a COLOR triplet (3 floats of RGB=0,0,0), not a tex handle.
+    sub_1421629D0 (raw2:1002) zero-inits a MaterialPropertyData struct and also writes
+    qword_1434391A0 at offset 12 and 28 — both color fields.
+    All other xrefs (raw.txt:1842) are to color/tint slots of various shader props.
+
+Conclusion: qword_1434391A0 = a pair of floats (0.0, 0.0) + dword_1434391A8 (0.0) used
+as a default color-tint constant, NOT a NiSourceTexture* handle.
+FogOfWarOverlay is procedural (geometry-fed alpha); it never loads a DDS — that ctor
+pathway is NOT a template for "install tex into Effect shader".
+
+WHERE DOES THE ACTUAL TEXTURE LIVE?
+
+  BSEffectShaderProperty layout (from ctor sub_14216F9C0 + sub_142171620 as
+  BSLSP-is-subclass reference point):
+    offset 0:    vtable (&BSEffectShaderProperty::vftable)
+    offset 8..47: base NiObjectNET / NiAVObject / property fields
+    offset 48:   flags (_DWORD a1+48)  — various shader flags  [seen in raw2:2433 and elsewhere]
+    offset 88:   _QWORD — BSShaderMaterial* sub-object (what ctor sub_14216F9C0 allocates
+                                            indirectly and sub_142161B10 stores via a1[11]=result)
+                                            (raw.txt:56 "a1[11] = result")
+    offset 112:  _QWORD (tex ref slot? — v10+72 write pattern, but see note below)
+    offset 120:  _QWORD
+    offset 192-: NiObjectNET name / BSFixedString group
+
+  The sub-object at shader+88 is what sub_142161B10 init creates via
+      sub_1421F9F00(qword_1431E5320, a2, …)
+  and stores at a1[11]. That's a BSShaderMaterialBase-like handle pulled from the
+  effect-shader material cache (singleton qword_1431E5320, raw2 §PART E:2893).
+  It is REFERENCE-COUNTED and INTERNED — you cannot just write a tex ptr into it
+  without going through the cache (or you will corrupt other objects sharing the
+  material).
+
+SO, THE HONEST ANSWER:
+  OPEN: the raws do NOT contain a fully-resolved "effect shader + raw texture" install
+  pattern. All effect-shader install sites in the raws (FogOfWar, Moon glare/decal
+  overlays, etc.) either:
+    (a) use a pre-loaded default color sub-object (no DDS texture), OR
+    (b) install at "v37+128" where v37 = *(obj+40+312) — some NiProperty-derived inner
+        struct; the "+128" slot is written in raw3:2301 AND raw3:2297 looks up existing
+        pointer before replacing (normal NiRefObject-swap pattern).
+    (c) OR they use the BSLSP path (§4), not the BSEffectShader path at all.
+
+  Recommended follow-up IDA scan if we want BSEffectShader-specific install:
+    • Find writes to BSEffectShaderProperty vtable @ 0x2170170 area offsets +16/+24/+32
+      where the value is a NiSourceTexture* (matches qword_143D709A8 or qword_143D709B0
+      default texture globals, raw3:1390/1402).
+    • Re-decompile sub_14216F9C0 (ctor) through to sub_142171620 (BSLSP ctor) and diff.
+    • Search for Effect-shader property flag "0x100000" (raw2:3794 — that's the "use-texture"
+      flag path) and see which offset it reads from. raw2:3794 shows
+          *(_QWORD *)(v10 + 72)     // shader+88 sub-obj → +72 is NiRefObject* SLOT
+      — this IS a texture slot in the material sub-obj, but with a caveat: the material
+      sub-obj is an interned/cached object (see §3 note above).
+
+WORKAROUND THAT WORKS:
+  Use the BSLightingShaderProperty path (§4). It's the canonical "load a DDS into
+  a 3D model" path anyway (actors, statics, world objects all use BSLSP). The
+  EffectShader path is for special alpha/glow overlays and probably not what we want
+  for ghost-player rendering.
+
+
+=========================================
+  §4 — BSLightingShaderProperty install (RECOMMENDED)
+=========================================
+
+  BSLightingShaderProperty ctor:  sub_142171620   RVA=0x2171620
+    Size: 0xE8 bytes (0x2171620 → see allocator call sub_1416579C0((…), 0xE8u, 0, 0)
+                      in raw3:3478, 3441, 3510 etc.).
+    Input: uninitialized __int64 a1 = heap block of 0xE8 bytes.
+    Output: fully zeroed + vtable'd BSLightingShaderProperty.
+    Calls (in order):
+       sub_142160DA0()                           — global init sanity
+       a1[0] = &BSLightingShaderProperty::vftable
+       (zero-inits +112, +120, +144, +152, +160, +168, +176)
+       initial float constants at +128, +132, +136, +140 (UV scale defaults)
+       sub_14167BCF0(a1 + 192)                   — zero-init BSFixedString at +192
+       sub_142161B10((_QWORD*)a1, qword_143E488C8, 0)   — install default material
+       // qword_143E488C8 = BSLSP's global default material (raw3:1434)
+       allocate MaterialPropertyData at +184 (0xC bytes), copy qword_1434391A0 default
+       color triplet into it.
+    Done.
+
+  ALLOCATOR wrapper (use this, not the raw ctor):
+    sub_142171050   RVA=0x2171050  (raw3:3539)
+         returns a NEW BSLightingShaderProperty* or nullptr. Self-contained:
+             result = sub_1416579C0(&unk_143E5E0F0, 0xE8, 0, 0);
+             if (result) result = sub_142171620(result);
+             return result;
+
+  TEXTURE ATTACHMENT (canonical flow):
+    Step A — Create a BSShaderTextureSet and fill its 10 path slots:
+        // BSShaderTextureSet is a NiObject with 10 BSFixedString slots at +16, +24, +32, …, +88.
+        // Allocator (0x60 bytes, see raw2:2295 / 2338 sub_140596EC0 / sub_1421625A0):
+        void* textureSet = sub_1416579C0(&unk_143E5E0F0, 0x60, 0, 0);
+        sub_14216ED10(textureSet);   // equivalent to sub_1421625A0 (raw2:2363-2380);
+                                     // installs BSShaderTextureSet::vftable + zero-inits the 10 FixedStrings
+        // Set path for slot i (via vtable[44] @ 0x2162~7B0 — raw3:915 "SetTexturePath"):
+        //    sub_1421627B0(texSet, i, (unsigned __int8*)"Actors\\Character\\BaseHumanMale\\BaseMaleBody_d.DDS");
+        //    -- i=0 is diffuse _d, i=1 is normal _n, etc.
+        //    Internal: calls sub_14167BF00 to assign into the BSFixedString at +16+8*i.
+    Step B — Wire the BSShaderTextureSet into the BSLSP's material sub-object.
+        // The material sub-obj lives at shader+88 (raw3:§PART H). It has the texture
+        // set reference at +120:
+        //    (see sub_1421711F0 raw2:2384  — "BSShaderMaterial::LoadTextures" type fn)
+        //    It does:  *(_QWORD*)(material+120) = textureSet;  with _Interlocked refcount.
+        // After that, call sub_1421C6870 (raw3:1458) to bind + trigger the actual
+        // NiSourceTexture lookups for every slot in the texture set:
+        //    sub_1421C6870(material, shaderProp + 520, textureSetSubobj);
+        //    ^ this iterates the 10 BSFixedString paths, calls the vtable[43] of the
+        //      BSShaderTextureSet (sub_1421626D0 raw3:871), which internally calls
+        //      sub_14217A910(path, 1, &matTexSlot[i], …) and resolves each DDS to a
+        //      NiSourceTexture handle. This is THE install mechanism.
+
+    Step C — Attach the BSLSP as a Property to the BSTriShape (you already know this pattern).
+
+  THIS IS THE PATH TO USE.  No need to manually call sub_14217A910 yourself — the
+  shader texture-set binding does it for every slot.
+
+  SIMPLIFIED: if we just want ONE custom DDS on a quad, the absolute minimum is
+  still to create a BSShaderTextureSet with slot 0 = "our.dds" and invoke the
+  bind function. Writing into the material's tex-handle array directly is
+  possible (offsets +8, +16, +24, +32, +40, +48, +56, +64, +72, +80 of the material
+  sub-obj in raw3:1516-1541 vtable[+112] = GetTextures) but you MUST
+  _InterlockedIncrement every ref you store and decrement whatever was there.
+
+
+=========================================
+  §5 — Minimum compile-ready code path
+=========================================
+
+// For fw_native/src/native/scene_inject.cpp  (FO4 1.10.163)
+// All RVAs relative to ImageBase = 0x140000000
+
+#include <cstdint>
+#include <atomic>
+
+// ---- global engine pointers we resolve at init (all offsets from ImageBase) ----
+using ImgAddr = std::uintptr_t;
+static ImgAddr  g_img = 0;   // set via GetModuleHandle("Fallout4.exe")
+
+// fn pointer typedefs
+typedef void*(__fastcall* fnAlloc)(void* heap, size_t sz, int, int);      // 0x16579C0
+typedef void*(__fastcall* fnTexLoad)(const char* path, char blocking,
+                                     void** outHandle, char forceSpDef,
+                                     char emissiveOrNormal, char tlsByte);// 0x217A910
+typedef void*(__fastcall* fnBSFSCreate)(void* self, const char* str);     // 0x167BDC0
+typedef void (__fastcall* fnBSFSRelease)();                               // 0x167BEF0
+typedef void*(__fastcall* fnTexSetCtor)(void* self);                      // 0x216ED10
+typedef void*(__fastcall* fnTexSetSetPath)(void* self, int slot, const unsigned char* path); // 0x21627B0
+typedef void*(__fastcall* fnBSLSPNew)();                                  // 0x2171050  (wraps 0x2171620)
+typedef void*(__fastcall* fnBindMatTex)(void* material, void* shaderProp520, void* textureSet); // 0x21C6870
+
+// per-thread sampler flag byte (TLS[2496+5440]) — most callers default to 0
+static inline char tls_sampler_byte() { return 0; }
+
+void* load_texture_by_path(const char* path) {
+    // path format: "Actors\\Character\\BaseHumanMale\\BaseMaleBody_d.DDS"
+    // The fn internally prefixes "textures\\" if missing and searches BSA archives.
+    auto fn = reinterpret_cast<fnTexLoad>(g_img + 0x217A910);
+    void* handle = nullptr;
+    fn(path, /*blocking*/1, &handle, /*forceSpecialDefault*/0,
+       /*emissiveOrNormalMap*/0, /*tlsByte*/tls_sampler_byte());
+    // handle is a NiSourceTexture* with refcount already = 1 (owned by caller).
+    return handle;
+}
+
+void release_texture_handle(void* h) {
+    if (!h) return;
+    auto ref = reinterpret_cast<std::atomic<int32_t>*>(
+                   static_cast<char*>(h) + 8);
+    if (ref->fetch_sub(1) == 1) {
+        auto vtbl = *reinterpret_cast<void***>(h);
+        auto dtor = reinterpret_cast<void(__fastcall*)(void*)>(vtbl[1]);
+        dtor(h);
+    }
+}
+
+// Creates a BSShaderTextureSet with slot 0 = path (diffuse).
+// Returns NiRefObject* (refcount=1, caller owns).
+void* make_texture_set_for_diffuse(const char* diffusePath) {
+    auto alloc        = reinterpret_cast<fnAlloc>(g_img + 0x16579C0);
+    auto texSetCtor   = reinterpret_cast<fnTexSetCtor>(g_img + 0x216ED10);
+    auto texSetSet    = reinterpret_cast<fnTexSetSetPath>(g_img + 0x21627B0);
+
+    // the global heap cookie
+    auto heap = reinterpret_cast<void*>(g_img + 0x3E5E0F0);  // &unk_143E5E0F0
+
+    void* ts = alloc(heap, 0x60, 0, 0);
+    if (!ts) return nullptr;
+    texSetCtor(ts);  // installs vtable + zero-inits 10 BSFixedString slots
+
+    // slot 0 = diffuse (_d.dds)
+    texSetSet(ts, 0, reinterpret_cast<const unsigned char*>(diffusePath));
+    return ts;
+}
+
+// Creates a fresh BSLightingShaderProperty, binds our texture set to it,
+// kicks off the actual texture load via the material-bind path.
+// Returns BSLightingShaderProperty* (refcount=1, caller owns).
+void* make_bslsp_with_texture(const char* diffusePath) {
+    auto bslspNew  = reinterpret_cast<fnBSLSPNew>(g_img + 0x2171050);
+    auto bindTex   = reinterpret_cast<fnBindMatTex>(g_img + 0x21C6870);
+
+    void* shader = bslspNew();
+    if (!shader) return nullptr;
+
+    void* ts = make_texture_set_for_diffuse(diffusePath);
+    if (!ts) return shader;
+
+    // material sub-object lives at shader + 88 (a1[11]).
+    void* material = *reinterpret_cast<void**>(
+                         static_cast<char*>(shader) + 88);
+
+    // sub_1421C6870(a1=material, a2=shader+520, a3=textureSet)
+    //   internally: iterates 10 paths in ts, resolves each via sub_14217A910,
+    //   installs the resulting NiSourceTexture* into the material's tex slots.
+    bindTex(material, static_cast<char*>(shader) + 520, ts);
+
+    // The material now holds a ref to ts; we can drop our ref.
+    release_texture_handle(ts);
+
+    return shader;
+}
+
+// Attach the shader property to a BSTriShape (standard NiObjectNET flow).
+// shape is your BSTriShape*; shader is the BSLSP from above.
+// This uses shape vtable[42] (NiAVObject::SetShaderProperty-ish):
+//   (*(void(__fastcall**)(void*, void*))((*((void**)shape))[42]))(shape, shader);
+// OR: write to shape + offset that normal NiAVObject uses — we already know this from
+// stradaB_M2_shader_raw.txt.
+
+// For the BSEffectShaderProperty approach (NOT RECOMMENDED — see §3 OPEN):
+void install_texture_on_effect_shader(void* /*shader*/, void* /*tex_handle*/) {
+    // OPEN: raws do not conclusively identify the tex-handle slot in
+    //       BSEffectShaderProperty's material sub-obj. Do NOT use this path
+    //       until a follow-up scan resolves:
+    //          * which slot inside shader[11] is NiSourceTexture* (candidates: +8, +16, +24)
+    //          * whether we need to install via sub_1421C6870 analogue or directly
+    //       Suggested IDA scan: decompile sub_14221CE70 (raw2:4184 — primary caller
+    //       site of sub_14217A910 from effect-shader context) and find where v16
+    //       output is stored into the shader prop.
+}
+
+
+=========================================
+  §6 — RVAs quick reference (relative to 0x140000000)
+=========================================
+
+  CORE TEXTURE LOAD
+    sub_14217A910      0x217A910    NiSourceTexture*(const char*, char, NiRef**, char, char, char)
+                                     — THE texture-path load API. Returns refcounted handle.
+    sub_1417A3540      0x17A3540    queued-load worker (called by 14217A910 when blocking=1)
+    sub_1417A4540      0x17A4540    preload/lookup (called by 14217A910 when blocking=0)
+    qword_1430DD7F8    0x30DD7F8    ITextureDB* singleton (must be non-null when you call)
+
+  PATH / FIXEDSTRING HELPERS
+    sub_14167BCF0      0x167BCF0    BSFixedString zero-init
+    sub_14167BDC0      0x167BDC0    BSFixedString::Create (intern from const char*)
+    sub_14167BEF0      0x167BEF0    BSFixedString release (thunk)
+    sub_14167BF00      0x167BF00    BSFixedString::operator=
+    sub_14167BF60      0x167BF60    BSFixedString copy-assign
+    sub_14167C070      0x167C070    BSFixedString → const char* accessor
+    sub_14167D900      0x167D900    string-pool intern (internal, don't call directly)
+
+  TEXTURE SET (BSShaderTextureSet) — 10 path slots
+    vtable             0x24A7030    BSShaderTextureSet vtable
+    allocator size     0x60         (use sub_1416579C0(heap, 0x60, 0, 0))
+    sub_14216ED10      0x216ED10    ctor (installs vtable, zero-inits 10 BSFixedStrings)
+    sub_1421625A0      0x21625A0    alt ctor (equivalent)
+    sub_142162890      0x2162890    alt ctor (equivalent, registered name "BSShaderTextureSet")
+    sub_140596EC0      0x596EC0     build-from-BGSTextureSet (prefixes "Data\\Textures\\")
+    sub_142162690      0x2162690    vtable[40] GetTextureSlot (returns &slot[i] = &self[8*(i+2)])
+    sub_1421626B0      0x21626B0    vtable[41] GetTexturePath (returns const char* of slot i)
+    sub_142162160      0x2162160    vtable[42] — advanced assign (with flag)
+    sub_1421626D0      0x21626D0    vtable[43] LoadTextureIntoSlot (calls sub_14217A910!)
+    sub_1421627B0      0x21627B0    vtable[44] SetTexturePath (assigns a BSFixedString)
+
+  SHADER PROPERTIES
+    BSEffectShaderProperty
+      vtable           (not extracted in these raws — OPEN)
+      size             0x88         (see allocator call in raw.txt:1746)
+      sub_14216F9C0    0x216F9C0    ctor (base, populates sub-obj via sub_142161B10)
+      sub_142161B10    0x2161B10    "init" — creates/refs material sub-obj at shader+88 (a1[11])
+                                     using qword_1431E5320 (effect-shader material cache).
+      sub_1421632A0    0x21632A0    FACTORY that switches on shader type and allocates
+                                     either BSEffectShader, BSLSP, Grass/Water/etc.
+                                     Size depends on type — uses 0xE8 / 0xB0 / 0x88 / 0xC0 / 0x138.
+
+    BSLightingShaderProperty  (RECOMMENDED PATH)
+      size             0xE8
+      sub_142171050    0x2171050    public allocator wrapper (alloc + ctor)
+      sub_142171620    0x2171620    ctor (full init)
+      sub_142170E60    0x2170E60    init-from-template (copies material ref + flags from another BSLSP)
+      sub_142174A70    0x2174A70    same as sub_142171050 (dup?)
+      qword_143E488C8  0x3E488C8    global default-material for BSLSP (passed to sub_142161B10)
+      qword_1431E5320  0x31E5320    effect/lighting shader material cache singleton
+
+  TEXTURE INSTALL (material ↔ texture set binding)
+    sub_1421C6870      0x21C6870    BSShaderMaterial::LoadTextures (CALL THIS to resolve
+                                     all 10 paths → NiSourceTexture handles and install into
+                                     the material's tex slots).
+                                     Signature: (material*, shader+520, textureSet*)
+    sub_1421711F0      0x21711F0    BSLSP::LoadTextures wrapper (called by BSLSP::Load, does
+                                     similar setup but from serialized form data).
+    sub_1421C6690      0x21C6690    BSLSP load-textures complementary fn
+
+  DEFAULT TEXTURE HANDLES (fallbacks)
+    qword_143D70978    0x3D70978    "special default" (returned if a4=1 on sub_14217A910 failure)
+    qword_143D709A8    0x3D709A8    default ERROR texture
+    qword_143D709B0    0x3D709B0    default NORMAL-MAP texture
+
+  COLOR CONSTANT (NOT a texture — CORRECTION!)
+    qword_1434391A0    0x34391A0    default-color triplet (3 floats = RGB 0,0,0)
+    dword_1434391A8    0x34391A8    (4th dword of the same triplet)
+    xref pattern: *(_QWORD*)(obj+X) = qword_1434391A0; *(_DWORD*)(obj+X+8) = dword_1434391A8;
+                  → means: writing 12 bytes of "black" color, NOT installing a tex handle.
+
+  HEAP ALLOCATOR (used by all the above "new" sites)
+    sub_1416579C0      0x16579C0    generic bucket-allocator
+    sub_141657F90      0x1657F90    allocator init-once helper
+    sub_141657E20      0x1657E20    generic dealloc
+    unk_143E5E0F0      0x3E5E0F0    global heap/bucket cookie (first arg to 0x16579C0)
+    dword_143E5F2D0    0x3E5F2D0    allocator-initialized-flag ( 2 = done )
+
+  REGISTRATION (shader type-factory map, seen in startup sub_1421792E0 raw2:965-970)
+    sub_1416DE200      0x16DE200    registers a named factory; used to wire up
+                                     "BSLightingShaderProperty" → sub_142171050,
+                                     "BSEffectShaderProperty" → sub_14216F8E0,
+                                     "BSShaderTextureSet"     → sub_142162890.
+    sub_1416DE030      0x16DE030    factory-map lookup.
+
+
+=========================================
+  §7 — OPEN ITEMS (follow-up scans needed)
+=========================================
+
+  [OPEN-1] BSEffectShaderProperty texture-install slot (CRITICAL for plano B if we stay
+           with effect shader).  Needed decomp:
+             • sub_14221CE70 @ 0x221CE70 — 5 calls to sub_14217A910 (raw2:4184-4188);
+               this is the top candidate for "how an effect shader resolves its texture".
+             • sub_142214590 @ 0x2214590 — sky shader texture install.
+             • sub_1421D2580 @ 0x21D2580 — water shader install.
+             Find the "*(_QWORD*)(shader[11] + N) = loadedTexHandle" pattern where N != 72,80.
+             Expected N: somewhere in the material sub-obj at +8, +16, +24 (per vtable[+112]
+             "GetTextures" in sub_1421C6870 raw3:1516).
+
+  [OPEN-2] The VALUE of qword_143E488C8 (BSLSP default material). Its address is known
+           (0x3E488C8), but we need to dump the 16 bytes there to understand the initial
+           material layout. Does the engine populate it with ALL defaults, or is it
+           nullptr at game-start and lazily filled? → affects whether we need a sub_1421C6870
+           call after sub_142171050 on a JUST-created BSLSP.
+
+  [OPEN-3] We never confirmed the BSLSP vtable offset for "SetShaderProperty" (attach to
+           BSTriShape) — but that's covered in the M2 geometry raws (stradaB_M2_geometry_raw.txt
+           in this directory), not in these texture raws. Look there for the binding step.
+
+  [OPEN-4] Thread-safety: sub_14217A910 calls Sleep() internally. We SHOULD NOT call this
+           from our D3D11 render hook (plano B). Must dispatch to a worker thread or the
+           game's main thread. Present-hook → queue-and-resolve-later pattern required.
+
+==== END dossier ====

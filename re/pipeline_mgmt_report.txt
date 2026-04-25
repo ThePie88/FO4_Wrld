@@ -1,0 +1,126 @@
+==== waiting for auto_wait ====
+[+] String 'CopyMainToMenuBG' @ 0x14255DCB0 (RVA 0x255DCB0)
+    xref from 0x140C37E04 (RVA 0xC37E04) in sub_140C37D20 @ 0x140C37D20 size=0x23E
+    --- CONTAINING FUNC DECOMP ---
+      __int64 __fastcall sub_140C37D20(__int64 a1, char a2)
+      {
+        int *v4; // r14
+        int v5; // ebx
+        char v6; // di
+        __int64 v7; // rdx
+        int v8; // eax
+        int v9; // eax
+        __int64 v10; // rdi
+        __int64 v11; // rax
+        __int64 v12; // rax
+      
+        v4 = (int *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex) + 2496LL);
+        byte_1438C8DA0 = 1;
+        v5 = *v4;
+        *v4 = 24;
+        if ( (unsigned __int8)sub_140C39760(a1) )
+        {
+          sub_140C39760(a1);
+          goto LABEL_24;
+        }
+        sub_1421E8FB0();
+        if ( byte_142F26F50 && (unsigned __int8)sub_141A7FEA0(qword_1430DD830) || byte_1432D1FE9 )
+        {
+          v6 = 1;
+          if ( !byte_1432D252C )
+          {
+            dword_142F27E6C = dword_143D7094C;
+            dword_143D7094C = 0;
+            byte_1432D252C = 1;
+          }
+          if ( byte_1432D1FE8 )
+            goto LABEL_12;
+        }
+        else
+        {
+          v6 = 0;
+          if ( byte_1432D252C )
+          {
+            dword_143D7094C = dword_142F27E6C;
+            byte_1432D252C = 0;
+          }
+        }
+        sub_1421F2180();
+        if ( v6 )
+        {
+          nullsub_621(&byte_143A0F400, "CopyMainToMenuBG");
+          sub_14217E540(1, 15);
+          nullsub_622(&byte_143A0F400);
+        }
+      LABEL_12:
+        byte_1432D1FE8 = v6;
+        if ( !a2 )
+        {
+          sub_1421F1E00();
+          sub_141697E10(5u);
+          v6 = byte_1432D1FE8;
+        }
+        if ( v6 )
+          sub_14217E540(15, 1);
+        if ( (unsigned __int8)sub_140BD4B70(1) )
+        {
+          sub_141817CA0(&byte_143A0F400);
+          sub_141697EB0(0, 1);
+          sub_141817C80(&byte_143A0F400, v7);
+        }
+        sub_141A815B0(qword_1430DD830);
+        sub_1421F26F0();
+        v8 = *(_DWORD *)(a1 + 32);
+        if ( v8 )
+        {
+          v9 = v8 - 1;
+          *(_DWORD *)(a1 + 32) = v9;
+          if ( !v9 )
+          {
+            v10 = qword_1430DD830;
+            v11 = sub_141A879F0();
+            if ( (unsigned __int8)sub_141A7FD40(v10, v11) )
+              sub_140ADBBA0();
+          }
+        }
+        sub_1421F28A0();
+        sub_1421F2E20();
+      LABEL_24:
+        *v4 = v5;
+        byte_1438C8DA0 = 0;
+        if ( !a2 )
+        {
+          if ( dword_143E5F2D0 != 2 )
+            sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+          v12 = sub_141656E30(&unk_143E5E0F0);
+          sub_14165C5A0(v12);
+        }
+        sub_141A81BB0(qword_1430DD830);
+        return sub_141A81DB0(qword_1430DD830);
+      }
+    --- END DECOMP ---
+[+] String 'RenderPipelineManagement' @ 0x142781B58 (RVA 0x2781B58)
+
+============================================================
+  sub_14217E540 — 'blit scene to menu BG' candidate
+  ea=0x14217E540  RVA=0x217E540
+============================================================
+  size=0x34
+---- BEGIN DECOMP ----
+__int64 __fastcall sub_14217E540(unsigned int a1, __int64 a2)
+{
+  __int64 result; // rax
+  __int64 v4; // rcx
+
+  result = *(_QWORD *)(*(_QWORD *)(qword_143E47AF0 + 24) + 576LL);
+  v4 = result - 400;
+  if ( !result )
+    v4 = 0;
+  if ( v4 )
+    return sub_14219E710(v4, a2, a1);
+  return result;
+}
+
+---- END DECOMP ----
+
+==== Report complete ====

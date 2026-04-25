@@ -1,0 +1,59 @@
+[*] imagebase = 0x140000000
+[*] file type = Portable executable for AMD64 (PE)
+
+[*] Searching for D3D11 API names
+
+========================================================================
+Q1 part A: search for ClearDepthStencilView calls (vtable slot 0x1A8)
+========================================================================
+   scanned 1 call/callfi instructions
+
+========================================================================
+Q1A: ClearDepthStencilView call sites & depth clear values
+========================================================================
+  total CSV sites: 0
+  clear-value frequency: {}
+  -- first 20 sites --
+
+========================================================================
+Q1B: CreateDepthStencilState call sites & DepthFunc values
+========================================================================
+  total CreateDepthStencilState sites: 0
+  DepthFunc frequency (global descs only): {}
+  StencilEnable frequency:                 {}
+  -- first 30 sites --
+
+========================================================================
+Q4: CreateTexture2D calls with DEPTH_STENCIL bind flag
+========================================================================
+  total CreateTexture2D sites: 0
+  depth-stencil-bind textures (GLOBAL desc only): 0
+  format frequency: []
+  -- depth textures list --
+  stack-filled CreateTexture2D sites (dynamic desc): 0
+
+========================================================================
+Q3: Search for NiCamera + NiFrustum defaults (near, far)
+========================================================================
+  'NiCamera' strings: ['0x14267dd38']
+   xref from 0x185397  in RVA0x185390
+   xref from 0x16e7716  in RVA0x16e75e0
+   xref from 0x16e7abb  in RVA0x16e7a10
+  (near,far) candidate pairs in .rdata: 2
+   0x1426293f4: near=10.0 far=1000000.0
+   0x142781a00: near=1.0 far=1000.0
+
+========================================================================
+Q2: Scene DSV identification — OMSetRenderTargets sites (top callers)
+========================================================================
+  total OMSetRenderTargets sites: 0
+  top 20 callers of OMSetRenderTargets:
+  MAIN_RENDER sub_140C38F80 OMSet count in its body: 0
+  sub-functions of main render that call OMSetRenderTargets (depth 1):
+
+========================================================================
+Q2 bonus: CreateDepthStencilView call sites
+========================================================================
+  total CreateDepthStencilView sites: 0
+
+[DONE]

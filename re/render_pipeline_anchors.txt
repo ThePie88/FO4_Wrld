@@ -1,0 +1,135 @@
+==== waiting for auto_wait ====
+[+] Image base: 0x140000000
+[*] Enumerating strings (slow)...
+[+] Total strings: 69154
+
+============================================================
+  PART 1: STRING ANCHORS AND THEIR CALLERS
+============================================================
+
+[+] 'Scaleform::Render::HAL::BeginFrame' @ 0x14276A6C8 (RVA 0x276A6C8)
+    CALLER 0x141D20C00 (RVA 0x1D20C00) size=0xED name=sub_141D20C00 (from 0x141D20C36)
+      xref from 0x142723170 (RVA 0x2723170) — NO FUNC
+      xref from 0x142723470 (RVA 0x2723470) — NO FUNC
+      xref from 0x14276A448 (RVA 0x276A448) — NO FUNC
+      xref from 0x142DE8DBC (RVA 0x2DE8DBC) — NO FUNC
+      xref from 0x142DE8DCC (RVA 0x2DE8DCC) — NO FUNC
+      xref from 0x144067FE4 (RVA 0x4067FE4) — NO FUNC
+
+[+] 'Scaleform::Render::HAL::BeginScene' @ 0x14276A718 (RVA 0x276A718)
+    CALLER 0x141D20CF0 (RVA 0x1D20CF0) size=0x110 name=sub_141D20CF0 (from 0x141D20D1F)
+      CALLER 0x141B484D0 (RVA 0x1B484D0) size=0x38 name=sub_141B484D0 (from 0x141B484D9)
+        xref from 0x142723190 (RVA 0x2723190) — NO FUNC
+        xref from 0x144045C28 (RVA 0x4045C28) — NO FUNC
+      CALLER 0x141B48510 (RVA 0x1B48510) size=0x96 name=sub_141B48510 (from 0x141B48519)
+        xref from 0x142723490 (RVA 0x2723490) — NO FUNC
+        xref from 0x144045C34 (RVA 0x4045C34) — NO FUNC
+      xref from 0x14276A468 (RVA 0x276A468) — NO FUNC
+      xref from 0x142DE8E44 (RVA 0x2DE8E44) — NO FUNC
+      xref from 0x142DE8E54 (RVA 0x2DE8E54) — NO FUNC
+      xref from 0x144068008 (RVA 0x4068008) — NO FUNC
+
+[+] 'Scaleform::Render::HAL::beginDisplay' @ 0x14276A6F0 (RVA 0x276A6F0)
+    CALLER 0x141D23EF0 (RVA 0x1D23EF0) size=0x1CF name=sub_141D23EF0 (from 0x141D23F3E)
+      xref from 0x1427231A0 (RVA 0x27231A0) — NO FUNC
+      xref from 0x1427234A0 (RVA 0x27234A0) — NO FUNC
+      xref from 0x14276A478 (RVA 0x276A478) — NO FUNC
+      xref from 0x142DE8EE8 (RVA 0x2DE8EE8) — NO FUNC
+      xref from 0x142DE8F44 (RVA 0x2DE8F44) — NO FUNC
+      xref from 0x14406856C (RVA 0x406856C) — NO FUNC
+
+[+] 'Scaleform::Render::D3D1x::HAL::PushRenderTarget' @ 0x1427237F8 (RVA 0x27237F8)
+    CALLER 0x141B4C6B0 (RVA 0x1B4C6B0) size=0x46D name=sub_141B4C6B0 (from 0x141B4C6FA)
+      xref from 0x142723508 (RVA 0x2723508) — NO FUNC
+      xref from 0x144045F70 (RVA 0x4045F70) — NO FUNC
+
+[+] 'Scaleform::Render::D3D1x::HAL::applyDepthStencilMode' @ 0x142723760 (RVA 0x2723760)
+    CALLER 0x141B4FCA0 (RVA 0x1B4FCA0) size=0x126 name=sub_141B4FCA0 (from 0x141B4FCB6)
+      xref from 0x1427236B8 (RVA 0x27236B8) — NO FUNC
+      xref from 0x144046240 (RVA 0x4046240) — NO FUNC
+
+[+] 'DuringMainRenderJobList' @ 0x142556348 (RVA 0x2556348)
+    CALLER 0x140BD3F80 (RVA 0xBD3F80) size=0x9FB name=sub_140BD3F80 (from 0x140BD40A9)
+      CALLER 0x140C2FAD0 (RVA 0xC2FAD0) size=0x14F1 name=sub_140C2FAD0 (from 0x140C30ABA)
+        CALLER 0x140C2F3F0 (RVA 0xC2F3F0) size=0x2C name=sub_140C2F3F0 (from 0x140C2F402)
+        xref from 0x142C3C558 (RVA 0x2C3C558) — NO FUNC
+        xref from 0x142C3C56C (RVA 0x2C3C56C) — NO FUNC
+        xref from 0x142C3C57C (RVA 0x2C3C57C) — NO FUNC
+        xref from 0x143F538F4 (RVA 0x3F538F4) — NO FUNC
+      xref from 0x143F4CAC0 (RVA 0x3F4CAC0) — NO FUNC
+
+[+] 'PostMainRenderJobList' @ 0x142556400 (RVA 0x2556400)
+    CALLER 0x140BD3F80 (RVA 0xBD3F80) size=0x9FB name=sub_140BD3F80 (from 0x140BD45B1)
+      CALLER 0x140C2FAD0 (RVA 0xC2FAD0) size=0x14F1 name=sub_140C2FAD0 (from 0x140C30ABA)
+        CALLER 0x140C2F3F0 (RVA 0xC2F3F0) size=0x2C name=sub_140C2F3F0 (from 0x140C2F402)
+        xref from 0x142C3C558 (RVA 0x2C3C558) — NO FUNC
+        xref from 0x142C3C56C (RVA 0x2C3C56C) — NO FUNC
+        xref from 0x142C3C57C (RVA 0x2C3C57C) — NO FUNC
+        xref from 0x143F538F4 (RVA 0x3F538F4) — NO FUNC
+      xref from 0x143F4CAC0 (RVA 0x3F4CAC0) — NO FUNC
+
+[+] 'PostAllRenderJobList' @ 0x142556440 (RVA 0x2556440)
+    CALLER 0x140BD3F80 (RVA 0xBD3F80) size=0x9FB name=sub_140BD3F80 (from 0x140BD4823)
+      CALLER 0x140C2FAD0 (RVA 0xC2FAD0) size=0x14F1 name=sub_140C2FAD0 (from 0x140C30ABA)
+        CALLER 0x140C2F3F0 (RVA 0xC2F3F0) size=0x2C name=sub_140C2F3F0 (from 0x140C2F402)
+        xref from 0x142C3C558 (RVA 0x2C3C558) — NO FUNC
+        xref from 0x142C3C56C (RVA 0x2C3C56C) — NO FUNC
+        xref from 0x142C3C57C (RVA 0x2C3C57C) — NO FUNC
+        xref from 0x143F538F4 (RVA 0x3F538F4) — NO FUNC
+      xref from 0x143F4CAC0 (RVA 0x3F4CAC0) — NO FUNC
+
+[+] 'Composite/AlphaRenderJobList' @ 0x1425563E0 (RVA 0x25563E0)
+    CALLER 0x140BD3F80 (RVA 0xBD3F80) size=0x9FB name=sub_140BD3F80 (from 0x140BD455D)
+      CALLER 0x140C2FAD0 (RVA 0xC2FAD0) size=0x14F1 name=sub_140C2FAD0 (from 0x140C30ABA)
+        CALLER 0x140C2F3F0 (RVA 0xC2F3F0) size=0x2C name=sub_140C2F3F0 (from 0x140C2F402)
+        xref from 0x142C3C558 (RVA 0x2C3C558) — NO FUNC
+        xref from 0x142C3C56C (RVA 0x2C3C56C) — NO FUNC
+        xref from 0x142C3C57C (RVA 0x2C3C57C) — NO FUNC
+        xref from 0x143F538F4 (RVA 0x3F538F4) — NO FUNC
+      xref from 0x143F4CAC0 (RVA 0x3F4CAC0) — NO FUNC
+
+[+] 'WaitDFComposite' @ 0x142555D58 (RVA 0x2555D58)
+    xref from 0x142F25FF0 (RVA 0x2F25FF0) — NO FUNC
+
+[+] 'DFComposite' @ 0x14290CA60 (RVA 0x290CA60)
+    CALLER 0x14220EAF0 (RVA 0x220EAF0) size=0x158 name=sub_14220EAF0 (from 0x14220EAF9)
+      CALLER 0x1421792E0 (RVA 0x21792E0) size=0xF37 name=sub_1421792E0 (from 0x142179859)
+        CALLER 0x140C322C0 (RVA 0xC322C0) size=0xA5C name=sub_140C322C0 (from 0x140C323EF)
+        CALLER 0x14217A220 (RVA 0x217A220) size=0xAD name=sub_14217A220 (from 0x14217A231)
+        xref from 0x1440A9900 (RVA 0x40A9900) — NO FUNC
+      xref from 0x1440B0C8C (RVA 0x40B0C8C) — NO FUNC
+
+[+] 'BSDFComposite' @ 0x14290CA70 (RVA 0x290CA70)
+    CALLER 0x142210C10 (RVA 0x2210C10) size=0x115 name=sub_142210C10 (from 0x142210C27)
+      xref from 0x14290CA30 (RVA 0x290CA30) — NO FUNC
+      xref from 0x1440B0DA0 (RVA 0x40B0DA0) — NO FUNC
+
+[+] 'BSShaderAccumulator' @ 0x14290A690 (RVA 0x290A690)
+    CALLER 0x1401DB230 (RVA 0x1DB230) size=0x1A name=sub_1401DB230 (from 0x1401DB237)
+      xref from 0x14245D850 (RVA 0x245D850) — NO FUNC
+[-] MISSING: 'BSBatchRenderer'
+
+[+] 'ShadowSceneNode' @ 0x142908EE8 (RVA 0x2908EE8)
+    CALLER 0x1401DAC50 (RVA 0x1DAC50) size=0x1A name=sub_1401DAC50 (from 0x1401DAC57)
+      xref from 0x14245D7C8 (RVA 0x245D7C8) — NO FUNC
+[-] MISSING: 'BSScaleformManager'
+
+[+] 'Scaleform allocator' @ 0x142720558 (RVA 0x2720558)
+    xref from 0x142F501F0 (RVA 0x2F501F0) — NO FUNC
+
+[+] 'TtpEndFrame' @ 0x142639570 (RVA 0x2639570)
+    CALLER 0x1414CD3A0 (RVA 0x14CD3A0) size=0x80 name=sub_1414CD3A0 (from 0x1414CD3C6)
+      xref from 0x142639280 (RVA 0x2639280) — NO FUNC
+      xref from 0x143FE4068 (RVA 0x3FE4068) — NO FUNC
+
+[+] 'EndFrameRateCapture' @ 0x1425D1390 (RVA 0x25D1390)
+    CALLER 0x14118C8F0 (RVA 0x118C8F0) size=0x155B name=sub_14118C8F0 (from 0x14118D7A3)
+      CALLER 0x14113E770 (RVA 0x113E770) size=0x46B name=sub_14113E770 (from 0x14113EA39)
+        CALLER 0x1410E8330 (RVA 0x10E8330) size=0xCF8 name=sub_1410E8330 (from 0x1410E8BE5)
+        xref from 0x143FB8B14 (RVA 0x3FB8B14) — NO FUNC
+      xref from 0x143FBD5A8 (RVA 0x3FBD5A8) — NO FUNC
+
+============================================================
+  PART 2: D3D11 CONTEXT VTABLE SLOT HEURISTIC
+============================================================
+[+] Scanning .text 0x140001000..0x14242D000 for vtable slot calls (heuristic)

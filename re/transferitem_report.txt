@@ -1,0 +1,767 @@
+[+] Image base: 0x140000000
+
+==============================================================================
+== sub_140A548B0 — Scaleform callback router (references aTransferitem)   at 0x140A548B0 RVA=0xA548B0
+==============================================================================
+-- callees (first-level) --
+    call -> 0x141B1A340 RVA=0x1B1A340  sub_141B1A340
+-- strings referenced --
+    str @ 0x1424C1FF0: 'PlaySound'
+    str @ 0x141B1A340: '@SH'
+    str @ 0x14252D470: 'transferItem'
+    str @ 0x141B1A340: '@SH'
+    str @ 0x14252D480: 'onIntroAnimComplete'
+    str @ 0x141B1A340: '@SH'
+    str @ 0x14252D494: 'show3D'
+    str @ 0x141B1A340: '@SH'
+    str @ 0x14252D4A0: 'exitMenu'
+    str @ 0x141B1A340: '@SH'
+    str @ 0x14252D4B0: 'takeAllItems'
+    str @ 0x141B1A340: '@SH'
+    str @ 0x14252D4C0: 'getItemValue'
+    str @ 0x141B1A340: '@SH'
+    str @ 0x14252D4D0: 'updateItemPickpocketInfo'
+    str @ 0x141B1A340: '@SH'
+    str @ 0x14252D4F0: 'getSelectedItemEquippable'
+    str @ 0x141B1A340: '@SH'
+    str @ 0x14252D510: 'getSelectedItemEquipped'
+    str @ 0x141B1A340: '@SH'
+    str @ 0x14252D528: 'toggleSelectedItemEquipped'
+    str @ 0x141B1A340: '@SH'
+    str @ 0x14252D548: 'confirmInvest'
+    str @ 0x141B1A340: '@SH'
+    str @ 0x14252D558: 'sendXButton'
+    str @ 0x141B1A340: '@SH'
+    str @ 0x14252D568: 'sendYButton'
+    str @ 0x141B1A340: '@SH'
+    str @ 0x14252D578: 'updateSortButtonLabel'
+    str @ 0x141B1A340: '@SH'
+    str @ 0x14252D590: 'sortItems'
+    str @ 0x141B1A340: '@SH'
+    str @ 0x14252D5A0: 'inspectItem'
+    str @ 0x141B1A340: '@SH'
+-- Hex-Rays --
+char __fastcall sub_140A548B0(__int64 a1)
+{
+  sub_141B1A340(a1, (__int64)"PlaySound", 0);
+  sub_141B1A340(a1, (__int64)"transferItem", 1);
+  sub_141B1A340(a1, (__int64)"onIntroAnimComplete", 2);
+  sub_141B1A340(a1, (__int64)"show3D", 3);
+  sub_141B1A340(a1, (__int64)"exitMenu", 4);
+  sub_141B1A340(a1, (__int64)"takeAllItems", 5);
+  sub_141B1A340(a1, (__int64)"getItemValue", 6);
+  sub_141B1A340(a1, (__int64)"updateItemPickpocketInfo", 7);
+  sub_141B1A340(a1, (__int64)"getSelectedItemEquippable", 8);
+  sub_141B1A340(a1, (__int64)"getSelectedItemEquipped", 9);
+  sub_141B1A340(a1, (__int64)"toggleSelectedItemEquipped", 10);
+  sub_141B1A340(a1, (__int64)"confirmInvest", 11);
+  sub_141B1A340(a1, (__int64)"sendXButton", 12);
+  sub_141B1A340(a1, (__int64)"sendYButton", 13);
+  sub_141B1A340(a1, (__int64)"updateSortButtonLabel", 15);
+  sub_141B1A340(a1, (__int64)"sortItems", 16);
+  return sub_141B1A340(a1, (__int64)"inspectItem", 17);
+}
+
+
+==============================================================================
+== ContainerMenuBase::vt[0] sub_140A57970   at 0x140A57970 RVA=0xA57970
+==============================================================================
+-- callees (first-level) --
+    call -> 0x140A53F30 RVA=0xA53F30  sub_140A53F30
+    call -> 0x141B21980 RVA=0x1B21980  sub_141B21980
+-- strings referenced --
+    str @ 0x140A57988: 't1@'
+-- Hex-Rays --
+__int64 __fastcall sub_140A57970(__int64 a1, char a2)
+{
+  sub_140A53F30();
+  if ( (a2 & 1) != 0 )
+  {
+    if ( (a2 & 4) == 0 )
+    {
+      (*(void (__fastcall **)(_QWORD, __int64))(**(_QWORD **)qword_143DA7480 + 96LL))(*(_QWORD *)qword_143DA7480, a1);
+      return a1;
+    }
+    sub_141B21980(a1, 1072);
+  }
+  return a1;
+}
+
+
+==============================================================================
+== ContainerMenuBase::vt[1] sub_140A54210   at 0x140A54210 RVA=0xA54210
+==============================================================================
+-- callees (first-level) --
+    call -> 0x141086080 RVA=0x1086080  sub_141086080
+    call -> 0x141AE6920 RVA=0x1AE6920  sub_141AE6920
+    call -> 0x141AD65D0 RVA=0x1AD65D0  sub_141AD65D0
+    call -> 0x140A531A0 RVA=0xA531A0  sub_140A531A0
+    call -> 0x140A56740 RVA=0xA56740  sub_140A56740
+    call -> 0x14105D960 RVA=0x105D960  sub_14105D960
+    call -> 0x14105C1F0 RVA=0x105C1F0  sub_14105C1F0
+    call -> 0x140A57A30 RVA=0xA57A30  sub_140A57A30
+    call -> 0x141ACFCC0 RVA=0x1ACFCC0  sub_141ACFCC0
+    call -> 0x140A558A0 RVA=0xA558A0  sub_140A558A0
+    call -> 0x1422B7498 RVA=0x22B7498  sub_1422B7498
+    call -> 0x14167BDC0 RVA=0x167BDC0  sub_14167BDC0
+    call -> 0x1422B70BC RVA=0x22B70BC  sub_1422B70BC
+    call -> 0x1422B7438 RVA=0x22B7438  sub_1422B7438
+-- strings referenced --
+    str @ 0x140A54212: 'VWH'
+    str @ 0x140A5421B: 'HcB0H'
+    str @ 0x14252D5B0: 'playFocusSounds'
+    str @ 0x141AE6920: '@USVWATAUAVAWH'
+    str @ 0x140A531A0: '@SH'
+    str @ 0x14252D5B0: 'playFocusSounds'
+    str @ 0x141AE6920: '@USVWATAUAVAWH'
+    str @ 0x14252D638: 'playerHasJunk'
+    str @ 0x14105C1F0: '@SUAVH'
+    str @ 0x140A57A30: '@SH'
+    str @ 0x140A545C7: 'tpE'
+    str @ 0x140A54603: 'w#Ic'
+    str @ 0x14252C858: 'InvalidateLists'
+    str @ 0x14252D5C0: 'sortButtonLabel'
+    str @ 0x141AE6920: '@USVWATAUAVAWH'
+    str @ 0x140A5472C: '_^]'
+    str @ 0x1422B7498: '@SH'
+    str @ 0x14252A508: 'YButton'
+    str @ 0x14167BDC0: '@SH'
+    str @ 0x1422B7438: '@SH'
+    str @ 0x1422B7498: '@SH'
+    str @ 0x14291B914: 'Cancel'
+    str @ 0x14167BDC0: '@SH'
+    str @ 0x1422B7438: '@SH'
+-- Hex-Rays --
+__int64 __fastcall sub_140A54210(__int64 *a1, _QWORD *a2)
+{
+  __int64 v2; // r15
+  __int64 result; // rax
+  __int64 v6; // rdx
+  int v7; // ecx
+  _QWORD *v8; // rax
+  int v9; // eax
+  __int64 v10; // rdx
+  __int64 v11; // rcx
+  __int64 v12; // rcx
+  int v13; // eax
+  __int64 v14; // rdx
+  __int64 v15; // rcx
+  bool v16; // zf
+  const char *v17; // r8
+  __int64 v18; // rax
+  __int64 v19; // rbx
+  __int64 v20; // rbx
+  __int64 v21; // rax
+  __int64 v22; // rdi
+  int v23; // r14d
+  __int64 v24; // rdi
+  char v25; // r14
+  __int64 v26; // rax
+  __int64 v27; // r10
+  unsigned __int8 v28; // r14
+  char v29; // cl
+  __int64 v30; // rdx
+  __int64 v31; // r10
+  unsigned int v32; // r8d
+  int v33; // r9d
+  int v34; // r11d
+  __int64 v35; // rsi
+  int v36; // edx
+  __int64 v37; // rcx
+  __int64 v38; // rax
+  __int64 v39; // r10
+  __int64 v40; // rcx
+  __int64 v41; // r10
+  __int64 v42; // rcx
+  __int64 v43; // rdx
+  __int64 v44; // rcx
+  int v45; // [rsp+20h] [rbp-50h]
+  int v46; // [rsp+20h] [rbp-50h]
+  __int64 v47; // [rsp+40h] [rbp-30h] BYREF
+  unsigned int v48; // [rsp+48h] [rbp-28h]
+  char *v49; // [rsp+50h] [rbp-20h]
+  __int64 v50; // [rsp+60h] [rbp-10h]
+  int v51; // [rsp+98h] [rbp+28h] BYREF
+  int *v52; // [rsp+A0h] [rbp+30h] BYREF
+
+  result = *((int *)a2 + 12);
+  v50 = v2;
+  switch ( result )
+  {
+    case 0LL:
+      if ( *((_DWORD *)a2 + 10) == 1 )
+      {
+        v6 = a2[4];
+        v7 = *(_DWORD *)(v6 + 8);
+        result = (unsigned __int8)v7 & 0x8F;
+        if ( (*(_BYTE *)(v6 + 8) & 0x8F) == 6 )
+        {
+          v8 = *(_QWORD **)(v6 + 16);
+          if ( (v7 & 0x40) != 0 )
+            v8 = (_QWORD *)*v8;
+          return sub_141086080(v8);
+        }
+      }
+      return result;
+    case 1LL:
+      v9 = *((_DWORD *)a1 + 10);
+      v10 = a1[6];
+      v11 = a1[4];
+      v48 = 2;
+      v47 = 0;
+      LOBYTE(v49) = 0;
+      sub_141AE6920(v11, v10, "playFocusSounds", &v47, (v9 & 0x8F) == 10);
+      if ( (v48 & 0x40) != 0 )
+        sub_141AD65D0(v47, &v47, v49);
+      v12 = a2[4];
+      v13 = *(_DWORD *)(v12 + 40) & 0x8F;
+      if ( v13 == 3 || v13 == 4 )
+        (*(void (__fastcall **)(__int64 *, _QWORD, _QWORD, _QWORD))(*a1 + 168))(
+          a1,
+          *(unsigned int *)(v12 + 16),
+          *(unsigned int *)(v12 + 48),
+          *(unsigned __int8 *)(v12 + 80));
+      v51 = *((_DWORD *)a1 + 266);
+      sub_140A531A0(a1 + 131, &v51);
+      v14 = a1[6];
+      v15 = a1[4];
+      v16 = (a1[5] & 0x8F) == 10;
+      v47 = 0;
+      v48 = 2;
+      LOBYTE(v49) = 1;
+      LOBYTE(v46) = v16;
+      sub_141AE6920(v15, v14, "playFocusSounds", &v47, v46);
+      if ( (v48 & 0x40) != 0 )
+        sub_141AD65D0(v47, &v47, v49);
+      v52 = &v51;
+      LOBYTE(v51) = 0;
+      sub_140A56740(qword_1432D2260, &v52, 0);
+      v17 = "playerHasJunk";
+      LOBYTE(v49) = v51;
+      v48 = 2;
+      goto LABEL_56;
+    case 2LL:
+      *((_BYTE *)a1 + 1069) = 0;
+      return result;
+    case 3LL:
+      v18 = a2[4];
+      if ( *(_DWORD *)(v18 + 16) == -1 )
+        v19 = 0;
+      else
+        v19 = (*(__int64 (__fastcall **)(__int64 *, _QWORD))(*a1 + 216))(a1, *(unsigned __int8 *)(v18 + 48));
+      result = sub_14105D960(a1 + 84);
+      if ( v19 )
+        result = sub_14105C1F0(a1 + 84, v19);
+      dword_14326F398 = 0;
+      return result;
+    case 4LL:
+      if ( dword_14326F2A8 > *(_DWORD *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex)
+                                       + 5488LL) )
+      {
+        sub_1422B7498(&dword_14326F2A8);
+        if ( dword_14326F2A8 == -1 )
+        {
+          sub_14167BDC0(&qword_14326F2A0, "Cancel");
+          sub_1422B70BC(sub_1423ECFC0);
+          sub_1422B7438(&dword_14326F2A8);
+        }
+      }
+      return (*(__int64 (__fastcall **)(__int64 *, __int64 *))(*a1 + 120))(a1, &qword_14326F2A0);
+    case 5LL:
+    case 12LL:
+      v20 = *a1;
+      v21 = sub_140A57A30();
+      return (*(__int64 (__fastcall **)(__int64 *, __int64))(v20 + 120))(a1, v21);
+    case 6LL:
+      result = (*(__int64 (__fastcall **)(__int64 *, _QWORD, _QWORD))(*a1 + 208))(
+                 a1,
+                 *(unsigned int *)(a2[4] + 16LL),
+                 *(unsigned __int8 *)(a2[4] + 48LL));
+      v22 = *a2;
+      v23 = result;
+      if ( (*(_DWORD *)(*a2 + 8LL) & 0x40) != 0 )
+      {
+        result = sub_141AD65D0(*(_QWORD *)v22, *a2, *(_QWORD *)(v22 + 16));
+        *(_QWORD *)v22 = 0;
+      }
+      *(_DWORD *)(v22 + 8) = 4;
+      *(_DWORD *)(v22 + 16) = v23;
+      return result;
+    case 7LL:
+      return (*(__int64 (__fastcall **)(__int64 *, _QWORD, _QWORD, _QWORD))(*a1 + 248))(
+               a1,
+               *(unsigned int *)(a2[4] + 16LL),
+               *(unsigned __int8 *)(a2[4] + 48LL),
+               *(unsigned int *)(a2[4] + 80LL));
+    case 8LL:
+      result = (*(__int64 (__fastcall **)(__int64 *, _QWORD, _QWORD))(*a1 + 184))(
+                 a1,
+                 *(unsigned int *)(a2[4] + 16LL),
+                 *(unsigned __int8 *)(a2[4] + 48LL));
+      goto LABEL_33;
+    case 9LL:
+      result = (*(__int64 (__fastcall **)(__int64 *, _QWORD, _QWORD))(*a1 + 192))(
+                 a1,
+                 *(unsigned int *)(a2[4] + 16LL),
+                 *(unsigned __int8 *)(a2[4] + 48LL));
+LABEL_33:
+      v24 = *a2;
+      v25 = result;
+      if ( (*(_DWORD *)(*a2 + 8LL) & 0x40) != 0 )
+      {
+        result = sub_141AD65D0(*(_QWORD *)v24, *a2, *(_QWORD *)(v24 + 16));
+        *(_QWORD *)v24 = 0;
+      }
+      *(_DWORD *)(v24 + 8) = 2;
+      *(_BYTE *)(v24 + 16) = v25;
+      break;
+    case 10LL:
+      result = (*(__int64 (__fastcall **)(__int64 *, _QWORD, _QWORD))(*a1 + 200))(
+                 a1,
+                 *(unsigned int *)(a2[4] + 16LL),
+                 *(unsigned __int8 *)(a2[4] + 48LL));
+      break;
+    case 11LL:
+      result = (*(__int64 (__fastcall **)(__int64 *))(*a1 + 160))(a1);
+      break;
+    case 13LL:
+      if ( dword_14326F2F8 > *(_DWORD *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex)
+                                       + 5488LL) )
+      {
+        sub_1422B7498(&dword_14326F2F8);
+        if ( dword_14326F2F8 == -1 )
+        {
+          sub_14167BDC0(&qword_14326F2F0, "YButton");
+          sub_1422B70BC(sub_1423ED010);
+          sub_1422B7438(&dword_14326F2F8);
+        }
+      }
+      result = (*(__int64 (__fastcall **)(__int64 *, __int64 *))(*a1 + 120))(a1, &qword_14326F2F0);
+      break;
+    case 15LL:
+      v38 = a2[4];
+      v39 = 240;
+      v40 = *(unsigned int *)(v38 + 48);
+      if ( !*(_BYTE *)(v38 + 16) )
+        v39 = 300;
+      v17 = "sortButtonLabel";
+      v41 = (__int64)a1 + v39;
+      *(_DWORD *)(v41 + 56) = v40;
+      v42 = *(int *)(v41 + 4 * v40);
+      v48 = 6;
+      v49 = off_142F214D0[v42];
+LABEL_56:
+      v43 = a1[6];
+      v44 = a1[4];
+      v16 = (a1[5] & 0x8F) == 10;
+      v47 = 0;
+      LOBYTE(v45) = v16;
+      sub_141AE6920(v44, v43, v17, &v47, v45);
+      result = v48 >> 6;
+      if ( (v48 & 0x40) != 0 )
+        result = sub_141AD65D0(v47, &v47, v49);
+      break;
+    case 16LL:
+      v26 = a2[4];
+      v27 = 240;
+      v28 = *(_BYTE *)(v26 + 16);
+      v29 = *(_BYTE *)(v26 + 80);
+      v30 = *(unsigned int *)(v26 + 48);
+      if ( !v28 )
+        v27 = 300;
+      v31 = (__int64)a1 + v27;
+      *(_DWORD *)(v31 + 56) = v30;
+      if ( v29 )
+      {
+        v32 = *(_DWORD *)(v31 + 4 * v30);
+        v33 = 7;
+        v34 = dword_142F21510[v30];
+        v35 = (unsigned int)v30;
+        do
+        {
+          v36 = 0;
+          v32 = (v32 + 1) % 7;
+          switch ( v32 )
+          {
+            case 0u:
+            case 5u:
+            case 6u:
+              v36 = -1;
+              break;
+            case 1u:
+              v36 = 6;
+              break;
+            case 2u:
+            case 4u:
+              v36 = 2;
+              break;
+            default:
+              break;
+          }
+          if ( (v34 & v36) != 0 )
+            v33 = v32;
+        }
+        while ( v33 == 7 );
+        *(_DWORD *)(v31 + 4 * v35) = v33;
+      }
+      result = (*(__int64 (__fastcall **)(__int64 *, _QWORD))(*a1 + 256))(a1, v28);
+      v37 = a1[4];
+      if ( v37 )
+        result = sub_141ACFCC0(v37, a1[6], 0, (unsigned int)"InvalidateLists", 0, 0);
+      break;
+    case 17LL:
+      result = sub_140A558A0();
+      break;
+    default:
+      return result;
+  }
+  return result;
+}
+
+
+==============================================================================
+== ContainerMenuBase::vt[4] sub_140A54850   at 0x140A54850 RVA=0xA54850
+==============================================================================
+-- callees (first-level) --
+    call -> 0x141B18EB0 RVA=0x1B18EB0  sub_141B18EB0
+    call -> 0x14105DA40 RVA=0x105DA40  sub_14105DA40
+-- strings referenced --
+    str @ 0x141B18EB0: '@SH'
+-- Hex-Rays --
+__int64 __fastcall sub_140A54850(__int64 a1, float a2)
+{
+  float v4; // [rsp+40h] [rbp+8h] BYREF
+  int v5; // [rsp+44h] [rbp+Ch]
+
+  sub_141B18EB0();
+  dword_14326F39C = LODWORD(a2);
+  v4 = *(float *)&dword_142F22908 * a2;
+  v5 = 0;
+  return sub_14105DA40(a1 + 672, &v4);
+}
+
+
+==============================================================================
+== ContainerMenuBase::vt[5] sub_140A54830   at 0x140A54830 RVA=0xA54830
+==============================================================================
+-- callees (first-level) --
+-- strings referenced --
+-- Hex-Rays --
+__int64 __fastcall sub_140A54830(__int64 a1)
+{
+  return sub_14105BF90(a1 + 672);
+}
+
+
+==============================================================================
+== ContainerMenuBase::vt[15] sub_140A52700   at 0x140A52700 RVA=0xA52700
+==============================================================================
+-- callees (first-level) --
+-- strings referenced --
+-- Hex-Rays --
+char sub_140A52700()
+{
+  return 0;
+}
+
+
+==============================================================================
+== ContainerMenuBase::vt[34] sub_140A57908   at 0x140A57908 RVA=0xA57908
+==============================================================================
+-- callees (first-level) --
+-- strings referenced --
+-- Hex-Rays --
+__int64 __fastcall sub_140A57908(__int64 a1, char a2)
+{
+  return sub_140A57970(a1 - 16, a2);
+}
+
+
+==============================================================================
+== ContainerMenuBase::vt[35] sub_140A54A30   at 0x140A54A30 RVA=0xA54A30
+==============================================================================
+-- callees (first-level) --
+    call -> 0x141B196E0 RVA=0x1B196E0  sub_141B196E0
+    call -> 0x1422B7498 RVA=0x22B7498  sub_1422B7498
+    call -> 0x14167BDC0 RVA=0x167BDC0  sub_14167BDC0
+    call -> 0x1422B70BC RVA=0x22B70BC  sub_1422B70BC
+    call -> 0x1422B7438 RVA=0x22B7438  sub_1422B7438
+-- strings referenced --
+    str @ 0x140A54A50: 'uVeH'
+    str @ 0x1422B7498: '@SH'
+    str @ 0x14252D0E8: 'RightStick'
+    str @ 0x14167BDC0: '@SH'
+    str @ 0x1422B7438: '@SH'
+-- Hex-Rays --
+bool __fastcall sub_140A54A30(__int64 a1, __int64 a2)
+{
+  if ( *(_BYTE *)(a1 + 1053) || *(_BYTE *)(a1 + 1052) )
+    return 0;
+  if ( dword_14326F3C8 > *(_DWORD *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex)
+                                   + 5488LL) )
+  {
+    sub_1422B7498(&dword_14326F3C8);
+    if ( dword_14326F3C8 == -1 )
+    {
+      sub_14167BDC0(&qword_14326F3C0, "RightStick");
+      sub_1422B70BC(sub_1423ED0A0);
+      sub_1422B7438(&dword_14326F3C8);
+    }
+  }
+  return *(_QWORD *)(*(__int64 (__fastcall **)(__int64))(*(_QWORD *)a2 + 16LL))(a2) == qword_14326F3C0
+      || (unsigned __int8)sub_141B196E0(a1, a2);
+}
+
+
+==============================================================================
+== ContainerMenuBase::vt[38] sub_140A54B00   at 0x140A54B00 RVA=0xA54B00
+==============================================================================
+-- callees (first-level) --
+    call -> 0x14105CDA0 RVA=0x105CDA0  sub_14105CDA0
+    call -> 0x14105CD20 RVA=0x105CD20  sub_14105CD20
+-- strings referenced --
+-- Hex-Rays --
+void __fastcall sub_140A54B00(__int64 a1, __int64 a2)
+{
+  __int64 v3; // rdi
+  float v4; // xmm1_4
+  float v5; // xmm0_4
+
+  if ( *(_DWORD *)(a2 + 48) == 12 )
+  {
+    v3 = a1 + 656;
+    if ( (unsigned __int8)sub_14105CDA0(a1 + 656) )
+    {
+      if ( fabs(*(float *)(a2 + 60)) > *(float *)&dword_142F21688 )
+      {
+        v4 = *(float *)&dword_142F21658;
+        v5 = (float)(*(float *)&dword_14326F39C * *(float *)(a2 + 60)) * *(float *)&dword_142F21640;
+        if ( (float)(*(float *)&dword_14326F398 - v5) <= *(float *)&dword_142F21658 )
+          v4 = fmaxf(*(float *)&dword_142F21670, *(float *)&dword_14326F398 - v5);
+        if ( fabs(v4 - *(float *)&dword_14326F398) > 0.0 )
+        {
+          dword_14326F398 = LODWORD(v4);
+          sub_14105CD20(v3);
+        }
+        *(_DWORD *)(a2 + 36) = 2;
+      }
+    }
+  }
+}
+
+
+==============================================================================
+== ContainerMenuBase::vt[45] sub_140A54BD0   at 0x140A54BD0 RVA=0xA54BD0
+==============================================================================
+-- callees (first-level) --
+    call -> 0x140519190 RVA=0x519190  sub_140519190
+    call -> 0x141AC8500 RVA=0x1AC8500  sub_141AC8500
+    call -> 0x141ACFCC0 RVA=0x1ACFCC0  sub_141ACFCC0
+    call -> 0x141AD65D0 RVA=0x1AD65D0  sub_141AD65D0
+    call -> 0x141B0BA00 RVA=0x1B0BA00  sub_141B0BA00
+    call -> 0x141AD6590 RVA=0x1AD6590  sub_141AD6590
+-- strings referenced --
+    str @ 0x140519190: '@SH'
+    str @ 0x14252C980: 'playerListArray'
+    str @ 0x14252C968: 'containerListArray'
+    str @ 0x140A54CD0: 't(H'
+    str @ 0x14252C95C: 'splice'
+    str @ 0x140A54D36: 'x1I;'
+    str @ 0x14252C95C: 'splice'
+-- Hex-Rays --
+__int64 __fastcall sub_140A54BD0(__int64 a1, _DWORD *a2, __int64 a3)
+{
+  __int64 v6; // r14
+  int v7; // r15d
+  __int64 v8; // rdx
+  const char *v9; // r8
+  bool v10; // zf
+  int v11; // eax
+  __int64 v12; // rdi
+  __int64 *v13; // rbx
+  int v14; // eax
+  int v15; // ecx
+  __int64 v16; // rax
+  __int64 v17; // rax
+  void *v18; // rdi
+  __int64 v19; // rcx
+  __int64 v20; // rdi
+  int v21; // eax
+  __int64 *v22; // rbx
+  int v23; // eax
+  __int64 v25; // [rsp+48h] [rbp-C0h] BYREF
+  __int64 v26; // [rsp+50h] [rbp-B8h]
+  __int64 v27; // [rsp+58h] [rbp-B0h]
+  __int64 v28; // [rsp+68h] [rbp-A0h] BYREF
+  __int64 v29; // [rsp+70h] [rbp-98h]
+  __int64 v30; // [rsp+78h] [rbp-90h]
+  __int64 v31; // [rsp+80h] [rbp-88h]
+  __int64 v32; // [rsp+88h] [rbp-80h]
+  int v33; // [rsp+90h] [rbp-78h]
+  int v34; // [rsp+98h] [rbp-70h]
+  __int64 v35; // [rsp+A8h] [rbp-60h] BYREF
+  int v36; // [rsp+B0h] [rbp-58h]
+  int v37; // [rsp+B8h] [rbp-50h]
+  __int64 v38; // [rsp+C8h] [rbp-40h]
+  int v39; // [rsp+D0h] [rbp-38h]
+  int v40; // [rsp+D8h] [rbp-30h]
+  __int64 v41; // [rsp+E8h] [rbp-20h] BYREF
+  int v42; // [rsp+F0h] [rbp-18h]
+  __int64 v43; // [rsp+F8h] [rbp-10h]
+  __int64 v44; // [rsp+100h] [rbp-8h]
+  __int64 v45; // [rsp+108h] [rbp+0h] BYREF
+  int v46; // [rsp+138h] [rbp+30h] BYREF
+
+  v6 = a1 + 192;
+  if ( a3 == a1 + 192 )
+    v7 = *(_DWORD *)sub_140519190(qword_1432D2260, &v46);
+  else
+    v7 = *(_DWORD *)(a1 + 840);
+  v8 = *(_QWORD *)(a1 - 176);
+  v9 = "containerListArray";
+  v10 = (*(_BYTE *)(a1 - 184) & 0x8F) == 10;
+  v25 = 0;
+  LODWORD(v26) = 0;
+  if ( a3 == v6 )
+    v9 = "playerListArray";
+  if ( (unsigned __int8)sub_141AC8500(*(_QWORD *)(a1 - 192), v8, v9, &v25, v10) && (v26 & 0x8F) == 9 )
+  {
+    if ( *a2 )
+    {
+      if ( *a2 == 1 )
+      {
+        v11 = a2[1];
+        LODWORD(v29) = 3;
+        v12 = 2;
+        v34 = 1;
+        v28 = 0;
+        LODWORD(v30) = v11;
+        v32 = 0;
+        v33 = 4;
+        if ( v25 )
+          sub_141ACFCC0(v25, v27, 0, (unsigned int)"splice", (__int64)&v28, 2);
+        v13 = &v35;
+        do
+        {
+          v14 = *((_DWORD *)v13 - 6);
+          v13 -= 4;
+          --v12;
+          if ( (v14 & 0x40) != 0 )
+          {
+            sub_141AD65D0(*v13, v13, v13[2]);
+            *v13 = 0;
+          }
+          *((_DWORD *)v13 + 2) = 0;
+        }
+        while ( v12 );
+      }
+    }
+    else
+    {
+      v15 = a2[1];
+      if ( v15 < 0 )
+        goto LABEL_24;
+      v16 = 304;
+      if ( a3 != v6 )
+        v16 = 432;
+      if ( (unsigned int)v15 >= *(_DWORD *)(v16 + a1) )
+      {
+LABEL_24:
+        v18 = &unk_14326EF30;
+      }
+      else
+      {
+        v17 = 288;
+        if ( a3 != v6 )
+          v17 = 416;
+        v18 = (void *)(*(_QWORD *)(v17 + a1) + 32LL * (unsigned int)v15);
+      }
+      v19 = *(_QWORD *)(a1 - 160);
+      v28 = 0;
+      LODWORD(v29) = 0;
+      sub_141B0BA00(v19, &v28, 0, 0, 0);
+      v46 = v7;
+      (*(void (__fastcall **)(__int64, int *, void *, __int64 *))(*(_QWORD *)(a1 - 224) + 224LL))(
+        a1 - 224,
+        &v46,
+        v18,
+        &v28);
+      v20 = 3;
+      v21 = a2[1];
+      v42 = v29;
+      v37 = v21;
+      v35 = 0;
+      v36 = 3;
+      v38 = 0;
+      v39 = 4;
+      v40 = 0;
+      v41 = 0;
+      v43 = v30;
+      v44 = v31;
+      if ( (v29 & 0x40) != 0 )
+      {
+        v41 = v28;
+        sub_141AD6590(v28, &v41);
+      }
+      if ( v25 )
+        sub_141ACFCC0(v25, v27, 0, (unsigned int)"splice", (__int64)&v35, 3);
+      v22 = &v45;
+      do
+      {
+        v23 = *((_DWORD *)v22 - 6);
+        v22 -= 4;
+        --v20;
+        if ( (v23 & 0x40) != 0 )
+        {
+          sub_141AD65D0(*v22, v22, v22[2]);
+          *v22 = 0;
+        }
+        *((_DWORD *)v22 + 2) = 0;
+      }
+      while ( v20 );
+      if ( (v29 & 0x40) != 0 )
+        sub_141AD65D0(v28, &v28, v30);
+    }
+  }
+  if ( (v26 & 0x40) != 0 )
+    sub_141AD65D0(v25, &v25, v27);
+  return 0;
+}
+
+
+==============================================================================
+== ContainerMenu::ctor? sub_141041000   at 0x141041000 RVA=0x1041000
+==============================================================================
+-- callees (first-level) --
+    call -> 0x140A53F30 RVA=0xA53F30  sub_140A53F30
+    call -> 0x141B21980 RVA=0x1B21980  sub_141B21980
+-- strings referenced --
+    str @ 0x14104106F: 't1@'
+-- Hex-Rays --
+_QWORD *__fastcall sub_141041000(_QWORD *a1, char a2)
+{
+  void (__fastcall ***v4)(_QWORD, __int64); // rcx
+
+  *a1 = &ContainerMenu::`vftable';
+  a1[2] = &ContainerMenu::`vftable';
+  a1[28] = &ContainerMenu::`vftable';
+  a1[29] = &ContainerMenu::`vftable';
+  --*(_DWORD *)(qword_143E47AF0 + 432);
+  v4 = (void (__fastcall ***)(_QWORD, __int64))a1[134];
+  if ( v4 )
+    (**v4)(v4, 1);
+  sub_140A53F30(a1);
+  if ( (a2 & 1) != 0 )
+  {
+    if ( (a2 & 4) == 0 )
+    {
+      (*(void (__fastcall **)(_QWORD, _QWORD *))(**(_QWORD **)qword_143DA7480 + 96LL))(*(_QWORD *)qword_143DA7480, a1);
+      return a1;
+    }
+    sub_141B21980(a1, 1088);
+  }
+  return a1;
+}
+
+
+==== done ====

@@ -1,0 +1,186 @@
+================================================================================
+  STRADA B — PINK CHARACTER BODY → PROPER TEXTURES
+  THE SOLUTION, in letters of fire
+================================================================================
+  Target:  Fallout4.exe 1.11.191 next-gen (image base 0x140000000)
+  Date:    2026-04-24
+  Status:  SOLVED + live-verified (textured MaleBody renders on both clients)
+================================================================================
+
+-------------------------------------------------------------------------------
+  THE PROBLEM
+-------------------------------------------------------------------------------
+
+Calling sub_1417B3E90(path, &out, &opts) on a character NIF
+("Actors\\Character\\CharacterAssets\\MaleBody.nif") successfully loads
+the BSFadeNode + BSSubIndexTriShape + BSLightingShaderProperty +
+BSLightingShaderMaterialBase tree, BUT the mesh renders FLAT PINK/MAGENTA.
+
+No crash. No hang. rc=0. Body appears in scene, tracks position/rotation
+perfectly. Just pink — classic D3D "missing texture" fallback color.
+
+-------------------------------------------------------------------------------
+  THE ROOT CAUSE
+-------------------------------------------------------------------------------
+
+FO4 character bodies do NOT embed DDS paths in the NIF. They embed a
+SINGLE reference to a .bgsm (BGSMaterial) file, which in turn references
+the diffuse / normal / specular / etc. DDSes.
+
+The NIF loader sub_1417B3E90 stores the .bgsm path at:
+    BSLSP + 0x10        (BSFixedString)
+but DOES NOT resolve it. The material at BSLSP+0x58 is created with
+4 shared-default NiSourceTexture fallback handles (the engine's
+built-in "<empty>" name pink-textures). Rendering pink is the engine
+correctly displaying "no texture loaded".
+
+The vanilla engine has a SEPARATE pipeline step that resolves these:
+
+    sub_140255BA0  (tree walker)
+      └─ for each BSTriShape/BSSIT in subtree:
+            sub_140256070  (per-geometry apply)
+              ├─ Read .bgsm path from BSLSP+0x10
+              ├─ Strip "materials\\" prefix
+              ├─ sub_1417A9620(path, &mat, 0)   (LOAD .BGSM FILE)
+              ├─ For 10 tex slots:
+              │     sub_142162340  (slot lookup)
+              │     sub_1417A4A30  (DDS resolve)
+              └─ sub_142169AD0(mat, geom, 1)    (bind + flag update)
+
+This walker is invoked by Actor::Load3D (sub_140458740) and
+TESObjectREFR::Load3D (sub_14033D1E0) AFTER they call the NIF loader.
+
+When you call sub_1417B3E90 STANDALONE (like we do for ghost bodies),
+you MUST call the walker yourself.
+
+-------------------------------------------------------------------------------
+  THE FIX  —  ONE LINE
+-------------------------------------------------------------------------------
+
+    typedef void (__fastcall *ApplyMaterialsWalkerFn)(
+        void* root, int64_t a2, int64_t a3, int64_t a4, int64_t a5);
+
+    auto apply_materials = (ApplyMaterialsWalkerFn)
+        (module_base + 0x00255BA0);
+
+    // AFTER sub_1417B3E90 returns with non-null out, BEFORE attach-to-SSN
+    // or any rendering visibility. Main thread only (BSMaterialDB lock +
+    // scene graph lock). Synchronous ~5-30 ms for body-sized subtree.
+    apply_materials(loadedFadeNode, 0, 0, 0, 0);
+
+That's it. The 4 trailing zeros are context/flags unused on the simple
+path. No opts struct, no post-processing, no extra calls.
+
+-------------------------------------------------------------------------------
+  WHY POSTPROC (opts.flags 0x08) DID NOT WORK
+-------------------------------------------------------------------------------
+
+The dossier's BSModelProcessor hook (qword_1430E0290 vt[1] =
+sub_1402FC0E0) handles FADE-WRAP finalization, shadow flags, and
+facegen — NOT .bgsm binding. That post-hook is orthogonal to the
+material resolve path. Both run in vanilla, but they do different work.
+
+Setting opts.flags |= 0x08 enables the BSModelProcessor hook (runs
+post-NIF-load from inside sub_1417B3E90), but does not substitute for
+the apply-materials walker. Both are required in vanilla; only the
+walker solves the pink body problem.
+
+-------------------------------------------------------------------------------
+  COMPLETE MINIMAL RECIPE (copyable)
+-------------------------------------------------------------------------------
+
+    // Module base (e.g. from GetModuleHandleW(L"Fallout4.exe"))
+    uintptr_t base = ...;
+
+    // 1. Resolve fn ptrs
+    typedef uint32_t (__fastcall *NifLoadFn)(
+        const char*, void**, void* /* NifLoadOpts* */);
+    typedef void (__fastcall *ApplyMatsFn)(
+        void*, int64_t, int64_t, int64_t, int64_t);
+
+    auto nif_load      = (NifLoadFn)   (base + 0x0017B3E90);
+    auto apply_mats    = (ApplyMatsFn) (base + 0x00255BA0);
+
+    // 2. Opts — 16 bytes, flags @ +0x8. 0x10 = wrap as BSFadeNode.
+    struct { uint64_t _0; uint8_t flags; uint8_t _1[7]; } opts = {};
+    opts.flags = 0x10;
+
+    // 3. Load
+    void* body = nullptr;
+    uint32_t rc = nif_load(
+        "Actors\\Character\\CharacterAssets\\MaleBody.nif",
+        &body, &opts);
+    if (rc != 0 || !body) return /* failure */;
+
+    // 4. THE FIX — resolve .bgsm references on the subtree
+    apply_mats(body, 0, 0, 0, 0);
+
+    // 5. Attach to ShadowSceneNode + position + flags — standard scene
+    //    graph attach (not shown here). Body will render with full
+    //    textures (diffuse, normal, specular from MaleBody.bgsm).
+
+-------------------------------------------------------------------------------
+  DIAG EVIDENCE
+-------------------------------------------------------------------------------
+
+Before apply_materials (v4.1):
+  material vt_rva=0x290A190  (BSLightingShaderMaterialBase)
+  tex[0..3] all name='<empty>', SHARED pointers to default fallback
+  (tex handle refcount observed: 0x2CAF = 11439 refs = singleton)
+
+After apply_materials (v5, same 0x290A190 class):
+  material vt_rva=0x290A190  (SAME class — walker patches in-place)
+  tex[0] = unique pointer, non-empty name  (real diffuse handle)
+  tex[1] = unique pointer, non-empty name  (real normal map)
+  tex[2] = still shared fallback           (slot unused by body)
+  tex[3] = new unique pointer              (specular/subsurface)
+  material +0x30 flags byte: 0x32F2 → 0x32ED (in-place patch)
+
+Render output: proper textured body (skin + musculature + underwear).
+
+-------------------------------------------------------------------------------
+  KEY RVAs  (for this fix only — broader NIF loader RVAs in
+             stradaB_nif_loader_api.txt)
+-------------------------------------------------------------------------------
+
+  0x0017B3E90   sub_1417B3E90   NIF loader (main entry, we already used)
+  0x00255BA0    sub_140255BA0   APPLY-MATERIALS TREE WALKER  ← THE FIX
+  0x00256070    sub_140256070   per-geometry apply (called by walker)
+  0x0017A9620   sub_1417A9620   BGSM file loader
+  0x02169AD0    sub_142169AD0   material ← geometry binder
+  0x030DC2A8    qword_1430DC2A8 BSMaterialDB singleton
+
+-------------------------------------------------------------------------------
+  DISCOVERY CREDITS
+-------------------------------------------------------------------------------
+
+  Live evidence: fw_native.log ~06:54-07:02 timestamps.
+  RE pass: re/_bgsm_loader.log (6045 lines of decomp + xref analysis).
+  Live fix ship: fw_native src/native/{ni_offsets.h, scene_inject.cpp}
+                 (2026-04-24, commit TBD).
+
+-------------------------------------------------------------------------------
+  LESSONS
+-------------------------------------------------------------------------------
+
+1. NIF-load alone is NOT enough for any FO4 asset that uses .bgsm
+   materials (i.e. most vanilla meshes). The apply-materials walker
+   is part of the load pipeline, not an afterthought.
+
+2. Vanilla wrappers that "just work" (Actor::Load3D, REFR::Load3D) do
+   MULTIPLE steps internally. When hand-rolling a load path, enumerate
+   EVERY step the vanilla wrapper takes and replicate them all — or
+   you'll hit gotchas like this one.
+
+3. The "placeholder material" hypothesis was wrong. The material class
+   at shader+0x58 (0x290A190 = BSLightingShaderMaterialBase) is the
+   FINAL class. The walker patches its fields in-place (tex handles,
+   flags) rather than replacing the whole object.
+
+================================================================================
+  THE 5 WORDS TO REMEMBER
+================================================================================
+
+        apply_materials(body, 0, 0, 0, 0);   // sub_140255BA0
+
+================================================================================

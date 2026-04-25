@@ -1,0 +1,188 @@
+[+] Image base: 0x140000000
+
+==== Quest_SetCurrentStageID (RVA 0x1185DD0) ====
+char __fastcall sub_141185DD0(__int64 *a1, unsigned int a2, __int64 a3, unsigned int a4)
+{
+  char v4; // r15
+  const CHAR *v5; // r12
+  const char *v10; // rdx
+  int v11; // edx
+  int v12; // ebx
+  const char *v13; // r9
+  __int64 v14; // rax
+  _QWORD v16[2]; // [rsp+30h] [rbp-448h] BYREF
+  _BYTE v17[1024]; // [rsp+40h] [rbp-438h] BYREF
+  __int64 v18; // [rsp+440h] [rbp-38h]
+  int v19; // [rsp+448h] [rbp-30h]
+  char v20; // [rsp+490h] [rbp+18h] BYREF
+
+  v4 = 0;
+  v5 = &Default;
+  v20 = 0;
+  if ( (*(_BYTE *)(a3 + 244) & 1) == 0 && *(_DWORD *)(a3 + 248) != -1 )
+  {
+    v10 = "attempting to start event scoped quest outside of story manager";
+LABEL_12:
+    sub_1410DD940(a3, (_DWORD)v10, (_DWORD)a1, a2, 2);
+    goto LABEL_13;
+  }
+  if ( a4 > 0xFFFF )
+  {
+    v18 = 0;
+    v19 = 0;
+    sub_14060D9F0(v17, "%d is an invalid value for a stage, ignoring stage set request", a4);
+    v10 = &Default;
+    if ( v18 )
+      LODWORD(v10) = v18;
+    goto LABEL_12;
+  }
+  if ( (unsigned __int8)sub_14066B100(a3, &v20, 0) )
+  {
+    v11 = *(_DWORD *)(a3 + 20);
+    if ( v20 )
+    {
+      v4 = 1;
+      sub_1410D5FA0(qword_143308C78, v11, 1, (unsigned __int16)a4, a2, (__int64)a1);
+    }
+    else
+    {
+      sub_1410D41D0(qword_143308C78, v11, (unsigned __int16)a4, a2, (__int64)a1);
+      v4 = sub_14066B210(a3, (unsigned __int16)a4);
+      if ( !v4 )
+        sub_1410D4420(qword_143308C78, *(unsigned int *)(a3 + 20), (unsigned __int16)a4, a2);
+    }
+  }
+LABEL_13:
+  v12 = *(_DWORD *)(a3 + 20);
+  if ( (unsigned int)sub_1410E07F0(a1) == v12 )
+  {
+    v13 = &Default;
+    v18 = 0;
+    if ( v20 )
+      v13 = " (quest will be started first)";
+    v19 = 0;
+    sub_14060D9F0(v17, "Stage %d set%s", a4, v13);
+    if ( v18 )
+      LODWORD(v5) = v18;
+    sub_1410DD940(a3, (_DWORD)v5, (_DWORD)a1, a2, 0);
+  }
+  if ( !v4 )
+  {
+    v16[0] = 5;
+    v14 = *a1;
+    v16[1] = 0;
+    (*(void (__fastcall **)(__int64 *, _QWORD, _QWORD *))(v14 + 392))(a1, a2, v16);
+    sub_1420E5050(v16);
+  }
+  return 1;
+}
+
+
+==== Quest_GetCurrentStageID (RVA 0x1188820) ====
+__int64 __fastcall sub_141188820(__int64 a1, __int64 a2, __int64 a3)
+{
+  return sub_14066B7E0(a3);
+}
+
+
+==== GlobalVar_SetValue_body (RVA 0x11459E0) ====
+__int64 __fastcall sub_1411459E0(__int64 a1, unsigned int a2, __int64 a3, float a4)
+{
+  __int64 result; // rax
+  _QWORD v7[2]; // [rsp+20h] [rbp-28h] BYREF
+  _BYTE v8[24]; // [rsp+30h] [rbp-18h] BYREF
+
+  result = *(_DWORD *)(a3 + 16) >> 6;
+  if ( (*(_DWORD *)(a3 + 16) & 0x40) != 0 )
+  {
+    sub_1420F7170(v7);
+    v7[0] = &BSScript::Internal::CachedErrorMessageImpl<char *>::`vftable';
+    v7[1] = "Cannot set the value of a constant GlobalVariable";
+    sub_14167BCF0(v8);
+    (*(void (__fastcall **)(__int64, _QWORD *, _QWORD, __int64))(*(_QWORD *)a1 + 480LL))(a1, v7, a2, 2);
+    sub_14167BEF0(v8);
+    return sub_1420F7190(v7);
+  }
+  else
+  {
+    *(float *)(a3 + 48) = a4;
+  }
+  return result;
+}
+
+
+==== GlobalVar_SetValue_wrapper (RVA 0x1145AA0) ====
+__int64 __fastcall sub_141145AA0(_QWORD *a1)
+{
+  int *v2; // r14
+  bool v3; // zf
+  int v4; // edi
+  __int64 v5; // rax
+  _QWORD *v6; // rsi
+  int v7; // eax
+  __int64 v8; // r9
+  __int64 v9; // rax
+  _QWORD *v10; // rsi
+  int v11; // eax
+  __int64 v12; // r9
+  __int64 result; // rax
+
+  v2 = (int *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex) + 2496LL);
+  v3 = dword_143E5F2D0 == 2;
+  v4 = *v2;
+  *v2 = 23;
+  if ( !v3 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v5 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v6 = (_QWORD *)v5;
+  if ( v5 )
+  {
+    sub_1420F9D00(v5, (unsigned int)"GetValue", (unsigned int)"GlobalVariable", 0, 0);
+    *v6 = &BSScript::NativeFunction0<TESGlobal,float>::`vftable';
+    v6[10] = sub_141145E00;
+    v7 = *v2;
+    v6[5] = 4;
+    *v2 = v7;
+  }
+  else
+  {
+    v6 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v6);
+  LOBYTE(v8) = 1;
+  (*(void (__fastcall **)(_QWORD, const char *, const char *, __int64))(*(_QWORD *)*a1 + 232LL))(
+    *a1,
+    "GlobalVariable",
+    "GetValue",
+    v8);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v9 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v10 = (_QWORD *)v9;
+  if ( v9 )
+  {
+    sub_1420F9D00(v9, (unsigned int)"SetValue", (unsigned int)"GlobalVariable", 0, 1);
+    *v10 = &BSScript::NativeFunction1<TESGlobal,void,float>::`vftable';
+    v10[10] = sub_1411459E0;
+    v11 = *v2;
+    *v2 = 18;
+    v10[5] = 0;
+    *(_QWORD *)(v10[6] + 8LL) = 4;
+    *v2 = v11;
+  }
+  else
+  {
+    v10 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v10);
+  LOBYTE(v12) = 1;
+  result = (*(__int64 (__fastcall **)(_QWORD, const char *, const char *, __int64))(*(_QWORD *)*a1 + 232LL))(
+             *a1,
+             "GlobalVariable",
+             "SetValue",
+             v12);
+  *v2 = v4;
+  return result;
+}
+
+

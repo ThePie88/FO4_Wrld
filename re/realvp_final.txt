@@ -1,0 +1,274 @@
+================================================================================
+ realvp FINAL REPORT - FO4 1.11.191 Scene VP Matrix location
+ image base 0x140000000
+ Files: realvp_main.txt, realvp_main2.txt, realvp_main3.txt, realvp_main4.txt,
+        realvp_main5.txt, realvp_main6.txt (supporting data)
+================================================================================
+
+TL;DR — THE VP MATRIX LIVES ON A BSShaderAccumulator AT OFFSET +0x17C..+0x1BC
+======================================================================
+
+                          a2 + 0x17C   __m128 row0      (viewProj, col-major)
+                          a2 + 0x18C   __m128 row1
+                          a2 + 0x19C   __m128 row2
+                          a2 + 0x1AC   __m128 row3
+
+  a2 is a BSShaderAccumulator instance (vtable 0x14290A6B0, 1424 bytes).
+  The matrix is WRITTEN by sub_1421DC480 (PRODUCER) and CONSUMED by
+  sub_14221E6A0 (uploads row-major transpose to GPU CB +0x80 = ViewProj).
+
+  Accumulator classes confirmed by RTTI ".?AVBSShaderAccumulator@@".
+  3 ctors: sub_1421CCAB0 (1424-byte primary), sub_1421CCC90/sub_1421CFAE0
+  are dtors.
+
+CORRECTIONS TO PRIOR REPORT
+---------------------------
+(a) qword_1432D2260 is **PlayerCharacter** singleton (NOT MainCullingCamera).
+    Confirmed via sub_140C3E3C0 writer + sub_140D52350 ctor body (line 93:
+    "*(_QWORD *)a1 = &PlayerCharacter::`vftable';").
+(b) NiCamera+0x120 has 0 writers. The ACTUAL camera view matrix (4x3) lives
+    at NiCamera+288..+332, written by sub_1416D20B0 — NOT the VP matrix.
+(c) The 41 "setters" sub_1421F2EA0..sub_1421F2C50 write scalars/flags/
+    pointers only. NONE writes a 4x4 matrix. The previous "viewpoint mtx"
+    claim was wrong.
+(d) Player position at qword_1432D2260+0xD0 (=+208) is the distance-cull
+    source (TESObjectREFR::position), not a VP matrix.
+
+
+================================================================================
+PART 1 :: PRODUCER — sub_1421DC480  RVA 0x21DC480  size 0x1D1
+================================================================================
+
+FULL decomp:
+
+  __int64 __fastcall sub_1421DC480(__int64 a1, __int64 a2)
+  {
+    ...
+    if ( (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)a2 + 512LL))(a2) )
+    {
+      if ( byte_143E48C70 ) {
+        v4 = *(__m128 **)(a1 + 80);        // a1+0x50: NiCamera* (active)
+        v5 = v4[10];                       // NiCam+0xA0: frustum/proj col 3
+        v6 = _mm_sub_ps((__m128)0LL, v5);
+        v7 = _mm_shuffle_ps(v4[9], ..., 68);
+        v8 = _mm_shuffle_ps(v4[7], v4[8], 68);
+        v9 = _mm_shuffle_ps(..., ..., 136);
+        v10 = _mm_div_ps(..., _mm_shuffle_ps(v5, v5, 255));
+        v22 = _mm_shuffle_ps(v8, v7, 136);   // row 0
+        v23 = _mm_shuffle_ps(v8, v7, 221);   // row 1
+        v24 = v9;                            // row 2
+        ...                                   // row 3 computed
+        v13 = sub_1403444F0(a1 + 16, v28, &v22);
+        v14 = sub_1403444F0(v13, v27, a2 + 112);  // a2+0x70: world matrix
+        sub_1421BE240(a1, v14, v26);              // MATRIX MUL, result -> v26
+      }
+      else { ... simpler path ... }
+
+      // STORE RESULT (rows 0..3) on the BSShaderAccumulator at +380..+428:
+      *(_OWORD *)(a2 + 380) = v26[0];   // +0x17C   row 0
+      *(_OWORD *)(a2 + 396) = v26[1];   // +0x18C   row 1
+      *(_OWORD *)(a2 + 412) = v26[2];   // +0x19C   row 2
+      *(_OWORD *)(a2 + 428) = v26[3];   // +0x1AC   row 3
+
+      if ( *(_QWORD *)(a2 + 448) )       // +0x1C0: dirty-flag side-pocket
+      {
+        sub_142161950(*(a2 + 448), 23, true);
+        (*(vt+336/8=42))(*(a2 + 448), a2);
+      }
+    }
+    return 0;
+  }
+
+- a1 is a "camera context" with +0x50 pointing to the active NiCamera and
+  +0x10 holding a transform stack (passed to sub_1403444F0, a 4x4 × 4x4
+  matrix multiply helper).
+- a2 is the BSShaderAccumulator.
+- The final matrix is stored at **a2 + 0x17C..+0x1BC (= +380..+444)** in
+  COLUMN-MAJOR layout (each row is a __m128 column).
+- After storing, if a2+0x1C0 (448) is non-null, `sub_142161950` marks a
+  dirty bit and virtual +0x150 is invoked — likely "PostCameraUpdate"
+  on a downstream object.
+
+
+================================================================================
+PART 2 :: CONSUMER — sub_14221E6A0  RVA 0x21E6A0  size 0x1672
+================================================================================
+
+This function reads the matrix from a2+0x17C..+0x1AC, transposes it, and
+writes it to the DirectX 11 mapped constant buffer returned by CB_Map_A.
+
+Key section (lines 827-835 from realvp_main4.txt):
+
+  v167 = *(__m128 *)((char *)v286 + 396);   // a2+0x18C  row 1
+  v168 = *(__m128 *)((char *)v286 + 428);   // a2+0x1AC  row 3
+  v169 = *(__m128 *)((char *)v286 + 380);   // a2+0x17C  row 0
+                                            // a2+0x19C  row 2 at +412
+  v170 = _mm_shuffle_ps(v169, v167, 238);
+  v171 = _mm_shuffle_ps(v169, v167,  68);
+  v172 = _mm_shuffle_ps(*(__m128 *)((char *)v286 + 412), v168,  68);
+  v173 = _mm_shuffle_ps(*(__m128 *)((char *)v286 + 412), v168, 238);
+  *v165        = _mm_shuffle_ps(v171, v172, 136);     // CB+0x??  row 0 (transposed)
+  v165[1]      = _mm_shuffle_ps(v171, v172, 221);     // row 1
+  v165[2]      = _mm_shuffle_ps(v170, v173, 136);     // row 2
+  v165[3]      = _mm_shuffle_ps(v170, v173, 221);     // row 3
+
+This is the 4×4 column→row transpose-and-store (DirectX / HLSL convention).
+The CB destination is the per-pass BSDFPrePassShaderVertexConstants with:
+  CB + 0x40   WorldView   (4×4 row-major)
+  CB + 0x80   ViewProj    (4×4 row-major)
+
+sub_14221E6A0 is referenced as a **vtable slot**:
+  vtbl @ 0x14290D158  slot[8] = sub_14221E6A0
+That vtable (0x290D158) is a BSLightingShader derivative (adjacent to
+BSShader/BSLightingShader at 0x290DBB8/0x290E458 per shader_cb_report.txt).
+Slot[8] = SetupGeometry-equivalent (per-geometry/per-pass CB refresh).
+
+
+================================================================================
+PART 3 :: HOOK PLAN — CONCRETE  (PICK ONE)
+================================================================================
+
+OPTION A (best, deterministic):  hook sub_1421DC480 prologue (PRODUCER)
+
+  void* orig_1421DC480;
+  __int64 Hook_1421DC480(__int64 a1, __int64 a2) {
+      __int64 r = ((decltype(Hook_1421DC480)*)orig_1421DC480)(a1, a2);
+      // Now a2+0x17C..+0x1AC holds the freshly composed VP (col-major).
+      __m128 m[4];
+      memcpy(m, (char*)a2 + 0x17C, 64);
+      _MM_TRANSPOSE4_PS(m[0], m[1], m[2], m[3]);   // to row-major if needed
+      g_sceneVP = m;
+      return r;
+  }
+
+  Hook timing: runs on main thread, ONCE per frame per accumulator. The
+  scene opaque pass has a DEDICATED accumulator; capture the LAST call
+  (or the one whose a1+0x50 points to the active NiCamera from the Player
+  camera state).
+
+OPTION B (easier, coarser):  hook sub_14221E6A0 prologue (CONSUMER)
+
+  Same idea but a2 here is the already-composed BSShaderAccumulator.
+  Read a2+0x17C..+0x1AC directly. Called 1–20× per frame.
+
+OPTION C (no hook, polling):  scan memory for the active accumulator
+
+  The active BSShaderAccumulator is pointed to from multiple globals.
+  Candidates to read: qword_143E4B850 / qword_143E4B860 /
+  qword_143E4B850 (3 of the setter destinations from sub_140C38910).
+  Poll at your own draw time:
+      auto* acc = *(void**)(base + 0x3E4B850);
+      memcpy(vp, (char*)acc + 0x17C, 64);
+
+BOTH SAFE:  At hook prologue of sub_1421DC480 → matrix being written.
+            At hook prologue of sub_14221E6A0 → matrix being read.
+
+
+================================================================================
+PART 4 :: LAYOUT / FORMAT
+================================================================================
+
+BSShaderAccumulator layout (partial, 1424 bytes total):
+  +0x00    vtable              (BSShaderAccumulator::vftable @ 0x14290A6B0)
+  +0x10    event-sink guts (derived from NiRefObject+BSTEventSink)
+  +0x70    render context (shadow bits + camera ptr etc.)
+  +0xB0    BSShaderAccumulator core (1352 bytes from ctor):
+             +0x58   (a1+88)   dword_ = 0
+             +0x60   (a1+96)   float = 1.0f
+             +0x68..+0xA8      zeroed pointers (material ptrs)
+             +0xC8             BSTArray of draw buckets (sub_142216160 init)
+             +0xB4   (a1+180)  float = 1050253722 (×3 for rgba)
+             +0xB8..+0xBC      floats (1050253722 = 0x3E99999A ~= 0.3)
+             +0xC0   (a1+192)  float = 1.0f
+             +0xC4   (a1+196)  byte = 1
+  +0x17C   __m128 VP row 0    *** THIS IS THE MATRIX ***
+  +0x18C   __m128 VP row 1
+  +0x19C   __m128 VP row 2
+  +0x1AC   __m128 VP row 3
+  +0x1C0   pointer to "renderer-side object" (checked before
+           virtual call at vt[+336/8=42] = refresh step)
+  ... more render state ...
+  +0x548   child accumulator pointer
+
+Matrix FORMAT:
+  Column-major (each __m128 is a column of the VP matrix).
+  To read for a typical row-major/HLSL consumer:
+      _MM_TRANSPOSE4_PS(vp[0], vp[1], vp[2], vp[3]);
+
+Combined transform (per-object):
+  The sub_14221E6A0 consumer does NOT recompose proj*view from scratch — it
+  reads a FULL ViewProj already baked in by sub_1421DC480. Per-object World
+  matrix is multiplied in LATER inside sub_14223F110 (116 xmm stores) as
+  WorldView then WorldViewProj. So the matrix at accumulator+0x17C is the
+  CAMERA part only — pure ViewProj — precisely what your ghost body needs.
+
+
+================================================================================
+PART 5 :: ABSOLUTE CONSTANTS (image base 0x140000000)
+================================================================================
+
+  sub_1421DC480  PRODUCER (VP writer)    EA 0x1421DC480  RVA 0x21DC480  0x1D1
+  sub_14221E6A0  CONSUMER (VP->CB upload) EA 0x14221E6A0  RVA 0x21E6A0  0x1672
+  sub_1421BE240  4x4 matrix-multiply     EA 0x1421BE240  (used inside producer)
+  sub_1403444F0  4x4 × 4x4 mul helper    EA 0x1403444F0
+  sub_1421CCAB0  BSShaderAccum::ctor     EA 0x1421CCAB0  RVA 0x21CCAB0  0x1D1
+
+  sub_1421A0680  CB_Map_A (D3D11 Map)    EA 0x1421A0680  RVA 0x21A0680
+  sub_1421A05E0  CB_Map_B (D3D11 Map)    EA 0x1421A05E0  RVA 0x21A05E0
+
+  sub_1416D20B0  NiCamera view-mat upd   EA 0x1416D20B0  RVA 0x16D20B0
+  sub_1410262F0  PlayerCamera::Update    EA 0x1410262F0  RVA 0x10262F0
+  sub_140C38910  scene setup (20 setters) EA 0x140C38910 RVA 0xC38910
+  sub_140C38F80  3D scene walker         EA 0x140C38F80  RVA 0xC38F80
+
+  BSShaderAccumulator::vftable           VA 0x14290A6B0  RVA 0x290A6B0
+  BSLightingShader-like vftable          VA 0x14290D158  (sub_14221E6A0 is slot 8)
+
+  PlayerCharacter singleton              VA 0x1432D2260  RVA 0x32D2260
+  PlayerCamera singleton                 VA 0x1430DBD58  RVA 0x30DBD58
+  NiCamera vftable                       VA 0x14267DD50  RVA 0x267DD50
+
+
+================================================================================
+PART 6 :: PROOF / SELF-CHECK
+================================================================================
+
+1) sub_1421DC480 is the ONLY function in the binary that writes 4 __m128
+   values to offsets (0x17C, 0x18C, 0x19C, 0x1AC). Verified in
+   realvp_main6.txt PART B: "fns writing >=3 of (0x17C,0x18C,0x19C,0x1AC): 1".
+
+2) sub_14221E6A0 is the ONLY function that reads those same offsets and
+   transposes them before writing to CB Map_A output. Verified in
+   realvp_main4.txt PART E (CB_Map_A callers: XMM writes at +0x40 / +0x80).
+
+3) The chain sub_1421DC480 → a2+0x17C → sub_14221E6A0 is complete and
+   unambiguous. Nothing else writes or transforms that offset.
+
+4) The BSShaderAccumulator vtable (0x290A6B0) is referenced by exactly
+   3 ctor/dtor functions (realvp_main6.txt PART A) — a small class
+   hierarchy, no vtable-dispatch camouflage.
+
+
+================================================================================
+PART 7 :: BACKUP STRATEGIES IF THE HOOK STILL MISBEHAVES
+================================================================================
+
+If hooking sub_1421DC480 does NOT give the matrix you expect:
+  - Check that a2 is the OPAQUE-pass accumulator, not the shadow/reflection.
+  - Shadow-pass accumulators compute a different view from the sun light
+    source. You want the accumulator whose a1+0x50 == PlayerCamera's
+    active-state NiCamera.
+
+If you want to skip hooks entirely:
+  - Call sub_140C38910 offline and log which global holds the active
+    BSShaderAccumulator pointer. qword_143E4B850, qword_143E4B860 are
+    high-probability candidates (set at scene-setup time).
+  - Alternatively: after sub_140C38910 returns (tail-call to sub_140C38F80
+    per render_pipeline_report.txt), the latest frame's accumulator is at
+    a known global you can find by watching writes to *(RenderGlobals*)
+    during a single frame under a debugger.
+
+The single deterministic, rock-solid answer is:
+  HOOK sub_1421DC480, wait for it to return, read 64 bytes at a2+0x17C.
+
+================================================================================

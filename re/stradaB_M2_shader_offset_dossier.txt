@@ -1,0 +1,327 @@
+============================================================
+  STRADA B M2 — SHADER/ALPHA OFFSET VALIDATION
+  Date: 2026-04-23   Binary: Fallout4.exe 1.11.191 next-gen
+  Image base: 0x140000000
+  Method: IDA 9.3sp1 headless hexrays decomp + vtable disasm
+  Scripts:
+    re/decomp_stradaB_M2_shader.py      (ctor decomps, BSLSP xrefs)
+    re/decomp_stradaB_M2_virt42.py      (vt[42] setter disasm)
+  Raw reports:
+    re/stradaB_M2_shader_raw.txt        (3067 L)
+    re/stradaB_M2_virt42_raw.txt        (324 L)
+============================================================
+
+TL;DR — THE HYPOTHESIS IS REFUTED. OFFSETS ARE SWAPPED.
+
+  * alphaProperty  sits at BSGeometry + 0x130  (= 304)   CONFIRMED
+  * shaderProperty sits at BSGeometry + 0x138  (= 312)   CONFIRMED
+
+  Dossier-M1 §9 guessed wrong. Any code that was going to probe
+  +0x130 for a shader or +0x138 for alpha is reading the wrong
+  slot. Swap them.
+
+
+============================================================
+  1. BSGeometry::ctor  (sub_1416D4BD0, RVA 0x16D4BD0)
+============================================================
+
+Full decomp (size 0xE1):
+
+    __int64 __fastcall sub_1416D4BD0(__int64 a1)
+    {
+      sub_1416C8CD0(a1);                      // NiAVObject::ctor
+      *(_QWORD *)a1 = &BSGeometry::vftable;
+
+      // --- new member block @ +0x120..+0x160 ---
+      *(_DWORD *)(a1 + 288) = unk_143437F50;  // +0x120 = vertex-desc globals
+      *(_QWORD *)(a1 + 292) = qword_143437F54;// +0x124 (overlapping)
+      *(_DWORD *)(a1 + 300) = 0;              // +0x12C (u32)
+      *(_QWORD *)(a1 + 304) = 0;              // +0x130 = property slot A  <-- ALPHA
+      *(_QWORD *)(a1 + 312) = 0;              // +0x138 = property slot B  <-- SHADER
+      *(_QWORD *)(a1 + 320) = 0;              // +0x140
+      *(_QWORD *)(a1 + 328) = 0;              // +0x148
+      *(_QWORD *)(a1 + 336) = 0;              // +0x150
+      *(_WORD *)(a1 + 344)  = 0;              // +0x158 = material type word
+
+      // --- refcount-safe release of +0x130 and +0x138 ---
+      v2 = *(volatile signed __int32 **)(a1 + 312);
+      if ( v2 ) { ...InterlockedExchangeAdd(v2+8,-1) → release... }
+      v3 = *(volatile signed __int32 **)(a1 + 304);
+      if ( v3 ) { ...InterlockedExchangeAdd(v3+8,-1) → release... }
+    }
+
+    ; disasm (the refcount-safe zeroing):
+    0x1416D4C26  mov  [rbx+12ch], esi     ; +0x12C = 0
+    0x1416D4C2C  mov  [rbx+130h], rsi     ; +0x130 = 0   <-- ALPHA slot
+    0x1416D4C33  mov  [rbx+138h], rsi     ; +0x138 = 0   <-- SHADER slot
+    0x1416D4C3A  mov  [rbx+140h], rsi
+    0x1416D4C41  mov  [rbx+148h], rsi
+    0x1416D4C48  mov  [rbx+150h], rsi
+    0x1416D4C4F  mov  [rbx+158h], si      ; +0x158 = 0 (word)
+    0x1416D4C56  mov  rcx, [rbx+138h]     ; read +0x138 for release
+    0x1416D4C62  mov  [rbx+138h], rsi     ; clear
+    0x1416D4C7B  mov  rcx, [rbx+130h]     ; read +0x130 for release
+    0x1416D4C87  mov  [rbx+130h], rsi     ; clear
+
+Both +0x130 and +0x138 are refcount-managed NiPointer<NiObject> slots
+(allocating ctor starts with both cleared; dtor does the same pattern
+ with the --refcount → callvt[1] trick at offset +8).
+
+
+============================================================
+  2. BSLightingShaderProperty xrefs (RVA 0x28F9FF8)
+============================================================
+
+Only three xrefs exist — all of them are inside BSLSP itself:
+  - RVA 0x2171620  BSLightingShaderProperty::ctor
+  - RVA 0x2171780  dtor variant 1 (flag=2 partial dtor)
+  - RVA 0x2174B20  dtor variant 2 (flag=3 free+dealloc)
+
+None of those directly install a BSLSP into a BSGeometry. Instead the
+INSTALL pattern is done at the call site of whoever allocates the
+shader. Two real installer patterns appear in sub_140372CC0 and
+sub_1406B60C0 (these build runtime TriShapes for FogOfWarOverlay and
+for some sky/landscape system).
+
+Installer pattern, copy-pasted from sub_140372CC0 lines 575-595:
+
+    v47 = sub_1416579C0(pool, 0x88, 0, 0);     // alloc shader base
+    v49 = sub_14216F9C0(v47);                  // init as BSEffectShaderProperty
+    sub_142161B10(v49, *(_QWORD *)(v49 + 88), v48);
+    (*(v49->vtable[42]))(v49, v45);            // v49 = shader, v45 = geom
+                                               // vt[42] on BSShaderProperty
+    // now the DIRECT install of the pointer:
+    v50 = *(volatile signed __int32 **)(v45 + 312);   // read geom + 0x138
+    if ( v50 != v49 ) {
+        _InterlockedIncrement((volatile signed __int32 *)(v49 + 8));
+        *(_QWORD *)(v45 + 312) = v49;               ; <<<< WRITE: geom+0x138 = shader
+        ...release-old-v50...
+    }
+
+Same shape in sub_1406B60C0 lines 1272-1290 with a BSSkyShaderProperty
+(sub_142214640 wraps the 0xB0 alloc as BSSkyShaderProperty::vftable):
+
+    v24 = wrap(alloc 0xB0) → BSSkyShaderProperty
+    *(_DWORD *)(v24 + 168) = 6;                ; BSSkyShaderProperty type id
+    (*(v24->vtable[42]))(v24, v26);
+    *(_QWORD *)(v26 + 312) = v24;              ; <<<< WRITE: geom+0x138 = shader
+
+Both call sites use the SAME offset: +0x138.
+
+  >>> shaderProperty slot is at BSGeometry + 0x138  (= 312)  <<<
+  >>> Install is refcount-safe DIRECT write, NOT a virtual. <<<
+
+
+============================================================
+  3. NiAlphaProperty xrefs (RVA 0x2474400)
+============================================================
+
+Many xrefs (25+). The two canonical installer sites:
+
+  sub_140365DB0 (RVA 0x365DB0) — tree-walk that lazily creates an
+                                 alpha property for any BSGeometry
+                                 that is missing one:
+
+      if ( a1 ) {
+        v2 = (*(a1->vtable[8]))();             // BSGeometry::vt[8] = identity
+        if ( v2 ) {
+          if ( !*(_QWORD *)(v2 + 304) ) {      // <<<< checks +0x130 for NULL
+            v3 = sub_1416579C0(pool, 0x30, 0, 0);
+            v4 = v3;
+            sub_1416BD6F0(v3);                 // NiObjectNET sub-ctor
+            *(_QWORD *)v4 = &NiAlphaProperty::vftable;
+            v4[20] = 236;                      // alpha flags word
+            *((_BYTE *)v4 + 42) = 0;
+            v4[20] |= 1u;
+            (*(a1->vtable[42]))(a1, v4);       // <<<< install via vt[42]
+          }
+        } else {
+          // recurse on NiNode children
+          ...
+        }
+      }
+
+  sub_1406B60C0 (RVA 0x6B60C0) — creates a BSGeometry for some sky /
+                                 atmospheric effect, then installs
+                                 BSSkyShaderProperty @ +0x138 AND a
+                                 freshly allocated NiAlphaProperty:
+
+      v35 = alloc 0x30 → NiAlphaProperty
+      (*(geo->vtable[42]))(geo, v35);          // vt[42] installs alpha
+
+Both installers converge on the same vt[42] entry. Let's look at that:
+
+  BSGeometry::vtable[42] = sub_1416D5930 (RVA 0x16D5930)
+  (BSTriShape and BSDynamicTriShape inherit this unchanged.)
+
+  Full disasm (21 bytes of logic):
+
+    0x1416D5930  mov   rax, rcx            ; rax = this
+    0x1416D5933  mov   rcx, [rcx+130h]     ; rcx = old prop at +0x130
+    0x1416D593A  cmp   rcx, rdx            ; same as new?
+    0x1416D593D  jz    short ret           ; yes → nothing
+    0x1416D593F  test  rdx, rdx            ; new is NULL?
+    0x1416D5942  jz    short skip_inc
+    0x1416D5944  lock inc dword ptr [rdx+8]; ++refcount on new
+    0x1416D5948  mov   [rax+130h], rdx     ; <<< WRITE new to +0x130
+    0x1416D594F  test  rcx, rcx            ; old NULL?
+    0x1416D5952  jz    short ret
+    0x1416D5954  mov   eax, 0FFFFFFFFh
+    0x1416D5959  lock xadd [rcx+8], eax    ; --refcount on old
+    0x1416D595E  cmp   eax, 1
+    0x1416D5961  jnz   short ret
+    0x1416D5963  mov   rax, [rcx]
+    0x1416D5966  jmp   qword ptr [rax+8]   ; vtable[1] → delete
+
+  >>> alphaProperty slot is at BSGeometry + 0x130  (= 304)  <<<
+  >>> Setter is vtable[42] (= offset +0x150, "SetAlphaProperty"). <<<
+
+
+============================================================
+  4. BSDynamicTriShape-specific fields  (bonus)
+============================================================
+
+sub_1416E4090 (RVA 0x16E4090, size 0x41) — BSDynamicTriShape ctor.
+Inherits from BSTriShape via a call to sub_1416D95B0 (which is a
+BSTriShape in-place ctor wrapper), then adds 0x20 bytes of its own
+state at the end of the allocation:
+
+    __int64 __fastcall sub_1416E4090(__int64 a1)
+    {
+      sub_1416D95B0();                            // BSTriShape sub-ctor
+      *(_QWORD *)a1 = &BSDynamicTriShape::vftable;
+                ; (IDA mis-labels this symbol as "NiDirectionalLight::vftable"
+                ;  but the address at RVA 0x267F948 is BSDynamicTriShape's vt;
+                ;  confirmed by BSDynamicTriShape vtable RVA in M1 dossier.)
+      *(_QWORD *)(a1 + 380) = 0;                  // +0x17C  (qword = 0)
+      *(_DWORD *)(a1 + 388) = 0;                  // +0x184  (dword = 0)
+      *(_DWORD *)(a1 + 376) = 0;                  // +0x178  (dword = 0)
+      *(_QWORD *)(a1 + 368) = 1065353216;         // +0x170  (= 0x3F800000 = 1.0f)
+      return a1;
+    }
+
+Layout interpretation of BSDynamicTriShape-extra region:
+
+  +0x170  qword  = 0x0000000000000000_3F800000
+                     i.e. low dword = 1.0f, high dword = 0
+                 → probably a pair: `float anim_time = 1.0f` + `int frame_id = 0`
+                   or `float fade_scale = 1.0f`. LOW CONFIDENCE.
+
+  +0x178  dword  = 0                  (vertex count this frame?)
+  +0x17C  qword  = 0                  (DYNAMIC VERTEX BUFFER ptr — almost
+                                       certainly; aligned 8-byte slot sits
+                                       at this offset and is allocated/
+                                       populated by the dynamic-mesh
+                                       updater later)
+  +0x184  dword  = 0                  (flags or updated-this-frame?)
+  +0x188..+0x190  = 8 bytes of trailing alignment padding (uninitialized)
+
+Total sizeof = 0x190 ✓ (matches M1 dossier).
+
+OPEN: exact semantics of +0x170/+0x178/+0x184 need a dynamic-update
+call site decomp to pin down. Not blocking M2.
+
+
+============================================================
+  5. Cross-check against live walker dump
+============================================================
+
+User's live dump for a BSTriShape at frame-time showed:
+  +0x130: <HEAP POINTER — shared across 4 consecutive TriShapes in mesh>
+  +0x138: <HEAP POINTER — different per shape>
+
+Interpretation with the confirmed layout:
+
+  +0x130 = alphaProperty. It is COMMON for a single NiAlphaProperty
+           to be shared across all sub-shapes of one NIF (since alpha
+           blending settings are usually a per-mesh, not per-shape,
+           concern). "Shared across 4 TriShapes" fits perfectly.
+
+  +0x138 = shaderProperty. Each TriShape has its own material/texture
+           binding, so the shader property varies per shape. "Different
+           per shape" fits perfectly.
+
+  This is the strongest empirical confirmation of the swap.
+
+
+============================================================
+  6. What the M1 dossier §9 needs updated to
+============================================================
+
+Replace the stub in M1 §9 with:
+
+    BSGeometry layout (confirmed M2):
+      +0x120  u32     vertex desc flags (init from unk_143437F50)
+      +0x128  u64     skin/owner-related data ptr (init from qword_143437F54)
+      +0x12C  u32     = 0 at ctor
+      +0x130  NiPointer<NiAlphaProperty>     <-- alphaProperty
+      +0x138  NiPointer<BSShaderProperty>    <-- shaderProperty
+      +0x140  NiPointer<?> (skin instance? light instance?)
+      +0x148  NiPointer<?>
+      +0x150  NiPointer<?>
+      +0x158  u16     material type word (set to 0 at ctor, to 3 in BSTriShape)
+
+    Clone procedure for M2:
+      1. Walk scene from qword_143E47A10 (ShadowSceneNode).
+      2. Find a visible BSTriShape V via AttachChild walk.
+      3. src_alpha  = *(QWORD*)(V + 0x130)
+         src_shader = *(QWORD*)(V + 0x138)
+      4. InterlockedIncrement(&src_alpha->refcount), write to cube+0x130
+         InterlockedIncrement(&src_shader->refcount), write to cube+0x138
+         (or equivalently call BSGeometry::vt[42] with src_alpha; use
+          sub_1416D5930's refcount-safe helper — but note that ONE slot
+          in cube is filled by vt[42], the OTHER must be direct-written
+          because there's no public vt[43] equivalent.)
+
+    Alternative (cleaner): use vtable[42] for alpha, and allocate a
+    NEW BSLightingShaderProperty via sub_142171620 with a cloned
+    texture set — see §2 installer pattern.
+
+
+============================================================
+  7. Confidence summary
+============================================================
+
+  shaderProperty @ +0x138        HIGH   (direct disasm of two installer
+                                         sites both write to +0x138;
+                                         ctor refcount-safe zeros +0x138)
+  alphaProperty  @ +0x130        HIGH   (BSGeometry vt[42] disasm shows
+                                         `mov [rax+130h], rdx` literally;
+                                         two installers both hit vt[42]
+                                         with a NiAlphaProperty)
+  BSGeometry::vt[42] = SetAlphaProperty (sub_1416D5930)
+                                 HIGH   (5-instruction refcount-safe
+                                         setter, pure offset-130 write)
+  BSDynamicTriShape extra layout LOW-MED (4 fields identified with
+                                         offsets + init values; semantic
+                                         names are guesses)
+
+  HYPOTHESIS FROM TASK:
+    "+0x130 = shaderProperty"           REFUTED
+    "+0x138 = alphaProperty"            REFUTED
+    The two slots ARE at +0x130 and +0x138, but they hold the OTHER
+    property each.
+
+
+============================================================
+  8. One ambiguity worth flagging
+============================================================
+
+In the installer sites, the "shader" object installed at +0x138 was
+not always BSLightingShaderProperty — in sub_1406B60C0 it was a
+BSSkyShaderProperty, in sub_140372CC0 it was a BSEffectShaderProperty.
+All three derive from BSShaderProperty (which derives from
+NiShadeProperty → NiProperty → NiObjectNET). So +0x138 is typed as
+`NiPointer<BSShaderProperty>` (base class), not specifically
+`NiPointer<BSLightingShaderProperty>`. This matters if the clone
+code introspects the vtable to decide how to copy parameters.
+
+Similarly +0x130 takes any NiProperty derivative in principle, but
+the only installer pattern I traced uses NiAlphaProperty directly,
+so in practice +0x130 is the alpha slot. (BSGeometry::vt[42] does
+not runtime-check the type; it's a plain refcount-safe setter.)
+
+============================================================
+  END — Hypothesis refuted; offsets swapped; M1 dossier needs
+        the §9 stub replaced with the confirmed layout above.
+============================================================

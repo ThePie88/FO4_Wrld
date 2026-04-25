@@ -1,0 +1,9 @@
+build/
+build-debug/
+*.obj
+*.exp
+*.lib
+*.pdb
+*.ilk
+CMakeUserPresets.json
+.vs/

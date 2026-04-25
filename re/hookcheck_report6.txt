@@ -1,0 +1,98 @@
+================================================================================
+ HOOK CHECK 6 - FINAL vtable/qword scan
+================================================================================
+
+### Scan .rdata (0x142439950 - 0x142ECD000) ###
+
+  Looking for qword = 0x14221E6A0 (CONSUMER sub_14221E6A0):
+    hit @ 0x14290D198  (RVA 0x290D198)
+    total hits: 1
+
+  Looking for qword = 0x1421DC480 (PRODUCER sub_1421DC480):
+    total hits: 0
+
+  Looking for qword = 0x14223F110 (per-geometry WVP sub_14223F110):
+    hit @ 0x14290FA30  (RVA 0x290FA30)
+    total hits: 1
+
+  Looking for qword = 0x1421DC190 (PRODUCER parent):
+    total hits: 0
+
+  Looking for qword = 0x1421DBAF0 (PRODUCER grandparent):
+    total hits: 0
+
+### Scan .data (0x142ECD000 - 0x143E60000) ###
+
+  Looking for qword = 0x14221E6A0 (CONSUMER sub_14221E6A0):
+    total hits: 0
+
+  Looking for qword = 0x1421DC480 (PRODUCER sub_1421DC480):
+    total hits: 0
+
+  Looking for qword = 0x14223F110 (per-geometry WVP sub_14223F110):
+    total hits: 0
+
+  Looking for qword = 0x1421DC190 (PRODUCER parent):
+    total hits: 0
+
+  Looking for qword = 0x1421DBAF0 (PRODUCER grandparent):
+    total hits: 0
+
+### Scan .pdata (0x143E60000 - 0x1440DF000) ###
+
+  Looking for qword = 0x14221E6A0 (CONSUMER sub_14221E6A0):
+    total hits: 0
+
+  Looking for qword = 0x1421DC480 (PRODUCER sub_1421DC480):
+    total hits: 0
+
+  Looking for qword = 0x14223F110 (per-geometry WVP sub_14223F110):
+    total hits: 0
+
+  Looking for qword = 0x1421DC190 (PRODUCER parent):
+    total hits: 0
+
+  Looking for qword = 0x1421DBAF0 (PRODUCER grandparent):
+    total hits: 0
+
+
+### DataRefsTo for each target ###
+
+  CONSUMER sub_14221E6A0:
+    0x14290D198  seg=.rdata
+    0x142EA6BB4  seg=.rdata
+    0x142EA6C70  seg=.rdata
+    0x142EA6C80  seg=.rdata
+    0x142EA6CB0  seg=.rdata
+    0x1440B1808  seg=.pdata
+    total refs: 6
+
+  PRODUCER sub_1421DC480:
+    0x142EA1C94  seg=.rdata
+    0x142EA1CA4  seg=.rdata
+    0x1440AEAB4  seg=.pdata
+    total refs: 3
+
+  per-geometry WVP sub_14223F110:
+    0x14290FA30  seg=.rdata
+    0x142EA95C0  seg=.rdata
+    0x142EA9610  seg=.rdata
+    0x142EA9620  seg=.rdata
+    0x1440B31A0  seg=.pdata
+    total refs: 5
+
+  PRODUCER parent:
+    0x142EA1CC8  seg=.rdata
+    0x142EA1D08  seg=.rdata
+    0x142EA1D20  seg=.rdata
+    0x142EA1D34  seg=.rdata
+    0x142EA1D44  seg=.rdata
+    0x1440AEA0C  seg=.pdata
+    total refs: 6
+
+  PRODUCER grandparent:
+    0x1440AE934  seg=.pdata
+    total refs: 1
+
+
+### Binary identification ###

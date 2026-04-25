@@ -1,0 +1,1782 @@
+==== Strada B M2.4 GEOM phase-3 — vertex packer ====
+image base = 0x140000000
+PACKER sub_14182DFC0        @ 0x14182DFC0
+IDX_BUILDER sub_141818550   @ 0x141818550
+TRI_POSTALLOC sub_1416DA0A0 @ 0x1416DA0A0
+TRI_POSTALLOC_E sub_1416DA0F0 @ 0x1416DA0F0
+VD_PACKER sub_1416CE630     @ 0x1416CE630
+VD_TEMPLATE_WR sub_1416D5E80@ 0x1416D5E80
+GEO_SET sub_1416BCE00       @ 0x1416BCE00
+BYTE_VTX_TMPL 143A0F400     @ 0x143A0F400
+
+
+========== STEP 1 — byte_143A0F400 hex dump (256 bytes) ==========
+
+-- bytes at byte_143A0F400 0x143A0F400 (RVA 0x3A0F400) (first 256) --
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+
+-- as dwords (first 64) --
+  +0000  FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFF  FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFF
+  +0020  FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFF  FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFF
+  +0040  FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFF  FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFF
+  +0060  FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFF  FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFF
+  +0080  FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFF  FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFF
+  +00A0  FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFF  FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFF
+  +00C0  FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFF  FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFF
+  +00E0  FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFF  FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFF
+
+
+========== STEP 2 — PACKER sub_14182DFC0 decomp ==========
+
+-- decomp sub_14182DFC0 (packer) @ 0x14182DFC0 (RVA 0x182DFC0) --
+  size=0xEE9
+unsigned __int64 __fastcall sub_14182DFC0(
+        unsigned int a1,
+        __int64 a2,
+        __int64 a3,
+        __int64 a4,
+        __int64 a5,
+        __int64 a6,
+        __int64 a7,
+        __int64 a8,
+        __int64 a9,
+        int *a10,
+        __int64 a11,
+        __int64 a12,
+        __int64 a13,
+        __int64 a14,
+        _DWORD *a15,
+        unsigned __int16 *a16,
+        unsigned int a17,
+        __int64 a18,
+        unsigned int a19)
+{
+  __int16 v19; // di
+  unsigned int v20; // r15d
+  __int64 v21; // r14
+  __int64 v22; // rbx
+  unsigned __int64 v23; // r10
+  unsigned int v24; // esi
+  __int64 v25; // rax
+  __int64 v26; // rax
+  __int64 v27; // rax
+  __int64 v28; // rax
+  __int64 v29; // rax
+  __int64 v30; // rax
+  __int64 v31; // rax
+  __int64 v32; // r12
+  __int64 v33; // rax
+  unsigned __int64 v34; // r9
+  unsigned __int16 *v35; // rbp
+  int v37; // ecx
+  int v38; // ebx
+  int v39; // ebx
+  __int64 v40; // rbx
+  unsigned int v41; // r13d
+  __int64 v42; // r11
+  __int64 v43; // rax
+  int *v44; // r10
+  unsigned __int16 *v45; // r11
+  __int64 v46; // rbx
+  __int64 v47; // r9
+  float *v48; // r9
+  __int64 v49; // rbx
+  _DWORD *v51; // rbx
+  __int64 v52; // r12
+  int v53; // eax
+  int v54; // edi
+  _DWORD *v55; // rdx
+  unsigned int v56; // esi
+  __int64 v57; // r8
+  __int64 v58; // rax
+  unsigned int v59; // ecx
+  __int64 v60; // r11
+  unsigned int v61; // edi
+  unsigned int v62; // r12d
+  float *v63; // r9
+  int v64; // edx
+  int v65; // eax
+  int v66; // r8d
+  float v67; // xmm0_4
+  float *v68; // r9
+  int *v69; // r10
+  float v70; // xmm0_4
+  int v71; // r8d
+  float *v72; // r9
+  int *v73; // r10
+  int *v74; // r10
+  float *v75; // r9
+  float *v76; // r9
+  __int64 v77; // rbx
+  float v78; // xmm0_4
+  float v79; // xmm1_4
+  __int64 v80; // r8
+  __int64 v81; // rax
+  _DWORD *v82; // rdx
+  _DWORD *v83; // rdx
+  __int64 v84; // rax
+  _DWORD *v85; // rdx
+  __int64 v86; // r9
+  int *v87; // r8
+  int v88; // ecx
+  __int64 v90; // [rsp+40h] [rbp-98h]
+  unsigned int v91; // [rsp+48h] [rbp-90h]
+  unsigned int v92; // [rsp+4Ch] [rbp-8Ch]
+  unsigned int v93; // [rsp+50h] [rbp-88h]
+  unsigned int v94; // [rsp+54h] [rbp-84h]
+  unsigned int v95; // [rsp+58h] [rbp-80h]
+  unsigned int v96; // [rsp+5Ch] [rbp-7Ch]
+  unsigned int v97; // [rsp+60h] [rbp-78h]
+  unsigned __int64 v98; // [rsp+68h] [rbp-70h]
+  unsigned int v99; // [rsp+E0h] [rbp+8h]
+  int v100; // [rsp+E8h] [rbp+10h]
+  int v103; // [rsp+F8h] [rbp+20h]
+  int v104; // [rsp+F8h] [rbp+20h]
+
+  v100 = a2;
+  v19 = a17;
+  v20 = 0;
+  v21 = a1;
+  v22 = a17 & 1;
+  v99 = 0;
+  v91 = 0;
+  v92 = 0;
+  v23 = 0;
+  v93 = 0;
+  v24 = 0;
+  v94 = 0;
+  v95 = 0;
+  v96 = 0;
+  v97 = 0;
+  v90 = 0;
+  if ( a2 || (a17 & 1) != 0 )
+  {
+    v23 = 0x100000000000LL << (10 * (unsigned __int8)v22);
+    *((_DWORD *)&v90 + v22) += 8;
+    v24 = v90;
+  }
+  v25 = (a17 >> 1) & 1;
+  if ( a3 || (_DWORD)v25 )
+  {
+    v99 = *((_DWORD *)&v90 + v25);
+    *((_DWORD *)&v90 + (unsigned int)v25) = v99 + 4;
+    v23 |= ((unsigned __int64)v99 << 6) | (0x100000000000LL << (10 * ((a17 & 2) != 0) + 1));
+    v24 = v90;
+  }
+  v26 = (a17 >> 2) & 1;
+  if ( a4 || (_DWORD)v26 )
+  {
+    v91 = *((_DWORD *)&v90 + v26);
+    v23 = v23 & 0xFFFFFFFFFFFF0FFFuLL
+        | ((unsigned __int64)v91 << 10)
+        | (0x100000000000LL << (10 * ((a17 & 4) != 0) + 2));
+    *((_DWORD *)&v90 + (unsigned int)v26) = v91 + 8;
+    v24 = v90;
+  }
+  v27 = (a17 >> 3) & 1;
+  if ( a5 || (_DWORD)v27 )
+  {
+    v92 = *((_DWORD *)&v90 + v27);
+    v23 = v23 & 0xFFFFFFFFFFF0FFFFuLL
+        | ((unsigned __int64)v92 << 14)
+        | (0x100000000000LL << (10 * ((a17 & 8) != 0) + 3));
+    *((_DWORD *)&v90 + (unsigned int)v27) = v92 + 4;
+    v24 = v90;
+  }
+  v28 = (a17 >> 4) & 1;
+  if ( a6 || (_DWORD)v28 )
+  {
+    v93 = *((_DWORD *)&v90 + v28);
+    v23 = v23 & 0xFFFFFFFFFF0FFFFFuLL
+        | ((unsigned __int64)v93 << 18)
+        | (0x100000000000LL << (10 * ((a17 & 0x10) != 0) + 4));
+    *((_DWORD *)&v90 + (unsigned int)v28) = v93 + 4;
+    v24 = v90;
+  }
+  v29 = (a17 >> 5) & 1;
+  if ( a8 || (_DWORD)v29 )
+  {
+    v94 = *((_DWORD *)&v90 + v29);
+    v23 = v23 & 0xFFFFFFFFF0FFFFFFuLL
+        | ((unsigned __int64)v94 << 22)
+        | (0x100000000000LL << (10 * ((a17 & 0x20) != 0) + 5));
+    *((_DWORD *)&v90 + (unsigned int)v29) = v94 + 4;
+    v24 = v90;
+  }
+  v30 = (a17 >> 6) & 1;
+  if ( a9 || (_DWORD)v30 )
+  {
+    v95 = *((_DWORD *)&v90 + v30);
+    v23 = v23 & 0xFFFFFFFF0FFFFFFFuLL
+        | ((unsigned __int64)v95 << 26)
+        | (0x100000000000LL << (10 * ((a17 & 0x40) != 0) + 6));
+    *((_DWORD *)&v90 + (unsigned int)v30) = v95 + 12;
+    v24 = v90;
+  }
+  v31 = (a17 >> 7) & 1;
+  if ( a11 || (_DWORD)v31 )
+  {
+    v96 = *((_DWORD *)&v90 + v31);
+    v23 = v23 & 0xFFFFFFF0FFFFFFFFuLL
+        | ((unsigned __int64)v96 << 30)
+        | (0x100000000000LL << (10 * ((a17 & 0x80) != 0) + 7));
+    *((_DWORD *)&v90 + (unsigned int)v31) = v96 + 8;
+    v24 = v90;
+  }
+  v32 = a13;
+  v33 = (a17 >> 8) & 1;
+  if ( a13 || (_DWORD)v33 )
+  {
+    v34 = ((unsigned __int64)*((unsigned int *)&v90 + ((a17 >> 8) & 1)) << 34)
+        | (0x100000000000LL << (10 * (BYTE1(a17) & 1u) + 8));
+    v97 = *((_DWORD *)&v90 + v33);
+    v23 = v23 & 0xFFFFFF0FFFFFFFFFuLL | v34;
+    *((_DWORD *)&v90 + (unsigned int)v33) = v97 + 4;
+    v24 = v90;
+  }
+  v98 = v23 & 0xFFFFFFFFFFFFFF00uLL | ((unsigned __int64)v24 >> 2) & 0x3FFFFFFFFFFFFF0FLL | (4LL * HIDWORD(v90));
+  LODWORD(v90) = a1 * v24;
+  if ( a14 && (unsigned int)v90 <= *a15 )
+  {
+    v35 = a16;
+    if ( a2 && (a17 & 1) == 0 )
+    {
+      sub_1418310B0(a14, v24, a2, 12, a1, (__int64)a16);
+      sub_1418310B0(a14 + 2, v24, v100 + 4, 12, v21, (__int64)a16);
+      sub_1418310B0(a14 + 4, v24, v100 + 8, 12, v21, (__int64)a16);
+    }
+    if ( a7 && (a17 & 0x10) == 0 )
+    {
+      if ( (a17 & 1) != 0 )
+      {
+        v37 = a18;
+      }
+      else
+      {
+        v37 = a14 + 6;
+        a19 = v24;
+      }
+      sub_1418310B0(v37, a19, a7, 12, v21, (__int64)a16);
+    }
+    if ( a3 && (a17 & 2) == 0 )
+    {
+      sub_1418310B0(a14 + v99, v24, a3, 8, v21, (__int64)a16);
+      sub_1418310B0(a14 + v99 + 2, v24, a3 + 4, 8, v21, (__int64)a16);
+    }
+    if ( a4 && (a17 & 4) == 0 )
+    {
+      v38 = a14 + v91;
+      sub_1418310B0(a14 + v91, v24, a4, 16, v21, (__int64)a16);
+      sub_1418310B0(v38 + 2, v24, a4 + 4, 16, v21, (__int64)a16);
+      sub_1418310B0(v38 + 4, v24, a4 + 8, 16, v21, (__int64)a16);
+      sub_1418310B0(v38 + 6, v24, a4 + 12, 16, v21, (__int64)a16);
+    }
+    if ( !a5 || (a17 & 8) != 0 )
+    {
+      v40 = a7;
+    }
+    else
+    {
+      v39 = a14 + v92;
+      v103 = a14 + v92;
+      sub_141831420(a14 + v92, v24, a5, 12, v21, -1082130432, 1065353216, (__int64)a16);
+      sub_141831420(v39 + 1, v24, a5 + 4, 12, v21, -1082130432, 1065353216, (__int64)a16);
+      sub_141831420(v39 + 2, v24, a5 + 8, 12, v21, -1082130432, 1065353216, (__int64)a16);
+      v40 = a7;
+      if ( a7 )
+        sub_141831420(v103 + 3, v24, a7 + 4, 12, v21, -1082130432, 1065353216, (__int64)a16);
+    }
+    if ( a6 )
+    {
+      if ( (a17 & 0x10) == 0 )
+      {
+        v104 = a14 + v93;
+        sub_141831420(a14 + v93, v24, a6, 12, v21, -1082130432, 1065353216, (__int64)a16);
+        sub_141831420(v104 + 1, v24, a6 + 4, 12, v21, -1082130432, 1065353216, (__int64)a16);
+        sub_141831420(v104 + 2, v24, a6 + 8, 12, v21, -1082130432, 1065353216, (__int64)a16);
+        if ( v40 )
+          sub_141831420(v104 + 3, v24, v40 + 8, 12, v21, -1082130432, 1065353216, (__int64)a16);
+      }
+    }
+    v41 = 2;
+    if ( a8 )
+    {
+      v42 = a14;
+      if ( (a17 & 0x20) != 0 )
+        goto LABEL_62;
+      v43 = v24 >> 2;
+      v44 = (int *)(a14 + v94);
+      if ( !(_DWORD)v21 )
+        goto LABEL_62;
+      if ( !a16 )
+      {
+        v59 = 0;
+        if ( (unsigned int)v21 >= 4 )
+        {
+          v60 = v43;
+          v61 = 2;
+          v62 = 0;
+          do
+          {
+            v63 = (float *)(a8 + 16LL * v62);
+            v64 = (int)(float)(v63[1] * 255.0);
+            v65 = (int)(float)(v63[3] * 255.0);
+            v66 = (unsigned __int8)(int)(float)(v63[2] * 255.0);
+            v67 = *v63;
+            v68 = (float *)(a8 + 16LL * (v61 - 1));
+            *v44 = (unsigned __int8)(int)(float)(v67 * 255.0)
+                 | (((unsigned __int8)v64 | (((v65 << 8) | v66) << 8)) << 8);
+            v69 = &v44[v60];
+            v70 = *v68 * 255.0;
+            v71 = (unsigned __int8)(int)(float)(v68[1] * 255.0)
+                | ((((int)(float)(v68[3] * 255.0) << 8) | (unsigned __int8)(int)(float)(v68[2] * 255.0)) << 8);
+            v72 = (float *)(a8 + 16LL * v61);
+            *v69 = (unsigned __int8)(int)v70 | (v71 << 8);
+            v73 = &v69[v60];
+            *v73 = (unsigned __int8)(int)(float)(*v72 * 255.0)
+                 | (((unsigned __int8)(int)(float)(v72[1] * 255.0)
+                   | ((((int)(float)(v72[3] * 255.0) << 8) | (unsigned __int8)(int)(float)(v72[2] * 255.0)) << 8)) << 8);
+            v74 = &v73[v60];
+            v75 = (float *)(a8 + 16LL * (v61 + 1));
+            v62 += 4;
+            v61 += 4;
+            *v74 = (unsigned __int8)(int)(float)(*v75 * 255.0)
+                 | (((unsigned __int8)(int)(float)(v75[1] * 255.0)
+                   | ((((int)(float)(v75[3] * 255.0) << 8) | (unsigned __int8)(int)(float)(v75[2] * 255.0)) << 8)) << 8);
+            v44 = &v74[v60];
+          }
+          while ( v62 < (int)v21 - 3 );
+          v35 = a16;
+          v19 = a17;
+          v42 = a14;
+          v43 = v24 >> 2;
+          v59 = v62;
+          v32 = a13;
+        }
+        if ( v59 < (unsigned int)v21 )
+        {
+          v76 = (float *)(16LL * v59 + a8 + 8);
+          v77 = (unsigned int)v21 - v59;
+          do
+          {
+            v78 = *(v76 - 1);
+            v79 = *v76;
+            v76 += 4;
+            *v44 = (unsigned __int8)(int)(float)(*(v76 - 6) * 255.0)
+                 | (((unsigned __int8)(int)(float)(v78 * 255.0)
+                   | ((((int)(float)(*(v76 - 3) * 255.0) << 8) | (unsigned __int8)(int)(float)(v79 * 255.0)) << 8)) << 8);
+            v44 += v43;
+            --v77;
+          }
+          while ( v77 );
+          v35 = a16;
+        }
+        goto LABEL_62;
+      }
+      v45 = a16;
+      v46 = v21;
+      do
+      {
+        v47 = *v45++;
+        v48 = (float *)(a8 + 16 * v47);
+        *v44 = (unsigned __int8)(int)(float)(*v48 * 255.0)
+             | (((unsigned __int8)(int)(float)(v48[1] * 255.0)
+               | ((((int)(float)(v48[3] * 255.0) << 8) | (unsigned __int8)(int)(float)(v48[2] * 255.0)) << 8)) << 8);
+        v44 += v43;
+        --v46;
+      }
+      while ( v46 );
+      v32 = a13;
+      v19 = a17;
+    }
+    v42 = a14;
+LABEL_62:
+    if ( a9 )
+    {
+      if ( (v19 & 0x40) == 0 )
+      {
+        v49 = v42 + v95;
+        sub_1416E55B0(v42 + v95, v24, a9, 16, v21);
+        sub_1416E55B0(v49 + 2, v24, a9 + 4, 16, v21);
+        sub_1416E55B0(v49 + 4, v24, a9 + 8, 16, v21);
+        sub_1416E55B0(v49 + 6, v24, a9 + 12, 16, v21);
+        v51 = (_DWORD *)(v49 + 8);
+        if ( (_DWORD)v21 )
+        {
+          v52 = v21;
+          do
+          {
+            v53 = *a10++;
+            *v51 = v53;
+            v51 += v24 >> 2;
+            --v52;
+          }
+          while ( v52 );
+          v32 = a13;
+        }
+      }
+    }
+    if ( a11 && (v19 & 0x80u) == 0 )
+    {
+      v54 = a14 + v96;
+      sub_141831420(a14 + v96, v24, a11, 16, v21, 0, 1065353216, (__int64)v35);
+      sub_141831420(v54 + 1, v24, a11 + 4, 16, v21, 0, 1065353216, (__int64)v35);
+      sub_141831420(v54 + 2, v24, a11 + 8, 16, v21, 0, 1065353216, (__int64)v35);
+      sub_141831420(v54 + 3, v24, a11 + 12, 16, v21, 0, 1065353216, (__int64)v35);
+      sub_141831420(v54 + 4, v24, a12, 16, v21, 0, 1065353216, (__int64)v35);
+      sub_141831420(v54 + 5, v24, a12 + 4, 16, v21, 0, 1065353216, (__int64)v35);
+      sub_141831420(v54 + 6, v24, a12 + 8, 16, v21, 0, 1065353216, (__int64)v35);
+      sub_141831420(v54 + 7, v24, a12 + 12, 16, v21, 0, 1065353216, (__int64)v35);
+      v19 = a17;
+    }
+    if ( v32 )
+    {
+      if ( (v19 & 0x100) == 0 )
+      {
+        v55 = (_DWORD *)(a14 + v97);
+        v56 = v24 >> 2;
+        if ( (_DWORD)v21 )
+        {
+          if ( v35 )
+          {
+            v57 = v21;
+            do
+            {
+              v58 = *v35++;
+              *v55 = *(_DWORD *)(v32 + 4 * v58);
+              v55 += v56;
+              --v57;
+            }
+            while ( v57 );
+          }
+          else
+          {
+            if ( (unsigned int)v21 >= 4 )
+            {
+              v80 = v56;
+              do
+              {
+                v81 = v20;
+                v20 += 4;
+                *v55 = *(_DWORD *)(v32 + 4 * v81);
+                v82 = &v55[v80];
+                *v82 = *(_DWORD *)(v32 + 4LL * (v41 - 1));
+                v83 = &v82[v80];
+                v84 = v41 + 1;
+                *v83 = *(_DWORD *)(v32 + 4LL * v41);
+                v41 += 4;
+                v85 = &v83[v80];
+                *v85 = *(_DWORD *)(v32 + 4 * v84);
+                v55 = &v85[v80];
+              }
+              while ( v20 < (int)v21 - 3 );
+            }
+            if ( v20 < (unsigned int)v21 )
+            {
+              v86 = (unsigned int)v21 - v20;
+              v87 = (int *)(v32 + 4LL * v20);
+              do
+              {
+                v88 = *v87++;
+                *v55 = v88;
+                v55 += v56;
+                --v86;
+              }
+              while ( v86 );
+            }
+          }
+        }
+      }
+    }
+  }
+  *a15 = v90;
+  return v98;
+}
+
+
+-- disasm sub_14182DFC0 (disasm) @ 0x14182DFC0 (RVA 0x182DFC0) --
+  0x14182DFC0  mov     [rsp+arg_18], r9
+  0x14182DFC5  mov     [rsp+arg_10], r8
+  0x14182DFCA  mov     [rsp+arg_8], rdx
+  0x14182DFCF  push    rbx
+  0x14182DFD0  push    rsi
+  0x14182DFD1  push    rdi
+  0x14182DFD2  push    r12
+  0x14182DFD4  push    r13
+  0x14182DFD6  push    r14
+  0x14182DFD8  push    r15
+  0x14182DFDA  sub     rsp, 0A0h
+  0x14182DFE1  mov     edi, [rsp+0D8h+arg_80]
+  0x14182DFE8  xor     r15d, r15d
+  0x14182DFEB  mov     ebx, edi
+  0x14182DFED  mov     r14d, ecx
+  0x14182DFF0  and     ebx, 1
+  0x14182DFF3  mov     [rsp+0D8h+arg_0], r15d
+  0x14182DFFB  mov     [rsp+0D8h+var_90], r15d
+  0x14182E000  mov     r11, r9
+  0x14182E003  mov     [rsp+0D8h+var_8C], r15d
+  0x14182E008  mov     r10d, r15d
+  0x14182E00B  mov     [rsp+0D8h+var_88], r15d
+  0x14182E010  mov     esi, r15d
+  0x14182E013  mov     [rsp+0D8h+var_84], r15d
+  0x14182E018  mov     r9, 100000000000h
+  0x14182E022  mov     [rsp+0D8h+var_80], r15d
+  0x14182E027  mov     [rsp+0D8h+var_7C], r15d
+  0x14182E02C  mov     [rsp+0D8h+var_78], r15d
+  0x14182E031  mov     [rsp+0D8h+var_98], r15
+  0x14182E036  test    rdx, rdx
+  0x14182E039  jnz     short loc_14182E03F
+  0x14182E03B  test    ebx, ebx
+  0x14182E03D  jz      short loc_14182E054
+  0x14182E03F  lea     eax, [rbx+rbx*4]
+  0x14182E042  mov     r10, r9
+  0x14182E045  lea     ecx, [rax+rax]
+  0x14182E048  shl     r10, cl
+  0x14182E04B  add     dword ptr [rsp+rbx*4+0D8h+var_98], 8
+  0x14182E050  mov     esi, dword ptr [rsp+0D8h+var_98]
+  0x14182E054  mov     eax, edi
+  0x14182E056  mov     [rsp+0D8h+var_40], rbp
+  0x14182E05E  shr     eax, 1
+  0x14182E060  and     eax, 1
+  0x14182E063  test    r8, r8
+  0x14182E066  jnz     short loc_14182E06C
+  0x14182E068  test    eax, eax
+  0x14182E06A  jz      short loc_14182E0A2
+  0x14182E06C  mov     ebp, dword ptr [rsp+rax*4+0D8h+var_98]
+  0x14182E070  lea     ecx, [rax+rax*4]
+  0x14182E073  mov     r8d, eax
+  0x14182E076  lea     ecx, ds:1[rcx*2]
+  0x14182E07D  mov     eax, ebp
+  0x14182E07F  mov     [rsp+0D8h+arg_0], ebp
+  0x14182E086  shl     rax, 6
+  0x14182E08A  mov     rdx, r9
+  0x14182E08D  shl     rdx, cl
+  0x14182E090  or      rdx, rax
+  0x14182E093  lea     eax, [rbp+4]
+  0x14182E096  mov     dword ptr [rsp+r8*4+0D8h+var_98], eax
+  0x14182E09B  or      r10, rdx
+  0x14182E09E  mov     esi, dword ptr [rsp+0D8h+var_98]
+  0x14182E0A2  mov     eax, edi
+  0x14182E0A4  shr     eax, 2
+  0x14182E0A7  and     eax, 1
+  0x14182E0AA  test    r11, r11
+  0x14182E0AD  jnz     short loc_14182E0B3
+  0x14182E0AF  test    eax, eax
+  0x14182E0B1  jz      short loc_14182E0F2
+  0x14182E0B3  mov     ebp, dword ptr [rsp+rax*4+0D8h+var_98]
+  0x14182E0B7  lea     ecx, [rax+rax*4]
+  0x14182E0BA  mov     r8d, eax
+  0x14182E0BD  lea     ecx, ds:2[rcx*2]
+  0x14182E0C4  mov     eax, ebp
+  0x14182E0C6  mov     [rsp+0D8h+var_90], ebp
+  0x14182E0CA  shl     rax, 0Ah
+  0x14182E0CE  mov     rdx, r9
+  0x14182E0D1  shl     rdx, cl
+  0x14182E0D4  or      rdx, rax
+  0x14182E0D7  mov     rax, r10
+  0x14182E0DA  and     rax, 0FFFFFFFFFFFF0FFFh
+  0x14182E0E0  mov     r10, rdx
+  0x14182E0E3  or      r10, rax
+  0x14182E0E6  lea     eax, [rbp+8]
+  0x14182E0E9  mov     dword ptr [rsp+r8*4+0D8h+var_98], eax
+  0x14182E0EE  mov     esi, dword ptr [rsp+0D8h+var_98]
+  0x14182E0F2  mov     eax, edi
+  0x14182E0F4  shr     eax, 3
+  0x14182E0F7  and     eax, 1
+  0x14182E0FA  cmp     [rsp+0D8h+arg_20], r15
+  0x14182E102  jnz     short loc_14182E108
+  0x14182E104  test    eax, eax
+  0x14182E106  jz      short loc_14182E14B
+  0x14182E108  mov     r13d, dword ptr [rsp+rax*4+0D8h+var_98]
+  0x14182E10D  lea     ecx, [rax+rax*4]
+  0x14182E110  mov     r8d, eax
+  0x14182E113  lea     ecx, ds:3[rcx*2]
+  0x14182E11A  mov     eax, r13d
+  0x14182E11D  mov     [rsp+0D8h+var_8C], r13d
+  0x14182E122  shl     rax, 0Eh
+  0x14182E126  mov     rdx, r9
+  0x14182E129  shl     rdx, cl
+  0x14182E12C  or      rdx, rax
+  0x14182E12F  mov     rax, r10
+  0x14182E132  and     rax, 0FFFFFFFFFFF0FFFFh
+  0x14182E138  mov     r10, rdx
+  0x14182E13B  or      r10, rax
+  0x14182E13E  lea     eax, [r13+4]
+  0x14182E142  mov     dword ptr [rsp+r8*4+0D8h+var_98], eax
+  0x14182E147  mov     esi, dword ptr [rsp+0D8h+var_98]
+  0x14182E14B  mov     eax, edi
+  0x14182E14D  shr     eax, 4
+  0x14182E150  and     eax, 1
+  0x14182E153  cmp     [rsp+0D8h+arg_28], r15
+  0x14182E15B  jnz     short loc_14182E161
+  0x14182E15D  test    eax, eax
+  0x14182E15F  jz      short loc_14182E1A4
+  0x14182E161  mov     r13d, dword ptr [rsp+rax*4+0D8h+var_98]
+  0x14182E166  lea     ecx, [rax+rax*4]
+  0x14182E169  mov     r8d, eax
+  0x14182E16C  lea     ecx, ds:4[rcx*2]
+  0x14182E173  mov     eax, r13d
+  0x14182E176  mov     [rsp+0D8h+var_88], r13d
+  0x14182E17B  shl     rax, 12h
+  0x14182E17F  mov     rdx, r9
+  0x14182E182  shl     rdx, cl
+  0x14182E185  or      rdx, rax
+  0x14182E188  mov     rax, r10
+  0x14182E18B  and     rax, 0FFFFFFFFFF0FFFFFh
+  0x14182E191  mov     r10, rdx
+  0x14182E194  or      r10, rax
+  0x14182E197  lea     eax, [r13+4]
+  0x14182E19B  mov     dword ptr [rsp+r8*4+0D8h+var_98], eax
+  0x14182E1A0  mov     esi, dword ptr [rsp+0D8h+var_98]
+  0x14182E1A4  mov     eax, edi
+  0x14182E1A6  shr     eax, 5
+  0x14182E1A9  and     eax, 1
+  0x14182E1AC  cmp     [rsp+0D8h+arg_38], r15
+  0x14182E1B4  jnz     short loc_14182E1BA
+  0x14182E1B6  test    eax, eax
+  0x14182E1B8  jz      short loc_14182E1FD
+  0x14182E1BA  mov     r13d, dword ptr [rsp+rax*4+0D8h+var_98]
+  0x14182E1BF  lea     ecx, [rax+rax*4]
+  0x14182E1C2  mov     r8d, eax
+  0x14182E1C5  lea     ecx, ds:5[rcx*2]
+  0x14182E1CC  mov     eax, r13d
+  0x14182E1CF  mov     [rsp+0D8h+var_84], r13d
+  0x14182E1D4  shl     rax, 16h
+  0x14182E1D8  mov     rdx, r9
+  0x14182E1DB  shl     rdx, cl
+  0x14182E1DE  or      rdx, rax
+  0x14182E1E1  mov     rax, r10
+  0x14182E1E4  and     rax, 0FFFFFFFFF0FFFFFFh
+  0x14182E1EA  mov     r10, rdx
+  0x14182E1ED  or      r10, rax
+  0x14182E1F0  lea     eax, [r13+4]
+  0x14182E1F4  mov     dword ptr [rsp+r8*4+0D8h+var_98], eax
+  0x14182E1F9  mov     esi, dword ptr [rsp+0D8h+var_98]
+  0x14182E1FD  mov     eax, edi
+  0x14182E1FF  shr     eax, 6
+  0x14182E202  and     eax, 1
+  0x14182E205  cmp     [rsp+0D8h+arg_40], r15
+  0x14182E20D  jnz     short loc_14182E213
+  0x14182E20F  test    eax, eax
+  0x14182E211  jz      short loc_14182E25E
+  0x14182E213  mov     r12d, dword ptr [rsp+rax*4+0D8h+var_98]
+  0x14182E218  lea     ecx, [rax+rax*4]
+  0x14182E21B  mov     r8d, eax
+  0x14182E21E  lea     ecx, ds:6[rcx*2]
+  0x14182E225  mov     eax, r12d
+  0x14182E228  mov     [rsp+0D8h+var_80], r12d
+  0x14182E22D  shl     rax, 1Ah
+  0x14182E231  mov     rdx, r9
+  0x14182E234  shl     rdx, cl
+  0x14182E237  mov     rcx, 0FFFFFFFF0FFFFFFFh
+  0x14182E241  or      rdx, rax
+  0x14182E244  mov     rax, r10
+  0x14182E247  and     rax, rcx
+  0x14182E24A  mov     r10, rdx
+  0x14182E24D  or      r10, rax
+  0x14182E250  lea     eax, [r12+0Ch]
+  0x14182E255  mov     dword ptr [rsp+r8*4+0D8h+var_98], eax
+  0x14182E25A  mov     esi, dword ptr [rsp+0D8h+var_98]
+  0x14182E25E  mov     eax, edi
+  0x14182E260  shr     eax, 7
+  0x14182E263  and     eax, 1
+  0x14182E266  cmp     [rsp+0D8h+arg_50], r15
+  0x14182E26E  jnz     short loc_14182E274
+  0x14182E270  test    eax, eax
+  0x14182E272  jz      short loc_14182E2BE
+  0x14182E274  mov     r11d, dword ptr [rsp+rax*4+0D8h+var_98]
+  0x14182E279  lea     ecx, [rax+rax*4]
+  0x14182E27C  mov     r8d, eax
+  0x14182E27F  lea     ecx, ds:7[rcx*2]
+  0x14182E286  mov     eax, r11d
+  0x14182E289  mov     [rsp+0D8h+var_7C], r11d
+  0x14182E28E  shl     rax, 1Eh
+  0x14182E292  mov     rdx, r9
+  0x14182E295  shl     rdx, cl
+  0x14182E298  mov     rcx, 0FFFFFFF0FFFFFFFFh
+  0x14182E2A2  or      rdx, rax
+  0x14182E2A5  mov     rax, r10
+  0x14182E2A8  and     rax, rcx
+  0x14182E2AB  mov     r10, rdx
+  0x14182E2AE  or      r10, rax
+  0x14182E2B1  lea     eax, [r11+8]
+  0x14182E2B5  mov     dword ptr [rsp+r8*4+0D8h+var_98], eax
+  0x14182E2BA  mov     esi, dword ptr [rsp+0D8h+var_98]
+  0x14182E2BE  mov     r12, [rsp+0D8h+arg_60]
+  0x14182E2C6  mov     eax, edi
+  0x14182E2C8  shr     eax, 8
+  0x14182E2CB  and     eax, 1
+  0x14182E2CE  test    r12, r12
+  0x14182E2D1  jnz     short loc_14182E2D7
+  0x14182E2D3  test    eax, eax
+  0x14182E2D5  jz      short loc_14182E31C
+  0x14182E2D7  mov     r8d, dword ptr [rsp+rax*4+0D8h+var_98]
+  0x14182E2DC  lea     ecx, [rax+rax*4]
+  0x14182E2DF  mov     edx, eax
+  0x14182E2E1  lea     ecx, ds:8[rcx*2]
+  0x14182E2E8  shl     r9, cl
+  0x14182E2EB  mov     eax, r8d
+  0x14182E2EE  shl     rax, 22h
+  0x14182E2F2  mov     rcx, 0FFFFFF0FFFFFFFFFh
+  0x14182E2FC  or      r9, rax
+  0x14182E2FF  mov     [rsp+0D8h+var_78], r8d
+  0x14182E304  mov     rax, r10
+  0x14182E307  mov     r10, r9
+  0x14182E30A  and     rax, rcx
+  0x14182E30D  or      r10, rax
+  0x14182E310  lea     eax, [r8+4]
+  0x14182E314  mov     dword ptr [rsp+rdx*4+0D8h+var_98], eax
+  0x14182E318  mov     esi, dword ptr [rsp+0D8h+var_98]
+  0x14182E31C  mov     r13d, dword ptr [rsp+0D8h+var_98+4]
+  0x14182E321  and     r10, 0FFFFFFFFFFFFFF00h
+  0x14182E328  shl     r13, 2
+  0x14182E32C  mov     rcx, 3FFFFFFFFFFFFF0Fh
+  0x14182E336  mov     eax, esi
+  0x14182E338  shr     rax, 2
+  0x14182E33C  and     rax, rcx
+  0x14182E33F  or      r13, rax
+  0x14182E342  or      r13, r10
+  0x14182E345  mov     [rsp+0D8h+var_70], r13
+  0x14182E34A  mov     r13d, esi
+  0x14182E34D  imul    r13d, r14d
+  0x14182E351  mov     dword ptr [rsp+0D8h+var_98], r13d
+  0x14182E356  mov     r13, [rsp+0D8h+arg_68]
+  0x14182E35E  test    r13, r13
+  0x14182E361  jz      loc_14182EE7B
+  0x14182E367  mov     rcx, [rsp+0D8h+arg_70]
+  0x14182E36F  mov     eax, dword ptr [rsp+0D8h+var_98]
+  0x14182E373  cmp     eax, [rcx]
+  0x14182E375  ja      loc_14182EE7B
+  0x14182E37B  mov     rax, [rsp+0D8h+arg_8]
+  0x14182E383  mov     rbp, [rsp+0D8h+arg_78]
+  0x14182E38B  movaps  [rsp+0D8h+var_58], xmm6
+  0x14182E393  movaps  [rsp+0D8h+var_68], xmm7
+  0x14182E398  test    rax, rax
+  0x14182E39B  jz      short loc_14182E406
+  0x14182E39D  test    ebx, ebx
+  0x14182E39F  jnz     short loc_14182E406
+  0x14182E3A1  mov     [rsp+0D8h+var_B0], rbp
+  0x14182E3A6  lea     r9d, [rbx+0Ch]
+  0x14182E3AA  mov     r8, rax
+  0x14182E3AD  mov     dword ptr [rsp+0D8h+var_B8], r14d
+  0x14182E3B2  mov     edx, esi
+  0x14182E3B4  mov     rcx, r13
+  0x14182E3B7  call    sub_1418310B0
+  0x14182E3BC  mov     r8, [rsp+0D8h+arg_8]
+  0x14182E3C4  lea     rcx, [r13+2]
+  0x14182E3C8  add     r8, 4
+  0x14182E3CC  mov     [rsp+0D8h+var_B0], rbp
+  0x14182E3D1  lea     r9d, [rbx+0Ch]
+  0x14182E3D5  mov     dword ptr [rsp+0D8h+var_B8], r14d
+  0x14182E3DA  mov     edx, esi
+  0x14182E3DC  call    sub_1418310B0
+  0x14182E3E1  mov     r8, [rsp+0D8h+arg_8]
+  0x14182E3E9  lea     rcx, [r13+4]
+  0x14182E3ED  add     r8, 8
+  0x14182E3F1  mov     [rsp+0D8h+var_B0], rbp
+  0x14182E3F6  lea     r9d, [rbx+0Ch]
+  0x14182E3FA  mov     dword ptr [rsp+0D8h+var_B8], r14d
+  0x14182E3FF  mov     edx, esi
+  0x14182E401  call    sub_1418310B0
+  0x14182E406  mov     r8, [rsp+0D8h+arg_30]
+  0x14182E40E  test    r8, r8
+  0x14182E411  jz      short loc_14182E449
+  0x14182E413  test    dil, 10h
+  0x14182E417  jnz     short loc_14182E449
+  0x14182E419  mov     [rsp+0D8h+var_B0], rbp
+  0x14182E41E  mov     r9d, 0Ch
+  0x14182E424  mov     dword ptr [rsp+0D8h+var_B8], r14d
+  0x14182E429  test    ebx, ebx
+  0x14182E42B  jz      short loc_14182E43E
+  0x14182E42D  mov     edx, [rsp+0D8h+arg_90]
+  0x14182E434  mov     rcx, [rsp+0D8h+arg_88]
+  0x14182E43C  jmp     short loc_14182E444
+  0x14182E43E  lea     rcx, [r13+6]
+  0x14182E442  mov     edx, esi
+  0x14182E444  call    sub_1418310B0
+  0x14182E449  mov     rax, [rsp+0D8h+arg_10]
+  0x14182E451  test    rax, rax
+  0x14182E454  jz      short loc_14182E4AA
+  0x14182E456  test    dil, 2
+  0x14182E45A  jnz     short loc_14182E4AA
+  0x14182E45C  mov     ebx, [rsp+0D8h+arg_0]
+  0x14182E463  mov     r9d, 8
+  0x14182E469  add     rbx, r13
+  0x14182E46C  mov     [rsp+0D8h+var_B0], rbp
+  0x14182E471  mov     rcx, rbx
+  0x14182E474  mov     dword ptr [rsp+0D8h+var_B8], r14d
+  0x14182E479  mov     r8, rax
+  0x14182E47C  mov     edx, esi
+  0x14182E47E  call    sub_1418310B0
+  0x14182E483  mov     r8, [rsp+0D8h+arg_10]
+  0x14182E48B  lea     rcx, [rbx+2]
+  0x14182E48F  add     r8, 4
+  0x14182E493  mov     [rsp+0D8h+var_B0], rbp
+  0x14182E498  mov     r9d, 8
+  0x14182E49E  mov     dword ptr [rsp+0D8h+var_B8], r14d
+  0x14182E4A3  mov     edx, esi
+  0x14182E4A5  call    sub_1418310B0
+  0x14182E4AA  mov     rax, [rsp+0D8h+arg_18]
+  0x14182E4B2  test    rax, rax
+  0x14182E4B5  jz      loc_14182E55E
+  0x14182E4BB  test    dil, 4
+  0x14182E4BF  jnz     loc_14182E55E
+  0x14182E4C5  mov     ebx, [rsp+0D8h+var_90]
+  0x14182E4C9  mov     r9d, 10h
+  0x14182E4CF  add     rbx, r13
+  0x14182E4D2  mov     [rsp+0D8h+var_B0], rbp
+  0x14182E4D7  mov     rcx, rbx
+  0x14182E4DA  mov     dword ptr [rsp+0D8h+var_B8], r14d
+  0x14182E4DF  mov     r8, rax
+  0x14182E4E2  mov     edx, esi
+  0x14182E4E4  call    sub_1418310B0
+  0x14182E4E9  mov     r8, [rsp+0D8h+arg_18]
+  0x14182E4F1  lea     rcx, [rbx+2]
+  0x14182E4F5  add     r8, 4
+  0x14182E4F9  mov     [rsp+0D8h+var_B0], rbp
+  0x14182E4FE  mov     r9d, 10h
+  0x14182E504  mov     dword ptr [rsp+0D8h+var_B8], r14d
+  0x14182E509  mov     edx, esi
+  0x14182E50B  call    sub_1418310B0
+  0x14182E510  mov     r8, [rsp+0D8h+arg_18]
+  0x14182E518  lea     rcx, [rbx+4]
+  0x14182E51C  add     r8, 8
+  0x14182E520  mov     [rsp+0D8h+var_B0], rbp
+  0x14182E525  mov     r9d, 10h
+  0x14182E52B  mov     dword ptr [rsp+0D8h+var_B8], r14d
+  0x14182E530  mov     edx, esi
+  0x14182E532  call    sub_1418310B0
+  0x14182E537  mov     r8, [rsp+0D8h+arg_18]
+  0x14182E53F  lea     rcx, [rbx+6]
+  0x14182E543  add     r8, 0Ch
+  0x14182E547  mov     [rsp+0D8h+var_B0], rbp
+  0x14182E54C  mov     r9d, 10h
+  0x14182E552  mov     dword ptr [rsp+0D8h+var_B8], r14d
+  0x14182E557  mov     edx, esi
+  0x14182E559  call    sub_1418310B0
+  0x14182E55E  mov     rax, [rsp+0D8h+arg_20]
+  0x14182E566  movss   xmm7, cs:flt_14291FCA0
+  0x14182E56E  movss   xmm6, cs:flt_14291FF98
+  0x14182E576  test    rax, rax
+  0x14182E579  jz      loc_14182E669
+  0x14182E57F  test    dil, 8
+  0x14182E583  jnz     loc_14182E669
+  0x14182E589  mov     ebx, [rsp+0D8h+var_8C]
+  0x14182E58D  mov     r9d, 0Ch
+  0x14182E593  mov     [rsp+0D8h+var_A0], rbp
+  0x14182E598  add     rbx, r13
+  0x14182E59B  movss   [rsp+0D8h+var_A8], xmm7
+  0x14182E5A1  mov     rcx, rbx
+  0x14182E5A4  movss   dword ptr [rsp+0D8h+var_B0], xmm6
+  0x14182E5AA  mov     r8, rax
+  0x14182E5AD  mov     edx, esi
+  0x14182E5AF  mov     [rsp+0D8h+arg_18], rbx
+  0x14182E5B7  mov     dword ptr [rsp+0D8h+var_B8], r14d
+  0x14182E5BC  call    sub_141831420
+  0x14182E5C1  mov     r8, [rsp+0D8h+arg_20]
+  0x14182E5C9  lea     rcx, [rbx+1]
+  0x14182E5CD  mov     [rsp+0D8h+var_A0], rbp
+  0x14182E5D2  add     r8, 4
+  0x14182E5D6  movss   [rsp+0D8h+var_A8], xmm7
+  0x14182E5DC  mov     r9d, 0Ch
+  0x14182E5E2  movss   dword ptr [rsp+0D8h+var_B0], xmm6
+  0x14182E5E8  mov     edx, esi
+  0x14182E5EA  mov     dword ptr [rsp+0D8h+var_B8], r14d
+  0x14182E5EF  call    sub_141831420
+  0x14182E5F4  mov     r8, [rsp+0D8h+arg_20]
+  0x14182E5FC  lea     rcx, [rbx+2]
+  0x14182E600  mov     [rsp+0D8h+var_A0], rbp
+  0x14182E605  add     r8, 8
+  0x14182E609  movss   [rsp+0D8h+var_A8], xmm7
+  0x14182E60F  mov     r9d, 0Ch
+  0x14182E615  movss   dword ptr [rsp+0D8h+var_B0], xmm6
+  0x14182E61B  mov     edx, esi
+  0x14182E61D  mov     dword ptr [rsp+0D8h+var_B8], r14d
+  0x14182E622  call    sub_141831420
+  0x14182E627  mov     rbx, [rsp+0D8h+arg_30]
+  0x14182E62F  test    rbx, rbx
+
+
+========== STEP 3 — IDX_BUILDER sub_141818550 decomp ==========
+
+-- decomp sub_141818550 (idx build) @ 0x141818550 (RVA 0x1818550) --
+  size=0xE1
+__int64 __fastcall sub_141818550(__int64 a1, __int64 a2, __int64 a3, __int64 a4, __int64 a5, int a6)
+{
+  __int64 v10; // r14
+  __int64 v11; // rax
+  __int64 v12; // rcx
+  _QWORD *ThreadLocalStoragePointer; // rax
+  _BYTE v15[8]; // [rsp+30h] [rbp-28h] BYREF
+  int v16; // [rsp+38h] [rbp-20h]
+  int v17; // [rsp+3Ch] [rbp-1Ch]
+  char v18; // [rsp+40h] [rbp-18h]
+
+  v10 = sub_14182A560(qword_143A11A90);
+  *(_QWORD *)v10 = 0;
+  *(_QWORD *)(v10 + 8) = 0;
+  *(_QWORD *)(v10 + 16) = 0;
+  *(_DWORD *)(v10 + 24) = 0;
+  v11 = sub_141819EB0(a1, a2, a3);
+  v12 = (unsigned int)TlsIndex;
+  *(_QWORD *)(v10 + 8) = v11;
+  v17 = 2 * a6;
+  ThreadLocalStoragePointer = NtCurrentTeb()->ThreadLocalStoragePointer;
+  v16 = 1;
+  v18 = *(_BYTE *)(ThreadLocalStoragePointer[v12] + 5428LL);
+  *(_QWORD *)(v10 + 16) = sub_14184EF10(*(_QWORD *)(a1 + 24), v15, a5);
+  *(_QWORD *)v10 = a4;
+  *(_DWORD *)(v10 + 24) = 1;
+  return v10;
+}
+
+
+
+========== STEP 4 — TRI_POSTALLOC sub_1416DA0A0 decomp ==========
+
+-- decomp sub_1416DA0A0 (post-alloc) @ 0x1416DA0A0 (RVA 0x16DA0A0) --
+  size=0x45
+__int64 __fastcall sub_1416DA0A0(__int64 a1, __int64 a2, __int64 a3, __int16 a4, int a5)
+{
+  sub_1416D5660();
+  *(_WORD *)(a1 + 356) = a4;
+  *(_QWORD *)a1 = &BSTriShape::`vftable';
+  *(_DWORD *)(a1 + 352) = a5;
+  *(_BYTE *)(a1 + 344) = 3;
+  return a1;
+}
+
+
+-- disasm sub_1416DA0A0 (disasm) @ 0x1416DA0A0 (RVA 0x16DA0A0) --
+  0x1416DA0A0  mov     [rsp+arg_0], rbx
+  0x1416DA0A5  push    rdi
+  0x1416DA0A6  sub     rsp, 20h
+  0x1416DA0AA  mov     edi, r9d
+  0x1416DA0AD  mov     rbx, rcx
+  0x1416DA0B0  call    sub_1416D5660
+  0x1416DA0B5  lea     rax, ??_7BSTriShape@@6B@; const BSTriShape::`vftable'
+  0x1416DA0BC  mov     [rbx+164h], di
+  0x1416DA0C3  mov     [rbx], rax
+  0x1416DA0C6  mov     eax, [rsp+28h+arg_20]
+  0x1416DA0CA  mov     [rbx+160h], eax
+  0x1416DA0D0  mov     rax, rbx
+  0x1416DA0D3  mov     byte ptr [rbx+158h], 3
+  0x1416DA0DA  mov     rbx, [rsp+28h+arg_0]
+  0x1416DA0DF  add     rsp, 20h
+  0x1416DA0E3  pop     rdi
+  0x1416DA0E4  retn
+
+
+========== STEP 4b — TRI_POSTALLOC_EMPTY sub_1416DA0F0 decomp ==========
+
+-- decomp sub_1416DA0F0 (empty post-alloc) @ 0x1416DA0F0 (RVA 0x16DA0F0) --
+  size=0x37
+__int64 __fastcall sub_1416DA0F0(__int64 a1)
+{
+  sub_1416D4BD0(a1);
+  *(_BYTE *)(a1 + 344) = 3;
+  *(_QWORD *)a1 = &BSTriShape::`vftable';
+  *(_DWORD *)(a1 + 352) = 0;
+  *(_WORD *)(a1 + 356) = 0;
+  return a1;
+}
+
+
+-- disasm sub_1416DA0F0 (disasm) @ 0x1416DA0F0 (RVA 0x16DA0F0) --
+  0x1416DA0F0  push    rbx
+  0x1416DA0F2  sub     rsp, 20h
+  0x1416DA0F6  mov     rbx, rcx
+  0x1416DA0F9  call    sub_1416D4BD0
+  0x1416DA0FE  lea     rax, ??_7BSTriShape@@6B@; const BSTriShape::`vftable'
+  0x1416DA105  mov     byte ptr [rbx+158h], 3
+  0x1416DA10C  mov     [rbx], rax
+  0x1416DA10F  xor     eax, eax
+  0x1416DA111  mov     [rbx+160h], eax
+  0x1416DA117  mov     [rbx+164h], ax
+  0x1416DA11E  mov     rax, rbx
+  0x1416DA121  add     rsp, 20h
+  0x1416DA125  pop     rbx
+  0x1416DA126  retn
+
+
+========== STEP 5 — VD_PACKER sub_1416CE630 decomp ==========
+
+-- decomp sub_1416CE630 (VD packer) @ 0x1416CE630 (RVA 0x16CE630) --
+  size=0x29C
+_DWORD *sub_1416CE630(__int64 a1, const void *a2, unsigned int a3, unsigned int a4, int *a5, char a6, ...)
+{
+  unsigned int v6; // ebx
+  unsigned int v7; // r14d
+  unsigned int v8; // ebp
+  _DWORD *v11; // rax
+  __int64 v12; // rdx
+  _DWORD *v13; // rsi
+  bool v14; // of
+  size_t v15; // r14
+  void *v16; // rax
+  size_t v17; // rbp
+  __int64 v18; // r8
+  __int64 v19; // r15
+  int i; // ebp
+  __int64 v21; // rcx
+  int v22; // eax
+  unsigned int j; // r11d
+  __int16 v24; // ax
+  _WORD *v25; // r10
+  __int64 v26; // r9
+  __int64 v27; // rdx
+  __int64 v28; // r8
+  __int16 v29; // ax
+  __int64 v30; // r10
+  __int64 v31; // r9
+  __int64 v32; // rdx
+  __int64 v33; // r8
+  __int16 v34; // ax
+  int v35; // r11d
+  __int64 v36; // r10
+  __int64 v37; // r9
+  __int64 v38; // r8
+  unsigned int v39; // edx
+  __int64 v40; // rax
+  __int64 v41; // rdx
+  unsigned int v44; // [rsp+70h] [rbp+18h]
+
+  v6 = 0;
+  v44 = 6 * a3;
+  v7 = 6 * a3 + a4 + 2;
+  v8 = 12 * a3;
+  if ( !a1 || !a2 )
+    return nullptr;
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v11 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x38u, 0, 0);
+  v13 = v11;
+  if ( v11 )
+  {
+    sub_1416BBAE0(v11, &unk_1434391D0);
+    v13[10] = v7;
+    *(_QWORD *)v13 = &BSPositionData::`vftable';
+    v13[11] = v8;
+    v13[12] = 1;
+    if ( v7 )
+    {
+      v14 = (v7 * (unsigned __int128)2uLL) >> 64 != 0;
+      v15 = 2LL * v7;
+      if ( v14 )
+        v15 = -1;
+      if ( dword_143E5F2D0 != 2 )
+        sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+      v16 = sub_1416579C0((__int64)&unk_143E5E0F0, v15, 0, 0);
+    }
+    else
+    {
+      v16 = nullptr;
+    }
+    *((_QWORD *)v13 + 3) = v16;
+    if ( v8 )
+    {
+      v14 = (v8 * (unsigned __int128)2uLL) >> 64 != 0;
+      v17 = 2LL * v8;
+      if ( v14 )
+        v17 = -1;
+      if ( dword_143E5F2D0 != 2 )
+        sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+      *((_QWORD *)v13 + 4) = sub_1416579C0((__int64)&unk_143E5E0F0, v17, 0, 0);
+    }
+    else
+    {
+      *((_QWORD *)v13 + 4) = 0;
+    }
+  }
+  else
+  {
+    v13 = nullptr;
+  }
+  v18 = 0;
+  v19 = *((_QWORD *)v13 + 3);
+  for ( i = *a5; (unsigned int)v18 < a3; *(_WORD *)(v19 + 2 * v21 + 4) = *(_WORD *)(v12 + 4) )
+  {
+    v21 = (unsigned int)(3 * v18);
+    v22 = v18;
+    v18 = (unsigned int)(v18 + 1);
+    v12 = a1 + (unsigned int)(i * v22) + (unsigned int)a5[1];
+    *(_DWORD *)(v19 + 2 * v21) = *(_DWORD *)v12;
+  }
+  for ( j = 0; j < a3; *(_WORD *)(v36 + 4) = v34 )
+  {
+    v24 = sub_1416CEB60(*(unsigned __int8 *)(a1 + i * j + (unsigned int)a5[2]), v12, v18);
+    *v25 = v24;
+    v29 = sub_1416CEB60(*(unsigned __int8 *)(v26 + 1), v27, v28);
+    *(_WORD *)(v30 + 2) = v29;
+    v34 = sub_1416CEB60(*(unsigned __int8 *)(v31 + 2), v32, v33);
+    j = v35 + 1;
+  }
+  memcpy((void *)(v19 + 2LL * v44), a2, 2LL * a4);
+  if ( a6 )
+  {
+    v37 = *((_QWORD *)v13 + 4);
+    v38 = a1 + (unsigned int)a5[3];
+    if ( a3 )
+    {
+      do
+      {
+        v39 = v6;
+        v40 = 12 * v6++;
+        v41 = i * v39;
+        *(_QWORD *)(v40 + v37) = *(_QWORD *)(v41 + v38);
+        *(_DWORD *)((unsigned int)v40 + v37 + 8) = *(_DWORD *)(v41 + v38 + 8);
+      }
+      while ( v6 < a3 );
+    }
+  }
+  return v13;
+}
+
+
+
+========== STEP 6 — VD_TEMPLATE_WR sub_1416D5E80 decomp ==========
+
+-- decomp sub_1416D5E80 (VD template writer) @ 0x1416D5E80 (RVA 0x16D5E80) --
+  size=0x652
+void __fastcall sub_1416D5E80(float *a1, int a2, unsigned int *a3)
+{
+  __int64 v3; // r9
+  unsigned int v6; // eax
+  __m128 v7; // xmm12
+  __m128 v8; // xmm5
+  __m128 v9; // xmm13
+  __m128 v10; // xmm3
+  __m128 v11; // xmm15
+  int v12; // r8d
+  float v13; // xmm14_4
+  __m128 v14; // xmm8
+  __m128 v15; // xmm7
+  __m128 v16; // xmm6
+  int v17; // ecx
+  __m128 v18; // xmm14
+  __m128 v19; // xmm13
+  __m128 v20; // xmm12
+  unsigned int *v21; // rax
+  __m128 v22; // xmm11
+  __m128 v23; // xmm15
+  __m128 v24; // xmm10
+  __m128 v25; // xmm9
+  __m128 v26; // xmm1
+  __m128 v27; // xmm0
+  __m128 v28; // xmm2
+  __m128 v29; // xmm5
+  __m128 v30; // xmm4
+  __m128 v31; // xmm3
+  __m128 v32; // xmm5
+  __m128 v33; // xmm4
+  __m128 v34; // xmm3
+  __m128 v35; // xmm5
+  __m128 v36; // xmm4
+  __m128 v37; // xmm3
+  __m128 v38; // xmm9
+  __m128 v39; // xmm10
+  __m128 v40; // xmm6
+  __m128 v41; // xmm7
+  __m128 v42; // xmm11
+  __m128 v43; // xmm8
+  __m128 v44; // xmm14
+  float *v45; // rdx
+  unsigned int v46; // eax
+  __int64 v47; // rcx
+  __m128 v48; // xmm4
+  float *v49; // rdx
+  __int64 v50; // rcx
+  float v51; // xmm3_4
+  float v52; // xmm2_4
+  float v53; // xmm0_4
+  float v54; // xmm4_4
+  float v55; // xmm1_4
+  float v56; // xmm13_4
+  __int64 v57; // r8
+  float v58; // xmm3_4
+  float v59; // xmm13_4
+  float v60; // xmm14_4
+  float v61; // xmm12_4
+  float *v62; // rax
+  unsigned __int64 v63; // rcx
+  float v64; // xmm1_4
+  float v65; // xmm2_4
+  float v66; // xmm3_4
+  float v67; // xmm0_4
+  __int64 v68; // rdx
+  float *v69; // rcx
+  float v70; // xmm2_4
+  float v71; // xmm1_4
+  float v72; // xmm0_4
+  __m128 v73; // [rsp+0h] [rbp-E8h]
+  __m128 v74; // [rsp+0h] [rbp-E8h]
+  __m128 v75; // [rsp+10h] [rbp-D8h]
+  __m128 v76; // [rsp+10h] [rbp-D8h]
+
+  v3 = a2;
+  if ( a2 > 0 )
+  {
+    v6 = a2 - 1;
+    v7 = (__m128)*a3;
+    v8.m128_i32[0] = v7.m128_i32[0];
+    v9 = (__m128)a3[1];
+    v10.m128_i32[0] = v9.m128_i32[0];
+    v11 = (__m128)a3[2];
+    v12 = 1;
+    v13 = v11.m128_f32[0];
+    if ( a2 > 1 )
+    {
+      v73 = v7;
+      v75 = v9;
+      if ( v6 >= 8 )
+      {
+        v14 = _mm_shuffle_ps(v11, v11, 0);
+        v15 = _mm_shuffle_ps(v9, v9, 0);
+        v16 = _mm_shuffle_ps(v7, v7, 0);
+        v17 = a2 - (int)v6 % 8;
+        v18 = v14;
+        v74 = v15;
+        v19 = v15;
+        v76 = v16;
+        v20 = v16;
+        v21 = a3 + 9;
+        v22 = v14;
+        v23 = v14;
+        v24 = v15;
+        v25 = v16;
+        do
+        {
+          v26 = (__m128)v21[3];
+          v12 += 8;
+          v27 = (__m128)*v21;
+          v28 = (__m128)*(v21 - 3);
+          v29 = (__m128)*(v21 - 6);
+          v30 = (__m128)*(v21 - 5);
+          v31 = (__m128)*(v21 - 4);
+          v21 += 24;
+          v32 = _mm_unpacklo_ps(_mm_unpacklo_ps(v29, v27), _mm_unpacklo_ps(v28, v26));
+          v33 = _mm_unpacklo_ps(
+                  _mm_unpacklo_ps(v30, (__m128)*(v21 - 23)),
+                  _mm_unpacklo_ps((__m128)*(v21 - 26), (__m128)*(v21 - 20)));
+          v34 = _mm_unpacklo_ps(
+                  _mm_unpacklo_ps(v31, (__m128)*(v21 - 22)),
+                  _mm_unpacklo_ps((__m128)*(v21 - 25), (__m128)*(v21 - 19)));
+          v25 = _mm_min_ps(v25, v32);
+          v16 = _mm_max_ps(v16, v32);
+          v35 = _mm_unpacklo_ps(
+                  _mm_unpacklo_ps((__m128)*(v21 - 18), (__m128)*(v21 - 12)),
+                  _mm_unpacklo_ps((__m128)*(v21 - 15), (__m128)*(v21 - 9)));
+          v24 = _mm_min_ps(v24, v33);
+          v76 = _mm_min_ps(v76, v35);
+          v15 = _mm_max_ps(v15, v33);
+          v36 = _mm_unpacklo_ps(
+                  _mm_unpacklo_ps((__m128)*(v21 - 17), (__m128)*(v21 - 11)),
+                  _mm_unpacklo_ps((__m128)*(v21 - 14), (__m128)*(v21 - 8)));
+          v22 = _mm_min_ps(v22, v34);
+          v14 = _mm_max_ps(v14, v34);
+          v20 = _mm_max_ps(v20, v35);
+          v74 = _mm_min_ps(v74, v36);
+          v37 = _mm_unpacklo_ps(
+                  _mm_unpacklo_ps((__m128)*(v21 - 16), (__m128)*(v21 - 10)),
+                  _mm_unpacklo_ps((__m128)*(v21 - 13), (__m128)*(v21 - 7)));
+          v23 = _mm_min_ps(v23, v37);
+          v18 = _mm_max_ps(v18, v37);
+          v19 = _mm_max_ps(v19, v36);
+        }
+        while ( v12 < v17 );
+        v38 = _mm_min_ps(v25, v76);
+        v39 = _mm_min_ps(v24, v74);
+        v40 = _mm_max_ps(v16, v20);
+        v41 = _mm_max_ps(v15, v19);
+        v42 = _mm_min_ps(v22, v23);
+        v43 = _mm_max_ps(v14, v18);
+        v7 = _mm_min_ps(_mm_movehl_ps(v38, v38), v38);
+        v9 = _mm_min_ps(_mm_movehl_ps(v39, v39), v39);
+        v7.m128_f32[0] = fminf(v7.m128_f32[0], _mm_shuffle_ps(v7, v7, 245).m128_f32[0]);
+        v8 = _mm_max_ps(_mm_movehl_ps(v40, v40), v40);
+        v11 = _mm_min_ps(_mm_movehl_ps(v42, v42), v42);
+        v9.m128_f32[0] = fminf(v9.m128_f32[0], _mm_shuffle_ps(v9, v9, 245).m128_f32[0]);
+        v10 = _mm_max_ps(_mm_movehl_ps(v41, v41), v41);
+        v44 = _mm_max_ps(_mm_movehl_ps(v43, v43), v43);
+        v11.m128_f32[0] = fminf(v11.m128_f32[0], _mm_shuffle_ps(v11, v11, 245).m128_f32[0]);
+        v8.m128_f32[0] = fmaxf(v8.m128_f32[0], _mm_shuffle_ps(v8, v8, 245).m128_f32[0]);
+        v10.m128_f32[0] = fmaxf(v10.m128_f32[0], _mm_shuffle_ps(v10, v10, 245).m128_f32[0]);
+        v13 = fmaxf(v44.m128_f32[0], _mm_shuffle_ps(v44, v44, 245).m128_f32[0]);
+        v73 = v8;
+        v75 = v10;
+      }
+      if ( v12 < a2 )
+      {
+        if ( a2 - v12 >= 4 )
+        {
+          v45 = (float *)&a3[2 * v12 + 2 + v12];
+          v46 = ((unsigned int)(v3 - v12 - 4) >> 2) + 1;
+          v47 = v46;
+          v12 += 4 * v46;
+          do
+          {
+            v48 = v73;
+            v10 = v75;
+            v48.m128_f32[0] = fmaxf(v73.m128_f32[0], *(v45 - 2));
+            v8 = v48;
+            v10.m128_f32[0] = fmaxf(fmaxf(fmaxf(fmaxf(v75.m128_f32[0], *(v45 - 1)), v45[2]), v45[5]), v45[8]);
+            v7.m128_f32[0] = fminf(fminf(fminf(fminf(v7.m128_f32[0], *(v45 - 2)), v45[1]), v45[4]), v45[7]);
+            v9.m128_f32[0] = fminf(fminf(fminf(fminf(v9.m128_f32[0], *(v45 - 1)), v45[2]), v45[5]), v45[8]);
+            v8.m128_f32[0] = fmaxf(fmaxf(fmaxf(v48.m128_f32[0], v45[1]), v45[4]), v45[7]);
+            v11.m128_f32[0] = fminf(fminf(fminf(fminf(v11.m128_f32[0], *v45), v45[3]), v45[6]), v45[9]);
+            v75 = v10;
+            v13 = fmaxf(fmaxf(fmaxf(fmaxf(v13, *v45), v45[3]), v45[6]), v45[9]);
+            v45 += 12;
+            v73 = v8;
+            --v47;
+          }
+          while ( v47 );
+        }
+        if ( v12 < (int)v3 )
+        {
+          v49 = (float *)&a3[2 * v12 + 2 + v12];
+          v50 = (int)v3 - v12;
+          do
+          {
+            v51 = *(v49 - 1);
+            v52 = *v49;
+            v53 = fminf(*(v49 - 2), v7.m128_f32[0]);
+            v54 = fmaxf(*(v49 - 2), v8.m128_f32[0]);
+            v55 = fminf(v51, v9.m128_f32[0]);
+            v49 += 3;
+            v10.m128_f32[0] = fmaxf(v51, v75.m128_f32[0]);
+            v7.m128_f32[0] = v53;
+            v8.m128_f32[0] = v54;
+            v9.m128_f32[0] = v55;
+            v75.m128_i32[0] = v10.m128_i32[0];
+            v11.m128_i32[0] = fminf(v52, v11.m128_f32[0]);
+            v13 = fmaxf(v52, v13);
+            --v50;
+          }
+          while ( v50 );
+        }
+      }
+    }
+    v56 = v9.m128_f32[0] + v10.m128_f32[0];
+    v57 = 0;
+    v58 = 0.0;
+    v59 = v56 * 0.5;
+    v60 = (float)(v13 + v11.m128_f32[0]) * 0.5;
+    v61 = (float)(v7.m128_f32[0] + v8.m128_f32[0]) * 0.5;
+    a1[1] = v59;
+    a1[2] = v60;
+    *a1 = v61;
+    if ( v3 >= 4 )
+    {
+      v62 = (float *)(a3 + 5);
+      v63 = ((unsigned __int64)(v3 - 4) >> 2) + 1;
+      v57 = 4 * v63;
+      do
+      {
+        v64 = (float)(v62[4] - v61) * (float)(v62[4] - v61);
+        v65 = fmaxf(
+                (float)((float)((float)(v62[2] - v59) * (float)(v62[2] - v59))
+                      + (float)((float)(v62[1] - v61) * (float)(v62[1] - v61)))
+              + (float)((float)(v62[3] - v60) * (float)(v62[3] - v60)),
+                fmaxf(
+                  (float)((float)((float)(*(v62 - 1) - v59) * (float)(*(v62 - 1) - v59))
+                        + (float)((float)(*(v62 - 2) - v61) * (float)(*(v62 - 2) - v61)))
+                + (float)((float)(*v62 - v60) * (float)(*v62 - v60)),
+                  fmaxf(
+                    (float)((float)((float)(*(v62 - 4) - v59) * (float)(*(v62 - 4) - v59))
+                          + (float)((float)(*(v62 - 5) - v61) * (float)(*(v62 - 5) - v61)))
+                  + (float)((float)(*(v62 - 3) - v60) * (float)(*(v62 - 3) - v60)),
+                    v58)));
+        v66 = v62[5];
+        v67 = (float)(v62[6] - v60) * (float)(v62[6] - v60);
+        v62 += 12;
+        v58 = fmaxf((float)((float)((float)(v66 - v59) * (float)(v66 - v59)) + v64) + v67, v65);
+        --v63;
+      }
+      while ( v63 );
+    }
+    if ( v57 < v3 )
+    {
+      v68 = v3 - v57;
+      v69 = (float *)&a3[2 * v57 + 2 + v57];
+      do
+      {
+        v70 = *(v69 - 1);
+        v71 = *(v69 - 2);
+        v72 = *v69;
+        v69 += 3;
+        v58 = fmaxf(
+                (float)((float)((float)(v70 - v59) * (float)(v70 - v59))
+                      + (float)((float)(v71 - v61) * (float)(v71 - v61)))
+              + (float)((float)(v72 - v60) * (float)(v72 - v60)),
+                v58);
+        --v68;
+      }
+      while ( v68 );
+    }
+    a1[3] = fsqrt(v58);
+  }
+  else
+  {
+    *(_QWORD *)a1 = qword_143437F50;
+    *((_DWORD *)a1 + 2) = unk_143437F58;
+    a1[3] = 0.0;
+  }
+}
+
+
+-- disasm sub_1416D5E80 (disasm) @ 0x1416D5E80 (RVA 0x16D5E80) --
+  0x1416D5E80  sub     rsp, 0E8h
+  0x1416D5E87  movsxd  r9, edx
+  0x1416D5E8A  mov     r11, r8
+  0x1416D5E8D  mov     r10, rcx
+  0x1416D5E90  test    edx, edx
+  0x1416D5E92  jg      short loc_1416D5EC9
+  0x1416D5E94  movss   xmm0, dword ptr cs:qword_143437F50
+  0x1416D5E9C  xor     r8d, r8d
+  0x1416D5E9F  movss   dword ptr [rcx], xmm0
+  0x1416D5EA3  movss   xmm1, dword ptr cs:qword_143437F50+4
+  0x1416D5EAB  movss   dword ptr [rcx+4], xmm1
+  0x1416D5EB0  movss   xmm0, dword ptr cs:unk_143437F58
+  0x1416D5EB8  movss   dword ptr [rcx+8], xmm0
+  0x1416D5EBD  mov     [rcx+0Ch], r8d
+  0x1416D5EC1  add     rsp, 0E8h
+  0x1416D5EC8  retn
+  0x1416D5EC9  movaps  [rsp+0E8h+var_78], xmm12
+  0x1416D5ECF  lea     eax, [r9-1]
+  0x1416D5ED3  movss   xmm12, dword ptr [r8]
+  0x1416D5ED8  movaps  [rsp+0E8h+var_88], xmm13
+  0x1416D5EDE  movaps  xmm5, xmm12
+  0x1416D5EE2  movss   xmm13, dword ptr [r8+4]
+  0x1416D5EE8  movaps  [rsp+0E8h+var_98], xmm14
+  0x1416D5EEE  movaps  xmm3, xmm13
+  0x1416D5EF2  movaps  [rsp+0E8h+var_A8], xmm15
+  0x1416D5EF8  movss   xmm15, dword ptr [r8+8]
+  0x1416D5EFE  mov     r8d, 1
+  0x1416D5F04  movaps  xmm14, xmm15
+  0x1416D5F08  cmp     r9d, r8d
+  0x1416D5F0B  jle     loc_1416D6305
+  0x1416D5F11  movaps  [rsp+0E8h+var_18], xmm6
+  0x1416D5F19  movaps  [rsp+0E8h+var_28], xmm7
+  0x1416D5F21  movaps  [rsp+0E8h+var_38], xmm8
+  0x1416D5F2A  movaps  [rsp+0E8h+var_48], xmm9
+  0x1416D5F33  movaps  [rsp+0E8h+var_58], xmm10
+  0x1416D5F3C  movaps  [rsp+0E8h+var_68], xmm11
+  0x1416D5F45  movaps  [rsp+0E8h+var_E8], xmm5
+  0x1416D5F49  movaps  [rsp+0E8h+var_D8], xmm3
+  0x1416D5F4E  cmp     eax, 8
+  0x1416D5F51  jb      loc_1416D616E
+  0x1416D5F57  and     eax, 80000007h
+  0x1416D5F5C  jge     short loc_1416D5F65
+  0x1416D5F5E  dec     eax
+  0x1416D5F60  or      eax, 0FFFFFFF8h
+  0x1416D5F63  inc     eax
+  0x1416D5F65  movaps  xmm8, xmm15
+  0x1416D5F69  movaps  xmm7, xmm13
+  0x1416D5F6D  shufps  xmm8, xmm8, 0
+  0x1416D5F72  movaps  xmm6, xmm12
+  0x1416D5F76  shufps  xmm7, xmm7, 0
+  0x1416D5F7A  mov     ecx, r9d
+  0x1416D5F7D  shufps  xmm6, xmm6, 0
+  0x1416D5F81  sub     ecx, eax
+  0x1416D5F83  movaps  xmm14, xmm8
+  0x1416D5F87  movaps  [rsp+0E8h+var_E8], xmm7
+  0x1416D5F8B  movaps  xmm13, xmm7
+  0x1416D5F8F  movaps  [rsp+0E8h+var_D8], xmm6
+  0x1416D5F94  movaps  xmm12, xmm6
+  0x1416D5F98  lea     rax, [r11+24h]
+  0x1416D5F9C  movaps  xmm11, xmm8
+  0x1416D5FA0  movaps  xmm15, xmm8
+  0x1416D5FA4  movaps  xmm10, xmm7
+  0x1416D5FA8  movaps  xmm9, xmm6
+  0x1416D5FAC  nop     dword ptr [rax+00h]
+  0x1416D5FB0  movss   xmm1, dword ptr [rax+0Ch]
+  0x1416D5FB5  add     r8d, 8
+  0x1416D5FB9  movss   xmm0, dword ptr [rax]
+  0x1416D5FBD  movss   xmm2, dword ptr [rax-0Ch]
+  0x1416D5FC2  movss   xmm5, dword ptr [rax-18h]
+  0x1416D5FC7  movss   xmm4, dword ptr [rax-14h]
+  0x1416D5FCC  movss   xmm3, dword ptr [rax-10h]
+  0x1416D5FD1  lea     rax, [rax+60h]
+  0x1416D5FD5  unpcklps xmm2, xmm1
+  0x1416D5FD8  movss   xmm1, dword ptr [rax-50h]
+  0x1416D5FDD  unpcklps xmm5, xmm0
+  0x1416D5FE0  movss   xmm0, dword ptr [rax-5Ch]
+  0x1416D5FE5  unpcklps xmm5, xmm2
+  0x1416D5FE8  movss   xmm2, dword ptr [rax-68h]
+  0x1416D5FED  unpcklps xmm2, xmm1
+  0x1416D5FF0  movss   xmm1, dword ptr [rax-4Ch]
+  0x1416D5FF5  unpcklps xmm4, xmm0
+  0x1416D5FF8  movss   xmm0, dword ptr [rax-58h]
+  0x1416D5FFD  unpcklps xmm4, xmm2
+  0x1416D6000  movss   xmm2, dword ptr [rax-64h]
+  0x1416D6005  unpcklps xmm3, xmm0
+  0x1416D6008  movss   xmm0, dword ptr [rax-30h]
+  0x1416D600D  unpcklps xmm2, xmm1
+  0x1416D6010  movss   xmm1, dword ptr [rax-24h]
+  0x1416D6015  unpcklps xmm3, xmm2
+  0x1416D6018  movss   xmm2, dword ptr [rax-3Ch]
+  0x1416D601D  unpcklps xmm2, xmm1
+  0x1416D6020  movss   xmm1, dword ptr [rax-20h]
+  0x1416D6025  minps   xmm9, xmm5
+  0x1416D6029  maxps   xmm6, xmm5
+  0x1416D602C  movss   xmm5, dword ptr [rax-48h]
+  0x1416D6031  unpcklps xmm5, xmm0
+  0x1416D6034  movaps  xmm0, [rsp+0E8h+var_D8]
+  0x1416D6039  unpcklps xmm5, xmm2
+  0x1416D603C  movss   xmm2, dword ptr [rax-38h]
+  0x1416D6041  unpcklps xmm2, xmm1
+
+
+========== STEP 7 — GEO_SET sub_1416BCE00 decomp ==========
+
+-- decomp sub_1416BCE00 @ 0x1416BCE00 (RVA 0x16BCE00) --
+  size=0x2A1
+char __fastcall sub_1416BCE00(__int64 a1, __int64 a2)
+{
+  __int64 v5; // rax
+  const char *v6; // rsi
+  __int64 v7; // rdi
+  __int64 v8; // rax
+  __int64 v9; // rbp
+  unsigned int v10; // r15d
+  char *v11; // rax
+  __int64 v12; // r9
+  unsigned __int16 v13; // dx
+  __int16 v14; // si
+  const CHAR *v15; // rcx
+  __int64 v16; // rax
+  unsigned __int64 v17; // rbx
+  unsigned __int64 v18; // rax
+  __int64 v19; // rax
+  const CHAR *v20; // rdx
+  _QWORD *v21; // rax
+  _BYTE v22[256]; // [rsp+20h] [rbp-138h] BYREF
+  const CHAR *v23; // [rsp+120h] [rbp-38h]
+  int v24; // [rsp+128h] [rbp-30h]
+  char Buffer[8]; // [rsp+168h] [rbp+10h] BYREF
+  __int64 v26; // [rsp+170h] [rbp+18h] BYREF
+
+  if ( !a2 )
+    return 0;
+  v5 = sub_1416BBB80(a2);
+  if ( !(unsigned int)sub_14167C200(v5) )
+  {
+    v6 = *(const char **)(*(__int64 (__fastcall **)(__int64))(*(_QWORD *)a2 + 16LL))(a2);
+    if ( v6 )
+    {
+      v7 = -1;
+      v8 = -1;
+      do
+        ++v8;
+      while ( v6[v8] );
+      if ( v8 )
+      {
+        v9 = *(_QWORD *)(a1 + 32);
+        v10 = 0;
+        if ( v9 )
+        {
+          sub_141658FE0(v9 + 24);
+          if ( v9 != -24 )
+            sub_1416592B0(v9 + 24);
+        }
+        v23 = nullptr;
+        v24 = 0;
+        sub_14024BDC0(Buffer, 6u, "ED%03u");
+        v11 = strstr(v6, "ExtraData");
+        if ( v11 > v6 )
+          v10 = (_DWORD)v11 - (_DWORD)v6;
+        sub_1416BD8B0(v22, v6, v10);
+        v12 = -1;
+        do
+          ++v12;
+        while ( Buffer[v12] );
+        v13 = v24;
+        v14 = -1;
+        v15 = v23;
+        if ( (_WORD)v24 == 0xFFFF )
+        {
+          v16 = -1;
+          do
+            ++v16;
+          while ( v23[v16] );
+        }
+        else
+        {
+          LODWORD(v16) = (unsigned __int16)v24;
+        }
+        v17 = v12 + (unsigned int)v16;
+        if ( v17 >= HIWORD(v24) )
+        {
+          sub_1416BD8B0(v22, v23, v17);
+          v13 = v24;
+          v18 = HIWORD(v24) - 1LL;
+          v15 = v23;
+          if ( v17 < v18 )
+            v18 = v17;
+          v17 = v18;
+          if ( (_WORD)v24 == 0xFFFF )
+          {
+            v19 = -1;
+            do
+              ++v19;
+            while ( v23[v19] );
+          }
+          else
+          {
+            LODWORD(v19) = (unsigned __int16)v24;
+          }
+          v12 = v17 - (unsigned int)v19;
+        }
+        if ( v15 )
+        {
+          if ( v13 == 0xFFFF )
+          {
+            do
+              ++v7;
+            while ( v15[v7] );
+          }
+          else
+          {
+            LODWORD(v7) = v13;
+          }
+          sub_1416BD7B0(v22, (unsigned int)v7, Buffer, v12);
+          if ( v17 <= 0xFFFF )
+            v14 = v17;
+          v23[v17] = 0;
+          LOWORD(v24) = v14;
+        }
+        else
+        {
+          sub_1416BD8B0(v22, Buffer, 0);
+        }
+        v20 = &Default;
+        if ( v23 )
+          v20 = v23;
+        v21 = sub_14167BDC0(&v26, (__int64)v20);
+        sub_1416BBB90(a2, v21);
+        sub_14167BEF0();
+      }
+    }
+  }
+  return sub_1416BD4C0(a1, a2);
+}
+
+
+
+========== STEP 8 — shader wrappers ==========
+
+-- decomp sub_14216F9C0 (BSEffectShader) @ 0x14216F9C0 (RVA 0x216F9C0) --
+  size=0x5D
+_QWORD *__fastcall sub_14216F9C0(_QWORD *a1)
+{
+  __int64 v2; // r8
+  __int64 v3; // r8
+
+  sub_142160DA0();
+  *a1 = &BSEffectShaderProperty::`vftable';
+  a1[14] = 0;
+  a1[15] = 0;
+  sub_142161B10(a1, qword_143E5ACF0, 0);
+  LOBYTE(v2) = 1;
+  sub_142161950(a1, 31, v2);
+  LOBYTE(v3) = 1;
+  sub_142161950(a1, 32, v3);
+  return a1;
+}
+
+
+-- decomp sub_142214640 (BSSkyShader) @ 0x142214640 (RVA 0x2214640) --
+  size=0xB5
+__int64 __fastcall sub_142214640(__int64 a1)
+{
+  volatile signed __int32 **v2; // rbx
+  __int64 v3; // rdi
+  volatile signed __int32 *v4; // rcx
+
+  sub_142160DA0();
+  v2 = (volatile signed __int32 **)(a1 + 128);
+  *(_QWORD *)a1 = &BSSkyShaderProperty::`vftable';
+  *(_QWORD *)(a1 + 128) = 0;
+  *(_QWORD *)(a1 + 136) = 0;
+  *(_QWORD *)(a1 + 144) = 0;
+  *(_QWORD *)(a1 + 112) = 0;
+  *(_QWORD *)(a1 + 120) = 0;
+  sub_14167BCF0(a1 + 152);
+  *(_DWORD *)(a1 + 160) = 0;
+  v3 = 3;
+  *(_DWORD *)(a1 + 168) = 8;
+  *(_WORD *)(a1 + 164) = 0;
+  *(_OWORD *)(a1 + 112) = xmmword_142F41650;
+  do
+  {
+    v4 = *v2;
+    if ( *v2 )
+    {
+      *v2 = nullptr;
+      if ( _InterlockedExchangeAdd(v4 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v4 + 8LL))(v4);
+    }
+    ++v2;
+    --v3;
+  }
+  while ( v3 );
+  return a1;
+}
+
+
+
+========== STEP 9 — unk_143437F50 template region (+128 bytes) ==========
+
+-- bytes at unk_143437F50 0x143437F50 (RVA 0x3437F50) (first 128) --
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 
+  +0000  QW 0xFFFFFFFFFFFFFFFF
+  +0008  QW 0xFFFFFFFFFFFFFFFF
+  +0010  QW 0xFFFFFFFFFFFFFFFF
+  +0018  QW 0xFFFFFFFFFFFFFFFF
+  +0020  QW 0xFFFFFFFFFFFFFFFF
+  +0028  QW 0xFFFFFFFFFFFFFFFF
+  +0030  QW 0xFFFFFFFFFFFFFFFF
+  +0038  QW 0xFFFFFFFFFFFFFFFF
+  +0040  QW 0xFFFFFFFFFFFFFFFF
+  +0048  QW 0xFFFFFFFFFFFFFFFF
+  +0050  QW 0xFFFFFFFFFFFFFFFF
+  +0058  QW 0xFFFFFFFFFFFFFFFF
+  +0060  QW 0xFFFFFFFFFFFFFFFF
+  +0068  QW 0xFFFFFFFFFFFFFFFF
+  +0070  QW 0xFFFFFFFFFFFFFFFF
+  +0078  QW 0xFFFFFFFFFFFFFFFF
+
+
+========== STEP 10 — RTTI-named relevant classes ==========
+
+--- search 'BSBatchRenderer' ---
+  hit @ 0x14221617C (RVA 0x221617C)
+  hit @ 0x14221617C (RVA 0x221617C)
+  hit @ 0x14221617C (RVA 0x221617C)
+
+--- search 'BSShaderRenderer' ---
+
+--- search 'BSShaderRenderTargetManager' ---

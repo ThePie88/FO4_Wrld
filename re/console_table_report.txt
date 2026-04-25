@@ -1,0 +1,76 @@
+[+] Image base: 0x140000000
+[+] Expected LoadGame entry at 0x142EF1680
+[+] Using stride 0x50
+
+==== table dump around LoadGame (stride 0x50) ====
+  0x142EF1400: long='ToggleEmotions'       short='temo'     op=0x16D exec_fn=RVA 0x5EB180  parse_fn=RVA 0x5B6150  eval_fn=RVA 0  help='Toggle NPC facial emotions.'
+  0x142EF1450: long='AddDecal'             short=None       op=0x16E exec_fn=RVA 0x5E9DE0  parse_fn=RVA 0x5B6150  eval_fn=RVA 0  help=''
+  0x142EF14A0: long='TestCode'             short=None       op=0x16F exec_fn=RVA 0x5EB1E0  parse_fn=RVA 0x5B6150  eval_fn=RVA 0  help=''
+  0x142EF14F0: long='PlayerSpellBook'      short='psb'      op=0x170 exec_fn=RVA 0x5E3E90  parse_fn=RVA 0x5B6150  eval_fn=RVA 0  help='Add all spells to player.'
+  0x142EF1540: long='PrintAiList'          short='pai'      op=0x171 exec_fn=RVA 0x5EB200  parse_fn=RVA 0x5B6150  eval_fn=RVA 0  help='Printed Ai Lists.'
+  0x142EF1590: long='ShowQuestTargets'     short='SQT'      op=0x172 exec_fn=RVA 0x5F23B0  parse_fn=RVA 0x5B6150  eval_fn=RVA 0  help='Show current quest targets'
+  0x142EF15E0: long='HairTint'             short=None       op=0x173 exec_fn=RVA 0x5EA440  parse_fn=RVA 0x5B6150  eval_fn=RVA 0  help='3 ints, RGB'
+  0x142EF1630: long='SaveGame'             short='save'     op=0x174 exec_fn=RVA 0x5EF9B0  parse_fn=RVA 0x5B6150  eval_fn=RVA 0  help='SaveGame <filename>'
+  0x142EF1680: long='LoadGame'             short='load'     op=0x175 exec_fn=RVA 0x5EFAC0  parse_fn=RVA 0x5B6150  eval_fn=RVA 0  help='LoadGame <filename>'
+  0x142EF16D0: long='DisplayPlayerIDs'     short='dpid'     op=0x176 exec_fn=RVA 0x5EFBF0  parse_fn=RVA 0x5B6150  eval_fn=RVA 0  help='DisplayPlayerIDs'
+  0x142EF1720: long='SetDisplayPlayerID'   short='spid'     op=0x177 exec_fn=RVA 0x5EFD00  parse_fn=RVA 0x5B6150  eval_fn=RVA 0  help='SetDisplayPlayerID <filename>'
+  0x142EF1770: long='TestAllCells'         short='TAC'      op=0x178 exec_fn=RVA 0x5F1810  parse_fn=RVA 0x5B6150  eval_fn=RVA 0  help='Test All Cells (0 - stop, 1 - start, 2 - interiors…'
+  0x142EF17C0: long='RenderTestCell'       short='rtc'      op=0x179 exec_fn=RVA 0x5F1820  parse_fn=RVA 0x5B6150  eval_fn=RVA 0  help="runs Render Test on player's current parent cell"
+  0x142EF1810: long='RenderTestHere'       short='rth'      op=0x17A exec_fn=RVA 0x5F1880  parse_fn=RVA 0x5B6150  eval_fn=RVA 0  help="runs Render Test on player's current position"
+  0x142EF1860: long='SaveWorld'            short=None       op=0x17B exec_fn=RVA 0x5E41C0  parse_fn=RVA 0x5B6150  eval_fn=RVA 0  help='Save hkWorld <filename>'
+  0x142EF18B0: long='ReloadCurrentClimate' short='rcc'      op=0x17C exec_fn=RVA 0x5F2620  parse_fn=RVA 0x5B6150  eval_fn=RVA 0  help='Reloads values from the current climate'
+  0x142EF1900: long='ReloadCurrentWeather' short='rcw'      op=0x17D exec_fn=RVA 0x5F26B0  parse_fn=RVA 0x5B6150  eval_fn=RVA 0  help='Reloads values from the current weather'
+
+==== center entry (LoadGame) resolved ====
+  long_name = 'LoadGame'
+  short_name = 'load'
+  opcode = 0x175
+  help = 'LoadGame <filename>'
+  exec_fn = 0x1405EFAC0 (RVA 0x5EFAC0)
+  parse_fn = 0x1405B6150
+  eval_fn = 0x0
+
+==== exec_fn decomp (LoadGame at RVA 0x5EFAC0) ====
+char __fastcall sub_1405EFAC0(__int64 a1, __int64 a2, int a3, __int64 a4, __int64 a5, __int64 a6, int a7, int *a8)
+{
+  char result; // al
+  int v9; // [rsp+60h] [rbp-218h] BYREF
+  int v10; // [rsp+64h] [rbp-214h] BYREF
+  int v11; // [rsp+68h] [rbp-210h] BYREF
+  int v12; // [rsp+6Ch] [rbp-20Ch] BYREF
+  char v13[520]; // [rsp+70h] [rbp-208h] BYREF
+
+  v12 = 0;
+  v11 = 0;
+  v10 = 0;
+  v9 = 0;
+  result = sub_1405B32D0(a1, a2, a8, a3, a4, a5, a6, v13, &v12, &v11, &v10, &v9);
+  if ( result )
+  {
+    if ( (unsigned __int8)sub_141084830(qword_1431E5A90, 0, 0) )
+    {
+      sub_140C37200();
+      byte_1432D1FEA = 1;
+      if ( !(unsigned __int8)sub_140BF93B0(
+                               qword_14329D508,
+                               (unsigned int)v13,
+                               -1,
+                               v12 | (2 * (v11 | (2 * (v10 | (unsigned int)(2 * v9))))),
+                               1,
+                               0) )
+      {
+        sub_14103BB90(qword_1430ED2B8, "ERR: Could not load savefile '%s'.", v13);
+        return 1;
+      }
+    }
+    else
+    {
+      sub_14103BB90(qword_1430ED2B8, "Save profile / device not selected.  Sign in / select device and try again.");
+    }
+    return 1;
+  }
+  return result;
+}
+
+
+==== done ====

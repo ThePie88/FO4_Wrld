@@ -1,0 +1,217 @@
+[+] Image base: 0x140000000
+
+
+==== 'SetStage' ====
+  string @ 0x1424C2180 (RVA 0x24C2180)
+    xref 0x142EE03D0 in <no func>
+
+==== 'GetStage' ====
+  string @ 0x1424C2190 (RVA 0x24C2190)
+    xref 0x142EE0420 in <no func>
+
+==== 'CompleteQuest' ====
+  string @ 0x1424C2668 (RVA 0x24C2668)
+    xref 0x141186304 in RVA 0x11861C0
+      [idiom-A rax (after call)] native @ RVA 0x1185670
+__int64 __fastcall sub_141185670(__int64 a1, __int64 a2, __int64 a3)
+{
+  int v3; // ebp
+  int v6; // ebx
+  __int64 result; // rax
+
+  v3 = a2;
+  LOBYTE(a2) = 1;
+  sub_14066A9A0(a3, a2);
+  v6 = *(_DWORD *)(a3 + 20);
+  result = sub_1410E07F0(a1);
+  if ( (_DWORD)result == v6 )
+    return sub_1410DD940(a3, (unsigned int)"Quest completed", a1, v3, 0);
+  return result;
+}
+
+      ---
+    xref 0x142EE1550 in <no func>
+
+==== 'ResetQuest' ====
+  string @ 0x1424C4E60 (RVA 0x24C4E60)
+    xref 0x142EE8620 in <no func>
+
+==== 'SetValue' ====
+  string @ 0x1424C1D98 (RVA 0x24C1D98)
+    xref 0x141145BEC in RVA 0x1145AA0
+      [idiom-A rax (after call)] native @ RVA 0x11459E0
+__int64 __fastcall sub_1411459E0(__int64 a1, unsigned int a2, __int64 a3, float a4)
+{
+  __int64 result; // rax
+  _QWORD v7[2]; // [rsp+20h] [rbp-28h] BYREF
+  _BYTE v8[24]; // [rsp+30h] [rbp-18h] BYREF
+
+  result = *(_DWORD *)(a3 + 16) >> 6;
+  if ( (*(_DWORD *)(a3 + 16) & 0x40) != 0 )
+  {
+    sub_1420F7170(v7);
+    v7[0] = &BSScript::Internal::CachedErrorMessageImpl<char *>::`vftable';
+    v7[1] = "Cannot set the value of a constant GlobalVariable";
+    sub_14167BCF0(v8);
+    (*(void (__fastcall **)(__int64, _QWORD *, _QWORD, __int64))(*(_QWORD *)a1 + 480LL))(a1, v7, a2, 2);
+    sub_14167BEF0(v8);
+    return sub_1420F7190(v7);
+  }
+  else
+  {
+    *(float *)(a3 + 48) = a4;
+  }
+  return result;
+}
+
+      ---
+    xref 0x141145C56 in RVA 0x1145AA0
+    xref 0x14116568B in RVA 0x115EFB0
+      [idiom-B r9 (before)] native @ RVA 0x115DD10
+__int64 __fastcall sub_14115DD10(__int64 a1, unsigned int a2, __int64 a3, __int64 a4, float a5)
+{
+  void **v8; // rsi
+  const CHAR *v9; // rdx
+  __int64 result; // rax
+  void **v11; // [rsp+20h] [rbp-28h] BYREF
+  const char *v12; // [rsp+28h] [rbp-20h]
+  _BYTE v13[24]; // [rsp+30h] [rbp-18h] BYREF
+
+  if ( a4 )
+  {
+    if ( (*(_DWORD *)(a4 + 428) & 4) == 0 || a5 == (float)(int)a5 && a5 < (float)*(int *)(a4 + 440) )
+    {
+      return (*(__int64 (__fastcall **)(__int64, __int64))(*(_QWORD *)(a3 + 88) + 72LL))(a3 + 88, a4);
+    }
+    else
+    {
+      v11 = nullptr;
+      LODWORD(v12) = 0;
+      sub_1401F81D0(&v11, "- attempt made to set illegal value (%.2f).", a5);
+      v8 = v11;
+      v9 = &Default;
+      if ( v11 )
+        v9 = (const CHAR *)v11;
+      result = sub_141175950(a4, v9, a1, a2);
+      if ( v8 )
+      {
+        if ( dword_143E5F2D0 != 2 )
+          sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+        return sub_141657E20(&unk_143E5E0F0, v8, 0);
+      }
+    }
+  }
+  else
+  {
+    sub_1420F7170(&v11);
+    v11 = &BSScript::Internal::CachedErrorMessageImpl<char *>::`vftable';
+    v12 = "Cannot SetValue with None ActorValue";
+    sub_14167BCF0(v13);
+    (*(void (__fastcall **)(__int64, void ***, _QWORD, __int64))(*(_QWORD *)a1 + 480LL))(a1, &v11, a2, 2);
+    sub_14167BEF0(v13);
+    return sub_1420F7190(&v11);
+  }
+  return result;
+}
+
+      ---
+    xref 0x142EDF6B0 in <no func>
+
+==== 'GetValue' ====
+  string @ 0x1424C1D30 (RVA 0x24C1D30)
+    xref 0x141145B2C in RVA 0x1145AA0
+      [idiom-A rax (after call)] native @ RVA 0x1145E00
+float __fastcall sub_141145E00(__int64 a1, __int64 a2, __int64 a3)
+{
+  return *(float *)(a3 + 48);
+}
+
+      ---
+    xref 0x141145B83 in RVA 0x1145AA0
+    xref 0x1411624F9 in RVA 0x115EFB0
+      [idiom-B r9 (before)] native @ RVA 0x1156DC0
+double __fastcall sub_141156DC0(__int64 a1, unsigned int a2, __int64 a3, __int64 a4)
+{
+  __int64 v7; // rcx
+  __int64 v8; // rax
+  double result; // xmm0_8
+  _QWORD v10[2]; // [rsp+20h] [rbp-28h] BYREF
+  _BYTE v11[24]; // [rsp+30h] [rbp-18h] BYREF
+
+  if ( a4 )
+  {
+    if ( (*(_DWORD *)(a3 + 16) & 0x800) == 0 )
+    {
+      (*(void (__fastcall **)(__int64, __int64))(*(_QWORD *)(a3 + 88) + 8LL))(a3 + 88, a4);
+      return result;
+    }
+    v7 = 0;
+    if ( *(_BYTE *)(a3 + 26) == 65 )
+      v7 = a3;
+    if ( v7 )
+    {
+      v8 = sub_140C59100();
+      (*(void (__fastcall **)(__int64, __int64))(*(_QWORD *)(v8 + 304) + 8LL))(v8 + 304, a4);
+      return result;
+    }
+  }
+  else
+  {
+    sub_1420F7170(v10);
+    v10[0] = &BSScript::Internal::CachedErrorMessageImpl<char *>::`vftable';
+    v10[1] = "Cannot GetValue with None ActorValue";
+    sub_14167BCF0(v11);
+    (*(void (__fastcall **)(__int64, _QWORD *, _QWORD, __int64))(*(_QWORD *)a1 + 480LL))(a1, v10, a2, 2);
+    sub_14167BEF0(v11);
+    sub_1420F7190(v10);
+  }
+  return 0.0;
+}
+
+      ---
+    xref 0x14116251C in RVA 0x115EFB0
+      [idiom-B r9 (before)] native @ RVA 0x1156DC0
+double __fastcall sub_141156DC0(__int64 a1, unsigned int a2, __int64 a3, __int64 a4)
+{
+  __int64 v7; // rcx
+  __int64 v8; // rax
+  double result; // xmm0_8
+  _QWORD v10[2]; // [rsp+20h] [rbp-28h] BYREF
+  _BYTE v11[24]; // [rsp+30h] [rbp-18h] BYREF
+
+  if ( a4 )
+  {
+    if ( (*(_DWORD *)(a3 + 16) & 0x800) == 0 )
+    {
+      (*(void (__fastcall **)(__int64, __int64))(*(_QWORD *)(a3 + 88) + 8LL))(a3 + 88, a4);
+      return result;
+    }
+    v7 = 0;
+    if ( *(_BYTE *)(a3 + 26) == 65 )
+      v7 = a3;
+    if ( v7 )
+    {
+      v8 = sub_140C59100();
+      (*(void (__fastcall **)(__int64, __int64))(*(_QWORD *)(v8 + 304) + 8LL))(v8 + 304, a4);
+      return result;
+    }
+  }
+  else
+  {
+    sub_1420F7170(v10);
+    v10[0] = &BSScript::Internal::CachedErrorMessageImpl<char *>::`vftable';
+    v10[1] = "Cannot GetValue with None ActorValue";
+    sub_14167BCF0(v11);
+    (*(void (__fastcall **)(__int64, _QWORD *, _QWORD, __int64))(*(_QWORD *)a1 + 480LL))(a1, v10, a2, 2);
+    sub_14167BEF0(v11);
+    sub_1420F7190(v10);
+  }
+  return 0.0;
+}
+
+      ---
+
+==== 'SetStageInstance' ====
+  <string not found>
+
+==== done ====

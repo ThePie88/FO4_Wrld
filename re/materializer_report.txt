@@ -1,0 +1,74 @@
+[+] Image base: 0x140000000
+
+==== sub_140511F10_MATERIALIZER (RVA 0x511F10) ====
+__int64 __fastcall sub_140511F10(__int64 a1, __int64 a2)
+{
+  void *v4; // rax
+  void *v5; // rdi
+  int v7; // [rsp+30h] [rbp+8h] BYREF
+
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v4 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x80u, 0, 0);
+  v5 = v4;
+  if ( v4 )
+  {
+    if ( !a1 || (*(_DWORD *)(a1 + 40) & 0x3FF) != 0 )
+    {
+      sub_14021E3F0(&v7, a1);
+      v4 = (void *)sub_14034D320(v5, a2, &v7);
+    }
+    else
+    {
+      v7 = dword_1430DA180;
+      v4 = (void *)sub_14034D320(v4, a2, &v7);
+    }
+  }
+  *(_QWORD *)(a1 + 248) = v4;
+  return sub_140526030(v4, a1 + 64);
+}
+
+
+==== sub_140511FD0_sibling (RVA 0x511FD0) ====
+__int64 __fastcall sub_140511FD0(__int64 a1)
+{
+  __int64 v2; // rcx
+  __int64 result; // rax
+  __int64 v4; // rdi
+
+  v2 = *(_QWORD *)(a1 + 248);
+  if ( v2 )
+  {
+    result = sub_140527000(v2, a1 + 64);
+    v4 = *(_QWORD *)(a1 + 248);
+    if ( v4 )
+    {
+      sub_14034D400(*(_QWORD *)(a1 + 248));
+      result = sub_1422B6BC8(v4, 128);
+    }
+    *(_QWORD *)(a1 + 248) = 0;
+  }
+  return result;
+}
+
+
+==== sub_140D57400_vt167 (RVA 0xD57400) ====
+__int64 sub_140D57400()
+{
+  sub_140511F10();
+  return sub_141047020(qword_143268A38);
+}
+
+
+==== sub_141047020_vt167_inner2 (RVA 0x1047020) ====
+__int64 __fastcall sub_141047020(__int64 a1)
+{
+  __int64 v1; // rdx
+
+  v1 = a1 + 32;
+  if ( !a1 )
+    v1 = 0;
+  return sub_140502180(qword_1432D2260, v1);
+}
+
+

@@ -1,0 +1,49 @@
+[+] Image base: 0x140000000
+
+[+] 'GetForm': 1 hits
+    @ 0x1425BC918 (RVA 0x25BC918)
+      xref 0x14112467C in func 0x141123910 (RVA 0x1123910)
+        candidate native @ 0x1411299D0 (RVA 0x11299D0)
+        --- decompile ---
+__int64 __fastcall sub_1411299D0(__int64 a1, __int64 a2, __int64 a3, unsigned int a4)
+{
+  return sub_140311850(a4);
+}
+
+        ---
+      xref 0x14112475E in func 0x141123910 (RVA 0x1123910)
+
+[+] 'GetFormFromFile': 1 hits
+    @ 0x1425BC920 (RVA 0x25BC920)
+      xref 0x1411247CB in func 0x141123910 (RVA 0x1123910)
+        candidate native @ 0x1411221C0 (RVA 0x11221C0)
+        --- decompile ---
+__int64 __fastcall sub_1411221C0(__int64 a1, __int64 a2, __int64 a3, unsigned int a4, __int64 a5)
+{
+  __int64 v5; // rax
+  __int64 v6; // rax
+  __int64 v7; // rbx
+  unsigned int v9; // [rsp+48h] [rbp+20h] BYREF
+
+  v9 = a4;
+  v5 = sub_14167C070(a5);
+  v6 = sub_1402E65F0(qword_1430DC000, v5);
+  v7 = v6;
+  if ( !v6 || !(unsigned __int8)sub_1402F7200(v6) )
+    return 0;
+  sub_1402F8E90(v7, &v9);
+  return sub_140311850(v9);
+}
+
+        ---
+      xref 0x1411248BB in func 0x141123910 (RVA 0x1123910)
+
+[+] 'LookupByID': 0 hits
+
+[+] 'LookupByFormID': 0 hits
+
+[+] 'GetObjectReference': 0 hits
+
+[+] 'FindReferenceById': 0 hits
+
+==== done ====

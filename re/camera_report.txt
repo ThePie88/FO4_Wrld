@@ -1,0 +1,90 @@
+================================================================================
+ FO4 1.11.191  Camera / View-Proj RE  (for FoM-lite matrix capture)
+ imagebase 0x140000000
+================================================================================
+
+## 1. CONFIRMED RVAs  (from disassembly of Fallout4.exe)
+
+  PlayerCamera singleton       0x30DBD58   (VA 0x1430DBD58, .data qword)
+  PlayerCamera::ctor          ~0x1024A50   (classic BSTSingletonSDM install)
+  PlayerCamera primary vtable  0x25A25D8   (30+ slots)
+  PlayerCamera sub-vtables     0x25A2600 / 2610 / 2628 / 2640  (BSTEventSink)
+  TESCamera vtable             0x2519158
+  ThirdPersonState vtable      0x251AA18
+  FirstPersonState vtable      0x25A2A08
+  FreeCameraState vtable       0x25A26E8
+  VATSCameraState vtable       0x25A32A8
+  NiCamera vtable              0x267DD50
+  MainCullingCamera vtable     0x255DB08
+  BSFrustumFOVController vtbl  0x268BF38
+
+  Ctor install:  lea rax,[rip+VTBL]; cmovne rdx,r14; mov [rip+disp],rdx;
+                 mov [r14],rax    (writes singleton @ 0x30DBD58).
+  100+ code sites read the singleton via `mov rcx,[rip+disp]`.
+
+## 2. PlayerCamera LAYOUT (from ctor decode)
+
+  +0x00  vtable_primary
+  +0x38  +0x48  +0x50  +0x58   BSTEventSink sub-vtables
+  +0x40  dword init -1
+  +0xE0  NiPointer<TESCameraState>[16]  state-array   <<<
+         (slots +0xE0..+0x158, zero-initialised)
+  +0x170 qword (init 0) — likely cached "current state" pointer
+  +0x180  +0x184  float 1.0f each (likely zoom / fov mult)
+  +0x1A0 dword init -1 — likely active state index
+  size ~ 0x1B0 bytes
+
+## 3. VIEW/PROJ MATRICES  (speculative)
+
+  Each TESCameraState owns a NiCamera; Gamebryo NiCamera stores
+  viewMat / projMat / frustum / FOV / near / far as direct members.
+  Capture chain:  PlayerCamera -> state[idx] -> NiCamera -> float[16].
+
+  Shader-constant strings "ViewProj" 0x2912338, "WorldViewProj" 0x29097C0,
+  "OcclusionWorldViewProj" 0x2913008, "CameraData" 0x2913198 are used only
+  at constant-buffer registration (~0x226B7xx) — not a hook point.
+
+  Near/far/FOV INI keys ("fNearDistance:Display" 0x2698B20 etc.) resolve via
+  GameSettingCollection and end up in NiCamera — read NiCamera directly.
+
+## 4. CAMERA-MODE FLAG
+
+  Primary candidate: dword at PlayerCamera+0x1A0 (ctor init -1).
+  Secondary: pointer at +0x170 (current-state cache).  Quick in-game probe:
+  print the dword at +0x1A0 and toggle Tab / VATS / F — expect transitions.
+
+## 5. CONFIRMED vs SPECULATIVE
+
+  CONFIRMED:
+    - Singleton @ 0x30DBD58 + ctor + vtables + layout to +0x1A9 + 100+ xrefs.
+  SPECULATIVE (need IDA pass):
+    - NiCamera offset inside a TESCameraState
+    - NiCamera member offsets for view / proj / near / far / FOV
+    - Which of +0x170 / +0x1A0 is the authoritative active-state selector
+    - Which PlayerCamera vtable slot is Update()
+
+## 6. IDA SCRIPT EMITTED
+
+  re/decomp_camera.py  (~270 lines) — run File > Script file in IDA:
+    * Decompiles PlayerCamera::ctor.
+    * Walks ctor: lists call targets + `mov [r14+X],?` stores -> pins
+      field layout and the NiCamera ctor / member offset.
+    * Decomps PlayerCamera vtable [0..15] -> finds Update().
+    * Decomps NiCamera vtable [26..35] -> reveals view/proj member offsets.
+    * Decomps 10 small singleton consumers.
+  Output: re/camera_decomp_report.txt  (~30s runtime).
+
+## 7. CAPTURE PLAN (once IDA resolves OFF_NICAM / OFF_VIEW / OFF_PROJ)
+
+      pc  = *(void**) (imgbase + 0x30DBD58);
+      idx = *(int*)   (pc + 0x1A0);
+      st  = *(void**) (pc + 0xE0 + idx*8);          // TESCameraState*
+      cam = *(void**) (st + OFF_NICAM);             // NiCamera*
+      memcpy(view, cam + OFF_VIEW, 64);
+      memcpy(proj, cam + OFF_PROJ, 64);
+
+  Pure pointer chase — no hook needed.  Game writes these matrices during
+  Update (before Present), so reading at Present yields the exact transforms
+  the game rasterised with, eliminating the 1-frame wobble.
+
+================================================================================

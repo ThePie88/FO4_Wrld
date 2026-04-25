@@ -1,0 +1,130 @@
+{
+  "version": 3,
+  "timestamp_ms": 1776718806207,
+  "server": {
+    "tick_rate_hz": 20,
+    "server_version": [
+      1,
+      0
+    ],
+    "peer_timeout_ms": 5000.0
+  },
+  "sessions": [
+    {
+      "session_id": 1,
+      "peer_id": "player_A",
+      "addr": [
+        "127.0.0.1",
+        56622
+      ],
+      "client_version": [
+        1,
+        0
+      ],
+      "state": "ACTIVE",
+      "joined_at_ms": 282193109.0,
+      "last_seen_ms": 282522718.0,
+      "total_pos_updates": 6341,
+      "total_events": 11,
+      "last_pos": {
+        "x": -80759.09375,
+        "y": 91147.0,
+        "z": 7854.02685546875,
+        "rx": 0.38074198365211487,
+        "ry": -0.03202613815665245,
+        "rz": 3.594405174255371,
+        "timestamp_ms": 1776718806170
+      },
+      "channel_in_flight": 0,
+      "channel_rtt_ms": null
+    },
+    {
+      "session_id": 2,
+      "peer_id": "player_B",
+      "addr": [
+        "127.0.0.1",
+        64661
+      ],
+      "client_version": [
+        1,
+        0
+      ],
+      "state": "ACTIVE",
+      "joined_at_ms": 282204890.0,
+      "last_seen_ms": 282522718.0,
+      "total_pos_updates": 6156,
+      "total_events": 11,
+      "last_pos": {
+        "x": -80945.9765625,
+        "y": 90890.25,
+        "z": 7854.08056640625,
+        "rx": 0.4252746105194092,
+        "ry": -0.03202613815665245,
+        "rz": 5.348773956298828,
+        "timestamp_ms": 1776718806197
+      },
+      "channel_in_flight": 0,
+      "channel_rtt_ms": 16.0
+    }
+  ],
+  "world_actors": [
+    {
+      "base_id": "0xFF00130F",
+      "cell_id": "0xDCFD",
+      "alive": false,
+      "last_known_form_id": "0xA1A54",
+      "last_owner": "player_B",
+      "last_update_ms": 213395218.0
+    },
+    {
+      "base_id": "0xFF000FA7",
+      "cell_id": "0xDCFC",
+      "alive": false,
+      "last_known_form_id": "0xA1A59",
+      "last_owner": "player_B",
+      "last_update_ms": 213402484.0
+    },
+    {
+      "base_id": "0xFF000FA6",
+      "cell_id": "0xDCFD",
+      "alive": false,
+      "last_known_form_id": "0xA1A4E",
+      "last_owner": "player_B",
+      "last_update_ms": 213407015.0
+    },
+    {
+      "base_id": "0xFF00114C",
+      "cell_id": "0xDD3F",
+      "alive": false,
+      "last_known_form_id": "0xFF001B7E",
+      "last_owner": "player_A",
+      "last_update_ms": 248091031.0
+    },
+    {
+      "base_id": "0xFF001118",
+      "cell_id": "0xDD3F",
+      "alive": false,
+      "last_known_form_id": "0xFF001160",
+      "last_owner": "player_B",
+      "last_update_ms": 248123437.0
+    }
+  ],
+  "containers": [
+    {
+      "base_id": "0xDEAD01",
+      "cell_id": "0x1696A",
+      "items": {},
+      "last_known_form_id": "0x0",
+      "last_owner": "player_A",
+      "last_update_ms": 211645671.0
+    },
+    {
+      "base_id": "0x913F9",
+      "cell_id": "0xDD3F",
+      "items": {},
+      "last_known_form_id": "0x0",
+      "last_owner": "player_B",
+      "last_update_ms": 280981796.0
+    }
+  ]
+}

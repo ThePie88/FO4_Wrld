@@ -1,0 +1,17 @@
+; Proxy dxgi.dll — Fallout 4 NG imports CreateDXGIFactory only, but we
+; forward all three factory-creation entry points for robustness against
+; plugins that resolve via GetProcAddress.
+;
+; All 3 forward to the real dxgi.dll loaded from %SYSTEMROOT%\System32
+; (see proxy_exports.cpp). No __declspec(dllexport) in sources — .def is
+; authoritative.
+;
+; Why dxgi.dll and not dinput8.dll? Pre-NG FO4 imported dinput8 directly,
+; so the community "dinput8 proxy" pattern worked. NG (1.10.980+) removed
+; that import — Fallout4.exe now imports XINPUT1_3 + dxgi + d3d11. dxgi
+; is the lowest DLL in the DX11 stack and is guaranteed loaded at startup.
+LIBRARY "dxgi"
+EXPORTS
+    CreateDXGIFactory
+    CreateDXGIFactory1
+    CreateDXGIFactory2

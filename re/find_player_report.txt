@@ -1,0 +1,151 @@
+==== waiting for auto_wait ====
+[+] Image base: 0x140000000
+[*] Enumerating strings...
+[+] Total strings: 69154
+[+] 'RTTI PlayerCharacter' ('.?AVPlayerCharacter@@'): 1 hits
+    string at 0x142FFE168 (RVA 0x2FFE168)
+[+]   RTTI PlayerCharacter string @ 0x142FFE168 (RVA 0x2FFE168) has 0 xrefs:
+    presumed TypeDescriptor @ 0x142FFE158 (RVA 0x2FFE158)
+[+]   RTTI PlayerCharacter TypeDescriptor @ 0x142FFE158 (RVA 0x2FFE158) has 25 xrefs:
+    from 0x1429CC83C (RVA 0x29CC83C) func=? type=1
+    from 0x1429CC9C0 (RVA 0x29CC9C0) func=? type=1
+    from 0x1429CCD8C (RVA 0x29CCD8C) func=? type=1
+    from 0x1429CCDB4 (RVA 0x29CCDB4) func=? type=1
+    from 0x1429CCDDC (RVA 0x29CCDDC) func=? type=1
+    from 0x1429CCE04 (RVA 0x29CCE04) func=? type=1
+    from 0x1429CCE2C (RVA 0x29CCE2C) func=? type=1
+    from 0x1429CCE54 (RVA 0x29CCE54) func=? type=1
+    from 0x1429CCE7C (RVA 0x29CCE7C) func=? type=1
+    from 0x1429CCEA4 (RVA 0x29CCEA4) func=? type=1
+    from 0x1429CCECC (RVA 0x29CCECC) func=? type=1
+    from 0x1429CCEF4 (RVA 0x29CCEF4) func=? type=1
+    from 0x1429CCF1C (RVA 0x29CCF1C) func=? type=1
+    from 0x1429CCF44 (RVA 0x29CCF44) func=? type=1
+    from 0x1429CCF6C (RVA 0x29CCF6C) func=? type=1
+    from 0x1429CCF94 (RVA 0x29CCF94) func=? type=1
+    from 0x1429CCFBC (RVA 0x29CCFBC) func=? type=1
+    from 0x1429CCFE4 (RVA 0x29CCFE4) func=? type=1
+    from 0x1429CD00C (RVA 0x29CD00C) func=? type=1
+    from 0x1429CD034 (RVA 0x29CD034) func=? type=1
+    from 0x1429CD05C (RVA 0x29CD05C) func=? type=1
+    from 0x1429CD084 (RVA 0x29CD084) func=? type=1
+    from 0x1429CD0AC (RVA 0x29CD0AC) func=? type=1
+    from 0x1429CD0D4 (RVA 0x29CD0D4) func=? type=1
+    from 0x1429CD0FC (RVA 0x29CD0FC) func=? type=1
+[+] 'RTTI Actor' ('.?AVActor@@'): 1 hits
+    string at 0x142F913F8 (RVA 0x2F913F8)
+[+]   RTTI Actor string @ 0x142F913F8 (RVA 0x2F913F8) has 0 xrefs:
+    presumed TypeDescriptor @ 0x142F913E8 (RVA 0x2F913E8)
+[+]   RTTI Actor TypeDescriptor @ 0x142F913E8 (RVA 0x2F913E8) has 136 xrefs:
+    from 0x140228CE7 (RVA 0x228CE7) func=sub_140228C20 type=1
+    from 0x140229EBA (RVA 0x229EBA) func=sub_140229DE0 type=1
+    from 0x14022A020 (RVA 0x22A020) func=sub_140229DE0 type=1
+    from 0x14022A116 (RVA 0x22A116) func=sub_140229DE0 type=1
+    from 0x14022B2F6 (RVA 0x22B2F6) func=sub_14022B2C0 type=1
+    from 0x14022B356 (RVA 0x22B356) func=sub_14022B320 type=1
+    from 0x1402308D9 (RVA 0x2308D9) func=sub_1402308A0 type=1
+    from 0x140230F86 (RVA 0x230F86) func=sub_140230E80 type=1
+    from 0x1402EABC6 (RVA 0x2EABC6) func=sub_1402EA240 type=1
+    from 0x14045848D (RVA 0x45848D) func=sub_140458470 type=1
+    from 0x1405BDF6E (RVA 0x5BDF6E) func=sub_1405BDF00 type=1
+    from 0x1405BEE25 (RVA 0x5BEE25) func=sub_1405BEDD0 type=1
+    from 0x1405BEFE1 (RVA 0x5BEFE1) func=sub_1405BEF70 type=1
+    from 0x1405C0119 (RVA 0x5C0119) func=sub_1405C00A0 type=1
+    from 0x1405C05D2 (RVA 0x5C05D2) func=sub_1405C05A0 type=1
+    from 0x1405C1B04 (RVA 0x5C1B04) func=sub_1405C1A90 type=1
+    from 0x1405C211A (RVA 0x5C211A) func=sub_1405C20A0 type=1
+    from 0x1405C23CC (RVA 0x5C23CC) func=sub_1405C23C0 type=1
+    from 0x1405C26E2 (RVA 0x5C26E2) func=sub_1405C2670 type=1
+    from 0x1405C28DC (RVA 0x5C28DC) func=sub_1405C2870 type=1
+    from 0x1405C2CEC (RVA 0x5C2CEC) func=sub_1405C2C80 type=1
+    from 0x1405C2D7C (RVA 0x5C2D7C) func=sub_1405C2D70 type=1
+    from 0x1405C4AB1 (RVA 0x5C4AB1) func=sub_1405C4A90 type=1
+    from 0x1405C7E9C (RVA 0x5C7E9C) func=sub_1405C7E30 type=1
+    from 0x1405C7F5C (RVA 0x5C7F5C) func=sub_1405C7EF0 type=1
+    from 0x1405C8946 (RVA 0x5C8946) func=sub_1405C8870 type=1
+    from 0x1405C91B8 (RVA 0x5C91B8) func=sub_1405C91A0 type=1
+    from 0x1405C9208 (RVA 0x5C9208) func=sub_1405C91F0 type=1
+    from 0x1405C9629 (RVA 0x5C9629) func=sub_1405C95D0 type=1
+    from 0x1405C9728 (RVA 0x5C9728) func=sub_1405C96B0 type=1
+[+] 'RTTI TESObjectREFR' ('.?AVTESObjectREFR@@'): 1 hits
+    string at 0x142F90680 (RVA 0x2F90680)
+[+]   RTTI TESObjectREFR string @ 0x142F90680 (RVA 0x2F90680) has 0 xrefs:
+    presumed TypeDescriptor @ 0x142F90670 (RVA 0x2F90670)
+[+]   RTTI TESObjectREFR TypeDescriptor @ 0x142F90670 (RVA 0x2F90670) has 173 xrefs:
+    from 0x14021D939 (RVA 0x21D939) func=sub_14021D900 type=1
+    from 0x14021E046 (RVA 0x21E046) func=sub_14021E010 type=1
+    from 0x14021E0A6 (RVA 0x21E0A6) func=sub_14021E070 type=1
+    from 0x14021F289 (RVA 0x21F289) func=sub_14021F250 type=1
+    from 0x140221B78 (RVA 0x221B78) func=sub_140221B40 type=1
+    from 0x14022F898 (RVA 0x22F898) func=sub_14022F790 type=1
+    from 0x140278C4D (RVA 0x278C4D) func=sub_140278680 type=1
+    from 0x140278CAB (RVA 0x278CAB) func=sub_140278680 type=1
+    from 0x140278EB7 (RVA 0x278EB7) func=sub_140278680 type=1
+    from 0x140278F90 (RVA 0x278F90) func=sub_140278680 type=1
+    from 0x140279179 (RVA 0x279179) func=sub_140278680 type=1
+    from 0x1402792B9 (RVA 0x2792B9) func=sub_140278680 type=1
+    from 0x1402798AC (RVA 0x2798AC) func=sub_140278680 type=1
+    from 0x140279970 (RVA 0x279970) func=sub_140278680 type=1
+    from 0x14029461E (RVA 0x29461E) func=sub_140294440 type=1
+    from 0x1402A577D (RVA 0x2A577D) func=sub_1402A55F0 type=1
+    from 0x1402A7489 (RVA 0x2A7489) func=sub_1402A73D0 type=1
+    from 0x1402B045C (RVA 0x2B045C) func=sub_1402B03A0 type=1
+    from 0x1402B8087 (RVA 0x2B8087) func=sub_1402B8040 type=1
+    from 0x1402C2577 (RVA 0x2C2577) func=sub_1402C2530 type=1
+    from 0x1402C2A8A (RVA 0x2C2A8A) func=sub_1402C2A10 type=1
+    from 0x1402D578A (RVA 0x2D578A) func=sub_1402D5500 type=1
+    from 0x1402DF369 (RVA 0x2DF369) func=sub_1402DF1C0 type=1
+    from 0x1402EABD2 (RVA 0x2EABD2) func=sub_1402EA240 type=1
+    from 0x14031AB3B (RVA 0x31AB3B) func=sub_14031AB10 type=1
+    from 0x14031ABC3 (RVA 0x31ABC3) func=sub_14031AB90 type=1
+    from 0x1404407E8 (RVA 0x4407E8) func=sub_1404407A0 type=1
+    from 0x140458484 (RVA 0x458484) func=sub_140458470 type=1
+    from 0x14047060E (RVA 0x47060E) func=sub_1404705F0 type=1
+    from 0x1404F228E (RVA 0x4F228E) func=sub_1404F1F20 type=1
+[+] 'RTTI TESForm' ('.?AVTESForm@@'): 1 hits
+    string at 0x142F904A8 (RVA 0x2F904A8)
+[+]   RTTI TESForm string @ 0x142F904A8 (RVA 0x2F904A8) has 0 xrefs:
+    presumed TypeDescriptor @ 0x142F90498 (RVA 0x2F90498)
+[+]   RTTI TESForm TypeDescriptor @ 0x142F90498 (RVA 0x2F90498) has 1022 xrefs:
+    from 0x14021C292 (RVA 0x21C292) func=sub_14021C250 type=1
+    from 0x14021C35F (RVA 0x21C35F) func=sub_14021C320 type=1
+    from 0x14021CBC7 (RVA 0x21CBC7) func=sub_14021CB70 type=1
+    from 0x14021CC01 (RVA 0x21CC01) func=sub_14021CB70 type=1
+    from 0x14021CCEF (RVA 0x21CCEF) func=sub_14021CCB0 type=1
+    from 0x14021D942 (RVA 0x21D942) func=sub_14021D900 type=1
+    from 0x14021E04F (RVA 0x21E04F) func=sub_14021E010 type=1
+    from 0x14021E0AF (RVA 0x21E0AF) func=sub_14021E070 type=1
+    from 0x14021F292 (RVA 0x21F292) func=sub_14021F250 type=1
+    from 0x140221B81 (RVA 0x221B81) func=sub_140221B40 type=1
+    from 0x140221BE1 (RVA 0x221BE1) func=sub_140221B40 type=1
+    from 0x140221D3F (RVA 0x221D3F) func=sub_140221D00 type=1
+    from 0x140228CF0 (RVA 0x228CF0) func=sub_140228C20 type=1
+    from 0x140229EC3 (RVA 0x229EC3) func=sub_140229DE0 type=1
+    from 0x14022A029 (RVA 0x22A029) func=sub_140229DE0 type=1
+    from 0x14022A11F (RVA 0x22A11F) func=sub_140229DE0 type=1
+    from 0x14022B2FF (RVA 0x22B2FF) func=sub_14022B2C0 type=1
+    from 0x14022B35F (RVA 0x22B35F) func=sub_14022B320 type=1
+    from 0x14022F8A1 (RVA 0x22F8A1) func=sub_14022F790 type=1
+    from 0x1402308E2 (RVA 0x2308E2) func=sub_1402308A0 type=1
+    from 0x140230F8F (RVA 0x230F8F) func=sub_140230E80 type=1
+    from 0x14024E465 (RVA 0x24E465) func=sub_14024E2F0 type=1
+    from 0x14024EFF4 (RVA 0x24EFF4) func=sub_14024EE70 type=1
+    from 0x14024F683 (RVA 0x24F683) func=sub_14024F630 type=1
+    from 0x14024F6B3 (RVA 0x24F6B3) func=sub_14024F6A0 type=1
+    from 0x14024F7B3 (RVA 0x24F7B3) func=sub_14024F760 type=1
+    from 0x14024F9F2 (RVA 0x24F9F2) func=sub_14024F9A0 type=1
+    from 0x14025138D (RVA 0x25138D) func=sub_1402512E0 type=1
+    from 0x1402542FE (RVA 0x2542FE) func=sub_140254210 type=1
+    from 0x1402549FE (RVA 0x2549FE) func=sub_1402548B0 type=1
+[+] 'Console GetPos' ('GetPos'): 1 hits
+    string at 0x1424C1CBC (RVA 0x24C1CBC)
+[+]   Console GetPos string @ 0x1424C1CBC (RVA 0x24C1CBC) has 1 xrefs:
+    from 0x142EDF3E0 (RVA 0x2EDF3E0) func=? type=1
+[+] 'Papyrus GetPlayer' ('GetPlayer'): 1 hits
+    string at 0x1425BC978 (RVA 0x25BC978)
+[+]   Papyrus GetPlayer string @ 0x1425BC978 (RVA 0x25BC978) has 2 xrefs:
+    from 0x141124B68 (RVA 0x1124B68) func=sub_141123910 type=1
+    from 0x141124C30 (RVA 0x1124C30) func=sub_141123910 type=1
+[+] 'Editor ID PlayerRef' ('PlayerRef'): 0 hits
+[+] 'Class name literal' ('PlayerCharacter'): 0 hits
+==== Report complete ====

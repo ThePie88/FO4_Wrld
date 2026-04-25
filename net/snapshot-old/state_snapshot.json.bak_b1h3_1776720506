@@ -1,0 +1,122 @@
+{
+  "version": 3,
+  "timestamp_ms": 1776720501069,
+  "server": {
+    "tick_rate_hz": 20,
+    "server_version": [
+      1,
+      0
+    ],
+    "peer_timeout_ms": 5000.0
+  },
+  "sessions": [
+    {
+      "session_id": 1,
+      "peer_id": "player_A",
+      "addr": [
+        "127.0.0.1",
+        57318
+      ],
+      "client_version": [
+        1,
+        0
+      ],
+      "state": "ACTIVE",
+      "joined_at_ms": 283507484.0,
+      "last_seen_ms": 284217546.0,
+      "total_pos_updates": 13782,
+      "total_events": 12,
+      "last_pos": {
+        "x": -80926.1328125,
+        "y": 90964.390625,
+        "z": 7854.79833984375,
+        "rx": 0.3618156909942627,
+        "ry": -0.03202613815665245,
+        "rz": 5.045156478881836,
+        "timestamp_ms": 1776720500980
+      },
+      "channel_in_flight": 0,
+      "channel_rtt_ms": null
+    },
+    {
+      "session_id": 2,
+      "peer_id": "player_B",
+      "addr": [
+        "127.0.0.1",
+        52924
+      ],
+      "client_version": [
+        1,
+        0
+      ],
+      "state": "ACTIVE",
+      "joined_at_ms": 283529218.0,
+      "last_seen_ms": 284217546.0,
+      "total_pos_updates": 13374,
+      "total_events": 12,
+      "last_pos": {
+        "x": -80770.25,
+        "y": 91006.4921875,
+        "z": 7854.095703125,
+        "rx": 0.37072256207466125,
+        "ry": -0.03202613815665245,
+        "rz": 5.349963188171387,
+        "timestamp_ms": 1776720500980
+      },
+      "channel_in_flight": 0,
+      "channel_rtt_ms": 16.0
+    }
+  ],
+  "world_actors": [
+    {
+      "base_id": "0xFF00130F",
+      "cell_id": "0xDCFD",
+      "alive": false,
+      "last_known_form_id": "0xA1A54",
+      "last_owner": "player_B",
+      "last_update_ms": 213395218.0
+    },
+    {
+      "base_id": "0xFF000FA7",
+      "cell_id": "0xDCFC",
+      "alive": false,
+      "last_known_form_id": "0xA1A59",
+      "last_owner": "player_B",
+      "last_update_ms": 213402484.0
+    },
+    {
+      "base_id": "0xFF000FA6",
+      "cell_id": "0xDCFD",
+      "alive": false,
+      "last_known_form_id": "0xA1A4E",
+      "last_owner": "player_B",
+      "last_update_ms": 213407015.0
+    },
+    {
+      "base_id": "0xFF00114C",
+      "cell_id": "0xDD3F",
+      "alive": false,
+      "last_known_form_id": "0xFF001B7E",
+      "last_owner": "player_A",
+      "last_update_ms": 248091031.0
+    },
+    {
+      "base_id": "0xFF001118",
+      "cell_id": "0xDD3F",
+      "alive": false,
+      "last_known_form_id": "0xFF001160",
+      "last_owner": "player_B",
+      "last_update_ms": 248123437.0
+    }
+  ],
+  "containers": [
+    {
+      "base_id": "0x913F9",
+      "cell_id": "0xDD3F",
+      "items": {},
+      "last_known_form_id": "0x0",
+      "last_owner": "player_B",
+      "last_update_ms": 283613125.0
+    }
+  ]
+}

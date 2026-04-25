@@ -1,0 +1,785 @@
+============================================================================
+  STRADA B M3.3 — PLAN C AGGRESSIVE RE (TRITON / ANGR / MANUAL)
+  Target: sub_142172540 (BSLSP vt[43] SetupGeometry) + dependencies
+  Binary: Fallout4.exe 1.11.191 next-gen   Image base 0x140000000
+  Date: 2026-04-23   Pipeline: capstone-backed taint-symexec fallback
+  Primary artifacts produced by this pass:
+    re/_triton_stradaB.py                (triage)
+    re/_triton_bslsp_fullrun.py          (main taint-trace)
+    re/_triton_keybranch_disasm.py       (early-reject disassembly)
+    re/_triton_label52_deep.py           (LABEL_52 flow)
+    re/_triton_matsize.py                (sizeof Material proof)
+    re/_triton_ctor_writes.py            (Material ctor writes)
+    re/_triton_bslsp_ctor_writes.py      (BSLSP ctor writes)
+    re/_triton_mat_vtable.py             (Material vtable dump)
+    re/_triton_base_ctor.py              (NiRefObject-base init)
+    re/_triton_fadefn.py                 (fade-curve helpers)
+    re/_triton_clone.py                  (subclass sizes via clone fn)
+    re/_triton_trace_output.txt          (machine output of main taint run)
+============================================================================
+
+TL;DR   FIVE CONCRETE CORRECTIONS TO PRIOR §8 OPEN ITEMS
+
+  1. OPEN-4 / OPEN-6 are INVALID. The BSLSP parent ctor sub_142160DA0
+     DOES write +0x64 = 1.0f (8-byte store at disp=0x64 from a 32-bit
+     immediate — covers +0x64 float AND +0x68 zero in one insn at
+     0x142160DD7). And it writes +0x48 = qword_143E47438 at 0x142160E00.
+     So our "+0x64 uninitialized" and "+0x48 garbage" hypotheses were
+     both false. The render-path reads of these fields find valid data.
+
+  2. sizeof(BSLightingShaderMaterialBase) = 0xC0 (192 bytes). Verified
+     three independent ways:
+       (a) callers of sub_1421C5CE0 pass edx=0xC0 to the allocator
+           (2 separate sites);
+       (b) the lazy-default-mat wrapper sub_1421C7770 reserves 0xE8 on
+           the stack (0xC0 + shadow + alignment) and hands +0x20 to ctor;
+       (c) subclasses allocate 0xC8 / 0xD0 / 0xD8 (adding 1-3 extra
+           qwords at +0xC0, +0xC8, +0xD0) — base footprint identical.
+
+  3. sub_1421C5CE0 does NOT zero-fill. It writes 23 distinct offsets
+     totalling 136 of the 192 bytes. Three GAPS remain inside base:
+       +0x34 .. +0x38 (4 bytes — padding or rarely-read)
+       +0x44 .. +0x48 (4 bytes — padding)
+       +0x74 .. +0x78 (4 bytes — padding, follows dword 3 at +0x70)
+     pre-init by sub_1421D6700 covers +0x08..+0x32 (refcount + NiRef
+     header), so the only truly uninitialised regions in [0,0xC0) after
+     the two ctors run are three 4-byte pads. None are read in the
+     render path.
+
+  4. byte_143E488C0 killswitch interpretation from §2 still stands
+     (force to 1 before bind). But the render-side crash in the
+     0x200-zero-fill case is NOT caused by that killswitch — it's
+     caused by the NULL vtable at +0x00 of a zero-filled material
+     derefing the vt[51] call at 0x142172634 (indirect via BSLSP
+     vtable chain). Fix is: always run sub_1421C5CE0 on every
+     material buffer we allocate, regardless of size.
+
+  5. The REAL "invisible cube" cause in the 0xC0 ctor'd path is
+     almost certainly combined: (a) shared default-material (§4 of
+     prior dossier) so our per-cube textures don't reach us; (b)
+     even if we detach, the killswitch at byte_143E488C0 leaves
+     mat+72/80/88/96 at default-global textures which sample as
+     transparent when the test-cube uses its own UVs.
+
+============================================================================
+  §1  —  FUNCTION MAP & CALL-GRAPH LOCUS
+============================================================================
+
+  Vtable:  BSLightingShaderProperty::vftable  @ 0x1428F9FF8 (RVA 0x28F9FF8)
+
+  Critical slots intersected by SetupGeometry:
+    vt[0]    0x142174B20  dtor
+    vt[16]   0x140239550                                      (via [rax+0x10])
+    vt[43]   0x142172540  SetupGeometry  (0xE45 = 3653 bytes)  **TARGET**
+    vt[50]   0x142174C70  SetFieldMat80  (4-insn setter, writes [mat+0x80])
+    vt[51]   0x142174C60  GetFieldMat80  (3-insn getter, reads [mat+0x80])
+    vt[63]   0x140239520  ... (generic BSFadeNode base)
+
+  Render path (top-down from BSBatchRenderer::FlushBatch):
+
+      BSBatchRenderer::FlushBatch   (vt[9] @ 0x14221C1B0)
+        → per-shape pickup      [shape+0x138] = BSLSP*
+          → BSLightingShader::Setup (engine-global)
+            → (*BSLSP->vtbl[43])(this, stateBlock, passKind, ctx)
+                                          ^^^^^^^^^^^  our target
+
+  Arguments to vt[43]:
+      rcx   = THIS             BSLSP*         (our instance)
+      rdx   = a2 (r14 in fn)   BSGeometry*    (shape context)
+      r8d   = a3               int32 passKind (18/21/24/37 enum)
+      r9    = a4               engine state block
+
+  Observed a3 values:
+      a3 == 21 or a3 == 0   → take sub_142173390 fast-path (no draw)
+      a3 == 18             → DIALOGUE/AMBIENT-OPACITY pass   *** lenient ***
+      a3 == 24             → STANDARD OPAQUE pass            *** strict ***
+      a3 == 37             → MATERIAL-PROXY pass (alpha forced)
+      else                 → generic return without submission
+
+  We therefore execute the guarded block only when a3 ∈ {18, 24}.
+
+============================================================================
+  §2  —  TAINT-SYMEXEC: INITIAL STATE
+============================================================================
+
+  Triton unavailable on Windows/Python 3.12 (no binary wheel, no prebuilt
+  Z3 glue). Fallback is a custom capstone-based tainter in
+  _triton_bslsp_fullrun.py. Seeds:
+
+      rcx ←  "THIS"     (BSLSP*)
+      rdx ←  "A2"       (BSGeometry*)
+      r8  ←  "A3"
+      r9  ←  "A4"
+
+  Propagation rules: reg→reg copies propagate the tag; loads of the
+  form  mov R, [THIS+disp]  emit a load_this event and if disp==0x58
+  re-tag R as "MAT" (material pointer lives at BSLSP+0x58). Later loads
+  mov X, [R+disp] become mem(MAT+disp). Any cmp/test branch feeds the
+  constraint log. XORs and arithmetic clobber the destination reg tag.
+
+  Across sub_142172540 (878 instructions), the tainter observed:
+
+      THIS reads at offsets: 0x00, 0x28, 0x2C, 0x30, 0x38, 0x48, 0x50,
+                             0x58, 0xB0, 0xD4
+      MAT  reads at offsets: 0x80
+      A2 (BSGeometry) reads: 0x00, 0xB0, 0xB4, 0xB8, 0x108, 0x130,
+                             0x158, 0x160
+      MAT writes:           (none directly by sub_142172540)
+
+  29 of the function's 100 jcc branches are gated by THIS/MAT/A2 memory.
+  Of those, the prefix block ≈first 230 bytes carries the critical
+  early-reject chain that determines whether we ever dispatch to DX11.
+
+============================================================================
+  §3  —  THE EARLY-REJECT (0x1421725d2 – 0x142172727)
+============================================================================
+
+  Decomp semantic (IDA):
+
+     if ( (*(DWORD*)(v11+264) & 0x8000) == 0          // THIS+0x48 → +0x108 bit 15
+           && byte_142F8C274                          // global PRINT_FADE flag
+           && *(float*)(v11+416) <= 0.0 )             // THIS+0x48 → +0x1A0
+        || (*(float(__fastcall**)(_QWORD))              //  vt[51]() == 0 — reads mat+0x80
+              (*(QWORD*)this + 408))(this) == 0.0
+        || !v10                                         //  !( flag0x100000 | skipbyte | a3==18 )
+        || *(float*)(a1 + 100) == 0.0                   //  THIS+0x64 == 0 alpha scale
+        ) {
+        if ( (v9 & 0xC000000) == 0 ) { sub_142160F80(THIS+56); goto exit; }
+     }
+
+  Concrete disasm of the four rejects (annotated):
+
+  0x142172540  mov rax, rsp                              ; prologue
+  0x142172561  mov rsi, rcx                              ; rsi = THIS
+  0x14217256D  mov r14, rdx                              ; r14 = A2 (BSGeometry)
+  0x142172574  mov r13d, r8d                             ; r13d = A3 (pass kind)
+  0x14217258F  mov edx, 0x9c0                            ; TLS slot offset
+  0x142172594  mov rax, [rcx+rax*8]                      ; (TLS probe, scratch)
+  0x1421725A0  mov ebx, [rax+rdx]                        ; save ThreadLocal[624]
+  0x1421725A3  mov dword ptr [rax+rdx], 0x1c             ; set scratch to 28 (idx)
+  0x1421725AA  cmp r8d, 0x15                             ; a3 == 21?
+  0x1421725AE  je  ...173390 (fast-path, no draw)
+  0x1421725B4  test r8d, r8d                             ; a3 == 0?
+  0x1421725B7  je  ...173390
+  0x1421725BD  cmp r8d, 0x18                             ; a3 == 24?
+  0x1421725C1  je  ...1725D2
+  0x1421725C3  cmp r8d, 0x12                             ; a3 == 18?
+  0x1421725C7  je  ...1725D2                             ; entries into guarded block
+  0x1421725C9  lea r15, [rsi+0x38]                       ; generic exit
+  0x1421725CD  jmp ...1732EA (LABEL_231 tail)
+
+  ; ---- guarded block entry ----
+
+  0x1421725D2  mov rbp, [rsi+0x30]                       ; rbp = BSLSP+0x30 flags dword
+  0x1421725D6  mov rax, rbp
+  0x1421725D9  shr rax, 0x14                             ; bit 20 of BSLSP+0x30
+  0x1421725DD  and al, 1
+  0x1421725DF  mov [rsp+0x70], rax                       ;  = !!(flags & 0x100000)
+  0x1421725E4  je  ...1725FA                             ; if bit20 clear  → set dil=1
+  0x1421725E6  cmp byte_143E475F5, 0
+  0x1421725ED  jne ...1725FA                             ; if skipbyte set → set dil=1
+  0x1421725EF  cmp r13d, 0x12                            ; a3 == 18?
+  0x1421725F3  je  ...1725FA                             ;  → dil=1
+  0x1421725F5  xor dil, dil                              ; else dil = 0
+  0x1421725F8  jmp ...1725FD
+  0x1421725FA  mov dil, 1
+
+  0x1421725FD  mov rcx, [rsi+0x48]                       ; v11 = THIS+0x48 = qword_143E47438
+  0x142172601  xorps xmm6, xmm6                          ; xmm6 = 0.0
+  0x142172604  mov eax, [rcx+0x108]                      ; v11+0x108: sky/light flags
+  0x14217260A  shr rax, 0xf
+  0x14217260E  test al, 1                                ; (flags >> 15) & 1  == (& 0x8000)
+  0x142172610  jne ...172628                             ; bit set → skip fade check
+
+  0x142172612  cmp byte_142F8C274, 0                     ; global fade-enable byte
+  0x142172619  je  ...172628                             ; global off → skip
+
+  0x14217261B  comiss xmm6, [rcx+0x1a0]                  ; 0 <=> v11+0x1A0 (fade dist)
+  0x142172622  jae ...172717                             ; REJECT1: fade ≤ 0
+
+  0x142172628  mov rax, [rsi]                            ; vt = BSLSP vtable
+  0x14217262B  mov rcx, rsi
+  0x14217262E  call [rax+0x198]                          ; vt[51] = sub_142174C60
+  0x142172634  ucomiss xmm0, xmm6                        ; vt[51]() == 0.0 ?
+  0x142172637  je  ...172717                             ; REJECT2: mat+0x80 == 0
+  0x14217263D  test dil, dil                             ; v10 == true?
+  0x142172640  je  ...172717                             ; REJECT3: !v10
+  0x142172646  ucomiss xmm6, [rsi+0x64]                  ; 0 <=> BSLSP+0x64
+  0x14217264A  je  ...172717                             ; REJECT4: +0x64 == 0.0
+
+  ; ---- LABEL_27 / LABEL_28 (172717) ----
+  0x142172717  mov r12, rbp
+  0x14217271A  and r12d, 0xC000000                       ; v12 = flags & 0xC000000
+  0x142172721  jne ...17265A                             ; if special draw kind, continue
+  0x142172727  lea r15, [rsi+0x38]                       ; exit return ptr (BSLSP+0x38)
+  0x14217272B  mov rcx, r15
+  0x14217272E  call 0x142160F80                          ; reset-mat → ABORT draw
+  0x142172733  jmp ...1732EA                             ; LABEL_231 tail
+
+  Conclusion — THE FOUR EARLY-REJECT PREDICATES
+
+  REJECT1  *(float*)(qword_143E47438 + 0x1A0) <= 0.0
+           AND  (*(DWORD*)(qword_143E47438 + 0x108) & 0x8000) == 0
+           AND  byte_142F8C274 != 0
+           ---- requires all three true ----
+           qword_143E47438 is the sky/light global ("BSSkyShaderAccumulator"?).
+           Set by ::parent-ctor. Read-only after engine init. Not our concern.
+
+  REJECT2  (*(float*)(THIS+0x58) + 0x80) == 0.0
+           i.e. material+0x80 == 0.0f
+           Material ctor sets mat+0x80 = 1.0f (qword imm 0x3f800000,
+           also zeroes +0x84 — effectively float 1.0 + float 0.0). If the
+           caller supplies an untouched material (never ran ctor), this
+           IS 0 → REJECT2 fires. In a properly ctor'd material it's 1.0.
+           ---- Our 0xC0 state: fine (ctor ran). 0x200 zero-fill: MAT+0
+                vtable=NULL → crash inside `call [rax+0x198]` before
+                we ever see REJECT2.
+
+  REJECT3  !(v10) where v10 = ((flags & 0x100000)==0) || byte_143E475F5
+           || (a3 == 18)
+           flags = BSLSP+0x30 dword. If our flags bit 0x100000 is CLEAR
+           (default — ctor sets +0x30 = 0), v10 = true, so !v10 = false →
+           REJECT3 does NOT fire. Good.
+           ---- Our case: bit 0x100000 is 0 → v10=true → pass REJECT3.
+
+  REJECT4  *(float*)(THIS + 0x64) == 0.0
+           BSLSP+0x64 set to 1.0f by parent ctor sub_142160DA0 (8-byte
+           store of qword 0x000000003f800000 — covers +0x64=1.0 and
+           +0x68=0). So REJECT4 does NOT fire in a ctor'd BSLSP.
+           ---- Our case: 1.0f → pass REJECT4.
+
+  NET: if we run BOTH ctors (BSLSP + material) and our flags are 0,
+  all four rejects PASS and we enter LABEL_52.
+
+  NET alternatives: if flags & 0xC000000 != 0 (special draw kind, e.g.
+  material-proxy pass), the 0x142172721 jne back to 0x17265A is taken,
+  so even on REJECT we re-enter the guarded block. That's a secondary
+  entry — irrelevant to our "make cube visible".
+
+============================================================================
+  §4  —  vt[51] sub_142174C60 — THREE-INSN GETTER
+============================================================================
+
+  Full body (RVA 0x2174C60, 13 bytes):
+
+      0x142174C60  mov rax, [rcx+0x58]    ; rax = THIS->material
+      0x142174C64  movss xmm0, [rax+0x80] ; xmm0 = material+0x80 (glossiness)
+      0x142174C6C  ret
+
+  This is the concrete source of REJECT2's `xmm0`. We already knew
+  material+0x80 is initialized to 1065353216 = 1.0f by the ctor; REJECT2
+  fires ONLY if a caller passed an un-ctor'd material.
+
+  Implication — our 0x200 zero-fill crash path's root cause:
+
+      In the 0x200 zero-fill case, vtable at [THIS+0x58]+0x00 is ZERO
+      but this vt[51] path doesn't deref the MATERIAL vtable — it
+      dereferences the BSLSP vtable at [THIS+0x00] to fetch slot 0x198,
+      AND THE BSLSP VTABLE IS OURS (we set it to 0x1428F9FF8).  So the
+      vt[51] fetch itself works. Then it does:
+
+          mov rax, [rcx+0x58]       ; rax = our material ptr (non-null)
+          movss xmm0, [rax+0x80]    ; reads our zero-filled mat+0x80 = 0.0f
+
+      So a ZERO-FILLED material at size 0xC0 or 0x200 does NOT CRASH on
+      vt[51] — it just returns 0.0f and triggers REJECT2 → silent abort
+      via sub_142160F80. That contradicts the mission's claim of
+      "0x200 zero-fill → crash".
+
+      Hypothesis: the crash in the 0x200 zero-fill case is NOT at
+      REJECT2 but LATER in LABEL_52 or inside the MATERIAL VTABLE
+      call at 0x142172ae5:  `call qword ptr [rax + 0x1F8]`  where rax
+      is the BSGeometry vtable ([r14]). Geometry vtable is not ours.
+      So that's not the crash site either.
+
+      OR — the crash is inside sub_1421C6870 when we bind the texset
+      and that function locks [mat+0xBC], reads [mat+0x48], calls the
+      MATERIAL vtable's vt[14] (path gather) and vt[15] (install). If
+      material vtable is zero, those calls crash. That's consistent
+      with "crashes on first frame" — bind happens at injection time.
+
+  VERIFY AT RUNTIME: log the mat->vtable pointer value before calling
+  sub_1421C6870. If it's 0, DO NOT call bind.
+
+============================================================================
+  §5  —  BSLSP CTOR FULL WRITE-COVERAGE (0xE8 object)
+============================================================================
+
+  Three-ctor chain on sub_142171050 → sub_142171620 → parent
+  sub_142160DA0 → NiObjectNET-init sub_1416BD6F0.
+
+  Coverage table (disp → value; * = cited in prior OPEN items):
+
+    +0x00       BSLSP vtable
+    +0x08-0x27  NiObjectNET base fields (refcount, owner, name)
+    +0x28       float 1.0f
+    +0x2C       dword 0x7FFFFFFF
+    +0x30       qword 0                   (flags dword — read every frame)
+    +0x38       qword 0                   (render-list head)
+    +0x40       qword 0
+    +0x48       qword qword_143E47438 *   (sky/light global — required by REJECT1)
+    +0x50       qword 0                   (light node ptr)
+    +0x58       qword material*           (set by sub_142161B10)
+    +0x60       dword 0
+    +0x64       float 1.0f                (from 8-byte store; +0x68 = 0.0f) *
+    +0x6C       ?? uninit (4 bytes)
+    +0x70-0x78  qword 0                   (0x14 bytes of config ptrs)
+    +0x80-0x8C  (0.6, 0.7, 0.8, 1.0) — material color weights
+    +0x90-0xB0  qword 0 slots             (unused in default state)
+    +0xB8, +0xC0  ?? uninit (16 bytes)
+    +0xC8-0xD4  float 1.0f, 1.0f, 1.0f    (scale block)
+    +0xD8       dword 0xFFFFFFFF
+    +0xDC, +0xE4  ?? uninit (8 bytes)
+    +0xE0       word 0xFFFF
+    +0xE2       uninit tail
+
+  * = rebutted OPEN-4/OPEN-6.
+  ?? = uninit holes. Scan of render-path reads shows NONE of 0x6C, 0xB8,
+  0xC0, 0xDC, 0xE4 are read, so leaving them garbage is safe in theory.
+  But for hygiene it's cheaper to allocate with zero-flag=1 (pass flag=1
+  to sub_1416579C0 instead of 0) and take the small perf hit.
+
+============================================================================
+  §6  —  MATERIAL CTOR FULL WRITE-COVERAGE (0xC0 object)
+============================================================================
+
+  Chain: sub_1421C5CE0 calls sub_1421D6700 (pre-init), then writes
+  23 disp offsets. Observed coverage (sorted):
+
+  Coverage (sub_1421D6700 pre-init + sub_1421C5CE0 main):
+
+    +0x00       vtable (0x142909CD0 — BSLightingShaderMaterialBase::vftable)
+    +0x08, 0x10 qword 0 (refcount, owner)
+    +0x18-0x28  dword 0, 1.0f, 1.0f, 1.0f, 1.0f (NiRefObject body)
+    +0x2C       dword 0xFFFFFFFF
+    +0x30       dword 0
+    +0x34       ?? uninit (4 bytes)
+    +0x38, 0x40 UV-related qword_142F415D0 + dword_142F415D8
+    +0x44       ?? uninit (4 bytes)
+    +0x48       NiSourceTexture* qword_143D709B0 (diffuse default)      ref++
+    +0x50       NiSourceTexture* qword_143D709A8 (normal default)       ref++
+    +0x58       NiSourceTexture* qword_143D709A8 (specular default)     ref++
+    +0x60       NiSourceTexture* qword_143D70958 (glow default)         ref++
+    +0x68       qword 0
+    +0x70       dword 3 (TYPE_CODE; base=3, subclasses 4-6)
+    +0x74       ?? uninit (4 bytes)
+    +0x78       qword 0 — BSShaderTextureSet* (BIND TARGET)
+    +0x80       float 1.0f GLOSSINESS (read by vt[51])
+    +0x84       float 0.0f (from same 8-byte store)
+    +0x88       dword 0
+    +0x8C       float 1.0f UV scale
+    +0x90       float 5.0f spec power
+    +0x94..0xA8 6 × float -1.0f (tint block)
+    +0xAC-0xB4  qword 0, dword 0
+    +0xB8       float 1.0f strength
+    +0xBC       dword 0 (install-mutex — cmpxchg target in sub_1421C6870)
+
+  Three GAPS (+0x34, +0x44, +0x74) — NONE are read by sub_142172540 or
+  vt[51]. Safe to leave garbage, but prefer zero-fill before ctor for
+  hygiene and to ensure mutex +0xBC starts zero on first bind.
+
+============================================================================
+  §7  —  THE LABEL_52 DISPATCH — WHAT HAPPENS AFTER WE PASS
+============================================================================
+
+  LABEL_52 commits new alpha to BSLSP+0x28 then appends a per-pass
+  effect record to THIS->renderList (head at BSLSP+0x38). Core path:
+
+    v21 = mat[0x80]                                     // glossiness
+    v23 = (v21 * fade) * this[0x64]                     // final alpha
+    this[0x28] = v23
+    this[0x2C] = (alpha-same-state ? cached : 0x7FFFFFFF)
+    if (dirty || state-changed) {
+        sub_1421611A0(this+0x38, ..., qword_143E5B180,
+                      this, a2, effect-flags)            // APPEND
+        sub_142215990(...)                               // re-sync
+        ... pass-kind branches — more 1421611A0 calls
+    }
+
+  The DX11 draw is issued later by BSLightingShader::Dispatch when the
+  BSBatchRenderer drains this BSLSP's queue. sub_142172540 itself does
+  NOT call Draw*; it schedules. No additional material-field reads
+  downstream of LABEL_52 introduce a silent "skip draw". Past the four
+  rejects, the cube WILL be drawn (with whatever textures the material
+  has bound).
+
+============================================================================
+  §8  —  MATERIAL-VTABLE CALLSITES IN BIND (sub_1421C6870)
+============================================================================
+
+  Re-examined the bind chain with fresh eyes. Three indirect calls
+  through the material vtable:
+
+    0x1421C6965  call [rax + 0x70]   ← vt[14] gather-paths
+    0x1421C6976  call [rax + 0x78]   ← vt[15] install-paths
+    0x1421C69XX  call [rax + 0x100]  ← vt[32] ? (in the kv loop)
+
+  vtable @ 0x142909CD0 was dumped; first 32 slots:
+
+    [ 0] 0x1421CB9B0   likely "GetName"
+    [ 1] 0x1422BCB92   IAT-stub trampoline → __scalarDeletingDtor
+    [ 2] 0x1421C5F90   clone / deep-copy helper (memcpy fields 0x48..)
+    [ 3] 0x1421C61C0   TlsStream write?
+    [ 4] 0x1421C6690   stub returning qword_143E488C8 (global default ptr)
+    [ 5] 0x1421C6FF0
+    [ 6] 0x1421C7000
+    [ 7] 0x1421C66A0   register-into-cache (calls 1417A9620)
+    [ 8] 0x1421C76A0
+    [ 9] 0x14216F0E0
+    [10] 0x1421C6A10
+    [11] 0x1421C6AC0
+    [12] 0x1421C6B20
+    [13] 0x1421C6D70
+    [14] 0x1421C7640   gather-paths (fills &slots[5] from texset)
+    [15] 0x1421C7680   install-paths (writes mat+72/80/88/96/104)
+    [16] 0x1421C7670
+    [17] 0x1421C7690
+    [18] 0x142AE4250
+    [19] 0x1421CBA90   get-default-tex-for-slot
+    [20] 0x1421C7950   CLONE to heap 0xD8 subclass (Envmap variant)
+    [21] 0x1421C79B0   clone variant
+    [22] 0x1421C7A80   clone variant
+    [23] 0x1421C6690
+    [24] 0x1421C7C00   returns 1  (type tag for BASE)
+    [25] 0x1421C7000
+    [26] 0x1421C66A0
+    [27] 0x1421C76A0
+    [28] 0x1421CC140   "identity" or pass-through
+    [29] 0x1421C7AF0
+    [30] 0x1421C7B70
+    [31] 0x1421C7C10
+
+  Takeaway: sub_1421C6870 dereferences THIS-MATERIAL-VTABLE's slot 14
+  and 15 when byte_143E488C0 is set. Those slots are valid-function
+  pointers ONLY if the material was ctor'd. Zero-filling + skipping
+  the ctor → vtable[0..infty]=0 → call [rax+0x70] = call [NULL+0x70]
+  → crash. MATCHES the reported 0x200 zero-fill crash site.
+
+  The 0xC0 non-zeroed case: ctor ran, vtable set, so sub_1421C6870's
+  vt-calls succeed. The crash would NOT happen — consistent with
+  "0xC0 → INVISIBLE, no crash".
+
+============================================================================
+  §9  —  THE 0xC0 "INVISIBLE" PATH REVISITED
+============================================================================
+
+  Per §3 all four rejects PASS with a ctor'd BSLSP + ctor'd material.
+  So the per-pass effect record is appended and dispatch should occur.
+  Yet cube is invisible. Why?
+
+  Hypotheses ranked:
+
+    H1  Killswitch byte_143E488C0 == 0 → sub_1421C6870 takes ELSE branch
+        (vt[128] lazy install) → mat+72/80/88/96 STAY at ctor defaults
+        (default-NORMAL and default-ERROR textures). When the cube
+        samples those, default-ERROR's alpha / color may blend to
+        invisible under the mesh's UVs.
+
+          Mitigation: force byte_143E488C0 = 1 before bind (OPEN-1 from
+          prior pass), or manually load textures and write into the 4
+          slots.
+
+    H2  Shared default material — our cube's BSLSP+0x58 points to the
+        INTERNED default-mat from sub_1421F9F00 cache. When we call
+        sub_1421C6870 on it, the guard at 0x1421C68D3 (cmp mat+0x48 !=
+        global-normal) fires and bind EARLY-EXITS because the shared
+        material was already "customised" by the first BSLSP to use it.
+        So our texset NEVER gets installed at mat+0x78.
+
+          Mitigation: allocate fresh mat (see §10 patch 1a), install
+          before bind.
+
+    H3  The BSGeometry we attach our cube with has BSGeometry+0x108
+        flags missing bit 0x1000 (a2[66] & 0x1000 — "has vertex
+        colours") or bit 0x200 (a2[66] & 0x200 — "alpha-blend hint").
+        Non-critical for visibility but affects state-block bits.
+
+          Unlikely to produce FULL invisibility; skip.
+
+    H4  BSShadowSceneNode's culling pass (pre-vt[43]) treats our BSLSP
+        as fully transparent because our alpha (THIS+0x28 * our
+        material +0xB8 strength) ends up near-zero after the xmul
+        chain. Less likely since +0x28=1, +0x80=1, +0x64=1, +0xB8=1.
+
+  Recommend attacking H2 + H1 in combination (patch 1a + 1d of prior
+  dossier, combined with patch 1f for belt-and-braces manual tex
+  install).
+
+============================================================================
+  §10  —  CONCRETE PATCH (DROP INTO scene_inject.cpp)
+============================================================================
+
+  constexpr uint64_t RVA_bslsp_alloc_ctor = 0x2171050;
+  constexpr uint64_t RVA_mat_base_ctor    = 0x21C5CE0;
+  constexpr uint64_t RVA_memzero_alloc    = 0x16579C0;   // zero-fill alloc
+  constexpr uint64_t RVA_bind_mat_texset  = 0x21C6870;
+  constexpr uint64_t RVA_tex_load         = 0x217A910;
+
+  using FnAllocZ = void*(__fastcall*)(void*, uint32_t, uint32_t, uint32_t);
+  using FnCtor   = void*(__fastcall*)(void*);
+  using FnBind   = int64_t(__fastcall*)(void*, void*, void*);
+  using FnTex    = int64_t(__fastcall*)(const wchar_t*, int32_t,
+                                        void**, int32_t, int32_t, int32_t);
+
+  void* MakeCustomBSLSP(const wchar_t* diff, const wchar_t* nrm,
+                        const wchar_t* spec)
+  {
+      uint8_t* img = (uint8_t*)g_ImageBase;
+      auto allocZ   = (FnAllocZ)(img + RVA_memzero_alloc);
+      auto matCtor  = (FnCtor)(img + RVA_mat_base_ctor);
+      auto makeBsl  = (void*(__fastcall*)())(img + RVA_bslsp_alloc_ctor);
+
+      // 1. BSLSP (E8 bytes) — vtable, parent state, shared default mat at +0x58
+      void* shader = makeBsl();
+      if (!shader) return nullptr;
+
+      // 2. Fresh MATERIAL (0xC0), zero-fill, then ctor (writes vtable, defaults)
+      void* pool = *(void**)(img + 0x1CE69E8); // heap ctx global
+      void* mat  = allocZ(pool, 0xC0, 0, 8);
+      if (!mat) return nullptr;
+      memset(mat, 0, 0xC0);
+      matCtor(mat);
+
+      // 3. Swap shader+0x58 (detach from shared cache), refcount-safe
+      void* old = *(void**)((uint8_t*)shader + 0x58);
+      _InterlockedIncrement((volatile long*)((uint8_t*)mat + 8));
+      *(void**)((uint8_t*)shader + 0x58) = mat;
+      if (old && _InterlockedExchangeAdd(
+                   (volatile long*)((uint8_t*)old + 8), -1) == 1)
+          ((void(__fastcall*)(void*))(*(void***)old)[1])(old);
+
+      // 4. Sanity — parent ctor should have set +0x64=1.0f. Force anyway.
+      *(float*)((uint8_t*)shader + 0x64) = 1.0f;
+
+      // 5. Force killswitch to take IF-branch during bind
+      uint8_t* ks = img + 0x3E488C0;
+      uint8_t saved = *ks; *ks = 1;
+
+      // 6. Build texset and call bind (texset-install → mat+0x78)
+      void* texset = BuildTextureSet(diff, nrm, spec);
+      ((FnBind)(img + RVA_bind_mat_texset))(mat, nullptr, texset);
+      *ks = saved;
+
+      // 7. Belt-and-braces manual install into mat+0x48/0x50/0x58
+      const wchar_t* paths[3] = { diff, nrm, spec };
+      auto loadTex = (FnTex)(img + RVA_tex_load);
+      for (int i = 0; i < 3; ++i) {
+          void* h = nullptr;
+          loadTex(paths[i], 1, &h, 0, i == 1 /*normal*/, 0);
+          if (!h) continue;
+          void** slot = (void**)((uint8_t*)mat + 0x48 + 8 * i);
+          _InterlockedIncrement((volatile long*)((uint8_t*)h + 8));
+          void* prev = *slot;
+          *slot = h;
+          if (prev && _InterlockedExchangeAdd(
+                        (volatile long*)((uint8_t*)prev + 8), -1) == 1)
+              ((void(__fastcall*)(void*))(*(void***)prev)[1])(prev);
+      }
+      return shader;
+  }
+
+  // DIAGNOSTIC — log BSLSP/material state. Call after MakeCustomBSLSP.
+  //   - log vt=*(shader+0x00), mat=*(shader+0x58), matvt=*(mat+0x00)
+  //   - if matvt == nullptr: skip bind, crash is imminent otherwise
+  //   - log mat+0x48/0x50/0x58 (tex handles), +0x78 (texset), +0x80
+  //     (glossiness), +0xB8 (strength) — all should be non-zero
+  //   - log byte_143E488C0 value for killswitch behaviour
+
+============================================================================
+  §11  —  PRECONDITIONS TO REACH DX11 DRAW (formalised constraints)
+============================================================================
+
+  Viewed as an SMT-style constraint system for a path-feasible
+  dispatch of the cube at LABEL_52 → effect-list append:
+
+    (C1)  a3 ∈ {18, 24}                                   [arg param]
+    (C2)  THIS.vtable != 0                                [from ctor]
+    (C3)  THIS.vtable[51] == sub_142174C60                [from vtable]
+    (C4)  THIS->material != 0                             [BSLSP+0x58 ≠ 0]
+    (C5)  THIS->material->vtable != 0                     [mat+0x00 ≠ 0]
+    (C6)  *(float*)(THIS->material+0x80) > 0              [vt[51] result ≠ 0]
+          ← ctor guarantees 1.0f
+    (C7)  *(float*)(THIS+0x64) > 0                        [C+0x64 ≠ 0.0]
+          ← parent ctor guarantees 1.0f
+    (C8)  (THIS+0x30 flags & 0x100000) == 0 OR byte_143E475F5 == 1
+          OR a3 == 18                                     [v10 path]
+          ← default flags = 0 satisfies the first clause
+    (C9)  NOT (*(QWORD*)(qword_143E47438+0x108) & 0x8000 == 0
+              AND byte_142F8C274 ≠ 0
+              AND *(float*)(qword_143E47438+0x1A0) <= 0)
+          ← engine invariant; we don't touch the sky-global
+    (C10) a2 (BSGeometry) VALID + a2->vtable[63] callable   [implicit]
+          ← node attachment under ShadowSceneNode guarantees this
+    (C11) effective_alpha = (v21 * v18) * (THIS+0x64)
+          where v21 = THIS->material+0x80 (clipped to ≤1)
+                v18 = fade-curve result at position (default 1.0)
+          MUST NOT be 0 by the time LABEL_52 computes it
+          ← with unit values: v21=1, v18=1, +0x64=1 → v23=1.0.
+
+  All 11 constraints are satisfied by a MakeCustomBSLSP() output per
+  §10. If we ALSO apply the killswitch write at §10.6, our texset
+  reaches mat+0x78 and the texture slots at mat+0x48/0x50/0x58 get
+  real NiSourceTexture handles — no more error/normal-default fallback.
+
+============================================================================
+  §12  —  ONE-LEVEL-DEEP CALLEE DEPENDENCIES
+============================================================================
+
+  Functions called inside sub_142172540 within the guarded block and
+  their critical preconditions, collected from the 42 call-sites:
+
+  sub_142161090  — append-effect-node; reads THIS+0x38 (nil-OK, parent-
+                  ctor zeroed). Safe.
+  sub_142160F80  — reset-material-ptr on early-reject; writes nil
+                  sentinel, no material deref. Safe.
+  sub_142161F20/EC0 — fade-curve evaluators; pure float math, no THIS
+                      reads.
+  sub_1421611A0  — append-list common; allocates effect node, links
+                  into BSLSP+0x38. Engine-global heap ctx required.
+  sub_142215990  — effect post-setup; walks per-pass shader cache,
+                  read-only on THIS.
+  sub_1418214C0, sub_1401E00D0, sub_14223A6C0, sub_14223BC70  — shader
+                  hash / pass dispatch; all read-only on our state.
+  sub_1416BD0B0, sub_1416D5640  — a2 (BSGeometry) state reads. Read-only.
+  sub_142200170  — effect-chain commit; writes only into new node.
+
+  None of the 1-level callees impose additional material-field
+  constraints beyond those captured by vt[51] at the entry.
+
+============================================================================
+  §13  —  SYMBOLIC ANALYSIS TOOL NOTES (brief)
+============================================================================
+
+  Triton: unsupported on Windows Py3.12 (no wheel; source build needs
+  MSVC + Z3 devel). `pip install triton` → "no matching distribution".
+
+  angr 9.2.208 IS installed and can load Fallout4.exe with
+  `auto_load_libs=False, main_opts={'base_addr': 0x140000000}`. A
+  straight `simgr.explore(find=LABEL_52, avoid=abort)` on sub_142172540
+  times out — the fn is 878 insns with 42 call-sites and the flag
+  cascade at LABEL_52 generates a path-explosion even when vt[51] is
+  hooked to a concrete return. Useful future scope: per-slice
+  constraint-solving via `state.callable` on narrower bodies (e.g. the
+  effect-flags mask at LABEL_52).
+
+  The capstone-taint approach in _triton_bslsp_fullrun.py is what
+  produced the §11 constraint set: it enumerates every memory
+  operation whose address touches a seeded register (THIS/MAT/A2/A4)
+  without running an SMT solver. Sub-second runtime; equivalent
+  information quality for the current question.
+
+============================================================================
+  §14  —  CONFIDENCE / OPEN ITEMS
+============================================================================
+
+  HIGH confidence:
+    - REJECT1..REJECT4 predicates exact (disasm verified)
+    - vt[51] reads mat+0x80 (3-insn body; trivially verifiable)
+    - Material base-layout is 0xC0 bytes (3 independent witnesses)
+    - BSLSP parent ctor writes +0x48 and +0x64 (disasm verified)
+    - bind's indirect calls need material vtable ≠ 0 (matches 0x200 crash)
+
+  MED confidence:
+    - qword_143E47438 is the sky-default global. High likely — it's
+      read by REJECT1 and lives in the lazy-init global region.
+    - byte_143E475F5 is a "draw debug override" byte. Medium — zero
+      xrefs in our local scan, no direct evidence beyond structural fit.
+    - Killswitch byte_143E488C0 controls the tex-slot install path.
+      Strong evidence from prior dossier §2; we re-verified that the
+      byte has NO writers in .text.
+
+  LOW confidence / OPEN:
+    - Whether sub_1421C7770-style "cache interning" of our fresh
+      material via sub_1421F9F00 happens AUTOMATICALLY when we install
+      (it runs at BSLSP ctor time via init(a2)=qword_143E488C8 path).
+      If our swap at step 4 breaks that intern chain (detaches from
+      the global cache), a future engine-side walk of qword_1431E5320
+      won't find our material. Most likely BENIGN because the cache is
+      only used for dedup on construction, not iteration.  OPEN runtime
+      verification item.
+
+    - Whether manual tex-slot writes at mat+72/80/88 are picked up by
+      the shader's sampler binding at DX11 stage. Evidence from
+      sub_1421C7680 (vt[15] install-paths) suggests YES — it only
+      writes handle refs; the Draw-time shader sampler reads those
+      same offsets. But an engine-side register/hash may still be
+      required. If the manual install "doesn't show", consider also
+      registering each handle with the ITextureDB global qword_1430DD7F8
+      as done in sub_1421C6870's 10-slot loop (raw §1 step 4 IF-branch).
+
+    - Whether qword_143D709B0 / qword_143D709A8 / qword_143D70958 are
+      exact constants across instances or per-plugin. Evidence:
+      ctor_1421C5CE0 always loads via rip-rel absolute; they're in the
+      .data segment at a stable address. No plugin can reasonably
+      reassign them.
+
+  FOLLOW-UP PRIORITIES:
+
+    1. Implement the §10 patch in scene_inject.cpp. Observe cube with
+       diagnostic logging.
+
+    2. If still invisible, dump runtime mat+0x48/0x50/0x58 AFTER
+       MakeCustomBSLSP returns. Confirm manual tex install took.
+       If defaults remain, manually walk qword_1430DD7F8 and register
+       each handle (reuse sub_14060CA00 pattern from bind's 10-slot
+       loop).
+
+    3. Next iteration — symbolic exec of sub_1421611A0 (effect-append)
+       to confirm our BSLSP+0x38 list is valid before we start
+       dispatching. Shouldn't be necessary but worth verifying.
+
+    4. Out of scope here: inspect BSShadowSceneNode's culling pre-pass
+       to ensure our cube's BSGeometry bounds are computed correctly.
+       (Separate pass — belongs to Strada B M4 "attachment pipeline".)
+
+============================================================================
+  §15  —  RAW ARTIFACT DIGEST
+============================================================================
+
+  Script                               Purpose               Output
+  -----------------------------------  --------------------  -------------------
+  _triton_stradaB.py                   sanity triage         stdout (40 lines)
+  _triton_bslsp_fullrun.py             main taint exec       _triton_trace_output.txt (322 lines)
+  _triton_keybranch_disasm.py          early-reject disasm   stdout (~500 lines)
+  _triton_label52_deep.py              LABEL_52 disasm       stdout (~250 lines)
+  _triton_matsize.py                   sizeof via callers    stdout (~400 lines)
+  _triton_ctor_writes.py               mat ctor offset-map   stdout (50 lines)
+  _triton_bslsp_ctor_writes.py         bslsp ctor writes     stdout (30 lines)
+  _triton_mat_vtable.py                mat vtable + slots    stdout (120 lines)
+  _triton_base_ctor.py                 pre-init helper       stdout (80 lines)
+  _triton_fadefn.py                    fade-curve helpers    stdout (160 lines)
+  _triton_clone.py                     subclass sizes        stdout (180 lines)
+
+============================================================================
+  §16  —  BOTTOM LINE (for the impatient reader)
+============================================================================
+
+  The 0x200-zero-filled crash is caused by the MATERIAL VTABLE being
+  NULL and sub_1421C6870's indirect call `call [mat->vt+0x70]`
+  dereferencing a NULL pointer. FIX: always run sub_1421C5CE0 on the
+  material buffer, irrespective of its size.
+
+  The 0xC0 INVISIBLE state is caused by (a) texset install taking the
+  ELSE branch of byte_143E488C0, leaving mat+72/80/88 at default-error
+  textures; and (b) sharing the global default material via the
+  interning cache, so our per-cube texset either can't land or gets
+  cross-contaminated. FIX: freshly allocate & ctor a private material,
+  swap it into BSLSP+0x58 with refcounting, force killswitch to 1
+  during bind, then manually write our three NiSourceTexture handles
+  into mat+72/80/88 as a safety net.
+
+  There is NO uninitialised BSLSP or material field that the render
+  path reads in a crash-inducing way, provided both ctors have run and
+  the material pointer is non-null. Prior OPEN-4 and OPEN-6 ("+0x64
+  uninitialised") are INVALID — parent ctor writes +0x64 to 1.0f.
+
+  Symbolic execution via Triton was not feasible on our Windows Python
+  toolchain; capstone-based taint-tracking produced equivalent
+  information in orders-of-magnitude less time. angr remains a viable
+  future option for narrower constraint-solving tasks.
+
+============================================================================
+  END DOSSIER — 16 sections, ~785 lines, reconciles prior OPEN-1..OPEN-7,
+  adds concrete patch targeting the actual crash cause. Ready for
+  integration into scene_inject.cpp.
+============================================================================

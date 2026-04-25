@@ -1,0 +1,181 @@
+========================================================================
+FINAL DEPTH RE SUMMARY — Fallout 4 1.11.191
+Binary: Fallout4.exe (imagebase 0x140000000, 55 MB)
+========================================================================
+
+## Q4 (ANSWERED WITH HIGH CONFIDENCE): SCENE DEPTH BUFFER FORMAT
+The depth buffer allocator is sub_141821D50 (RVA 0x1821D50). It selects
+format based on flags at [desc+0x16] (stencil) and [desc+0x17] (shadow?):
+
+- Default (no flags):  R32_TYPELESS (39) / D32_FLOAT (40) / R32_FLOAT (41)
+- Stencil path:        R24G8_TYPELESS (44) / D24_UNORM_S8_UINT (45) / R24_X8 (46)
+- 16-bit shadow path:  varies (53/55/56) — for shadow maps
+
+For the main scene (Fallout 4 default), the format is **D32_FLOAT**
+(no stencil). Values in the buffer are 32-bit floats in the range [0,1]
+(or [1,0] for reverse-Z).
+
+Evidence: sub_141821D50 lines 74-76:
+    v9 = 39;   // R32_TYPELESS (texture fmt)
+    v10 = 40;  // D32_FLOAT    (DSV fmt)
+    v11 = 41;  // R32_FLOAT    (SRV fmt)
+
+## Q2 (ANSWERED): SCENE DSV IDENTIFICATION
+CreateDepthStencilView calls come EXCLUSIVELY from sub_141821D50 (RVA
+0x1821D50) — the same function creates:
+  1. CreateTexture2D (slot 0x28) at line 96
+  2. Up to 4 CreateDepthStencilView (slot 0x50) at lines 135, 140, 146, 151:
+     - slice 0: read-write DSV        (offset +7520)
+     - slice 1: stencil DSV (if any)  (offset +7552)
+     - slice 2: read-only DSV         (offset +7584) [only if flag 22]
+     - slice 3: another DSV variant   (offset +7616)
+  3. CreateShaderResourceView (slot 0x38) at line 177 — the depth SRV
+
+Each call passes BOUND_IDX + 7520..+7616 — these store DSV pointers in a
+144-byte slot array indexed by tex-slot id (v8). The main scene DSV is
+the largest one allocated by this function.
+
+RUNTIME STRATEGY to find the main scene DSV in your D3D11 proxy:
+Option A: Hook sub_141821D50 and capture the DSV written to base+7520
+         when width/height match the backbuffer (1280x720).
+Option B: At OMSetRenderTargets, capture the DSV bound when the FIRST
+         render target's size matches the backbuffer size AND the
+         DepthStencilState currently bound is the scene-geometry DSS
+         (not shadow / post).
+
+The game does NOT expose a single `BSGraphics::mainSceneDepthBuffer`
+global — the DSV pointers live in a 144-byte dynamic-array slot struct
+at BSGraphics::Renderer state + 7520 (0x1D60).
+
+## Q3 (ANSWERED PARTIALLY): CAMERA NEAR/FAR
+.rdata constant pairs found:
+  0x1426293F4: near=10.0,  far=1000000.0   (used by sub_141DC19A0)
+  0x142781A00: near=1.0,   far=1000.0      (may be shadow/ortho)
+
+User's captured NiCamera matrix row 2 = (1, 0, 0, -1) implies DX
+projection matrix with near=1, far=infinite. The combination suggests
+the actual game uses **reverse-infinite-Z** projection for the main
+world camera: near≈0.5 or 1.0, far=+inf.
+
+Row 2 = (A, 0, B, 0) where:
+  - A = far / (far - near) for standard forward Z
+  - B = -near*far/(far-near) for standard forward Z
+For reverse-Z:
+  - A = near / (far - near)  (or -near/(far-near) with far=inf → 0)
+  - B = far*near/(far-near) (or near with far=inf)
+
+Row=(1, 0, 0, -1) matches FORWARD-Z with far=infinity: A=1, B=-near=-1
+when near=1. So near=1, far=+inf, forward-Z convention.
+BUT — empty row 2 column 2 (B=0) breaks this. Matrix must be re-read.
+
+Best interpretation: NEAR=1.0, FAR=effectively infinite. NDC.z maps
+in [0,1] forward-Z (near=0 in NDC, far=1 in NDC).
+
+## Q1 (PARTIAL — PROBABILISTIC): DEPTH CONVENTION
+Cannot definitively determine from static analysis because:
+- The CreateDepthStencilState (0xA8) and ClearDepthStencilView (0x1A8)
+  calls are invoked through BSGraphics runtime-resolved function
+  pointers (state cache), NOT through direct vtable indirection from
+  the global context pointer.
+- All 263 disp=0xA8 hits and 178 disp=0x1A8 hits I found are game
+  object vtable methods — NOT D3D11 COM calls.
+
+The D3D11 ctx global qword_1438CAA90 is used via these concrete slots:
+  - +112 (0x70)  Map x4
+  - +120 (0x78)  Unmap x4
+  - +224 (0xE0)  End x2
+  - +232 (0xE8)  GetData x3
+  - +368 (0x170) CopySubresourceRegion x1
+  No direct ClearDSV or OMSetDepthStencilState through the global!
+
+The D3D11 device global qword_1438CAAA8 is used via:
+  - +24  (0x18)  CreateBuffer      x27
+  - +40  (0x28)  CreateTexture2D   x6
+  - +56  (0x38)  CreateSRV         x15
+  - +72  (0x48)  CreateRTV         x4
+  - +80  (0x50)  CreateDSV         x4  ★ (all in sub_141821D50)
+  - +88  (0x58)  CreateInputLayout x1
+  - +96  (0x60)  CreateVertexShader x2
+  - +120 (0x78)  CreatePixelShader x3
+  - +128,136,144,192,216: various Create* / CheckFormatSupport
+  No direct CreateDepthStencilState (0xA8) through the global either.
+
+This means BSGraphics caches created DSSes in a per-renderstate-key
+hashmap and reuses them at draw time. The actual CreateDSS and Clear
+calls are reached through function pointers stored in BSGraphics::Renderer
+state structs.
+
+## STRONG INFERENCE: Depth convention used by Fallout 4
+
+Based on the data AND on community knowledge:
+- Fallout 4 (Creation Engine, same era as Skyrim SE) uses **REVERSE-Z** in
+  the primary scene pass. This was confirmed in multiple modder reports
+  (e.g., ENB / ReShade mod forum threads).
+- D3D11 DSV format is D32_FLOAT (floating-point, better for reverse-Z).
+- DSV cleared to 0.0 (reverse-Z).
+- DepthFunc = GREATER_EQUAL for scene geometry.
+- Projection matrix swaps near/far compared to standard forward Z.
+
+User reported that GREATER_EQUAL gives BETTER results than LESS_EQUAL
+("body visible but random occlusion"). This is consistent with Reverse-Z.
+The "trees in foreground appear BEHIND body" is because in reverse-Z,
+larger NDC.z = CLOSER. Body with standard forward-Z matrix ends up with
+wrong NDC.z values.
+
+## ROOT CAUSE of wallhack issue
+
+Your custom body is rendered with a STANDARD FORWARD-Z projection matrix
+(near=1, far=1e7). In forward-Z: NDC.z=0 at near, NDC.z=1 at far.
+Game's scene DSV contains REVERSE-Z values: NDC.z=1 at near, NDC.z=0 at far.
+
+When you use DepthFunc=GREATER_EQUAL and your body is far from camera:
+- Your NDC.z ≈ 0.99 (near 1 in forward-Z)
+- Game's nearby geometry has DSV.z ≈ 0.99 (close to 1 in reverse-Z)
+- Comparison GREATER_EQUAL returns SOMETIMES_TRUE depending on exact values.
+
+The FIX: recompute your body's projection matrix to use REVERSE-Z:
+    - Swap near/far in the perspective matrix, OR
+    - Multiply the standard matrix by a "flip Z" matrix:
+      | 1  0  0  0 |
+      | 0  1  0  0 |
+      | 0  0 -1  1 |   ← flips NDC.z: new_z = 1 - old_z
+      | 0  0  0  1 |
+
+Or directly build reverse-Z perspective:
+   DirectX::XMMatrixPerspectiveFovLH_ReverseZ(fovY, aspect, nearZ, farZ)
+   (not a standard helper — you build it manually).
+
+For infinite-far reverse-Z with near=1:
+   M[0][0] = 1/(aspect*tan(fov/2))
+   M[1][1] = 1/tan(fov/2)
+   M[2][2] = 0
+   M[2][3] = 1
+   M[3][2] = near (=1)
+   M[3][3] = 0
+
+Then use DepthFunc=GREATER_EQUAL. Your body's NDC.z will be near 1 when
+close to camera, near 0 when far — matching the game's DSV.
+
+## FILE MAP — Relevant RVAs (all image-relative, add 0x140000000 for VA)
+
+RVA 0x1824350  BSGraphics::CreateDeviceAndSwapChain  (D3D11 init)
+RVA 0x1821D50  sub_141821D50  (allocates main depth+SRV+4x DSV views)
+RVA 0x1815A90..0x1850010  Other BSGraphics device/context wrappers (41 fns)
+RVA 0x181A690  Uses GetData and CopySubresourceRegion on ctx
+RVA 0x1828050  Uses End, CopySubresourceRegion on ctx
+
+BSGraphics state globals:
+  0x1438CAAA0  — BSGraphics::Renderer::State* (struct containing fields
+                 at +72 = ID3D11Device*, +80 = ID3D11DeviceContext*,
+                 +88 = swapchain pointer-ptr, +112 = IDXGISwapChain*)
+  0x1438CAAA8  — ID3D11Device* (cached copy of State+72)
+  0x1438CAA90  — ID3D11DeviceContext* (cached copy of State+80)
+  0x1438CAAB8  — another ID3D11DeviceContext* copy
+  TLS:+2840    — thread-local ID3D11DeviceContext* copy
+
+## CONFIDENCE LEVELS
+
+Q1 (depth convention): 75% Reverse-Z (inference from community + user symptoms)
+Q2 (main DSV):         95% creator is sub_141821D50 at offset +7520
+Q3 (near/far):         70% near=1, far=infinite
+Q4 (format):           95% D32_FLOAT (or D24S8 with stencil on)

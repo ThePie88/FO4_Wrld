@@ -1,0 +1,69 @@
+[+] Image base: 0x140000000
+slot @ 0x143EA9FEC RVA 0x3EA9FEC  target=0x31C9A60031C310
+segment: .pdata [0x143E60000..0x1440DF000]
+
+-- preceding 40 qwords (so we can find the RTTI/vtable head) --
+  [-40] 0x143EA9EAC  q=0x2B1A1A80031B4C3                                              ->  
+  [-39] 0x143EA9EB4  q=0x31B4D30031B4C3                                              ->  
+  [-38] 0x143EA9EBC  q=0x31B4D302B1A1B4                                              ->  
+  [-37] 0x143EA9EC4  q=0x2B1A1C80031B5AE                                              ->  
+  [-36] 0x143EA9ECC  q=0x31B68C0031B5AE                                              ->  
+  [-35] 0x143EA9ED4  q=0x31B68C02B1A1E0                                              ->  
+  [-34] 0x143EA9EDC  q=0x2B1A1F00031B696                                              ->  
+  [-33] 0x143EA9EE4  q=0x31B6E00031B6A0                                              ->  
+  [-32] 0x143EA9EEC  q=0x31B6E002B1A31C                                              ->  
+  [-31] 0x143EA9EF4  q=0x2B1A30C0031B720                                              ->  
+  [-30] 0x143EA9EFC  q=0x31B7600031B720                                              ->  
+  [-29] 0x143EA9F04  q=0x31B76002B1A314                                              ->  
+  [-28] 0x143EA9F0C  q=0x2B1A3040031B7A0                                              ->  
+  [-27] 0x143EA9F14  q=0x31B7DD0031B7A0                                              ->  
+  [-26] 0x143EA9F1C  q=0x31B7DD02B1A2B0                                              ->  
+  [-25] 0x143EA9F24  q=0x2B1A2C00031BA92                                              ->  
+  [-24] 0x143EA9F2C  q=0x31BA9E0031BA92                                              ->  
+  [-23] 0x143EA9F34  q=0x31BAA002B1A2DC                                              ->  
+  [-22] 0x143EA9F3C  q=0x2B1A2480031BADD                                              ->  
+  [-21] 0x143EA9F44  q=0x31BAE70031BADD                                              ->  
+  [-20] 0x143EA9F4C  q=0x31BAE702B1A258                                              ->  
+  [-19] 0x143EA9F54  q=0x2B1A26C0031BCE3                                              ->  
+  [-18] 0x143EA9F5C  q=0x31BD9C0031BCE3                                              ->  
+  [-17] 0x143EA9F64  q=0x31BD9C02B1A284                                              ->  
+  [-16] 0x143EA9F6C  q=0x2B1A2980031BDA8                                              ->  
+  [-15] 0x143EA9F74  q=0x31BE6D0031BDC0                                              ->  
+  [-14] 0x143EA9F7C  q=0x31BE7002B1A2F8                                              ->  
+  [-13] 0x143EA9F84  q=0x2B1A2EC0031BF1D                                              ->  
+  [-12] 0x143EA9F8C  q=0x31C0700031BF20                                              ->  
+  [-11] 0x143EA9F94  q=0x31C07002B1A200                                              ->  
+  [-10] 0x143EA9F9C  q=0x2B1A2A80031C0A2                                              ->  
+  [-9] 0x143EA9FA4  q=0x31C0E20031C0B0                                              ->  
+  [-8] 0x143EA9FAC  q=0x31C0F002B1A218                                              ->  
+  [-7] 0x143EA9FB4  q=0x2B1A3240031C135                                              ->  
+  [-6] 0x143EA9FBC  q=0x31C15E0031C140                                              ->  
+  [-5] 0x143EA9FC4  q=0x31C17002B1A330                                              ->  
+  [-4] 0x143EA9FCC  q=0x2B1A3380031C18E                                              ->  
+  [-3] 0x143EA9FD4  q=0x31C2520031C200                                              ->  
+  [-2] 0x143EA9FDC  q=0x31C26002B1A340                                              ->  
+  [-1] 0x143EA9FE4  q=0x2B1A3480031C309                                              ->  
+  [+0] 0x143EA9FEC  q=0x31C9A60031C310                                              ->  
+
+-- following 20 qwords --
+  [+1] 0x143EA9FF4  q=0x31C9B002B1A354                                              ->  
+  [+2] 0x143EA9FFC  q=0x2B1A3700031C9EA                                              ->  
+  [+3] 0x143EAA004  q=0x31CA060031C9EA                                              ->  
+  [+4] 0x143EAA00C  q=0x31CA0602B1A37C                                              ->  
+  [+5] 0x143EAA014  q=0x2B1A3900031CB26                                              ->  
+  [+6] 0x143EAA01C  q=0x31CB2B0031CB26                                              ->  
+  [+7] 0x143EAA024  q=0x31CB2B02B1A3A4                                              ->  
+  [+8] 0x143EAA02C  q=0x2B1A3B40031CB36                                              ->  
+  [+9] 0x143EAA034  q=0x31CBFB0031CB40                                              ->  
+  [+10] 0x143EAA03C  q=0x31CC1002B1A3C4                                              ->  
+  [+11] 0x143EAA044  q=0x2B1A3D00031CC3A                                              ->  
+  [+12] 0x143EAA04C  q=0x31CC5D0031CC40                                              ->  
+  [+13] 0x143EAA054  q=0x31CC5D02B1A630                                              ->  
+  [+14] 0x143EAA05C  q=0x2B1A63C0031CCA0                                              ->  
+  [+15] 0x143EAA064  q=0x31CCD20031CCA0                                              ->  
+  [+16] 0x143EAA06C  q=0x31CCD202B1A654                                              ->  
+  [+17] 0x143EAA074  q=0x2B1A6680031CCE5                                              ->  
+  [+18] 0x143EAA07C  q=0x31CCE90031CCE5                                              ->  
+  [+19] 0x143EAA084  q=0x31CCE902B1A678                                              ->  
+
+-- xrefs TO slot 0x143EA9FEC (who reads this vtable entry) --

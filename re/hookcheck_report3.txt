@@ -1,0 +1,521 @@
+================================================================================
+ FINAL HOOK CHECK
+================================================================================
+
+### PRODUCER gating — byte_143E48C70 ###
+  byte @ 0x143E48C70 current value (static): 255
+  data refs to gate: 2
+  writers of byte_143E48C70:
+    0x1421DBC60 (mov) in sub_1421DBC60
+
+
+### Caller chain PRODUCER up to top ###
+
+  callers of 0x1421DC480 (RVA 0x21DC480):
+    sub_1421DC190  RVA 0x21DC190  from 0x1421DC1C3
+
+  callers of 0x1421DC190 (RVA 0x21DC190):
+    sub_1421DBAF0  RVA 0x21DBAF0  from 0x1421DBBA3
+    sub_1421DC190  RVA 0x21DC190  from 0x1421DC213
+
+  callers of 0x1421DBAF0 (RVA 0x21DBAF0):
+    sub_140458740  RVA 0x458740  from 0x1404592AC
+
+  callers of sub_140458740 (RVA 0x458740):
+    sub_1404391C0  RVA 0x4391C0  from 0x140439295
+    sub_140458390  RVA 0x458390  from 0x1404583F6
+    sub_140458740  RVA 0x458740  from 0x140459429
+    sub_140458740  RVA 0x458740  from 0x140459681
+
+
+### sub_1421DBAF0 decomp ###
+__int64 __fastcall sub_1421DBAF0(_QWORD *a1, float *a2, __int128 *a3)
+{
+  float v5; // xmm6_4
+  float v6; // xmm7_4
+  float v7; // xmm8_4
+  __int64 v8; // rax
+  __int128 v9; // xmm1
+  int v11; // [rsp+20h] [rbp-B8h] BYREF
+  __int64 v12; // [rsp+28h] [rbp-B0h]
+  __int64 v13; // [rsp+30h] [rbp-A8h]
+  int v14; // [rsp+38h] [rbp-A0h]
+  float v15[4]; // [rsp+40h] [rbp-98h] BYREF
+  __int128 v16; // [rsp+50h] [rbp-88h]
+  __int128 v17; // [rsp+60h] [rbp-78h]
+  __int128 v18; // [rsp+70h] [rbp-68h]
+  __int128 v19; // [rsp+80h] [rbp-58h]
+  _QWORD *v20; // [rsp+90h] [rbp-48h]
+
+  v5 = -a2[2];
+  v6 = -a2[1];
+  v7 = *a2;
+  v12 = 0;
+  v13 = 0;
+  v14 = 0;
+  v8 = *a1;
+  v11 = 0;
+  (*(void (__fastcall **)(_QWORD *, int *))(v8 + 424))(a1, &v11);
+  v9 = a3[1];
+  v16 = *a3;
+  v18 = a3[2];
+  v19 = a3[3];
+  v15[0] = -v7;
+  v15[1] = v6;
+  v15[2] = v5;
+  v17 = v9;
+  v20 = a1;
+  return sub_1421DC190((__int64)a1, (__int64)v15);
+}
+
+
+
+### sub_140458740 decomp ###
+__int64 __fastcall sub_140458740(_BYTE *a1, __int64 a2, float *a3, volatile signed __int32 **a4, char a5)
+{
+  __int64 result; // rax
+  volatile signed __int32 *v7; // rcx
+  __int64 v11; // rdi
+  char v12; // bl
+  bool v13; // r12
+  __int64 v14; // rax
+  __int64 v15; // rcx
+  __int64 v16; // rbx
+  __int64 v17; // r8
+  _QWORD *v18; // rcx
+  __int64 v19; // r12
+  char v20; // al
+  int v21; // ebx
+  __int64 v22; // rax
+  int v23; // ebx
+  __int64 v24; // rdx
+  volatile signed __int32 *v25; // rax
+  volatile signed __int32 *v26; // rbx
+  float v27; // xmm6_4
+  double v28; // xmm0_8
+  volatile signed __int32 *v29; // rdx
+  float v30; // xmm6_4
+  double v31; // xmm0_8
+  float v32; // xmm9_4
+  volatile signed __int32 *v33; // rcx
+  __int64 v34; // rax
+  volatile signed __int32 *v35; // r12
+  __int64 v36; // rax
+  __int64 v37; // rax
+  unsigned int v38; // eax
+  __int64 v39; // r12
+  __int64 v40; // rcx
+  __int64 v41; // rax
+  __int64 v42; // rbx
+  int v43; // xmm1_4
+  float v44; // xmm0_4
+  float v45; // xmm0_4
+  int v46; // xmm1_4
+  volatile signed __int32 *v47; // rcx
+  float v48; // xmm8_4
+  double v49; // xmm0_8
+  __int64 v50; // rax
+  const char *v51; // r8
+  const char *v52; // rbx
+  __int64 v53; // rax
+  const char *v54; // r8
+  __int64 v55; // rax
+  float v56; // xmm7_4
+  int v57; // xmm1_4
+  float v58; // xmm0_4
+  int v59; // xmm1_4
+  volatile signed __int32 *v60; // rcx
+  volatile signed __int32 *v61; // rcx
+  __int64 v62; // rax
+  volatile signed __int32 *v63; // rcx
+  __int64 v64; // rax
+  __int64 v65; // rbx
+  __int64 v66; // r15
+  volatile signed __int32 *v67; // rcx
+  __int64 v68; // rdi
+  char v69; // di
+  bool v70; // al
+  _QWORD *v71; // rbx
+  float v72; // xmm1_4
+  __int64 v73; // rax
+  volatile signed __int32 *v74; // rax
+  volatile signed __int32 *v75; // rax
+  volatile signed __int32 *v76; // r8
+  double v77; // xmm0_8
+  __int64 v78; // rax
+  volatile signed __int32 *v79; // rcx
+  __int64 v80; // rax
+  volatile signed __int32 *v81; // rcx
+  __int64 v82; // rbx
+  __int64 v83; // rdi
+  volatile signed __int32 *v84; // r8
+  const char *v85; // rbx
+  const char *v86; // r8
+  __int64 v87; // rdi
+  __int64 v88; // rbx
+  double v89; // [rsp+20h] [rbp-E0h]
+  char v90; // [rsp+30h] [rbp-D0h]
+  char v91; // [rsp+31h] [rbp-CFh]
+  volatile signed __int32 *v92; // [rsp+38h] [rbp-C8h]
+  volatile signed __int32 *v93; // [rsp+40h] [rbp-C0h]
+  __int64 v94; // [rsp+50h] [rbp-B0h]
+  __int64 v95; // [rsp+58h] [rbp-A8h] BYREF
+  int v96; // [rsp+60h] [rbp-A0h] BYREF
+  int v97; // [rsp+64h] [rbp-9Ch] BYREF
+  __int64 v98; // [rsp+68h] [rbp-98h] BYREF
+  __int64 v99; // [rsp+70h] [rbp-90h] BYREF
+  float v100[4]; // [rsp+78h] [rbp-88h] BYREF
+  _DWORD v101[4]; // [rsp+88h] [rbp-78h] BYREF
+  _DWORD v102[4]; // [rsp+98h] [rbp-68h] BYREF
+  _DWORD v103[4]; // [rsp+A8h] [rbp-58h] BYREF
+  _DWORD v104[6]; // [rsp+B8h] [rbp-48h] BYREF
+  char v105[8]; // [rsp+D0h] [rbp-30h] BYREF
+  _BYTE v106[4]; // [rsp+D8h] [rbp-28h] BYREF
+  __int64 v107; // [rsp+DCh] [rbp-24h]
+  int v108; // [rsp+E4h] [rbp-1Ch]
+  void *v109; // [rsp+E8h] [rbp-18h]
+  __int64 v110; // [rsp+F8h] [rbp-8h]
+  _BYTE v111[4]; // [rsp+108h] [rbp+8h] BYREF
+  __int64 v112; // [rsp+10Ch] [rbp+Ch]
+  int v113; // [rsp+114h] [rbp+14h]
+  void *v114; // [rsp+118h] [rbp+18h]
+  __int64 v115; // [rsp+128h] [rbp+28h]
+  int v116; // [rsp+130h] [rbp+30h]
+  char v117; // [rsp+134h] [rbp+34h]
+  float v118; // [rsp+138h] [rbp+38h]
+  float v119; // [rsp+13Ch] [rbp+3Ch]
+  float v120; // [rsp+140h] [rbp+40h]
+  char v121[8]; // [rsp+150h] [rbp+50h] BYREF
+  char v122[4]; // [rsp+158h] [rbp+58h] BYREF
+  __int64 v123; // [rsp+15Ch] [rbp+5Ch]
+  int v124; // [rsp+164h] [rbp+64h]
+  void *v125; // [rsp+168h] [rbp+68h]
+  __int64 v126; // [rsp+178h] [rbp+78h]
+  char v127[4]; // [rsp+188h] [rbp+88h] BYREF
+  __int64 v128; // [rsp+18Ch] [rbp+8Ch]
+  int v129; // [rsp+194h] [rbp+94h]
+  void *v130; // [rsp+198h] [rbp+98h]
+  __int64 v131; // [rsp+1A8h] [rbp+A8h]
+  int v132; // [rsp+1B0h] [rbp+B0h]
+  char v133; // [rsp+1B4h] [rbp+B4h]
+  float v134; // [rsp+1B8h] [rbp+B8h]
+  float v135; // [rsp+1BCh] [rbp+BCh]
+  float v136; // [rsp+1C0h] [rbp+C0h]
+  char v137[8]; // [rsp+1D0h] [rbp+D0h] BYREF
+  char v138[4]; // [rsp+1D8h] [rbp+D8h] BYREF
+  __int64 v139; // [rsp+1DCh] [rbp+DCh]
+  int v140; // [rsp+1E4h] [rbp+E4h]
+  void *v141; // [rsp+1E8h] [rbp+E8h]
+  __int64 v142; // [rsp+1F8h] [rbp+F8h]
+  char v143[4]; // [rsp+208h] [rbp+108h] BYREF
+  __int64 v144; // [rsp+20Ch] [rbp+10Ch]
+  int v145; // [rsp+214h] [rbp+114h]
+  void *v146; // [rsp+218h] [rbp+118h]
+  __int64 v147; // [rsp+228h] [rbp+128h]
+  int v148; // [rsp+230h] [rbp+130h]
+  char v149; // [rsp+234h] [rbp+134h]
+  int v150; // [rsp+238h] [rbp+138h]
+  int v151; // [rsp+23Ch] [rbp+13Ch]
+  int v152; // [rsp+240h] [rbp+140h]
+  char v153[8]; // [rsp+250h] [rbp+150h] BYREF
+  char v154[4]; // [rsp+258h] [rbp+158h] BYREF
+  __int64 v155; // [rsp+25Ch] [rbp+15Ch]
+  int v156; // [rsp+264h] [rbp+164h]
+  void *v157; // [rsp+268h] [rbp+168h]
+  __int64 v158; // [rsp+278h
+
+
+### sub_14223F110 — per-geometry WVP writer ###
+  RVA 0x223F110
+  callers of sub_14223F110:
+
+  decomp (first 6000):
+__int64 __fastcall sub_14223F110(__int64 a1, __int64 a2)
+{
+  __int64 v2; // rbx
+  unsigned int v3; // edi
+  _QWORD *v4; // r14
+  _QWORD *ThreadLocalStoragePointer; // rcx
+  __int64 v6; // r12
+  __int64 v7; // r13
+  int *v8; // r15
+  __m128 *v9; // r13
+  unsigned __int8 v10; // cl
+  float *v11; // rsi
+  float v12; // xmm6_4
+  float v13; // xmm4_4
+  __m128 v14; // xmm2
+  __m128 v15; // xmm3
+  int v16; // ecx
+  int v17; // ecx
+  float v18; // xmm6_4
+  float v19; // xmm7_4
+  unsigned __int8 v20; // cl
+  __m128 *v21; // rdx
+  __m128 v22; // xmm0
+  __m128 v23; // xmm0
+  int *v24; // rsi
+  __m128 v25; // xmm6
+  float v26; // xmm6_4
+  unsigned __int8 v27; // cl
+  int *v28; // rdx
+  __m128 v29; // xmm3
+  unsigned __int8 v30; // cl
+  __m128i si128; // xmm13
+  __int128 *v32; // rax
+  __int64 v33; // rcx
+  bool v34; // zf
+  __m128 v35; // xmm0
+  __m128 v36; // xmm13
+  __m128 v37; // xmm2
+  __m128 v38; // xmm9
+  __m128 v39; // xmm10
+  __m128 v40; // xmm12
+  __int64 *v41; // rax
+  __int64 v42; // rbx
+  __m128 v43; // xmm0
+  float v44; // xmm8_4
+  __m128 v45; // xmm6
+  __m128 v46; // xmm0
+  __m128 v47; // xmm2
+  __m128 v48; // xmm0
+  __m128 v49; // xmm4
+  __int64 v50; // rcx
+  __m128 v51; // xmm0
+  __m128 v52; // xmm2
+  __m128 v53; // xmm1
+  __m128 v54; // xmm5
+  __m128 v55; // xmm3
+  __m128 v56; // xmm4
+  __m128 v57; // xmm0
+  __m128 v58; // xmm5
+  __m128 v59; // xmm1
+  __m128 v60; // xmm2
+  __m128 v61; // xmm3
+  float v62; // xmm6_4
+  unsigned __int8 v63; // cl
+  int *v64; // rdx
+  __m128 v65; // xmm3
+  unsigned int v66; // eax
+  __int64 v67; // rax
+  __int64 v68; // rax
+  unsigned __int8 v69; // cl
+  _QWORD *v70; // rdx
+  __m128 *v71; // rcx
+  __m128 v72; // xmm8
+  float v73; // xmm0_4
+  float v74; // xmm14_4
+  __m128 v75; // xmm1
+  float v76; // xmm2_4
+  __m128 *v77; // rdx
+  __m128 v78; // xmm9
+  __m128 *v79; // rax
+  float v80; // xmm3_4
+  float v81; // xmm4_4
+  __m128 v82; // xmm7
+  float v83; // xmm5_4
+  __m128 v84; // xmm7
+  __m128 v85; // xmm7
+  __m128 v86; // xmm1
+  __m128 v87; // xmm2
+  __m128 v88; // xmm7
+  __m128 v89; // xmm6
+  __m128 v90; // xmm6
+  __m128 v91; // xmm4
+  __m128 v92; // xmm6
+  __m128 v93; // xmm6
+  __m128 v94; // xmm6
+  __int128 v95; // xmm0
+  __m128 *v96; // rcx
+  __m128 v97; // xmm3
+  __m128 *v98; // rax
+  __m128 v99; // xmm4
+  __m128 v100; // xmm1
+  __m128 v101; // xmm3
+  __m128 v102; // xmm2
+  __m128 v103; // xmm3
+  __int128 v104; // xmm0
+  __m128 v105; // xmm3
+  unsigned __int8 v106; // cl
+  int *v107; // rbx
+  unsigned __int8 v108; // cl
+  float *v109; // rsi
+  float v110; // xmm6_4
+  float v111; // xmm7_4
+  float v112; // xmm9_4
+  float v113; // xmm0_4
+  float v114; // xmm1_4
+  float v115; // xmm0_4
+  __m128 v116; // xmm4
+  float v117; // xmm3_4
+  __m128 v118; // xmm4
+  __m128 v119; // xmm4
+  __m128 v120; // xmm6
+  unsigned __int8 v121; // cl
+  __m128 *v122; // rdx
+  __m128 v123; // xmm1
+  __int64 v124; // rax
+  float v125; // xmm15_4
+  unsigned int v126; // r8d
+  __int64 v127; // rcx
+  float v128; // xmm7_4
+  __int64 v129; // rsi
+  float v130; // xmm4_4
+  __int64 v131; // rdx
+  float v132; // xmm5_4
+  float *v133; // rcx
+  unsigned int v134; // eax
+  __int64 v135; // r9
+  float v136; // xmm6_4
+  float v137; // xmm3_4
+  float v138; // xmm0_4
+  float v139; // xmm3_4
+  float v140; // xmm2_4
+  float v141; // xmm0_4
+  float v142; // xmm2_4
+  float v143; // xmm3_4
+  float v144; // xmm0_4
+  unsigned int v145; // r8d
+  float *v146; // rcx
+  __int64 v147; // rax
+  __int32 *v148; // r8
+  __int64 v149; // rax
+  float *v150; // r12
+  unsigned __int8 v151; // cl
+  __int64 v152; // rax
+  int v153; // ecx
+  unsigned __int8 v154; // al
+  __int64 v155; // rcx
+  __m128 v156; // xmm0
+  __m128 v157; // xmm1
+  __m128 v158; // xmm9
+  __m128 v159; // xmm11
+  __m128 v160; // xmm10
+  __m128 v161; // xmm0
+  __m128 v162; // xmm2
+  __m128 v163; // xmm12
+  __m128 v164; // xmm11
+  __m128 v165; // xmm13
+  __m128 v166; // xmm10
+  _QWORD *v167; // r13
+  __int128 v168; // xmm0
+  __int64 v169; // rcx
+  __m128 *v170; // rax
+  unsigned __int8 v171; // cl
+  int *v172; // r8
+  __m128 *v173; // rdx
+  __m128 v174; // xmm2
+  __m128 v175; // xmm3
+  unsigned __int8 v176; // cl
+  int *v177; // r9
+  unsigned int i; // r10d
+  __int64 v179; // r8
+  __int64 v180; // rcx
+  __m128 *v181; // rdx
+  __m128 v182; // xmm2
+  __m128 v183; // xmm3
+  __int64 v184; // r13
+  unsigned __int8 v185; // cl
+  float *v186; // rdx
+  float v187; // xmm2_4
+  __int64 v188; // rax
+  float v189; // xmm1_4
+  __m128 v190; // xmm7
+  __m128 v191; // xmm6
+  __m128 v192; // xmm9
+  __int128 v193; // xmm0
+  __int64 v194; // rcx
+  int *v195; // r12
+  __int64 v196; // rcx
+  __int128 v197; // xmm0
+  __int64 v198; // rcx
+  unsigned int v199; // r13d
+  int *v200; // r14
+  __m128 v201; // xmm7
+  __m128 v202; // xmm14
+  __m128 v203; // xmm15
+  __m128 v204; // xmm9
+  __m128 v205; // xmm12
+  __m128 v206; // xmm11
+  __m128 v207; // xmm13
+  __m128 v208; // xmm10
+  __int64 v209; // rbx
+  __m128 v210; // xmm8
+  __m128 v211; // xmm7
+  __m128 v212; // xmm4
+  __m128 v213; // xmm2
+  __m128 v214; // xmm3
+  __m128 v215; // xmm8
+  __m128 v216; // xmm1
+  unsigned __int8 v217; // cl
+  __m128 *v218; // rdx
+  unsigned __int8 v219; // cl
+  float *v220; // rdx
+  unsigned int v221; // ebx
+  __int64 v222; // rax
+  _DWORD *v223; // rax
+  __int64 v224; // rax
+  _DWORD *v225; // rax
+  __m128 **v226; // rax
+  __m128 *v227; // r12
+  __m128 *v228; // rbx
+  unsigned __int8 v229; // cl
+  __m128 *v230; // rdx
+  __m128 *v231; // rax
+  __int64 v232; // rcx
+  __m128 v233; // xmm14
+  __m128 v234; // xmm7
+  __int64 v235; // rcx
+  __m128 v236; // xmm8
+  __m128 v237; // xmm13
+  __m128 v238; // xmm7
+  __m128 v239; // xmm9
+  __m128 v240; // xmm7
+  __m128 v241; // xmm10
+  __m128 v242; // xmm12
+  __m128 v243; // xmm10
+  __m128 v244; // xmm12
+  __m128 v245; // xmm7
+  __m128 v246; // xmm7
+  __m128 v247; // xmm1
+  __m128 v248; // xmm7
+  __m128 v249; // xmm7
+  __m128 v250; // xmm3
+  float v251; // xmm4_4
+  float v252; // xmm5_4
+  float v253; // xmm6_4
+  __m128 v254; // xmm7
+  __m128 v255; // xmm1
+
+
+### sub_14221BC90 — BSBatchRenderer vt[4] (Dispatch) ###
+  callers of sub_14221BC90:
+
+
+### Global accumulator candidates ###
+  vtable 0x14290A6B0 data refs:
+    0x1421CCACE in sub_1421CCAB0
+    0x1421CCCAE in sub_1421CCC90
+    0x1421CFAFD in sub_1421CFAE0
+
+
+### D3D11 import analysis ###
+    GFSDK_SSAO_CreateContext_D3D11  RVA 0x22B9628
+    D3D11CreateDeviceAndSwapChain  RVA 0x22BD1C9
+    ?GFSDK_GodraysLib_OpenDX@@YA?AW4GFSDK_GodraysLib_Status@@IPEAPEAUGFSDK_GodraysLib_Ctx@@QEAUID3D11Device@@IPEAUgfsdk_new_delete_t@@@Z  RVA 0x22BD1D5
+    ?GFSDK_GodraysLib_BeginAccumulation@@YA?AW4GFSDK_GodraysLib_Status@@PEAUGFSDK_GodraysLib_Ctx@@PEAUID3D11DeviceContext@@PEBUGFSDK_GodraysLib_ViewerDesc@@PEAUID3D11RenderTargetView@@PEAUID3D11ShaderResourceView@@PEBUGFSDK_GodraysLib_MediumDesc@@MW4GFSDK_GodraysLib_Technique@@W4GFSDK_GodraysLib_BufferSize@@_NI@Z  RVA 0x22BD1E1
+    ?GFSDK_GodraysLib_RenderVolume@@YA?AW4GFSDK_GodraysLib_Status@@PEAUGFSDK_GodraysLib_Ctx@@PEAUID3D11DeviceContext@@PEBUGFSDK_GodraysLib_ShadowMapDesc@@PEAUID3D11ShaderResourceView@@PEBUGFSDK_GodraysLib_LightDesc@@MMIM@Z  RVA 0x22BD1E7
+    ?GFSDK_GodraysLib_EndAccumulation@@YA?AW4GFSDK_GodraysLib_Status@@PEAUGFSDK_GodraysLib_Ctx@@PEAUID3D11DeviceContext@@@Z  RVA 0x22BD1ED
+    ?GFSDK_GodraysLib_ApplyLighting@@YA?AW4GFSDK_GodraysLib_Status@@PEAUGFSDK_GodraysLib_Ctx@@PEAUID3D11DeviceContext@@PEAUID3D11RenderTargetView@@PEAUID3D11ShaderResourceView@@PEBUGFSDK_GodraysLib_PostProcessDesc@@W4GFSDK_GodraysLib_UpsampleQuality@@MPEAUID3D11BlendState@@@Z  RVA 0x22BD1F3
+    ?GFSDK_GodraysLib_GetInternalDepth@@YA?AW4GFSDK_GodraysLib_Status@@PEAUGFSDK_GodraysLib_Ctx@@PEAPEAUID3D11DepthStencilView@@@Z  RVA 0x22BD1F9
+
+  imports containing d3d11/dxgi:
+    module: GFSDK_SSAO_D3D11.win64
+      0x142438150  GFSDK_SSAO_CreateContext_D3D11
+    module: d3d11
+      0x142439758  D3D11CreateDeviceAndSwapChain
+    module: dxgi
+      0x142439768  CreateDXGIFactory
+
+
+DONE.

@@ -1,0 +1,323 @@
+image base = 0x140000000
+
+-- decomp BSGeometry::vt[42] (SetAlphaProperty? — slot +0x150) @ 0x1416D5930 (RVA 0x16D5930) --
+  size=0x3B
+__int64 __fastcall sub_1416D5930(__int64 a1, volatile signed __int32 *a2)
+{
+  __int64 result; // rax
+  volatile signed __int32 *v3; // rcx
+
+  result = a1;
+  v3 = *(volatile signed __int32 **)(a1 + 304);
+  if ( v3 != a2 )
+  {
+    if ( a2 )
+      _InterlockedIncrement(a2 + 2);
+    *(_QWORD *)(result + 304) = a2;
+    if ( v3 )
+    {
+      result = (unsigned int)_InterlockedExchangeAdd(v3 + 2, 0xFFFFFFFF);
+      if ( (_DWORD)result == 1 )
+        return (*(__int64 (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v3 + 8LL))(v3);
+    }
+  }
+  return result;
+}
+
+
+-- decomp BSGeometry::vt[8] (Cast-to/GetSomething?) @ 0x1416D5520 (RVA 0x16D5520) --
+  size=0x4
+__int64 __fastcall sub_1416D5520(__int64 a1)
+{
+  return a1;
+}
+
+
+-- decomp sub_1416D4890 (called end of BSTriShape::ctor) @ 0x1416D4890 (RVA 0x16D4890) --
+  size=0xE6
+__int64 __fastcall sub_1416D4890(__int64 a1, __int64 *a2, __int64 a3)
+{
+  __int64 v6; // rcx
+  __int64 v7; // rax
+  volatile signed __int32 *v8; // rcx
+  __int64 v9; // rcx
+  __int64 v10; // rbx
+  __int64 v11; // rax
+  int v12; // xmm0_4
+  __int64 result; // rax
+
+  sub_1416C7B80(a1, a2, a3);
+  a2[42] = *(_QWORD *)(a1 + 336);
+  v6 = *(_QWORD *)(a1 + 312);
+  if ( v6 )
+  {
+    v7 = sub_1416BA930(v6, a3);
+    v8 = (volatile signed __int32 *)a2[39];
+    if ( v8 != (volatile signed __int32 *)v7 )
+    {
+      if ( v7 )
+        _InterlockedIncrement((volatile signed __int32 *)(v7 + 8));
+      a2[39] = v7;
+      if ( v8 && _InterlockedExchangeAdd(v8 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v8 + 8LL))(v8);
+    }
+  }
+  v9 = *(_QWORD *)(a1 + 304);
+  if ( v9 )
+  {
+    v10 = *a2;
+    v11 = sub_1416BA930(v9, a3);
+    (*(void (__fastcall **)(__int64 *, __int64))(v10 + 336))(a2, v11);
+  }
+  v12 = *(_DWORD *)(a1 + 300);
+  *((_DWORD *)a2 + 72) = *(_DWORD *)(a1 + 288);
+  *((_DWORD *)a2 + 73) = *(_DWORD *)(a1 + 292);
+  result = *(unsigned int *)(a1 + 296);
+  *((_DWORD *)a2 + 74) = result;
+  *((_DWORD *)a2 + 75) = v12;
+  return result;
+}
+
+
+-- decomp sub_1416D5600 (called in BSTriShape::ctor) @ 0x1416D5600 (RVA 0x16D5600) --
+  size=0x17
+__int64 __fastcall sub_1416D5600(__int64 a1, __int64 *a2)
+{
+  __int64 result; // rax
+
+  *(_QWORD *)(a1 + 328) = a2;
+  if ( a2 )
+  {
+    result = *a2;
+    *(_QWORD *)(a1 + 336) = *a2;
+  }
+  return result;
+}
+
+
+-- decomp sub_142214640 (wraps 0xB0 alloc in sub_1406B60C0) @ 0x142214640 (RVA 0x2214640) --
+  size=0xB5
+__int64 __fastcall sub_142214640(__int64 a1)
+{
+  volatile signed __int32 **v2; // rbx
+  __int64 v3; // rdi
+  volatile signed __int32 *v4; // rcx
+
+  sub_142160DA0();
+  v2 = (volatile signed __int32 **)(a1 + 128);
+  *(_QWORD *)a1 = &BSSkyShaderProperty::`vftable';
+  *(_QWORD *)(a1 + 128) = 0;
+  *(_QWORD *)(a1 + 136) = 0;
+  *(_QWORD *)(a1 + 144) = 0;
+  *(_QWORD *)(a1 + 112) = 0;
+  *(_QWORD *)(a1 + 120) = 0;
+  sub_14167BCF0(a1 + 152);
+  *(_DWORD *)(a1 + 160) = 0;
+  v3 = 3;
+  *(_DWORD *)(a1 + 168) = 8;
+  *(_WORD *)(a1 + 164) = 0;
+  *(_OWORD *)(a1 + 112) = xmmword_142F41650;
+  do
+  {
+    v4 = *v2;
+    if ( *v2 )
+    {
+      *v2 = nullptr;
+      if ( _InterlockedExchangeAdd(v4 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v4 + 8LL))(v4);
+    }
+    ++v2;
+    --v3;
+  }
+  while ( v3 );
+  return a1;
+}
+
+
+-- decomp sub_14216F9C0 (wraps 0x88 alloc in sub_140372CC0) @ 0x14216F9C0 (RVA 0x216F9C0) --
+  size=0x5D
+_QWORD *__fastcall sub_14216F9C0(_QWORD *a1)
+{
+  __int64 v2; // r8
+  __int64 v3; // r8
+
+  sub_142160DA0();
+  *a1 = &BSEffectShaderProperty::`vftable';
+  a1[14] = 0;
+  a1[15] = 0;
+  sub_142161B10(a1, qword_143E5ACF0, 0);
+  LOBYTE(v2) = 1;
+  sub_142161950(a1, 31, v2);
+  LOBYTE(v3) = 1;
+  sub_142161950(a1, 32, v3);
+  return a1;
+}
+
+
+-- decomp sub_1417E91F0 (wraps 0x150 alloc) @ 0x1417E91F0 (RVA 0x17E91F0) --
+  size=0x31
+_QWORD *__fastcall sub_1417E91F0(_QWORD *a1)
+{
+  sub_1417E55E0();
+  *a1 = &BSMultiBoundNode::`vftable';
+  a1[40] = 0;
+  a1[41] = 0;
+  return a1;
+}
+
+
+-- decomp sub_1416BD6F0 (called before NiAlphaProperty vt set) @ 0x1416BD6F0 (RVA 0x16BD6F0) --
+  size=0x34
+_QWORD *__fastcall sub_1416BD6F0(_QWORD *a1)
+{
+  sub_1416BAB90(a1);
+  *a1 = &NiObjectNET::`vftable';
+  sub_14167BCF0(a1 + 2);
+  a1[3] = 0;
+  a1[4] = 0;
+  return a1;
+}
+
+
+-- decomp sub_14182FFD0 (BSTriShape factory) @ 0x14182FFD0 (RVA 0x182FFD0) --
+  size=0x3D0
+// Hidden C++ exception states: #wind=2
+void *sub_14182FFD0(
+        int a1,
+        __int64 a2,
+        unsigned int a3,
+        __int64 a4,
+        __int64 a5,
+        __int64 a6,
+        __int64 a7,
+        __int64 a8,
+        __int64 a9,
+        __int64 a10,
+        __int64 a11,
+        __int64 a12,
+        __int64 a13,
+        __int64 a14,
+        __int64 a15,
+        char a16,
+        ...)
+{
+  __int64 v16; // r15
+  __int64 v17; // rsi
+  __int64 v18; // r12
+  void *v19; // rax
+  __int64 v20; // rbx
+  unsigned __int64 v21; // rcx
+  __int64 v22; // rax
+  __int64 v23; // rax
+  void *result; // rax
+  int v25; // [rsp+A0h] [rbp-78h] BYREF
+  __int64 v26; // [rsp+A8h] [rbp-70h]
+  __int64 v27; // [rsp+B0h] [rbp-68h] BYREF
+  int v28; // [rsp+B8h] [rbp-60h]
+  int v29; // [rsp+BCh] [rbp-5Ch]
+  __int64 v30; // [rsp+C0h] [rbp-58h]
+
+  v30 = -2;
+  if ( a3 && a1 )
+  {
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v26 = sub_141656E30(&unk_143E5E0F0);
+    v25 = 0;
+    sub_14182DFC0(a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, 0, (__int64)&v25, 0, 0, 0, 0);
+    v27 = sub_14165BE20(v26, (unsigned int)(2 * v25), 8);
+    v16 = sub_14182DFC0(a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, v27, (__int64)&v25, 0, 0, 0, 0);
+    v17 = v27;
+    v18 = sub_141818550((unsigned int)&byte_143A0F400, (unsigned int)&v25, v27, v16, a2, 3 * a1);
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v19 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x170u, 0x10u, 1);
+    v27 = (__int64)v19;
+    if ( v19 )
+      v20 = sub_1416DA0A0((__int64)v19, v18, v16, a3, a1);
+    else
+      v20 = 0;
+    if ( v20 && a16 )
+    {
+      v21 = *(_QWORD *)(v20 + 336);
+      LODWORD(v27) = (4 * (_BYTE)v21) & 0x3C;
+      HIDWORD(v27) = (v21 >> 2) & 0x3C;
+      v28 = (v21 >> 14) & 0x3C;
+      v22 = *(_QWORD *)(v20 + 320);
+      if ( v22 )
+        v29 = (v21 >> 26) & 0x3C;
+      v23 = sub_1416CE630(v17, a2, a3, 3 * a1, (__int64)&v27, v22 != 0);
+      if ( v23 )
+        sub_1416BCE00(v20, v23);
+    }
+    sub_14165C3F0(v26, v17);
+    sub_1416D5E80(v20 + 288, a3, a4);
+    return (void *)v20;
+  }
+  else
+  {
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    result = sub_1416579C0((__int64)&unk_143E5E0F0, 0x170u, 0x10u, 1);
+    v27 = (__int64)result;
+    if ( result )
+      return (void *)sub_1416DA0F0(result);
+  }
+  return result;
+}
+
+
+-- disasm vt[42] disasm @ 0x1416D5930 (RVA 0x16D5930) --
+  0x1416D5930  mov     rax, rcx
+  0x1416D5933  mov     rcx, [rcx+130h]
+  0x1416D593A  cmp     rcx, rdx
+  0x1416D593D  jz      short locret_1416D596A
+  0x1416D593F  test    rdx, rdx
+  0x1416D5942  jz      short loc_1416D5948
+  0x1416D5944  lock inc dword ptr [rdx+8]
+  0x1416D5948  mov     [rax+130h], rdx
+  0x1416D594F  test    rcx, rcx
+  0x1416D5952  jz      short locret_1416D596A
+  0x1416D5954  mov     eax, 0FFFFFFFFh
+  0x1416D5959  lock xadd [rcx+8], eax
+  0x1416D595E  cmp     eax, 1
+  0x1416D5961  jnz     short locret_1416D596A
+  0x1416D5963  mov     rax, [rcx]
+  0x1416D5966  jmp     qword ptr [rax+8]
+  0x1416D596A  retn
+
+
+==== BSTriShape vtable [42] / [8] ====
+BSTriShape vt[8]  -> 0x1416D5520  RVA 0x16D5520
+BSTriShape vt[42] -> 0x1416D5930 RVA 0x16D5930
+
+-- decomp BSTriShape::vt[42] @ 0x1416D5930 (RVA 0x16D5930) --
+  size=0x3B
+__int64 __fastcall sub_1416D5930(__int64 a1, volatile signed __int32 *a2)
+{
+  __int64 result; // rax
+  volatile signed __int32 *v3; // rcx
+
+  result = a1;
+  v3 = *(volatile signed __int32 **)(a1 + 304);
+  if ( v3 != a2 )
+  {
+    if ( a2 )
+      _InterlockedIncrement(a2 + 2);
+    *(_QWORD *)(result + 304) = a2;
+    if ( v3 )
+    {
+      result = (unsigned int)_InterlockedExchangeAdd(v3 + 2, 0xFFFFFFFF);
+      if ( (_DWORD)result == 1 )
+        return (*(__int64 (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v3 + 8LL))(v3);
+    }
+  }
+  return result;
+}
+
+
+==== BSDynamicTriShape vtable [42] / [8] ====
+BSDynamicTriShape vt[8]  -> 0x1416D5520  RVA 0x16D5520
+BSDynamicTriShape vt[42] -> 0x1416D5930 RVA 0x16D5930
+
+==== END ====

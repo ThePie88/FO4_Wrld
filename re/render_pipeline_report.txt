@@ -1,0 +1,205 @@
+FO4 1.11.191 RENDER PIPELINE — FINAL REPORT
+=============================================
+image base 0x140000000 ; all offsets below are RVAs unless marked "ea".
+
+NOTE: This file supersedes the earlier stub written by decomp_render_pipeline.py.
+All data comes from IDA Pro 9.3 on Fallout4.exe.i64 (see scripts
+decomp_render_pipeline{1..5}.py and render_pipeline_report{2..5}.txt).
+
+
+0) CORRECTION FROM PRIOR ROUND
+-------------------------------
+qword_1430DD830 is NOT the 3D scene root. Its ctor sub_141A7F600 installs a
+`BSInputEventReceiver::vftable` and it is a Scaleform/UI manager (strings
+"RemoveMoviesQueuedForRemoval", "CopyMainToMenuBG" confirm). Consequently
+sub_141A815B0 / sub_141A81BB0 / sub_141A81DB0 with vt[+56] on phase codes
+1/2/5/6 are the **Scaleform movie update** dispatcher, not the 3D scene.
+The "Composite/AlphaRenderJobList" strings live in a DIFFERENT path.
+
+
+1) ACTUAL PER-FRAME CALL TREE (single-threaded main thread)
+------------------------------------------------------------
+sub_140C2F3F0 (0xC2F3F0)             Top trampoline (WinMain-ish)
+  sub_140C2FAD0 (0xC2FAD0)           Pre-loop init (framedispatch)
+  sub_140C30FD0 (0xC30FD0)           MAIN LOOP  while(!shutdown) { ... }
+    GetActiveWindow() test -> if ours:
+    sub_140C334B0 (0xC334B0)         FrameTick (F=0xF7C bytes)
+       ... input / physics / world update ...
+       sub_140C32D30 (0xC32D30)      RenderDispatch_1  <--- THE RENDER FUNCTION
+          sub_140C38910 (0xC38910)   Setup state + per-cell visibility  [3D pass 1]
+            sub_140C38F80 (0xC38F80) 3D scene walker: distance-cull + frustum + submit
+                                     visible refs to the per-phase accumulators.
+          sub_140C37D20 (0xC37D20)   Scaleform / UI compose/present   [UI pass]
+            sub_141A815B0 (0x1A815B0) Scaleform phase 1 (movie update)
+            sub_141A81BB0 (0x1A81BB0) Scaleform phase 2
+            sub_141A81DB0 (0x1A81DB0) Scaleform phase 5+6
+          (return -> swapchain Present)
+    else if minimized -> Sleep(50)
+Exits via sub_140C311E0 (teardown).
+
+sub_140C32D30 is the ONE you want. Its body:
+
+  if (byte_1432D1FEA && world_valid) {       // 3D+UI
+      save camera/view globals (xmmword_143437FE0)
+      sub_140C38910(a1, 0)                  // opaque 3D scene
+      sub_140C37D20(a1, 0)                  // UI composite
+  } else {                                    // menu-only
+      sub_141A815B0(qword_1430DD830)        // UI update only
+      sub_141A81BB0(...)
+      sub_141A81DB0(...)
+  }
+
+THREADING: sub_140C30FD0 is called directly from WinMain (via sub_140C2F3F0
+which calls sub_1422B7B08 = _scrt_common_main_seh). All of FrameTick +
+RenderDispatch_1 + sub_140C38910/F80 run on the **main thread**. The only
+CRT _beginthreadex site (at 0x141A7DF80) spawns job workers for
+CellAttach/Dynamic/Composite job lists — those are pre-render culling
+workers, NOT the draw path. The draw path is 100% main-thread.
+
+
+2) 3D SCENE SUBMIT DETAIL — sub_140C38910 / sub_140C38F80
+----------------------------------------------------------
+sub_140C38910 (0xC38910) is the "scene context setup":
+  - Calls PlayerCamera::Update (sub_1410262F0 @ RVA 0x10262F0).
+  - Queries PlayerCamera vt[+1112] (a TESCamera::GetCurrentState()-style accessor).
+  - Builds flag set v13..v16 describing FirstPerson / menu / VATS etc.
+  - Calls ~20 one-line globals-setters sub_1421F2EA0..sub_1421F2C50 —
+    these are the **RenderGlobals** (viewpoint mtx, near/far, world+proj,
+    light count, etc.) used by BSLightingShader::SetupTechnique.
+  - On success: tail-calls sub_140C38F80(a1) which IS the 3D scene walker.
+
+sub_140C38F80 (0xC38F80, ~0x800 bytes) walks an array at a1+8 (count a1+24)
+of world cell ids. For each cell:
+  - Distance-cull: if camera-distance squared > (float)*(v13+0) skip.
+  - Decode cell handle (*(_DWORD*)(v13+4)) via qword_1430DA390 ref table.
+  - Queries vt[+1120] (likely GetRootNode) and vt[+264].flags.
+  - If visible & enabled, pushes (distance, cellid) into a sorted linked
+    list (256-byte buckets).
+  - Second loop drains the list calling sub_1421F2D60(scene, v4).
+
+sub_1421F2D60 is the per-cell submit. It binds per-cell CBs and calls the
+BSBatchRenderer for each shape. That's the START of the opaque pass.
+
+
+3) BSBatchRenderer — RESOLVED
+-----------------------------
+Typedesc @ 0x30D4E70, RTTI string ".?AVBSBatchRenderer@@" at 0x30D4E80.
+Located via manual COL RVA scan (IDA autoanalyzer missed it).
+
+VTABLE @ RVA 0x290CFD0, ea 0x14290CFD0  (17 slots)
+  [ 0] 0x221AF90  size=0x34    ctor-ish
+  [ 1] 0x2AE6900               RTTI (data)
+  [ 2] 0x221C660  size=0x79    dtor
+  [ 3] 0x16BA6D0  size=0x11    reset/clear
+  [ 4] 0x221BC90  size=0x38B   **Dispatch/SetPass(pass_id)** — sets VS/PS CBs,
+                               binds shaders for a pass. `a2`=pass_id.
+  [ 5] 0x221C030  size=0x152   **EndPass / UnbindPass** — resets CB slots.
+  [ 6] 0x221C190  size=0x3     nullsub
+  [ 7] 0x221C1A0  size=0x3     nullsub
+  [ 8] 0x22283E0  size=0x3     nullsub
+  [ 9] 0x221C1B0  size=0x454   **FlushBatch / DrawQueued** — biggest, issues
+                               the actual DrawIndexed loop.
+  [10] 0x221C610  size=0x3     nullsub
+  [11] 0x221C630  size=0x12    flag setter
+  [12] 0x22285F0  nullsub
+  [13] 0x142228D90 size=0x5    small getter
+  [14] 0x14219E860 size=0x3
+  [15] 0x2AE6990              data
+  [16] 0x142228DA0 size=0x9
+
+Pass IDs live in .rdata around 0x269C6E0..0x269C720 (PerTechnique,
+PerMaterial, PerGeometry strings), and render-pass constants referenced
+by vt[4] are at qword_143E5AC90..qword_143E5ACB0 (texture bind points).
+
+
+4) HOOKABLE POINTS (ranked)
+----------------------------
+WINNER — hook **sub_140C38F80 @ RVA 0xC38F80** (prologue).
+  • Runs on main thread, after PlayerCamera has published fresh view state
+    into qword_1432D2260+208..+216.
+  • Before any 3D draws are issued.
+  • View/Proj already live in *(qword_1432D2260+208..+216).
+  • After this returns you have a fully rendered 3D scene in the backbuffer
+    and Scaleform hasn't touched it yet (Scaleform is the LATER call at
+    sub_140C37D20 inside the same sub_140C32D30).
+  Hook strategy: inline-detour at function start to capture the already-set
+  camera state, or **trailing detour at function end** to issue your own
+  DrawIndexed with the engine's currently-bound D3D state (VP matrix, RT,
+  depth buffer, OMSetRenderTargets, etc. all preserved).
+
+RUNNER-UP — hook **sub_140C38910 @ RVA 0xC38910** just before its tail-call
+  to sub_140C38F80. This gives you access to the scene flag bundle v13..v16
+  so you can skip your draw in menus/vats.
+
+FALLBACK A — hook **BSBatchRenderer::Dispatch @ RVA 0x221BC90** (vt[4]).
+  Called once per pass (opaque / pre-pass / shadow). `a2` is pass_id.
+  If pass_id == opaque, you are at the exact start of opaque.
+
+FALLBACK B — hook **BSBatchRenderer::FlushBatch @ RVA 0x221C1B0** (vt[9]).
+  Called once per material batch. Too granular for our needs (called 500+
+  times per frame) but lets you piggyback a draw on an existing material's
+  binding.
+
+DO NOT use sub_141A815B0 / sub_141A81BB0 / sub_141A81DB0. They are the
+Scaleform movie-clip update path; vt[+56] on their iterated objects is
+Scaleform-specific (BSGeometry vt[7] is a stub returning 0).
+
+DO NOT hook IDXGISwapChain::Present. VP matrix + depth have been
+discarded by then; the render state was reset for the final UI composite
+copy. This is the source of the VP mismatch you saw.
+
+
+5) SHADER / VERTEX-FORMAT REQUIREMENTS
+--------------------------------------
+BSLightingShader (RTTI @ 0x30D5250, vtable @ 0x290E818) is the standard
+skinned-mesh shader. Its per-draw CBs are laid out per the schema in
+shader_cb_report.txt:
+  BSDFPrePassShaderVertexConstants   0x00  PreviousWorld float4x4
+                                     0x40  WorldView     float4x4
+                                     0x80  ViewProj      float4x4
+                                     0xC0  DisplacementData float4
+                                     0x180 PreviousBones (skin palette)
+  BSLightingShaderVertexConstants    0x00  HighDetailRange float4x4
+                                     0x40  TextureProj     float4x4
+                                     0x80  EyePosition     float4
+
+If your body re-uses the engine shader you must match these layouts exactly
+AND produce the engine vertex format (BSTriShape vertex has position
+int16×4, normal+tan int8×4, uv float16×2, color byte×4, bone weights
+byte×4, bone indices byte×4 — see BSDynamicTriShape @ RVA 0x267F948 for
+the canonical order). Simpler: ship your own VS/PS pair, upload a 1-CB
+containing just WorldViewProj (read from qword_1432D2260+208), and bind
+your own vertex buffer. The engine's depth/stencil state is already bound,
+so your draw will z-test correctly against the world.
+
+
+6) MINIMAL HOOK SKETCH
+-----------------------
+  MH_CreateHook(base + 0xC38F80, &Hook_SceneWalker, &orig);
+  MH_EnableHook();
+
+  __int64 __fastcall Hook_SceneWalker(__int64 a1) {
+      __int64 ret = orig(a1);                  // let engine draw world
+      if (g_ghost_ready)
+          DrawGhostBody();                     // your draw, same RT/depth
+      return ret;
+  }
+
+  // DrawGhostBody reads VP from *(__m128*)(qword_1432D2260 + 208)
+  // which is the current frame's camera matrix (written by
+  // sub_1416D20B0 each tick).
+
+
+7) OPEN QUESTIONS / ADDITIONAL RE
+----------------------------------
+  - sub_1421F2D60 (per-cell submit) has ~700 bytes; an RE pass would tell
+    us exactly which D3D11 state is live when sub_140C38F80 returns, so
+    we can verify OMSetRenderTargets/viewport are still the scene's.
+  - BSSkinnedTriShape RTTI string not found in binary — skinning may be
+    implemented inside BSDynamicTriShape (RVA 0x267F948) or under a
+    different name ("BSSubIndexTriShape"? "BSMultiBoundShape"?).
+    If you want skinned support, investigate first.
+  - The job-workers (spawned at sub_141A7DF80 via _beginthreadex) run
+    CellAttach/PostPhysics/Composite lists. These *culling* workers write
+    into per-cell buffers that sub_140C38F80 then iterates. Your hook is
+    downstream so thread-safe.

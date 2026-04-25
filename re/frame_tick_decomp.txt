@@ -1,0 +1,1467 @@
+==== waiting for auto_wait ====
+
+============================================================
+  FrameTick (called each frame from sub_140C30FD0 main loop)
+  ea=0x140C334B0  RVA=0xC334B0
+============================================================
+  size=0xF7C
+---- BEGIN DECOMP ----
+SHORT __fastcall sub_140C334B0(__int64 a1)
+{
+  double v1; // xmm0_8
+  _BYTE *v2; // rbp
+  int v4; // ecx
+  bool v5; // r12
+  __int64 v6; // rax
+  __int64 v7; // rdx
+  __int64 v8; // rcx
+  __int64 v9; // r8
+  SHORT result; // ax
+  __int64 v11; // rax
+  __int64 v12; // rbx
+  int v13; // edx
+  int v14; // r8d
+  __int64 v15; // r9
+  __int64 v16; // rax
+  int v17; // edx
+  int v18; // r8d
+  __int64 v19; // r9
+  int v20; // r9d
+  __int64 v21; // rax
+  __int64 v22; // rax
+  char v23; // cl
+  __int64 v24; // rdx
+  __int64 v25; // r9
+  int v26; // r9d
+  __int64 v27; // rbx
+  __int64 v28; // rbx
+  __int64 v29; // rax
+  __int64 v30; // rbx
+  __int64 v31; // rax
+  __int64 v32; // rbx
+  __int64 v33; // rax
+  __int64 v34; // rbx
+  __int64 v35; // rax
+  __int64 v36; // rbx
+  void *v37; // rax
+  __int64 v38; // rbx
+  __int64 v39; // rax
+  __int64 v40; // rbx
+  __int64 v41; // rax
+  int v42; // edx
+  __int64 v43; // rbx
+  __int64 v44; // rax
+  __int64 v45; // rdx
+  unsigned __int8 v46; // r14
+  void (__fastcall *v47)(_QWORD, _QWORD); // rax
+  int v48; // ebx
+  int *v49; // rsi
+  __int64 v50; // rax
+  __int64 v51; // rdx
+  __int64 v52; // rax
+  __int64 v53; // rcx
+  __int64 v54; // r8
+  int v55; // edx
+  __int64 v56; // rsi
+  __int64 v57; // rax
+  int v58; // ebx
+  __int64 v59; // r15
+  __int64 v60; // r14
+  bool v61; // zf
+  float v62; // xmm6_4
+  __int64 v63; // rcx
+  unsigned int v64; // r9d
+  char v65; // bl
+  __int64 v66; // rax
+  int v67; // ebx
+  __int64 v68; // rax
+  __int64 v69; // rcx
+  __int64 v70; // rdx
+  __int64 v71; // rbx
+  __int64 v72; // rax
+  __int64 v73; // rax
+  __int64 v74; // rdx
+  __int64 v75; // rax
+  int v76; // ebx
+  _BYTE v77[272]; // [rsp+1C0h] [rbp+1C0h] BYREF
+
+  v2 = (_BYTE *)((unsigned __int64)v77 & 0xFFFFFFFFFFFFFF80uLL);
+  v4 = *(_DWORD *)(qword_1430DD830 + 480);
+  *(_BYTE *)(a1 + 464) = v4 != 0;
+  v5 = !v4 && !*(_BYTE *)(a1 + 42);
+  if ( v4 )
+  {
+    byte_14339436C = byte_142F274C0;
+    if ( !*(_BYTE *)(a1 + 464) )
+      sub_14165B740();
+    v6 = sub_141661010(&qword_143394320);
+    sub_14165B5F0(&qword_143394320, 1000 * (v6 - qword_143394320) / (unsigned __int64)qword_143394310);
+    dword_142F44660 = dword_142F27C40;
+    if ( *(_BYTE *)(a1 + 464)
+      || (LOBYTE(v9) = *(_DWORD *)(qword_1430EEED0 + 64) == 1,
+          LOBYTE(v7) = dword_1432D1FEC != 0,
+          sub_141873C80(v8, v7, v9),
+          *(_BYTE *)(a1 + 464)) )
+    {
+      LODWORD(v1) = 0;
+    }
+    else
+    {
+      LODWORD(v1) = dword_143394330;
+    }
+    dword_1432D2014 = LODWORD(v1);
+    if ( byte_1432D1FEA )
+      sub_1410E98F0(qword_1430E0208);
+  }
+  if ( (!*(_BYTE *)(a1 + 464) || *(_BYTE *)(a1 + 465)) && !*(_BYTE *)(a1 + 42) )
+  {
+    LODWORD(v1) = dword_143394330;
+    sub_1403D44F0();
+  }
+  nullsub_810(qword_1432D25C0, qword_1432D1FF8);
+  sub_141697C60(qword_1432961F8);
+  if ( GetAsyncKeyState(9) >= 0 || (result = GetAsyncKeyState(18), (result & 0x8000) == 0) )
+  {
+    if ( !*(_BYTE *)(a1 + 464) )
+      goto LABEL_184;
+    if ( byte_1432D1FEB )
+    {
+      v11 = qword_1432D2260;
+      v12 = *(_QWORD *)(qword_1432D2260 + 184);
+      *(_DWORD *)(((unsigned __int64)v77 & 0xFFFFFFFFFFFFFF80uLL) + 8) = *(_DWORD *)(qword_1432D2260 + 208);
+      *(_DWORD *)(((unsigned __int64)v77 & 0xFFFFFFFFFFFFFF80uLL) + 0xC) = *(_DWORD *)(v11 + 212);
+      LODWORD(v1) = *(_DWORD *)(v11 + 216);
+      *(_DWORD *)(((unsigned __int64)v77 & 0xFFFFFFFFFFFFFF80uLL) + 0x10) = LODWORD(v1);
+      if ( v12 && (*(_BYTE *)(v12 + 64) & 1) == 0 && !(unsigned __int8)sub_1404D3910(v12, v2 + 8) )
+      {
+        LODWORD(v15) = 0;
+        if ( (*(_BYTE *)(v12 + 64) & 1) == 0 )
+          v15 = *(_QWORD *)(v12 + 200);
+        v16 = sub_1402E4070(qword_1430DC000, v13, v14, v15, 0);
+        if ( !v16 || ((*(_BYTE *)(v16 + 68) - 4) & 0xFB) != 0 )
+        {
+          sub_1402CD890(qword_1432D2048, v2 + 8, 0, 0);
+          LODWORD(v19) = 0;
+          if ( (*(_BYTE *)(v12 + 64) & 1) == 0 )
+            v19 = *(_QWORD *)(v12 + 200);
+          v16 = sub_1402E4070(qword_1430DC000, v17, v18, v19, 1);
+        }
+        _InterlockedIncrement(&dword_143285E94);
+        sub_1404E87C0(v16, qword_1432D2260, 0);
+        _InterlockedDecrement(&dword_143285E94);
+      }
+      sub_1402CDDD0(qword_1432D2048);
+      if ( *(_BYTE *)(qword_1432D2048 + 197) || *(_BYTE *)(qword_1432D2048 + 198) )
+        sub_1402D4090(qword_1432D2048, 0, 0, v20, 0);
+    }
+    v21 = sub_1411C3B50();
+    sub_1422AC1A0(v21);
+    v22 = sub_1411C3B50();
+    v23 = *(_BYTE *)(v22 + 273);
+    *(_BYTE *)(v22 + 273) = 0;
+    if ( v23 && !byte_143308060 )
+      sub_141078F70(qword_1430DDA00, (unsigned int)&Default, (unsigned int)"$ChangedDLC_WarnReset", 0, 20, 1);
+    sub_1416A8DB0();
+    if ( !*(_BYTE *)(a1 + 464) )
+    {
+LABEL_184:
+      if ( *(_BYTE *)(a1 + 42) && (unsigned __int8)sub_14102B090(qword_1430DBD58, 3) )
+        sub_140C34A80(a1);
+    }
+    if ( byte_1432D1FEB )
+    {
+      if ( (unsigned __int8)sub_140C3AB10() )
+      {
+        sub_140BD4CE0();
+        LOBYTE(v24) = 1;
+        sub_1421AB6D0(qword_1430DDA40, v24);
+        sub_1421AB0C0(qword_1430DDA40);
+      }
+      else if ( !(unsigned __int8)sub_140CA2790(qword_1432D2260) )
+      {
+        if ( byte_1432D23B0 )
+        {
+          if ( byte_1432D1FE8 )
+          {
+            LOBYTE(v25) = 1;
+            byte_143307F37 = 1;
+            sub_1402D3EB0(qword_1432D2048, 0, 1, v25);
+            v1 = sub_1417AF2F0(qword_14355EB28, 4);
+            sub_1402D4090(qword_1432D2048, 0, 0, v26, 1);
+            byte_1432D23B0 = 0;
+            byte_1432D1FE9 = 0;
+          }
+        }
+        else
+        {
+          v27 = *(_QWORD *)(qword_1432D2260 + 184);
+          if ( v27 && v27 != qword_1432D23A8 && (*(_BYTE *)(v27 + 64) & 1) == 0 )
+          {
+            if ( !(unsigned __int8)sub_1404C9540(*(_QWORD *)(qword_1432D2260 + 184))
+              || !(unsigned __int8)sub_1421A6A80()
+              && !(unsigned __int8)sub_1421ABB80(qword_1430DDA40, *(unsigned int *)(v27 + 20)) )
+            {
+              byte_1432D23B0 = 1;
+              byte_1432D1FE9 = 1;
+            }
+            qword_1432D23A8 = v27;
+          }
+        }
+      }
+      sub_140338300(qword_1430DD820);
+      sub_140BFE820(qword_14329D508);
+      dword_1432D1FEC = 0;
+      *v2 = 0;
+      sub_140C3B0E0(&qword_1432D2270, (unsigned __int64)v77 & 0xFFFFFFFFFFFFFF80uLL, 0);
+      sub_140D622B0(qword_1432D2260);
+    }
+    if ( byte_142F271C0 )
+    {
+      if ( !*(_BYTE *)(a1 + 464) )
+        goto LABEL_185;
+      v28 = qword_1430DD830;
+      v29 = sub_141A87450();
+      if ( !(unsigned __int8)sub_141A7FD40(v28, v29) )
+      {
+        v30 = qword_1430DD830;
+        v31 = sub_141A870F0();
+        if ( !(unsigned __int8)sub_141A7FD40(v30, v31) )
+        {
+          v32 = qword_1430DD830;
+          v33 = sub_141A87F90();
+          if ( !(unsigned __int8)sub_141A7FD40(v32, v33) )
+          {
+            v34 = qword_1430DD830;
+            v35 = sub_141A884A0();
+            if ( !(unsigned __int8)sub_141A7FD40(v34, v35) )
+            {
+              v36 = qword_1430DD830;
+              v37 = sub_141A873C0();
+              if ( !(unsigned __int8)sub_141A7FD40(v36, v37) )
+              {
+                v38 = qword_1430DD830;
+                v39 = sub_141A86F40();
+                if ( !(unsigned __int8)sub_141A7FD40(v38, v39) )
+                {
+LABEL_185:
+                  if ( *(_DWORD *)(qword_14355EB28 + 5296)
+                    || !*(_BYTE *)(a1 + 464)
+                    && (!*(_QWORD *)(qword_1432D2048 + 88)
+                     || (v40 = qword_1430DD830, v41 = sub_141A86370(), (unsigned __int8)sub_141A7FD40(v40, v41))) )
+                  {
+                    sub_140C13D20();
+                  }
+                  else
+                  {
+                    sub_140C13D50();
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    if ( v5 )
+      dword_143E476F4 ^= 1u;
+    if ( !*(_BYTE *)(a1 + 464) && !*(_BYTE *)(a1 + 42) )
+    {
+      v1 = (*(double (__fastcall **)(__int64))(*(_QWORD *)qword_1432D2228 + 552LL))(qword_1432D2228);
+      sub_140C1EEB0(qword_1430DDA28);
+      sub_140C1C450(qword_1431E59C0, qword_143394340);
+    }
+    if ( v5 )
+    {
+      dword_1432F5884 = dword_1432F5880;
+      *(float *)&v1 = *(float *)&dword_1432F5880 + *(float *)&dword_143394330;
+      *(float *)&dword_1432F5880 = *(float *)&dword_1432F5880 + *(float *)&dword_143394330;
+      sub_140BD4C70();
+    }
+    if ( byte_1432D1FEA )
+    {
+      if ( !(unsigned __int8)sub_1421AA0D0(qword_1430DDA40) )
+      {
+        v1 = sub_141029980(qword_1430DBD58);
+        if ( *(_DWORD *)(qword_1430EEED0 + 64) != 1 )
+        {
+          sub_1421C11B0(qword_1432D2228, v42, 0, 0, 1);
+          sub_14217BD60();
+        }
+        if ( (unsigned __int8)sub_1421A6A10()
+          && qword_1432D2260
+          && (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)qword_1432D2260 + 1120LL))(qword_1432D2260)
+          && ((!byte_142F26F50 || !(unsigned __int8)sub_141A7FEA0(qword_1430DD830)) && !byte_1432D1FE9 || !byte_1432D1FE8)
+          && !(unsigned __int8)sub_141A7FEC0(qword_1430DD830) )
+        {
+          sub_1421AA0F0(qword_1430DDA40, *(_QWORD *)(qword_1432D2228 + 320));
+        }
+      }
+      v43 = qword_1430DD830;
+      v44 = sub_141A87450();
+      if ( !(unsigned __int8)sub_141A7FD40(v43, v44) )
+      {
+        if ( *(_BYTE *)(a1 + 464) || *(_BYTE *)(a1 + 42) )
+          v45 = 0;
+        else
+          LOBYTE(v45) = 1;
+        sub_140C34FC0(a1, v45);
+      }
+    }
+    ++dword_142F26E48;
+    dword_1432F4820 = 0;
+    v46 = *(_BYTE *)(a1 + 464);
+    if ( !v46 )
+    {
+      ++dword_142F8C2C8;
+      v46 = *(_BYTE *)(a1 + 464);
+    }
+    v47 = (void (__fastcall *)(_QWORD, _QWORD))qword_143E47468;
+    v48 = 0;
+    v49 = &dword_143E475C8;
+    do
+    {
+      if ( v47 )
+      {
+        v47((unsigned int)v48, v46);
+        v47 = (void (__fastcall *)(_QWORD, _QWORD))qword_143E47468;
+      }
+      else
+      {
+        LODWORD(v1) = 0;
+      }
+      *v49 = LODWORD(v1);
+      ++v48;
+      ++v49;
+    }
+    while ( v48 < 5 );
+    *(float *)&dword_143E475DC = *(float *)&dword_143E475DC + *(float *)&dword_143E475CC;
+    dword_143E475E0 = (int)*(float *)&dword_143E475D8;
+    *(float *)&dword_143E4772C = *(float *)&dword_143E4772C + *(float *)&dword_143E475CC;
+    if ( !v5 )
+    {
+      if ( byte_1432D1FEA )
+      {
+        v50 = sub_1404A40A0();
+        sub_1407F7AA0(v50);
+        sub_1407FE7A0(qword_1430DD7B8, 0);
+        sub_1410E9A70(qword_1430E0208);
+        sub_1410E9CD0(qword_1430E0208);
+        LOBYTE(v51) = 1;
+        sub_140ED1CE0(qword_1431E5790, v51);
+        sub_140CE1720(qword_1432D2260);
+        sub_141660BB0(v2 + 128);
+        if ( dword_143E5F2D0 != 2 )
+          sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+        sub_141656BC0(&unk_143E5E0F0, v2 + 128);
+        sub_1417AF000(qword_14355EB28);
+        sub_141660C00(v2 + 128);
+      }
+      sub_141672120(qword_143E5F2F8);
+      sub_141036D70();
+      sub_1409DEDA0(qword_14326B4A0);
+      sub_1416736C0(qword_1432689D0, qword_1431E5A80);
+      sub_1416736C0(qword_1432689D0, qword_143262940);
+      sub_1409DEE20(qword_14326B4A0);
+    }
+    if ( byte_1432D1FEA )
+    {
+      if ( dword_1432D1FEC )
+      {
+        dword_142F8C268 = dword_142F277C0;
+        dword_142F8C270 = dword_142F277F0;
+        dword_142F8C26C = dword_142F277D8;
+      }
+      else if ( sub_1402D0100(qword_1432D2048) && (v52 = sub_1402D0100(qword_1432D2048), sub_1405740A0(v52, 1)) )
+      {
+        dword_142F8C268 = dword_142F27808;
+        dword_142F8C270 = dword_142F27838;
+        dword_142F8C26C = dword_142F27820;
+      }
+      else if ( qword_1432D2260 && (v53 = *(_QWORD *)(qword_1432D2260 + 184)) != 0 && (*(_BYTE *)(v53 + 64) & 1) != 0 )
+      {
+        dword_142F8C268 = dword_142F27850;
+        dword_142F8C270 = dword_142F27880;
+        dword_142F8C26C = dword_142F27868;
+      }
+      else
+      {
+        dword_142F8C268 = 1065353216;
+        dword_142F8C26C = 1065353216;
+        dword_142F8C270 = 1065353216;
+      }
+    }
+    if ( !*(_BYTE *)(a1 + 464) && !*(_BYTE *)(a1 + 42) )
+      sub_140375DB0();
+    sub_140DB48C0(qword_1430DC0C0);
+    if ( *(_BYTE *)(a1 + 464) )
+    {
+      sub_140C24670();
+      sub_1416C9E40();
+    }
+    if ( byte_143D70944 )
+    {
+      byte_143D70944 = 0;
+      sub_140A36F20("Hitched from shader compile", 0, 1);
+    }
+    if ( !*(_BYTE *)(a1 + 464) && !*(_BYTE *)(a1 + 42) && !(unsigned __int8)sub_140C419E0() )
+    {
+      LOBYTE(v54) = 1;
+      sub_1402CD890(qword_1432D2048, qword_1432D2260 + 208, v54, 0);
+    }
+    sub_141697E10(0);
+    sub_141697E10(1);
+    if ( qword_1430E10E8 )
+      sub_14032F6D0();
+    sub_141697E10(2);
+    *(_OWORD *)(*(_QWORD *)(qword_1432D2228 + 320) + 388LL) = xmmword_142F8C4F8;
+    if ( byte_1432D1FEA )
+    {
+      sub_141029980(qword_1430DBD58);
+      if ( *(_DWORD *)(qword_1430EEED0 + 64) != 1 )
+      {
+        sub_1421C11B0(qword_1432D2228, v55, 0, 0, 1);
+        sub_14217BD60();
+      }
+    }
+    if ( (unsigned __int8)sub_140BD4B70(1) )
+    {
+      if ( (unsigned __int8)sub_14037E100() )
+        sub_141697EB0(0, 3);
+      sub_141697EB0(0, 0);
+    }
+    v56 = *((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex);
+    v57 = qword_1432D2228;
+    v58 = *(_DWORD *)(v56 + 2496);
+    *(_DWORD *)(v56 + 2496) = 30;
+    v59 = *(_QWORD *)(v57 + 320);
+    v60 = sub_1421F2950();
+    sub_1402D77F0(qword_1432D2048, v60, 1);
+    if ( byte_1432D1FEA )
+    {
+      sub_1421B51F0(qword_143E475A0[0], v59);
+      *(_QWORD *)(v60 + 24) = v59;
+      sub_1416E61C0(v60, v59 + 352);
+      byte_1438C8DA0 = 1;
+      sub_1402D71D0(qword_1432D2048, v60);
+      byte_1438C8DA0 = 0;
+    }
+    v61 = qword_1430DC000 == 0;
+    *(_DWORD *)(v56 + 2496) = v58;
+    if ( !v61 )
+    {
+      sub_141EAE600(qword_1430DC008);
+      v58 = *(_DWORD *)(v56 + 2496);
+    }
+    v62 = fmaxf(*(float *)&dword_142F27928, *(float *)&dword_142F26F68);
+    *(_DWORD *)(v56 + 2496) = 101;
+    if ( *(_QWORD *)(a1 + 8) )
+    {
+      sub_1416599D0(a1 + 8);
+      *(_DWORD *)(a1 + 24) = 0;
+    }
+    if ( v62 != 3.4028235e38 )
+      v62 = v62 * v62;
+    v63 = qword_1430DC0C0 + 64;
+    *(float *)(((unsigned __int64)v77 & 0xFFFFFFFFFFFFFF80uLL) + 0x18) = v62;
+    *(_QWORD *)(((unsigned __int64)v77 & 0xFFFFFFFFFFFFFF80uLL) + 0x20) = ((unsigned __int64)v77 & 0xFFFFFFFFFFFFFF80uLL)
+                                                                        + 24;
+    *(_QWORD *)(((unsigned __int64)v77 & 0xFFFFFFFFFFFFFF80uLL) + 0x28) = a1;
+    sub_140C3B2F0(v63, v2 + 32);
+    v64 = *(_DWORD *)(a1 + 24);
+    if ( v64 > 1 )
+      sub_140C3AFF0(a1 + 8, v2 + 1, 0, v64 - 1);
+    *(_DWORD *)(v56 + 2496) = v58;
+    sub_140C32D30(a1);
+    v65 = sub_140BD4B70(0);
+    sub_140BD4CA0();
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v66 = sub_141656E30(&unk_143E5E0F0);
+    sub_14165C590(v66);
+    if ( !v65 )
+    {
+      sub_1416736C0(qword_1432689D0, qword_1430DDA10);
+      sub_1416736C0(qword_1432689D0, qword_14326F458);
+      sub_1416736C0(qword_1432689D0, qword_1430DD830);
+      sub_140B512C0(qword_1431E5788);
+      sub_1409A6A70();
+      sub_141A80030(qword_1430DD830);
+      sub_141A81230(qword_1430DD830);
+    }
+    if ( qword_143268A90 )
+    {
+      sub_1409A6D50();
+      *(_DWORD *)(qword_143268A90 + 428) = 0;
+    }
+    if ( *(_BYTE *)(qword_1432D2020 + 43) )
+    {
+      *(_BYTE *)(qword_1432D2020 + 43) = 0;
+      *(_BYTE *)(qword_1432D2020 + 42) = 1;
+    }
+    sub_141036350();
+    sub_140BB93F0();
+    sub_140C351B0(a1);
+    if ( (!*(_BYTE *)(a1 + 464) || *(_BYTE *)(a1 + 465)) && !*(_BYTE *)(a1 + 42) )
+      sub_1403D45D0();
+    if ( !v5 )
+    {
+      if ( !*(_BYTE *)(a1 + 464) && !*(_BYTE *)(a1 + 42) )
+      {
+        sub_14097DE40();
+        sub_140D278C0();
+        sub_1409831F0();
+      }
+      sub_141DEE950();
+      sub_140BA1C10();
+      if ( qword_1432D2260 )
+        sub_140CD1BD0(qword_1432D2260);
+      sub_140829CE0();
+      if ( byte_1432D1FEA )
+      {
+        v67 = *(_DWORD *)(v56 + 2496);
+        *(_DWORD *)(v56 + 2496) = 74;
+        if ( !*(_BYTE *)(a1 + 42) )
+        {
+          v68 = sub_14022D6E0();
+          sub_141E08DF0(v68, 0);
+        }
+        v69 = qword_1430E0208;
+        *(_DWORD *)(v56 + 2496) = v67;
+        sub_1410E9E10(v69);
+      }
+      sub_1405B4700();
+      sub_140C44C30(qword_1432F46F8, v70, 8);
+      v71 = qword_1430DD830;
+      v72 = sub_141A87F90();
+      if ( (unsigned __int8)sub_141A7FD40(v71, v72) )
+      {
+        v73 = (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)qword_1432D2260 + 1032LL))(qword_1432D2260);
+        LOBYTE(v74) = 1;
+        sub_1406E83B0(v73, v74);
+      }
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v75 = sub_141656E30(&unk_143E5E0F0);
+    sub_14165C5A0(v75);
+    sub_1405B4A80();
+    sub_1405B0FB0();
+    if ( !*(_BYTE *)(a1 + 42) )
+    {
+      v76 = *(_DWORD *)(v56 + 2496);
+      *(_DWORD *)(v56 + 2496) = 7;
+      nullsub_644();
+      *(_DWORD *)(v56 + 2496) = v76;
+    }
+    return sub_1422344D0(qword_143E5B140);
+  }
+  return result;
+}
+
+---- END DECOMP ----
+
+============================================================
+  BeginScene caller small (38 bytes)
+  ea=0x141B484D0  RVA=0x1B484D0
+============================================================
+  size=0x38
+---- BEGIN DECOMP ----
+char __fastcall sub_141B484D0(_DWORD *a1)
+{
+  char result; // al
+
+  result = sub_141D20CF0(a1);
+  if ( result )
+  {
+    nullsub_719(a1 + 214);
+    sub_141D281C0(a1 + 53038);
+    return 1;
+  }
+  return result;
+}
+
+---- END DECOMP ----
+
+============================================================
+  BeginScene caller medium (96 bytes)
+  ea=0x141B48510  RVA=0x1B48510
+============================================================
+  size=0x96
+---- BEGIN DECOMP ----
+char __fastcall sub_141B48510(__int64 a1)
+{
+  if ( !sub_141D20CF0((_DWORD *)a1) )
+    return 0;
+  nullsub_719(a1 + 856);
+  sub_141D281C0(a1 + 212152);
+  (*(void (__fastcall **)(_QWORD, __int64, __int64, __int64))(**(_QWORD **)(a1 + 216696) + 712LL))(
+    *(_QWORD *)(a1 + 216696),
+    1,
+    a1 + 216704,
+    a1 + 216712);
+  (*(void (__fastcall **)(_QWORD, __int64))(**(_QWORD **)(a1 + 216696) + 192LL))(*(_QWORD *)(a1 + 216696), 4);
+  (*(void (__fastcall **)(_QWORD, _QWORD, _QWORD))(**(_QWORD **)(a1 + 216696) + 288LL))(
+    *(_QWORD *)(a1 + 216696),
+    *(_QWORD *)(a1 + 217856),
+    0);
+  *(_DWORD *)(a1 + 218000) = 0;
+  return 1;
+}
+
+---- END DECOMP ----
+
+============================================================
+  FrameTick inner callee — called before tick
+  ea=0x140C33190  RVA=0xC33190
+============================================================
+  size=0x293
+---- BEGIN DECOMP ----
+BOOL sub_140C33190()
+{
+  HWND v0; // rdi
+  char v1; // al
+  __int64 v2; // rcx
+  bool v3; // bl
+  char v4; // al
+  BOOL result; // eax
+  float v6; // [rsp+30h] [rbp-29h] BYREF
+  RECT v7; // [rsp+38h] [rbp-21h] BYREF
+  struct tagRECT Rect; // [rsp+48h] [rbp-11h] BYREF
+  struct tagMSG Msg; // [rsp+58h] [rbp-1h] BYREF
+  struct tagPOINT Point; // [rsp+C8h] [rbp+6Fh] BYREF
+  float v11; // [rsp+D0h] [rbp+77h] BYREF
+  float v12; // [rsp+D8h] [rbp+7Fh] BYREF
+
+  memset(&Msg, 0, sizeof(Msg));
+  v0 = *(HWND *)(qword_1432D2020 + 48);
+  if ( (unsigned __int8)sub_141672270(qword_143E5F2F8) || GetActiveWindow() != v0 )
+  {
+    v1 = byte_142F40FC8;
+  }
+  else
+  {
+    v1 = byte_142F40FC8;
+    if ( !byte_142F40FC8 )
+    {
+      v2 = qword_14326F458;
+      v3 = !*(_DWORD *)(qword_14326F458 + 80)
+        || *(float *)(qword_14326F458 + 60) != 0.0
+        || *(float *)(qword_14326F458 + 64) != 0.0
+        || *(float *)(qword_14326F458 + 68) != 0.0
+        || *(float *)(qword_14326F458 + 72) != 0.0;
+      goto LABEL_14;
+    }
+  }
+  v3 = 0;
+  if ( v1 )
+    goto LABEL_25;
+  v2 = qword_14326F458;
+LABEL_14:
+  v4 = *(_BYTE *)(v2 + 84);
+  *(_BYTE *)(v2 + 84) = 0;
+  if ( v4 )
+  {
+    Point = *(struct tagPOINT *)(qword_14326F458 + 36);
+    ClientToScreen(v0, &Point);
+    SetCursorPos(Point.x, Point.y);
+  }
+  if ( v3 )
+  {
+    GetClipCursor(&Rect);
+    GetWindowRect(v0, &v7);
+    if ( *(_DWORD *)(qword_14326F458 + 80) )
+    {
+      if ( *(float *)(qword_14326F458 + 60) != 0.0
+        || *(float *)(qword_14326F458 + 64) != 0.0
+        || *(float *)(qword_14326F458 + 68) != 0.0
+        || *(float *)(qword_14326F458 + 72) != 0.0 )
+      {
+        Point.x = 0;
+        v12 = 0.0;
+        v11 = 0.0;
+        v6 = 0.0;
+        sub_141B1D2E0(qword_14326F458, (unsigned int)&Point, (unsigned int)&v12, (unsigned int)&v11, (__int64)&v6);
+        v7.left += (int)(float)((float)xRight * *(float *)&Point.x);
+        v7.top += (int)(float)((float)yBottom * v11);
+        v7.right -= (int)(float)((float)xRight * v12);
+        v7.bottom -= (int)(float)((float)yBottom * v6);
+      }
+    }
+    else
+    {
+      v7.left += (int)(float)((float)xRight * 0.25);
+      v7.top += (int)(float)((float)yBottom * 0.25);
+      v7.right += (int)(float)((float)xRight * -0.25);
+      v7.bottom += (int)(float)((float)yBottom * -0.25);
+    }
+    ClipCursor(&v7);
+  }
+LABEL_25:
+  for ( result = PeekMessageA(&Msg, nullptr, 0, 0, 1u); result; result = PeekMessageA(&Msg, nullptr, 0, 0, 1u) )
+  {
+    TranslateMessage(&Msg);
+    DispatchMessageA(&Msg);
+  }
+  if ( v3 )
+    return ClipCursor(&Rect);
+  return result;
+}
+
+---- END DECOMP ----
+
+============================================================
+  called during FrameTick on exit
+  ea=0x140BD4CE0  RVA=0xBD4CE0
+============================================================
+  size=0x71
+---- BEGIN DECOMP ----
+__int64 sub_140BD4CE0()
+{
+  sub_141688170(*(_QWORD *)(qword_1432961C8 + 8LL * (unsigned int)dword_143296178));
+  sub_141688170(*(_QWORD *)(qword_1432961C8 + 8LL * (unsigned int)dword_143296180));
+  sub_141688170(*(_QWORD *)(qword_1432961C8 + 8LL * (unsigned int)dword_143296174));
+  sub_141688170(*(_QWORD *)(qword_1432961C8 + 8LL * (unsigned int)dword_143296170));
+  sub_1404C15A0(0);
+  sub_140DB2BA0();
+  return sub_1404DF680();
+}
+
+---- END DECOMP ----
+
+============================================================
+  another tick helper (possibly scene update)
+  ea=0x141E08F90  RVA=0x1E08F90
+============================================================
+  size=0x115
+---- BEGIN DECOMP ----
+_BOOL8 __fastcall sub_141E08F90(__int64 *a1)
+{
+  int *v1; // r14
+  int v2; // esi
+  __int64 v3; // rbp
+  __int64 v4; // rdi
+  bool v5; // zf
+  int v6; // eax
+  bool v7; // r15
+  int v8; // ecx
+  unsigned int v9; // ebx
+  DWORD v10; // ecx
+
+  v1 = (int *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex) + 2496LL);
+  v2 = *v1;
+  *v1 = 74;
+  v3 = *a1;
+  v4 = *a1 + 176;
+  sub_1402DD4E0(v4);
+  v5 = *(_DWORD *)(v3 + 184) == 1;
+  v6 = *(_DWORD *)(v3 + 184) - 1;
+  *(_DWORD *)(v3 + 184) = v6;
+  v7 = v5;
+  if ( !v6 )
+  {
+    v8 = *(_DWORD *)(v3 + 152);
+    if ( v8 == 1 )
+    {
+      *(_DWORD *)(v3 + 152) = 0;
+      v8 = 0;
+    }
+    else if ( *(_DWORD *)(v3 + 152) == 2 )
+    {
+      v8 = 3;
+      *(_DWORD *)(v3 + 152) = 3;
+    }
+    v9 = 0;
+    if ( v8 )
+    {
+      do
+      {
+        sub_141E0B080(v3, 0);
+        if ( v9 >= 0x2710 )
+        {
+          v10 = 1;
+        }
+        else
+        {
+          ++v9;
+          v10 = 0;
+        }
+        Sleep(v10);
+      }
+      while ( *(_DWORD *)(v3 + 152) );
+    }
+  }
+  if ( v4 )
+  {
+    if ( *(_DWORD *)(v4 + 4) == 1 )
+    {
+      *(_DWORD *)v4 = 0;
+      _mm_mfence();
+      _InterlockedCompareExchange((volatile signed __int32 *)(v4 + 4), 0, 1);
+    }
+    else
+    {
+      _InterlockedDecrement((volatile signed __int32 *)(v4 + 4));
+    }
+  }
+  *v1 = v2;
+  return v7;
+}
+
+---- END DECOMP ----
+
+============================================================
+  UI helper
+  ea=0x141070A10  RVA=0x1070A10
+============================================================
+  size=0x47
+---- BEGIN DECOMP ----
+void __fastcall sub_141070A10(char a1)
+{
+  __int64 v1; // rbx
+  void *v2; // rax
+
+  byte_142F2FE79 = a1;
+  if ( !qword_1432848B0 )
+  {
+    v1 = qword_1430DDA20;
+    v2 = sub_141A873C0();
+    sub_141A89050(v1, v2, 1);
+    byte_143307F35 = 1;
+  }
+}
+
+---- END DECOMP ----
+
+============================================================
+  called before tick
+  ea=0x1422A7780  RVA=0x22A7780
+============================================================
+  size=0x49
+---- BEGIN DECOMP ----
+__int64 __fastcall sub_1422A7780(int a1)
+{
+  __int64 v1; // rbx
+  __int64 result; // rax
+
+  v1 = 3LL * a1;
+  *((_DWORD *)&unk_143E5B870 + 2 * v1 + 5) = *((_DWORD *)&unk_143E5B870 + 6 * a1 + 4);
+  *((_DWORD *)&unk_143E5B870 + 2 * v1 + 4) = 0;
+  *((_QWORD *)&unk_143E5B870 + v1) = sub_14165D150();
+  result = (unsigned int)(int)0.0;
+  *((_QWORD *)&unk_143E5B870 + v1 + 1) = result;
+  return result;
+}
+
+---- END DECOMP ----
+
+============================================================
+  called at end of loop iter
+  ea=0x1422A77D0  RVA=0x22A77D0
+============================================================
+  size=0x6D
+---- BEGIN DECOMP ----
+__int64 __fastcall sub_1422A77D0(int a1)
+{
+  __int64 v2; // rbx
+  __int64 result; // rax
+  float v4; // xmm0_4
+  float v5; // [rsp+30h] [rbp+8h] BYREF
+
+  v2 = 3LL * a1;
+  result = sub_14165D150() - *((_QWORD *)&unk_143E5B870 + 3 * a1);
+  v4 = (float)((float)(int)result * *(float *)&dword_142F40A0C) + *((float *)&unk_143E5B870 + 2 * v2 + 4);
+  *((float *)&unk_143E5B870 + 2 * v2 + 4) = v4;
+  if ( !a1 )
+  {
+    v5 = v4;
+    return sub_1422A9890(&unk_143E5B810, &v5);
+  }
+  return result;
+}
+
+---- END DECOMP ----
+
+============================================================
+  DFComposite tiny wrapper (from report 1)
+  ea=0x14217A220  RVA=0x217A220
+============================================================
+  size=0xAD
+---- BEGIN DECOMP ----
+void *sub_14217A220()
+{
+  void *result; // rax
+  __int64 v1; // rbx
+
+  if ( !byte_143E47464 )
+    return (void *)sub_1421792E0();
+  sub_1422183C0();
+  v1 = qword_143E47AF0;
+  if ( qword_143E47AF0 )
+  {
+    sub_14217D350(qword_143E47AF0);
+    sub_1422B6BC8(v1, 440);
+    qword_143E47AF0 = 0;
+  }
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  result = sub_1416579C0((__int64)&unk_143E5E0F0, 0x1B8u, 0, 0);
+  if ( result )
+  {
+    result = (void *)sub_14217D0A0(result);
+    qword_143E47AF0 = (__int64)result;
+  }
+  else
+  {
+    qword_143E47AF0 = 0;
+  }
+  return result;
+}
+
+---- END DECOMP ----
+
+============================================================
+  DFComposite user 1 (called during scene init)
+  ea=0x14220EAF0  RVA=0x220EAF0
+============================================================
+  size=0x158
+---- BEGIN DECOMP ----
+__int64 __fastcall sub_14220EAF0(__int64 a1)
+{
+  __int64 v2; // rax
+  volatile signed __int32 *v3; // rcx
+  char v5; // [rsp+78h] [rbp-50h]
+  __int128 v6; // [rsp+80h] [rbp-48h] BYREF
+  int v7; // [rsp+90h] [rbp-38h]
+  int v8; // [rsp+94h] [rbp-34h]
+  _OWORD v9[2]; // [rsp+98h] [rbp-30h] BYREF
+  int v10; // [rsp+B8h] [rbp-10h]
+  int v11; // [rsp+D8h] [rbp+10h] BYREF
+  __int16 v12; // [rsp+DCh] [rbp+14h]
+
+  sub_1422283F0(a1, "DFComposite");
+  *(_QWORD *)a1 = &BSDFCompositeShader::`vftable';
+  v5 = 0;
+  *(_QWORD *)(a1 + 16) = &BSDFCompositeShader::`vftable';
+  *(_QWORD *)(a1 + 408) = 0;
+  v9[0] = xmmword_142909640;
+  v9[1] = xmmword_14290CAC0;
+  v12 = 2;
+  v10 = 1065353216;
+  v6 = xmmword_142908D60;
+  *(_DWORD *)(a1 + 24) = 6;
+  v7 = 0x40000000;
+  v8 = 0;
+  qword_143E5A998 = a1;
+  v11 = 0x10000;
+  v2 = sub_14182FFD0(1, (unsigned int)&v11, 3, (unsigned int)v9, (__int64)&v6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, v5);
+  v3 = *(volatile signed __int32 **)(a1 + 408);
+  if ( v3 != (volatile signed __int32 *)v2 )
+  {
+    if ( v2 )
+      _InterlockedIncrement((volatile signed __int32 *)(v2 + 8));
+    *(_QWORD *)(a1 + 408) = v2;
+    if ( v3 && _InterlockedExchangeAdd(v3 + 2, 0xFFFFFFFF) == 1 )
+      (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v3 + 8LL))(v3);
+  }
+  return a1;
+}
+
+---- END DECOMP ----
+
+============================================================
+  DFComposite INIT (called from scene tree build)
+  ea=0x1421792E0  RVA=0x21792E0
+============================================================
+  size=0xF37
+---- BEGIN DECOMP ----
+__int64 sub_1421792E0()
+{
+  bool v0; // zf
+  __int64 v1; // r13
+  int v2; // edi
+  __int64 v3; // r9
+  void *v4; // rax
+  __int64 v5; // rax
+  volatile signed __int32 *v6; // rcx
+  void *v7; // rax
+  __int64 v8; // rax
+  volatile signed __int32 *v9; // rcx
+  void *v10; // rax
+  __int64 v11; // rax
+  volatile signed __int32 *v12; // rcx
+  void *v13; // rax
+  __int64 v14; // rax
+  volatile signed __int32 *v15; // rcx
+  void *v16; // rax
+  __int64 v17; // rax
+  volatile signed __int32 *v18; // rcx
+  void *v19; // rax
+  __int64 v20; // rax
+  volatile signed __int32 *v21; // rcx
+  void *v22; // rax
+  __int64 v23; // rax
+  volatile signed __int32 *v24; // rcx
+  void *v25; // rax
+  __int64 v26; // rax
+  volatile signed __int32 *v27; // rcx
+  void *v28; // rax
+  __int64 v29; // rax
+  volatile signed __int32 *v30; // rcx
+  void *v31; // rax
+  __int64 v32; // rax
+  volatile signed __int32 *v33; // rcx
+  void *v34; // rax
+  __int64 v35; // rax
+  volatile signed __int32 *v36; // rcx
+  void *v37; // rax
+  __int64 v38; // rax
+  volatile signed __int32 *v39; // rcx
+  int v40; // ebx
+  void *v41; // rax
+  __int64 v42; // rax
+  int v43; // eax
+  int v44; // eax
+  __int64 v45; // rbx
+  volatile signed __int32 *v46; // rcx
+  char *v47; // rax
+  char *v48; // r12
+  __int64 v49; // r15
+  char *v50; // r14
+  __int64 result; // rax
+  __int64 v52; // rcx
+  _BYTE v53[32]; // [rsp+40h] [rbp-C0h] BYREF
+  _QWORD v54[2]; // [rsp+60h] [rbp-A0h] BYREF
+  char Destination[272]; // [rsp+70h] [rbp-90h] BYREF
+  char Buffer[320]; // [rsp+180h] [rbp+80h] BYREF
+  __int64 v57; // [rsp+2D8h] [rbp+1D8h]
+
+  v0 = byte_143E47464 == 0;
+  v1 = *((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex);
+  v2 = *(_DWORD *)(v1 + 2496);
+  *(_DWORD *)(v1 + 2496) = 26;
+  if ( v0 )
+  {
+    sub_14024BDC0(Buffer, 0x104u, "SHADERSFX/Shaders%03u.fxp");
+    LOBYTE(v3) = 1;
+    sub_1417D8650(v53, Buffer, 0, v3);
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v4 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x198u, 0, 0);
+    if ( v4 )
+      v5 = sub_1421D2790(v4);
+    else
+      v5 = 0;
+    v6 = (volatile signed __int32 *)qword_143E479D8;
+    if ( qword_143E479D8 != v5 )
+    {
+      if ( v5 )
+        _InterlockedIncrement((volatile signed __int32 *)(v5 + 8));
+      qword_143E479D8 = v5;
+      if ( v6 && _InterlockedExchangeAdd(v6 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v6 + 8LL))(v6);
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v7 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x198u, 0, 0);
+    if ( v7 )
+      v8 = sub_142221150(v7);
+    else
+      v8 = 0;
+    v9 = (volatile signed __int32 *)qword_143E479A0;
+    if ( qword_143E479A0 != v8 )
+    {
+      if ( v8 )
+        _InterlockedIncrement((volatile signed __int32 *)(v8 + 8));
+      qword_143E479A0 = v8;
+      if ( v9 && _InterlockedExchangeAdd(v9 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v9 + 8LL))(v9);
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v10 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x198u, 0, 0);
+    if ( v10 )
+      v11 = sub_14223D8F0(v10);
+    else
+      v11 = 0;
+    v12 = (volatile signed __int32 *)qword_143E479A8;
+    if ( qword_143E479A8 != v11 )
+    {
+      if ( v11 )
+        _InterlockedIncrement((volatile signed __int32 *)(v11 + 8));
+      qword_143E479A8 = v11;
+      if ( v12 && _InterlockedExchangeAdd(v12 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v12 + 8LL))(v12);
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v13 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x198u, 0, 0);
+    if ( v13 )
+      v14 = sub_142213000(v13);
+    else
+      v14 = 0;
+    v15 = (volatile signed __int32 *)qword_143E479C8;
+    if ( qword_143E479C8 != v14 )
+    {
+      if ( v14 )
+        _InterlockedIncrement((volatile signed __int32 *)(v14 + 8));
+      qword_143E479C8 = v14;
+      if ( v15 && _InterlockedExchangeAdd(v15 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v15 + 8LL))(v15);
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v16 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x198u, 0, 0);
+    if ( v16 )
+      v17 = sub_14221D430(v16);
+    else
+      v17 = 0;
+    v18 = (volatile signed __int32 *)qword_143E47990;
+    if ( qword_143E47990 != v17 )
+    {
+      if ( v17 )
+        _InterlockedIncrement((volatile signed __int32 *)(v17 + 8));
+      qword_143E47990 = v17;
+      if ( v18 && _InterlockedExchangeAdd(v18 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v18 + 8LL))(v18);
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v19 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x1D0u, 0, 0);
+    if ( v19 )
+      v20 = sub_1422321F0(v19);
+    else
+      v20 = 0;
+    v21 = (volatile signed __int32 *)qword_143E479D0;
+    if ( qword_143E479D0 != v20 )
+    {
+      if ( v20 )
+        _InterlockedIncrement((volatile signed __int32 *)(v20 + 8));
+      qword_143E479D0 = v20;
+      if ( v21 && _InterlockedExchangeAdd(v21 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v21 + 8LL))(v21);
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v22 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x198u, 0, 0);
+    if ( v22 )
+      v23 = sub_142238CC0(v22);
+    else
+      v23 = 0;
+    v24 = (volatile signed __int32 *)qword_143E47998;
+    if ( qword_143E47998 != v23 )
+    {
+      if ( v23 )
+        _InterlockedIncrement((volatile signed __int32 *)(v23 + 8));
+      qword_143E47998 = v23;
+      if ( v24 && _InterlockedExchangeAdd(v24 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v24 + 8LL))(v24);
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v25 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x198u, 0, 0);
+    if ( v25 )
+      v26 = sub_142223450(v25);
+    else
+      v26 = 0;
+    v27 = (volatile signed __int32 *)qword_143E479E0;
+    if ( qword_143E479E0 != v26 )
+    {
+      if ( v26 )
+        _InterlockedIncrement((volatile signed __int32 *)(v26 + 8));
+      qword_143E479E0 = v26;
+      if ( v27 && _InterlockedExchangeAdd(v27 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v27 + 8LL))(v27);
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v28 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x198u, 0, 0);
+    if ( v28 )
+      v29 = sub_1421FB8C0(v28);
+    else
+      v29 = 0;
+    v30 = (volatile signed __int32 *)qword_143E479B0;
+    if ( qword_143E479B0 != v29 )
+    {
+      if ( v29 )
+        _InterlockedIncrement((volatile signed __int32 *)(v29 + 8));
+      qword_143E479B0 = v29;
+      if ( v30 && _InterlockedExchangeAdd(v30 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v30 + 8LL))(v30);
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v31 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x1B8u, 0, 0);
+    if ( v31 )
+      v32 = sub_14223EA50(v31);
+    else
+      v32 = 0;
+    v33 = (volatile signed __int32 *)qword_143E479B8;
+    if ( qword_143E479B8 != v32 )
+    {
+      if ( v32 )
+        _InterlockedIncrement((volatile signed __int32 *)(v32 + 8));
+      qword_143E479B8 = v32;
+      if ( v33 && _InterlockedExchangeAdd(v33 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v33 + 8LL))(v33);
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v34 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x1A0u, 0, 0);
+    if ( v34 )
+      v35 = sub_14220EAF0((__int64)v34);
+    else
+      v35 = 0;
+    v36 = (volatile signed __int32 *)qword_143E479C0;
+    if ( qword_143E479C0 != v35 )
+    {
+      if ( v35 )
+        _InterlockedIncrement((volatile signed __int32 *)(v35 + 8));
+      qword_143E479C0 = v35;
+      if ( v36 && _InterlockedExchangeAdd(v36 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v36 + 8LL))(v36);
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v37 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x1A0u, 0, 0);
+    if ( v37 )
+      v38 = sub_14221BAE0(v37);
+    else
+      v38 = 0;
+    v39 = (volatile signed __int32 *)qword_143E479E8;
+    if ( qword_143E479E8 != v38 )
+    {
+      if ( v38 )
+        _InterlockedIncrement((volatile signed __int32 *)(v38 + 8));
+      qword_143E479E8 = v38;
+      if ( v39 && _InterlockedExchangeAdd(v39 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v39 + 8LL))(v39);
+    }
+    sub_142228DB0(qword_143E479D8, v53);
+    sub_142228DB0(qword_143E479A0, v53);
+    sub_142228DB0(qword_143E479A8, v53);
+    sub_142228DB0(qword_143E479C8, v53);
+    sub_142228DB0(qword_143E47990, v53);
+    sub_142228DB0(qword_143E479D0, v53);
+    sub_142228DB0(qword_143E47998, v53);
+    sub_142228DB0(qword_143E479E0, v53);
+    sub_142228DB0(qword_143E479B0, v53);
+    sub_142228DB0(qword_143E479B8, v53);
+    sub_142228DB0(qword_143E479C0, v53);
+    sub_142228DB0(qword_143E479E8, v53);
+    sub_142207200(v53);
+    sub_1421FA520(v53);
+    sub_142207470(v53);
+    v0 = dword_143E5F2D0 == 2;
+    v40 = *(_DWORD *)(v1 + 2496);
+    qword_143E5B318 = (__int64)v53;
+    *(_DWORD *)(v1 + 2496) = 31;
+    if ( !v0 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v41 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x1B8u, 0, 0);
+    if ( v41 )
+      v42 = sub_14217D0A0(v41);
+    else
+      v42 = 0;
+    qword_143E47AF0 = v42;
+    *(_DWORD *)(v1 + 2496) = v40;
+    sub_14181ECB0(&byte_143A0F400, v53);
+    sub_1421D6AF0(v53);
+    sub_1421FA5E0(v53);
+    sub_1416DE200("BSLightingShaderProperty", sub_142171050);
+    sub_1416DE200("BSWaterShaderProperty", sub_1421D2020);
+    sub_1416DE200("BSEffectShaderProperty", sub_14216F8E0);
+    sub_1416DE200("BSSkyShaderProperty", sub_142214A60);
+    sub_1416DE200("BSGrassShaderProperty", sub_1421C5910);
+    sub_1416DE200("BSShaderTextureSet", sub_142162890);
+    sub_142177450();
+    sub_1416DE200("BSTreeNode", sub_142178B50);
+    sub_1416DE200("BSLightingShaderPropertyFloatController", sub_142243020);
+    sub_1416DE200("BSLightingShaderPropertyUShortController", sub_142243510);
+    sub_1416DE200("BSLightingShaderPropertyColorController", sub_142243AE0);
+    sub_1416DE200("BSEffectShaderPropertyFloatController", sub_142244170);
+    sub_1416DE200("BSEffectShaderPropertyColorController", sub_1422447A0);
+    sub_1416DE200("BSNiAlphaPropertyTestRefController", sub_142244C40);
+    sub_1416DE200("BSPSysSimpleColorModifier", sub_142245AB0);
+    sub_1416DE200("BSPSysLODModifier", sub_142246250);
+    sub_1416DE200("BSOrderedNode", sub_14223D7C0);
+    sub_1416DE200("BSLeafAnimNode", sub_142177FC0);
+    sub_1416DE200("BSMeshLODTriShape", sub_14223BDD0);
+    sub_1416DE200("BSPackedCombinedGeomDataExtra", sub_1421E45B0);
+    sub_1416DE200("BSEyeCenterExtraData", sub_1422382D0);
+    sub_1416DE200("BSPackedCombinedSharedGeomDataExtra", sub_1421E4640);
+    *(_BYTE *)(*(_QWORD *)(*(_QWORD *)(qword_143E47AF0 + 24) + 136LL) + 8LL) = _stricmp(off_142F8C5B8, "fxaa") == 0;
+    v43 = _stricmp(off_142F8C5B8, "taa");
+    byte_143E47464 = 1;
+    dword_143E5B3C0 = dword_142F8DC08;
+    byte_143E47601 = byte_142F8C180;
+    dword_143D7094C = v43 == 0;
+    byte_143E47602 = byte_142F8C198;
+    sub_1417D88E0(v53);
+  }
+  qword_143E48A18 = 0;
+  qword_143E488D8 = (__int64)sub_1421CCEC0;
+  qword_143E48968 = (__int64)sub_1421CD570;
+  qword_143E488E0 = (__int64)sub_1421CCEC0;
+  qword_143E48970 = (__int64)sub_1421CD580;
+  qword_143E48A20 = 0;
+  qword_143E48938 = (__int64)sub_1421CD690;
+  qword_143E48948 = (__int64)sub_1421CD690;
+  qword_143E48950 = (__int64)sub_1421CD690;
+  qword_143E48958 = (__int64)sub_1421CD690;
+  qword_143E48978 = (__int64)sub_1421CD7A0;
+  qword_143E48980 = (__int64)sub_1421CD7A0;
+  qword_143E489D8 = (__int64)sub_1421CD830;
+  qword_143E489E0 = (__int64)sub_1421CD830;
+  qword_143E489E8 = (__int64)sub_1421CD830;
+  qword_143E489F0 = (__int64)sub_1421CD910;
+  qword_143E48940 = (__int64)sub_1421CD9B0;
+  qword_143E48AB0 = (__int64)sub_1421CE660;
+  qword_143E48A78 = (__int64)sub_1421CE670;
+  qword_143E48A88 = (__int64)sub_1421CE670;
+  qword_143E488E8 = (__int64)sub_1421CCEC0;
+  qword_143E48A28 = 0;
+  qword_143E488F0 = (__int64)sub_1421CCEC0;
+  qword_143E48A30 = 0;
+  qword_143E488F8 = (__int64)sub_1421CCEC0;
+  qword_143E48A38 = 0;
+  qword_143E48900 = (__int64)sub_1421CCEC0;
+  qword_143E48A40 = 0;
+  qword_143E48908 = (__int64)sub_1421CCEC0;
+  qword_143E48A48 = 0;
+  qword_143E48910 = (__int64)sub_1421CCEC0;
+  qword_143E48A50 = 0;
+  qword_143E48918 = (__int64)sub_1421CCEC0;
+  qword_143E48A58 = 0;
+  qword_143E48920 = (__int64)sub_1421CCEC0;
+  qword_143E48A60 = 0;
+  qword_143E48928 = (__int64)sub_1421CCEC0;
+  qword_143E48A68 = 0;
+  qword_143E48930 = (__int64)sub_1421CCEC0;
+  qword_143E48A70 = 0;
+  qword_143E48AA0 = 0;
+  qword_143E48AA8 = 0;
+  qword_143E48988 = (__int64)sub_1421CCEC0;
+  qword_143E48AC8 = 0;
+  qword_143E48990 = (__int64)sub_1421CCEC0;
+  qword_143E48AD0 = 0;
+  qword_143E48998 = (__int64)sub_1421CCEC0;
+  qword_143E48AD8 = 0;
+  qword_143E489A0 = (__int64)sub_1421CCEC0;
+  qword_143E48AE0 = 0;
+  qword_143E489A8 = (__int64)sub_1421CCEC0;
+  qword_143E48AE8 = 0;
+  qword_143E489B0 = (__int64)sub_1421CCEC0;
+  qword_143E48AF0 = 0;
+  qword_143E489B8 = (__int64)sub_1421CCEC0;
+  qword_143E48AF8 = 0;
+  qword_143E489C0 = (__int64)sub_1421CCEC0;
+  qword_143E48B00 = 0;
+  qword_143E489C8 = (__int64)sub_1421CCEC0;
+  qword_143E48B08 = 0;
+  qword_143E489D0 = (__int64)sub_1421CCEC0;
+  qword_143E48B10 = 0;
+  qword_143E48B38 = 0;
+  qword_143E48A00 = (__int64)sub_1421CCEC0;
+  qword_143E48B40 = 0;
+  qword_143E488D0 = (__int64)sub_1421CCEC0;
+  qword_143E48960 = (__int64)sub_1421CD600;
+  qword_143E489F8 = (__int64)sub_1421CD600;
+  qword_143E48A10 = (__int64)sub_1421CDAE0;
+  qword_143E48A90 = (__int64)sub_1421CE670;
+  qword_143E48A98 = (__int64)sub_1421CE670;
+  qword_143E48AB8 = (__int64)sub_1421CE6E0;
+  qword_143E48AC0 = (__int64)sub_1421CE6E0;
+  qword_143E48B20 = (__int64)sub_1421CE7F0;
+  qword_143E48B30 = (__int64)sub_1421CE8B0;
+  qword_143E48A80 = (__int64)sub_1421CE8F0;
+  qword_143E48B18 = (__int64)sub_1421CE730;
+  qword_143E48B28 = (__int64)sub_1421CE730;
+  qword_143E48A08 = (__int64)sub_1421CCEC0;
+  qword_143E48B48 = (__int64)sub_1421CDAE0;
+  sub_1422183C0();
+  sub_142176C70();
+  sub_142171840();
+  sub_1421CA960();
+  sub_1421F69B0();
+  dword_143E5B3C4 = LODWORD(flt_142F8E5F0);
+  dword_143E5B3C8 = powf(flt_142F8E5F0, 2.0);
+  dword_143E5B3D0 = 1065353216;
+  dword_142F8E5E4 = 1065353216;
+  dword_143E5B3CC = fmaxf(*(float *)&dword_142F8E608, 1000.0);
+  dword_143E47630 = dword_142F8C480;
+  dword_143E5B3D4 = fmaxf(*(float *)&dword_142F8CAD8, 0.0);
+  dword_143E4762C = dword_142F8C468;
+  sub_14182BFD0(&unk_143D708A0);
+  v57 = 0;
+  v44 = sub_1416C99E0();
+  sub_1417A3540("Textures\\Shared\\Cubemaps\\EyeCubeMap.dds", v44, 0, 1, 0);
+  v45 = 0;
+  v46 = (volatile signed __int32 *)qword_143D70978;
+  if ( qword_143D70978 )
+  {
+    v45 = qword_143D70978;
+    _InterlockedIncrement((volatile signed __int32 *)(qword_143D70978 + 8));
+    v46 = (volatile signed __int32 *)qword_143D70978;
+    v57 = v45;
+  }
+  if ( v46 != (volatile signed __int32 *)v45 )
+  {
+    if ( v45 )
+    {
+      _InterlockedIncrement((volatile signed __int32 *)(v45 + 8));
+      v45 = v57;
+    }
+    qword_143D70978 = v45;
+    if ( v46 )
+    {
+      if ( _InterlockedExchangeAdd(v46 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v46 + 8LL))(v46);
+      v45 = v57;
+    }
+  }
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v47 = (char *)sub_1416579C0((__int64)&unk_143E5E0F0, 0x60u, 0, 0);
+  v48 = v47;
+  if ( v47 )
+  {
+    sub_1416BAB90(v47);
+    v49 = 10;
+    *(_QWORD *)v48 = &BSShaderTextureSet::`vftable';
+    v50 = v48 + 16;
+    do
+    {
+      sub_14167BCF0(v50);
+      v50 += 8;
+      --v49;
+    }
+    while ( v49 );
+  }
+  else
+  {
+    v48 = nullptr;
+  }
+  strcpy_s(Destination, 0x104u, "Data\\Textures\\Effects\\TestMeatcapGore01_d.dds");
+  (*(void (__fastcall **)(char *, _QWORD, char *))(*(_QWORD *)v48 + 352LL))(v48, 0, Destination);
+  strcpy_s(Destination, 0x104u, "Data\\Textures\\Effects\\TestMeatcapGore01_n.dds");
+  (*(void (__fastcall **)(char *, __int64, char *))(*(_QWORD *)v48 + 352LL))(v48, 1, Destination);
+  strcpy_s(Destination, 0x104u, "Data\\Textures\\Effects\\TestMeatcapGore01_h.dds");
+  (*(void (__fastcall **)(char *, __int64, char *))(*(_QWORD *)v48 + 352LL))(v48, 3, Destination);
+  v54[0] = &BSTArrayAllocatorFunctor<BSTArrayHeapAllocator>::`vftable';
+  v54[1] = &qword_143E479F8;
+  result = sub_141659520(&dword_143E47A08, v54, (unsigned int)dword_143E47A00, 8);
+  if ( (_DWORD)result != -1 )
+  {
+    v52 = (unsigned int)result;
+    result = qword_143E479F8;
+    *(_QWORD *)(qword_143E479F8 + 8 * v52) = v48;
+  }
+  if ( v45 && _InterlockedExchangeAdd((volatile signed __int32 *)(v45 + 8), 0xFFFFFFFF) == 1 )
+    result = (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)v57 + 8LL))(v57);
+  *(_DWORD *)(v1 + 2496) = v2;
+  return result;
+}
+
+---- END DECOMP ----
+
+==== Report complete ====

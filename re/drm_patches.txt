@@ -1,0 +1,14 @@
+[+] Image base: 0x140000000
+
+[*] Searching imports for SteamAPI_RestartAppIfNecessary
+[-] SteamAPI_RestartAppIfNecessary not found!
+
+[*] Searching strings 'steam:'
+    string @ 0x1425567C0 (RVA 0x25567C0): 'steam://store/%s'
+[+] 1 steam:// strings found
+
+[*] xrefs to 'steam://store/%s' @ 0x1425567C0:
+    from 0x140BE6FA7 (RVA 0xBE6FA7) insn: lea     rdx, aSteamStoreS; "steam://store/%s"
+      in func 0x140BE6EF0 size=0x2A9
+
+==== Report done ====

@@ -1,0 +1,88 @@
+[+] Image base: 0x140000000
+
+
+==== 'ToggleCollision'  (1 occurrence(s))
+  string @ 0x1424B9FD0 (RVA 0x24B9FD0)
+    data-xref from 0x142EEF830
+      <no stride detected at +0x20..0x40>
+
+==== 'ShowQuestObjectives'  (1 occurrence(s))
+  string @ 0x1424C3660 (RVA 0x24C3660)
+    data-xref from 0x142EE4610
+      <no stride detected at +0x20..0x40>
+
+==== 'SetPCName'  (0 occurrence(s))
+
+==== 'SetGameSetting'  (1 occurrence(s))
+  string @ 0x1424BA870 (RVA 0x24BA870)
+    data-xref from 0x142EF0730
+      <no stride detected at +0x20..0x40>
+
+==== 'PlaceAtMe'  (1 occurrence(s))
+  string @ 0x1424C1FE0 (RVA 0x24C1FE0)
+    data-xref from 0x141163C0F
+      <no stride detected at +0x20..0x40>
+    data-xref from 0x142EDFD90
+      <no stride detected at +0x20..0x40>
+
+==== 'CenterOnCell'  (1 occurrence(s))
+  string @ 0x1424BA858 (RVA 0x24BA858)
+    data-xref from 0x14111CFA1
+      <no stride detected at +0x20..0x40>
+    data-xref from 0x142EF06E0
+      <no stride detected at +0x20..0x40>
+
+==== 'ShowVars'  (1 occurrence(s))
+  string @ 0x1424B9B10 (RVA 0x24B9B10)
+    data-xref from 0x142EEF240
+      <no stride detected at +0x20..0x40>
+
+==== 'ShowGlobalValues'  (0 occurrence(s))
+
+==== 'ToggleMenus'  (1 occurrence(s))
+  string @ 0x1424BA028 (RVA 0x24BA028)
+    data-xref from 0x142EEF8D0
+      <no stride detected at +0x20..0x40>
+
+==== 'QuitGame'  (1 occurrence(s))
+  string @ 0x1424BBD90 (RVA 0x24BBD90)
+    data-xref from 0x14111DCFE
+      <no stride detected at +0x20..0x40>
+    data-xref from 0x142EF2300
+      <no stride detected at +0x20..0x40>
+
+==== 'Save'  (0 occurrence(s))
+
+==== 'Load'  (0 occurrence(s))
+
+==== 'LoadGame'  (1 occurrence(s))
+  string @ 0x1424BB210 (RVA 0x24BB210)
+    data-xref from 0x142EF1680
+      <no stride detected at +0x20..0x40>
+
+==== 'Continue'  (1 occurrence(s))
+  string @ 0x1424FA708 (RVA 0x24FA708)
+    data-xref from 0x142F161B8
+      stride detected = 0x20
+      --- forward (up to 128) ---
+        0x142F161B8: 'Continue'                           <no handler candidates>
+        0x142F161D8: 'sShoutAdded'                        <no handler candidates>
+      --- backward (up to 128) ---
+
+==== 'GetPlayer'  (1 occurrence(s))
+  string @ 0x1425BC978 (RVA 0x25BC978)
+    data-xref from 0x141124B68
+      <no stride detected at +0x20..0x40>
+    data-xref from 0x141124C30
+      <no stride detected at +0x20..0x40>
+
+==== 'IncrementStat'  (1 occurrence(s))
+  string @ 0x1425BC9E0 (RVA 0x25BC9E0)
+    data-xref from 0x14112521C
+      <no stride detected at +0x20..0x40>
+
+==== 'startquest'  (0 occurrence(s))
+
+==== 'completequest'  (0 occurrence(s))
+
+==== done ====

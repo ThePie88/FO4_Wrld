@@ -1,0 +1,427 @@
+[*] ctx-reader funcs: 18
+[*] device-reader funcs: 41
+   CTX reader: RVA0x1817d10 (sub_141817D10)
+   CTX reader: RVA0x181a250 (sub_14181A250)
+   CTX reader: RVA0x181a290 (sub_14181A290)
+   CTX reader: RVA0x181a2d0 (sub_14181A2D0)
+   CTX reader: RVA0x181a310 (sub_14181A310)
+   CTX reader: RVA0x181a350 (sub_14181A350)
+   CTX reader: RVA0x181a530 (sub_14181A530)
+   CTX reader: RVA0x181a570 (sub_14181A570)
+   CTX reader: RVA0x181a690 (sub_14181A690)
+   CTX reader: RVA0x181a7d0 (sub_14181A7D0)
+   CTX reader: RVA0x181ac80 (sub_14181AC80)
+   CTX reader: RVA0x181ad70 (sub_14181AD70)
+   CTX reader: RVA0x181ae50 (sub_14181AE50)
+   CTX reader: RVA0x181aef0 (sub_14181AEF0)
+   CTX reader: RVA0x181aff0 (sub_14181AFF0)
+   CTX reader: RVA0x18218d0 (sub_1418218D0)
+   CTX reader: RVA0x1824350 (sub_141824350)
+   CTX reader: RVA0x1828050 (sub_141828050)
+
+   DEV reader: RVA0x1815a90 (sub_141815A90)
+   DEV reader: RVA0x1817a90 (sub_141817A90)
+   DEV reader: RVA0x18193c0 (sub_1418193C0)
+   DEV reader: RVA0x181ac80 (sub_14181AC80)
+   DEV reader: RVA0x181b420 (sub_14181B420)
+   DEV reader: RVA0x181b630 (sub_14181B630)
+   DEV reader: RVA0x181b6c0 (sub_14181B6C0)
+   DEV reader: RVA0x181b960 (sub_14181B960)
+   DEV reader: RVA0x181cc50 (sub_14181CC50)
+   DEV reader: RVA0x181d060 (sub_14181D060)
+   DEV reader: RVA0x181d1d0 (sub_14181D1D0)
+   DEV reader: RVA0x181d360 (sub_14181D360)
+   DEV reader: RVA0x181d4f0 (sub_14181D4F0)
+   DEV reader: RVA0x181d680 (sub_14181D680)
+   DEV reader: RVA0x181d7f0 (sub_14181D7F0)
+   DEV reader: RVA0x181da50 (sub_14181DA50)
+   DEV reader: RVA0x181ecb0 (sub_14181ECB0)
+   DEV reader: RVA0x18216b0 (sub_1418216B0)
+   DEV reader: RVA0x1821a70 (sub_141821A70)
+   DEV reader: RVA0x1821d50 (sub_141821D50)
+   DEV reader: RVA0x18220a0 (sub_1418220A0)
+   DEV reader: RVA0x1822c30 (sub_141822C30)
+   DEV reader: RVA0x18232f0 (sub_1418232F0)
+   DEV reader: RVA0x18233f0 (sub_1418233F0)
+   DEV reader: RVA0x1824350 (sub_141824350)
+   DEV reader: RVA0x1824b40 (sub_141824B40)
+   DEV reader: RVA0x1824f90 (sub_141824F90)
+   DEV reader: RVA0x18253a0 (sub_1418253A0)
+   DEV reader: RVA0x18259e0 (sub_1418259E0)
+   DEV reader: RVA0x1825da0 (sub_141825DA0)
+   DEV reader: RVA0x18267d0 (sub_1418267D0)
+   DEV reader: RVA0x1826d10 (sub_141826D10)
+   DEV reader: RVA0x1827250 (sub_141827250)
+   DEV reader: RVA0x1827790 (sub_141827790)
+   DEV reader: RVA0x1827dc0 (sub_141827DC0)
+   DEV reader: RVA0x1828050 (sub_141828050)
+   DEV reader: RVA0x183cb10 (sub_14183CB10)
+   DEV reader: RVA0x183e490 (sub_14183E490)
+   DEV reader: RVA0x183ef20 (sub_14183EF20)
+   DEV reader: RVA0x184e5b0 (sub_14184E5B0)
+   DEV reader: RVA0x1850010 (sub_141850010)
+
+
+========================================================================
+DEVICE reader functions — extract CreateDepthStencilState / CreateTexture2D / CreateDSV
+========================================================================
+
+-- RVA0x1815a90 (sub_141815A90) 2 interesting lines --
+   191:       (*(void (__fastcall **)(__int64, __int64 *, char *))(*(_QWORD *)qword_1438CAAA8 + 192LL))(
+   226:     (*(void (__fastcall **)(__int64, __int64 *, _QWORD **))(*(_QWORD *)qword_1438CAAA8 + 192LL))(
+
+-- RVA0x1817a90 (sub_141817A90) 6 interesting lines --
+    24:   (*(void (__fastcall **)(__int64, void *, __int64 *))(*(_QWORD *)v26 + 48LL))(v26, &unk_14269C688, &v25);
+    25:   (*(void (__fastcall **)(__int64, const IID *, __int64 *))(*(_QWORD *)v25 + 48LL))(v25, &stru_14269C640, &v24);
+    55:   if ( (*(int (__fastcall **)(__int64, __int64, _DWORD *, __int64))(*(_QWORD *)v24 + 80LL))(
+    74:   (*(void (__fastcall **)(__int64, _QWORD, __int64))(*(_QWORD *)v24 + 64LL))(v24, *(_QWORD *)(a1 + 80LL * v9 + 104), 3);
+    75:   (*(void (__fastcall **)(__int64))(*(_QWORD *)v25 + 16LL))(v25);
+    76:   (*(void (__fastcall **)(__int64))(*(_QWORD *)v24 + 16LL))(v24);
+
+-- RVA0x18193c0 (sub_1418193C0) 6 interesting lines --
+    52:     *(_QWORD *)(*(_QWORD *)(v5 + 2848) + 8LL * v38 + 11664),
+    62:   v13 = *(_QWORD *)(*(_QWORD *)(v5 + 2848) + 12256LL);
+    87:     (*(void (__fastcall **)(__int64, const char **, __int64, __int64, _QWORD, __int64 *))(*(_QWORD *)qword_1438CAAA8
+    97:   (*(void (__fastcall **)(_QWORD, __int64))(**(_QWORD **)(v5 + 2840) + 136LL))(*(_QWORD *)(v5 + 2840), v13);
+   101:     *(_QWORD *)(*(_QWORD *)(v5 + 2848) + 11832LL),
+   110:   return (*(__int64 (__fastcall **)(_QWORD, _QWORD, _QWORD, _QWORD))(**(_QWORD **)(v5 + 2840) + 96LL))(
+
+-- RVA0x181ac80 (sub_14181AC80) 6 interesting lines --
+    17:       (*(void (__fastcall **)(__int64, __int64 *, __int64 *))(*(_QWORD *)qword_1438CAAA8 + 192LL))(
+    26:     (*(void (__fastcall **)(_QWORD, _QWORD *))(**(_QWORD **)(a2 + 8) + 56LL))(*(_QWORD *)(a2 + 8), v5);
+    27:     v4 = *(_QWORD *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex) + 2840LL);
+    28:     (*(void (__fastcall **)(__int64, _QWORD, _QWORD))(*(_QWORD *)v4 + 376LL))(v4, *(_QWORD *)(a2 + 24), v5[0]);
+    29:     (*(void (__fastcall **)(__int64, _QWORD))(*(_QWORD *)qword_1438CAA90 + 224LL))(
+    32:     (*(void (__fastcall **)(_QWORD))(*(_QWORD *)v5[0] + 16LL))(v5[0]);
+
+-- RVA0x181b420 (sub_14181B420) 3 interesting lines --
+    32:   if ( (*(int (__fastcall **)(__int64, _DWORD *, _QWORD, __int64 *))(*(_QWORD *)qword_1438CAAA8 + 40LL))(
+    42:   v6 = sub_14182A910(*(_QWORD *)(a1 + 24) + 80LL);
+    57:   (*(void (__fastcall **)(__int64, __int64, int *, __int64))(*(_QWORD *)qword_1438CAAA8 + 56LL))(
+
+-- RVA0x181b630 (sub_14181B630) 3 interesting lines --
+     6:   v4 = sub_14182A910(*(_QWORD *)(a1 + 24) + 80LL);
+     7:   (*(void (__fastcall **)(__int64, _QWORD, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 56LL))(
+    13:     (*(void (__fastcall **)(__int64, _QWORD, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 64LL))(
+
+-- RVA0x181b6c0 (sub_14181B6C0) 4 interesting lines --
+   165:   if ( (*(int (__fastcall **)(__int64, _DWORD *, __int64 *, __int64 *, __int64, int))(*(_QWORD *)qword_1438CAAA8 + 40LL))(
+   177:   v18 = sub_14182A910(*(_QWORD *)(a1 + 24) + 80LL);
+   201:     (*(void (__fastcall **)(__int64, __int64, unsigned int *, __int64))(*(_QWORD *)qword_1438CAAA8 + 56LL))(
+   207:       (*(void (__fastcall **)(__int64, __int64, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 64LL))(
+
+-- RVA0x181b960 (sub_14181B960) 5 interesting lines --
+    39:   if ( (int)sub_14184D850(*(_QWORD *)(a1 + 88), v12, v11[0], (unsigned int)v10, (__int64)&v15) >= 0 )
+    41:     v7 = sub_14182A910(*(_QWORD *)(a1 + 24) + 80LL);
+    46:       (*(void (__fastcall **)(__int64, __int64 *))(*(_QWORD *)v15 + 56LL))(v15, &v9);
+    47:       (*(void (__fastcall **)(__int64, __int64, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 64LL))(
+    52:       (*(void (__fastcall **)(__int64))(*(_QWORD *)v9 + 16LL))(v9);
+
+-- RVA0x181cc50 (sub_14181CC50) 12 interesting lines --
+    34:       (*(void (__fastcall **)(_QWORD, __int64 *))(*(_QWORD *)*a2 + 56LL))(*a2, &v19);
+    39:       sub_14184D9B0(*(_QWORD *)(a1 + 88), *(_QWORD *)(a1 + 96), v19, v26);
+    50:           (*(void (__fastcall **)(__int64, __int64 *))(*(_QWORD *)**v6 + 56LL))(**v6, &v17);
+    55:           sub_14184D9B0(*(_QWORD *)(a1 + 88), *(_QWORD *)(a1 + 96), v17, v30);
+    60:             (*(void (__fastcall **)(__int64, __int64 *))(*(_QWORD *)v14 + 56LL))(v14, &v16);
+    61:             (*(void (__fastcall **)(__int64, _DWORD *))(*(_QWORD *)v16 + 80LL))(v16, v31);
+    64:             (*(void (__fastcall **)(__int64))(*(_QWORD *)v16 + 16LL))(v16);
+    71:           (*(void (__fastcall **)(__int64))(*(_QWORD *)v17 + 16LL))(v17);
+    81:       sub_14184D3D0(*(_QWORD *)(a1 + 88), v9, 1, (unsigned int)&v27, (__int64)&v15);
+    86:       (*(void (__fastcall **)(__int64, __int64, int *, _QWORD *))(*(_QWORD *)qword_1438CAAA8 + 56LL))(
+    91:       (*(void (__fastcall **)(__int64))(*(_QWORD *)v15 + 16LL))(v15);
+    92:       (*(void (__fastcall **)(__int64))(*(_QWORD *)v19 + 16LL))(v19);
+
+-- RVA0x181d060 (sub_14181D060) 1 interesting lines --
+    53:   (*(void (__fastcall **)(__int64, __int64, _QWORD, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 96LL))(
+
+-- RVA0x181d1d0 (sub_14181D1D0) 1 interesting lines --
+    74:         (*(void (__fastcall **)(__int64, __int64, __int64, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 96LL))(
+
+-- RVA0x181d360 (sub_14181D360) 1 interesting lines --
+    53:   (*(void (__fastcall **)(__int64, __int64, _QWORD, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 128LL))(
+
+-- RVA0x181d4f0 (sub_14181D4F0) 1 interesting lines --
+    53:   (*(void (__fastcall **)(__int64, __int64, _QWORD, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 136LL))(
+
+-- RVA0x181d680 (sub_14181D680) 1 interesting lines --
+    66:         (*(void (__fastcall **)(__int64, __int64, __int64, _QWORD, char *))(*(_QWORD *)qword_1438CAAA8 + 120LL))(
+
+-- RVA0x181d7f0 (sub_14181D7F0) 1 interesting lines --
+    60:   (*(void (__fastcall **)(__int64, __int64, _QWORD, _QWORD, _QWORD *))(*(_QWORD *)qword_1438CAAA8 + 120LL))(
+
+-- RVA0x181da50 (sub_14181DA50) 1 interesting lines --
+    53:   (*(void (__fastcall **)(__int64, __int64, _QWORD, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 144LL))(
+
+-- RVA0x181ecb0 (sub_14181ECB0) 3 interesting lines --
+    37:   (*(void (__fastcall **)(__int64, int *, _QWORD, __int64 *))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+    66:   (*(void (__fastcall **)(__int64, int *, _QWORD, __int64 *))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+   124:   (*(void (__fastcall **)(__int64, int *, _QWORD, __int64 *))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+
+-- RVA0x18216b0 (sub_1418216B0) 1 interesting lines --
+    32:     (*(void (__fastcall **)(__int64, _QWORD, _QWORD *))(*(_QWORD *)qword_1438CAAA8 + 216LL))(qword_1438CAAA8, 0, v6);
+
+-- RVA0x1821a70 (sub_141821A70) 9 interesting lines --
+    58:     (*(void (__fastcall **)(__int64, __int64 *, _QWORD, __int64, __int64, __int64, _QWORD, _QWORD, __int64, int))(*(_QWORD *)qword_1438CAAA8 + 40LL))(
+    69:     (*(void (__fastcall **)(__int64, _QWORD, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 72LL))(
+    74:     (*(void (__fastcall **)(__int64, _QWORD, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 56LL))(
+    80:       (*(void (__fastcall **)(__int64, _QWORD, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 64LL))(
+    88:       (*(void (__fastcall **)(__int64, __int64 *, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 40LL))(
+    93:       (*(void (__fastcall **)(__int64, _QWORD, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 56LL))(
+   107:     (*(void (__fastcall **)(__int64, _QWORD, _DWORD *, __int64))(*(_QWORD *)qword_1438CAAA8 + 72LL))(
+   116:     (*(void (__fastcall **)(__int64, _QWORD, _DWORD *, __int64))(*(_QWORD *)qword_1438CAAA8 + 56LL))(
+   127:       (*(void (__fastcall **)(__int64, _QWORD, _DWORD *, __int64))(*(_QWORD *)qword_1438CAAA8 + 64LL))(
+
+-- RVA0x1821d50 (sub_141821D50) 7 interesting lines --
+    96:   (*(void (__fastcall **)(__int64, _DWORD *, _QWORD, __int64))(*(_QWORD *)v12 + 40LL))(v12, v37, 0, v42 + 7512);
+   135:       (*(void (__fastcall **)(__int64, _QWORD, int *, __int64))(*(_QWORD *)qword_1438CAAA8 + 80LL))(
+   140:       (*(void (__fastcall **)(__int64, _QWORD, int *, __int64))(*(_QWORD *)qword_1438CAAA8 + 80LL))(
+   146:         (*(void (__fastcall **)(__int64, _QWORD, _DWORD *, __int64))(*(_QWORD *)qword_1438CAAA8 + 80LL))(
+   151:       (*(void (__fastcall **)(__int64, _QWORD, _DWORD *, __int64))(*(_QWORD *)qword_1438CAAA8 + 80LL))(
+   177:   (*(void (__fastcall **)(__int64, _QWORD, int *, __int64))(*(_QWORD *)qword_1438CAAA8 + 56LL))(
+   185:     (*(void (__fastcall **)(__int64, _QWORD, int *, __int64))(*(_QWORD *)qword_1438CAAA8 + 56LL))(
+
+-- RVA0x18220a0 (sub_1418220A0) 3 interesting lines --
+    53:   (*(void (__fastcall **)(_QWORD, _DWORD *, _QWORD, __int64))(**(_QWORD **)(a1 + 88) + 40LL))(
+    64:     (*(void (__fastcall **)(__int64, _QWORD, int *, __int64))(*(_QWORD *)qword_1438CAAA8 + 72LL))(
+    75:   (*(void (__fastcall **)(__int64, _QWORD, int *, __int64))(*(_QWORD *)qword_1438CAAA8 + 56LL))(
+
+-- RVA0x1822c30 (sub_141822C30) 2 interesting lines --
+   263:   (*(void (__fastcall **)(__int64, const char **, _QWORD, __int64, _QWORD, __int64 *))(*(_QWORD *)qword_1438CAAA8 + 88LL))(
+   268:     *(unsigned int *)(*(_QWORD *)(v30 + 1672) + 16LL),
+
+-- RVA0x18232f0 (sub_1418232F0) 1 interesting lines --
+    11:     (*(void (__fastcall **)(__int64, __int64 *, __int64 *))(*(_QWORD *)qword_1438CAAA8 + 192LL))(
+
+-- RVA0x18233f0 (sub_1418233F0) 1 interesting lines --
+    15:     (*(void (__fastcall **)(__int64, __int64 *, __int64 *))(*(_QWORD *)qword_1438CAAA8 + 192LL))(
+
+-- RVA0x1824350 (sub_141824350) 5 interesting lines --
+    45:   (*(void (__fastcall **)(void *, _QWORD, IDXGIAdapter **))(*(_QWORD *)ppFactory + 56LL))(
+   175:   (*(void (__fastcall **)(void *, _QWORD, __int64))(*(_QWORD *)v20 + 64LL))(v20, *v17, 3);
+   188:   (*(void (__fastcall **)(void *))(*(_QWORD *)ppFactory + 16LL))(ppFactory);
+   195:   (*(void (__fastcall **)(__int64, __int64 *))(*(_QWORD *)v21 + 24LL))(v21, &v28);
+   200:     (*(void (__fastcall **)(__int64))(*(_QWORD *)v28 + 16LL))(v28);
+
+-- RVA0x1824b40 (sub_141824B40) 6 interesting lines --
+    13:   (*(void (__fastcall **)(_QWORD, _QWORD, void *, __int64 *))(**(_QWORD **)(v2 + qword_1438CAAA0 + 112) + 72LL))(
+    18:   (*(void (__fastcall **)(__int64, __int64, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 72LL))(
+    23:   (*(void (__fastcall **)(__int64, __int64, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 56LL))(
+    28:   (*(void (__fastcall **)(__int64, __int64, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 64LL))(
+    33:   (*(void (__fastcall **)(__int64, unsigned int *))(*(_QWORD *)v11 + 80LL))(v11, &v9);
+    58:   return (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)v11 + 16LL))(v11);
+
+-- RVA0x1824f90 (sub_141824F90) 19 interesting lines --
+    48:     (*(void (__fastcall **)(__int64, _DWORD *, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+    62:     (*(void (__fastcall **)(__int64, _DWORD *, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+    76:     (*(void (__fastcall **)(__int64, _DWORD *, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+    90:     (*(void (__fastcall **)(__int64, _DWORD *, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+   104:     (*(void (__fastcall **)(__int64, _DWORD *, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+   118:     (*(void (__fastcall **)(__int64, _DWORD *, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+   132:     (*(void (__fastcall **)(__int64, _DWORD *, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+   146:     (*(void (__fastcall **)(__int64, _DWORD *, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+   160:     (*(void (__fastcall **)(__int64, _DWORD *, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+   174:     (*(void (__fastcall **)(__int64, _DWORD *, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+   188:     (*(void (__fastcall **)(__int64, _DWORD *, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+   202:     (*(void (__fastcall **)(__int64, _DWORD *, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+   216:     (*(void (__fastcall **)(__int64, _DWORD *, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+   230:     (*(void (__fastcall **)(__int64, _DWORD *, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+   244:     (*(void (__fastcall **)(__int64, _DWORD *, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+   257:     (*(void (__fastcall **)(__int64, _DWORD *, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+   267:   (*(void (__fastcall **)(__int64, _DWORD *, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+   273:   (*(void (__fastcall **)(__int64, _DWORD *, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+   279:   return (*(__int64 (__fastcall **)(__int64, _DWORD *, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+
+-- RVA0x18253a0 (sub_1418253A0) 4 interesting lines --
+    34:     (*(void (__fastcall **)(__int64, __int64 *, _QWORD, __int64, __int64))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+    41:     (*(void (__fastcall **)(__int64, __int64 *, __int64))(*(_QWORD *)qword_1438CAAA8 + 192LL))(
+    74:   (*(void (__fastcall **)(__int64, _QWORD *, _WORD **, __int64))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+   100:   (*(void (__fastcall **)(__int64, __int64 *, _WORD **, __int64))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+
+-- RVA0x18259e0 (sub_1418259E0) 1 interesting lines --
+    15:       (*(void (__fastcall **)(__int64, __int64 *, char *))(*(_QWORD *)qword_1438CAAA8 + 192LL))(
+
+-- RVA0x1825da0 (sub_141825DA0) 2 interesting lines --
+    13:   if ( (*(int (__fastcall **)(__int64, _DWORD *, _QWORD, __int64 *))(*(_QWORD *)qword_1438CAAA8 + 40LL))(
+    43:   (*(void (__fastcall **)(__int64, __int64, _DWORD *, __int64))(*(_QWORD *)qword_1438CAAA8 + 56LL))(
+
+-- RVA0x18267d0 (sub_1418267D0) 1 interesting lines --
+    41:             (*(void (__fastcall **)(__int64, unsigned int *, _QWORD, _QWORD, unsigned int *))(*(_QWORD *)qword_1438CAAA8
+
+-- RVA0x1826d10 (sub_141826D10) 1 interesting lines --
+    41:             (*(void (__fastcall **)(__int64, unsigned int *, _QWORD, _QWORD, unsigned int *))(*(_QWORD *)qword_1438CAAA8
+
+-- RVA0x1827250 (sub_141827250) 1 interesting lines --
+    41:             (*(void (__fastcall **)(__int64, unsigned int *, _QWORD, _QWORD, unsigned int *))(*(_QWORD *)qword_1438CAAA8
+
+-- RVA0x1827790 (sub_141827790) 1 interesting lines --
+    41:             (*(void (__fastcall **)(__int64, unsigned int *, _QWORD, _QWORD, unsigned int *))(*(_QWORD *)qword_1438CAAA8
+
+-- RVA0x1827dc0 (sub_141827DC0) 1 interesting lines --
+    50:       (*(void (__fastcall **)(__int64, void *, _QWORD, _QWORD, __int64))(*(_QWORD *)qword_1438CAAA8 + 120LL))(
+
+-- RVA0x1828050 (sub_141828050) 8 interesting lines --
+    94:       (*(void (__fastcall **)(__int64, __int64 *, _QWORD *))(*(_QWORD *)qword_1438CAAA8 + 192LL))(
+   107:     (*(void (__fastcall **)(__int64, int *, _QWORD, _QWORD *))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+   119:       v16 = *(_QWORD *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex) + 2840LL);
+   120:       (*(void (__fastcall **)(__int64, _QWORD, _QWORD, _QWORD, _DWORD, _DWORD, _QWORD, _DWORD, int *))(*(_QWORD *)v16 + 368LL))(
+   133:     (*(void (__fastcall **)(__int64, _QWORD, _QWORD, _QWORD, _DWORD, _DWORD, _QWORD, _DWORD, int *))(*(_QWORD *)qword_1438CAA90 + 368LL))(
+   143:     (*(void (__fastcall **)(__int64, _QWORD))(*(_QWORD *)qword_1438CAA90 + 224LL))(qword_1438CAA90, *v11);
+   149:         if ( (*(unsigned int (__fastcall **)(__int64, _QWORD, int *, __int64, _DWORD))(*(_QWORD *)qword_1438CAA90 + 232LL))(
+   162:           (*(void (__fastcall **)(__int64, _QWORD, _QWORD, __int64, _DWORD, __int64 *))(*(_QWORD *)qword_1438CAA90
+
+-- RVA0x183cb10 (sub_14183CB10) 5 interesting lines --
+    54:     a2[1] += (*(__int64 (__fastcall **)(_QWORD *, _DWORD *, size_t))(*a2 + 40LL))(a2, v6, v5);
+   152:       (*(void (__fastcall **)(__int64, int *, __int64 *, __int64 *))(*(_QWORD *)qword_1438CAAA8 + 48LL))(
+   161:       v4 = sub_14182A910(*(_QWORD *)(a1 + 24) + 80LL);
+   165:       (*(void (__fastcall **)(__int64, __int64, int *, __int64))(*(_QWORD *)qword_1438CAAA8 + 56LL))(
+   170:       (*(void (__fastcall **)(__int64))(*(_QWORD *)v39 + 16LL))(v39);
+
+-- RVA0x183e490 (sub_14183E490) 11 interesting lines --
+   169:     result = (*(__int64 (__fastcall **)(__int64, _DWORD *, _BYTE *, __int64 *))(*(_QWORD *)qword_1438CAAA8 + 40LL))(
+   177:       (*(void (__fastcall **)(__int64, _WORD *))(*(_QWORD *)v69 + 80LL))(v69, v87);
+   237:       (*(void (__fastcall **)(__int64, __int64, _DWORD *, __int64 *))(*(_QWORD *)qword_1438CAAA8 + 56LL))(
+   249:           v48 = (_QWORD *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex) + 2840LL);
+   253:             (*(void (__fastcall **)(_QWORD, __int64, _QWORD, _QWORD, _DWORD, _DWORD, __int64, unsigned int, _QWORD))(*(_QWORD *)*v48 + 368LL))(
+   273:         (*(void (__fastcall **)(__int64, _WORD *))(*(_QWORD *)v50 + 80LL))(v50, v91);
+   324:         (*(void (__fastcall **)(__int64, __int64, __int64))(*(_QWORD *)a1[1] + 16LL))(a1[1], v53, v61);
+   327:         (*(void (__fastcall **)(__int64))(*(_QWORD *)*a1 + 16LL))(*a1);
+   338:       sub_14184F5E0(*(_QWORD *)(qword_1438CAAA0 + 8), a1, a4, v98);
+   362:       sub_14184F4F0(*(_QWORD *)(qword_1438CAAA0 + 8), v86);
+   363:       sub_14184F8D0(*(_QWORD *)(qword_1438CAAA0 + 8), a1);
+
+-- RVA0x183ef20 (sub_14183EF20) 5 interesting lines --
+    42:   (*(void (__fastcall **)(__int64, _DWORD *, __int64 *, __int64 *, __int64, _BYTE *, __int64))(*(_QWORD *)qword_1438CAAA8
+    50:     0x40000000040LL);
+    55:   qword_143D709C8 = sub_14182A910(*(_QWORD *)(qword_1438CAAA0 + 8) + 80LL);
+    59:   (*(void (__fastcall **)(__int64, __int64, int *, __int64))(*(_QWORD *)qword_1438CAAA8 + 56LL))(
+    64:   (*(void (__fastcall **)(__int64))(*(_QWORD *)v15 + 16LL))(v15);
+
+-- RVA0x184e5b0 (sub_14184E5B0) 3 interesting lines --
+   149:         *(_DWORD *)(*(_QWORD *)v17 + 80LL) = 0;
+   153:         if ( *(_DWORD *)(v19 + 80) <= *(_DWORD *)(*(_QWORD *)v17 + 80LL) )
+   248:   (*(void (__fastcall **)(__int64, _DWORD *, _QWORD, char *))(*(_QWORD *)qword_1438CAAA8 + 24LL))(
+
+-- RVA0x1850010 (sub_141850010) 6 interesting lines --
+   126:               (*(void (__fastcall **)(__int64, _QWORD, _QWORD, __int64))(*(_QWORD *)qword_143D714D0 + 40LL))(
+   131:               sub_14183E1D0(*(_QWORD *)(v13 + 8));
+   151:               (*(void (__fastcall **)(__int64, _QWORD, _DWORD *, _QWORD *))(*(_QWORD *)qword_143D714D0 + 56LL))(
+   175:               (*(void (__fastcall **)(__int64, _QWORD, _DWORD *, _QWORD *))(*(_QWORD *)qword_143D714D0 + 64LL))(
+   200:               (*(void (__fastcall **)(__int64, _QWORD, _DWORD *, __int64))(*(_QWORD *)qword_143D714D0 + 56LL))(
+   215:               (*(void (__fastcall **)(__int64, _QWORD, _QWORD, __int64))(*(_QWORD *)qword_143D714D0 + 64LL))(
+
+
+========================================================================
+CTX reader functions — extract OMSet / ClearDSV patterns
+========================================================================
+
+-- RVA0x1817d10 (sub_141817D10) 1 lines --
+    23:   sub_14184FF00(*(_QWORD *)(a1 + 24), qword_1438CAA90);
+
+-- RVA0x181a250 (sub_14181A250) 1 lines --
+     2:   sub_1418154F0(a3, qword_1438CAA90);
+
+-- RVA0x181a290 (sub_14181A290) 1 lines --
+     2:   sub_1418154F0(a3, qword_1438CAA90);
+
+-- RVA0x181a2d0 (sub_14181A2D0) 1 lines --
+     2:   sub_1418154F0(a3, qword_1438CAA90);
+
+-- RVA0x181a310 (sub_14181A310) 1 lines --
+     2:   sub_1418154F0(a3, qword_1438CAA90);
+
+-- RVA0x181a350 (sub_14181A350) 1 lines --
+     2:   sub_1418154F0(a3, qword_1438CAA90);
+
+-- RVA0x181a530 (sub_14181A530) 1 lines --
+     2:   sub_1418154F0(a3, qword_1438CAA90);
+
+-- RVA0x181a570 (sub_14181A570) 1 lines --
+     2:   sub_1418154F0(a3, qword_1438CAA90);
+
+-- RVA0x181a690 (sub_14181A690) 4 lines --
+    16:   if ( (*(unsigned int (__fastcall **)(__int64, _QWORD, int *, __int64, _DWORD))(*(_QWORD *)qword_1438CAA90 + 232LL))(
+    17:          qword_1438CAA90,
+    29:     (*(void (__fastcall **)(__int64, _QWORD, _QWORD, __int64, _DWORD, _QWORD *))(*(_QWORD *)qword_1438CAA90 + 112LL))(
+    30:       qword_1438CAA90,
+
+-- RVA0x181a7d0 (sub_14181A7D0) 1 lines --
+    16:     (*(void (__fastcall **)(__int64, _QWORD, _QWORD))(*(_QWORD *)qword_1438CAA90 + 120LL))(qword_1438CAA90, a2[1], 0);
+
+-- RVA0x181ac80 (sub_14181AC80) 2 lines --
+    29:     (*(void (__fastcall **)(__int64, _QWORD))(*(_QWORD *)qword_1438CAA90 + 224LL))(
+    30:       qword_1438CAA90,
+
+-- RVA0x181ad70 (sub_14181AD70) 4 lines --
+    17:   (*(void (__fastcall **)(__int64, _QWORD, _QWORD, __int64, _DWORD, _QWORD *))(*(_QWORD *)qword_1438CAA90 + 112LL))(
+    18:     qword_1438CAA90,
+    25:   return (*(__int64 (__fastcall **)(__int64, _QWORD, _QWORD))(*(_QWORD *)qword_1438CAA90 + 120LL))(
+    26:            qword_1438CAA90,
+
+-- RVA0x181ae50 (sub_14181AE50) 4 lines --
+     8:   (*(void (__fastcall **)(__int64, _QWORD, _QWORD, __int64, _DWORD, _QWORD *))(*(_QWORD *)qword_1438CAA90 + 112LL))(
+     9:     qword_1438CAA90,
+    16:   return (*(__int64 (__fastcall **)(__int64, _QWORD, _QWORD))(*(_QWORD *)qword_1438CAA90 + 120LL))(
+    17:            qword_1438CAA90,
+
+-- RVA0x181aef0 (sub_14181AEF0) 5 lines --
+    12:   (*(void (__fastcall **)(__int64, _QWORD, _QWORD, __int64, _DWORD, _QWORD *))(*(_QWORD *)qword_1438CAA90 + 112LL))(
+    13:     qword_1438CAA90,
+    20:   (*(void (__fastcall **)(__int64, _QWORD, _QWORD))(*(_QWORD *)qword_1438CAA90 + 120LL))(
+    21:     qword_1438CAA90,
+    27:   return (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)v12 + 16LL))(v12);
+
+-- RVA0x181aff0 (sub_14181AFF0) 2 lines --
+    50:           if ( (*(int (__fastcall **)(__int64, __int64, int *, __int64, int))(*(_QWORD *)qword_1438CAA90 + 232LL))(
+    51:                  qword_1438CAA90,
+
+-- RVA0x18218d0 (sub_1418218D0) 1 lines --
+    12:   v5 = qword_1438CAAB8;
+
+-- RVA0x1824350 (sub_141824350) 2 lines --
+   172:   qword_1438CAA90 = v19;
+   174:   qword_1438CAAB8 = v19;
+
+-- RVA0x1828050 (sub_141828050) 9 lines --
+   101:     sub_1418154F0(a1, qword_1438CAA90);
+   102:     sub_1418154F0(a2, qword_1438CAA90);
+   133:     (*(void (__fastcall **)(__int64, _QWORD, _QWORD, _QWORD, _DWORD, _DWORD, _QWORD, _DWORD, int *))(*(_QWORD *)qword_1438CAA90 + 368LL))(
+   134:       qword_1438CAA90,
+   143:     (*(void (__fastcall **)(__int64, _QWORD))(*(_QWORD *)qword_1438CAA90 + 224LL))(qword_1438CAA90, *v11);
+   149:         if ( (*(unsigned int (__fastcall **)(__int64, _QWORD, int *, __int64, _DWORD))(*(_QWORD *)qword_1438CAA90 + 232LL))(
+   150:                qword_1438CAA90,
+   162:           (*(void (__fastcall **)(__int64, _QWORD, _QWORD, __int64, _DWORD, __int64 *))(*(_QWORD *)qword_1438CAA90
+   164:             qword_1438CAA90,
+
+
+========================================================================
+Specific offset string search in ALL functions (including non-global-reader)
+========================================================================
+
+[SCAN] Recursively trace base of call [reg+0x1A8h]:
+  sites disp 0x1A8: 178
+  sites disp 0xA0:  263
+  sites disp 0x28:  3710
+  sites disp 0x108: 80
+  sites disp 0x48:  1318
+
+ClearDSV 0x1A8 — classification tags (deep trace): {'clobbered': 42, 'no_trace': 134, 'stack': 2}
+
+CreateDSS 0xA0 — classification tags (deep trace): {'clobbered': 61, 'no_trace': 163, 'stack': 36, 'other_0x143da7480': 1, 'other_0x1438caaa0': 1, 'other_0x1434380a8': 1}
+    RVA0xa7327d tag=other_0x143da7480  fn RVA0xa73160
+
+CreateTex2D 0x28 — classification tags (deep trace): {'clobbered': 866, 'no_trace': 2417, 'stack': 355, 'other_0x1430da3a0': 6, 'other_0x58': 3, 'other_0x142ed09b0': 2, 'other_0x1430dc000': 2, 'other_0x14320fec8': 2, 'other_0x1431e7a40': 2, 'other_0x1431e7ab0': 2, 'other_0x1430dbd58': 2, 'other_0x1432d2260': 3, 'other_0x1432853e0': 1, 'other_0x1432d2020': 1, 'other_0x1430dd830': 2, 'other_0x142f31408': 1, 'other_0x143318cf0': 14, 'other_0x14333bf98': 3, 'other_0x14333bf90': 6, 'other_0x14333fcf0': 1, 'other_0x1433964e8': 2, 'device': 6, 'other_0x143d714d0': 3, 'other_0x143d71e10': 1, 'other_0x0': 1, 'other_0x143da7480': 3, 'other_0x143dc30a0': 1, 'other_0x143dc30f0': 1, 'other_0x143e4b7c8': 1}
+    RVA0x227c90 tag=other_0x1430da3a0  fn RVA0x227bf0
+    RVA0x2fa1b1 tag=other_0x58  fn RVA0x2fa080
+    RVA0x30a146 tag=other_0x142ed09b0  fn RVA0x30a080
+    RVA0x30b5b6 tag=other_0x142ed09b0  fn RVA0x30b490
+
+OMSetRT 0x108 — classification tags (deep trace): {'clobbered': 14, 'other_0x1434380a8': 4, 'no_trace': 61, 'stack': 1}
+    RVA0x9a7154 tag=other_0x1434380a8  fn RVA0x9a7130
+    RVA0x16c8fb6 tag=other_0x1434380a8  fn RVA0x16c8f90
+    RVA0x16c9b6c tag=other_0x1434380a8  fn RVA0x16c9b40
+    RVA0x17a3fa0 tag=other_0x1434380a8  fn RVA0x17a3d80
+
+CreateDSV 0x48 — classification tags (deep trace): {'no_trace': 811, 'clobbered': 238, 'stack': 196, 'other_0x1430dc000': 2, 'other_0x14320fec8': 7, 'other_0x143dc30a0': 4, 'other_0x1430eeed0': 1, 'other_0x1430da3a0': 1, 'other_0x143318648': 16, 'other_0x14333fcc8': 1, 'other_0x143345f18': 1, 'other_0x143346368': 1, 'device': 4, 'other_0x143da7480': 33, 'other_0x1430dbd48': 1, 'other_0x143e4b7c8': 1}
+    RVA0x3eb3bf tag=other_0x1430dc000  fn RVA0x3eb060
+
+[DONE]

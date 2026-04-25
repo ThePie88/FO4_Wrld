@@ -1,0 +1,59 @@
+========================================================================
+ BSGraphics::State singleton finder
+========================================================================
+ absolute-mem XMM store insns: 3645
+ candidate 4-row matrix globals: 0
+
+== Surrounding field footprint of each matrix global ==
+
+== Tiny singleton accessor candidates (mov rax, [mem] ; ret) ==
+ count: 139
+  fn 0x1401E41B0 (RVA 0x1E41B0)  -> [0x143E5E630 (RVA 0x3E5E630)] sub_1401E41B0
+  fn 0x1401EAA10 (RVA 0x1EAA10)  -> [0x143E5E6D8 (RVA 0x3E5E6D8)] sub_1401EAA10
+  fn 0x1401EBAE0 (RVA 0x1EBAE0)  -> [0x143E5F2F8 (RVA 0x3E5F2F8)] sub_1401EBAE0
+  fn 0x1401EBAF0 (RVA 0x1EBAF0)  -> [0x143E5F2F8 (RVA 0x3E5F2F8)] sub_1401EBAF0
+  fn 0x1401F33C0 (RVA 0x1F33C0)  -> [0x143E5E860 (RVA 0x3E5E860)] sub_1401F33C0
+  fn 0x1401F6C00 (RVA 0x1F6C00)  -> [0x143E5E9D0 (RVA 0x3E5E9D0)] sub_1401F6C00
+  fn 0x1402466A0 (RVA 0x2466A0)  -> [0x1430DC028 (RVA 0x30DC028)] sub_1402466A0
+  fn 0x140268000 (RVA 0x268000)  -> [0x1430DD610 (RVA 0x30DD610)] sub_140268000
+  fn 0x1402B4740 (RVA 0x2B4740)  -> [0x142F289E8 (RVA 0x2F289E8)] sub_1402B4740
+  fn 0x1402D5E80 (RVA 0x2D5E80)  -> [0x142ECFBC8 (RVA 0x2ECFBC8)] sub_1402D5E80
+  fn 0x1402D5E90 (RVA 0x2D5E90)  -> [0x142ECFBB0 (RVA 0x2ECFBB0)] sub_1402D5E90
+  fn 0x1403439A0 (RVA 0x3439A0)  -> [0x1430E11A0 (RVA 0x30E11A0)] sub_1403439A0
+  fn 0x1403439B0 (RVA 0x3439B0)  -> [0x1430E11D8 (RVA 0x30E11D8)] sub_1403439B0
+  fn 0x1403439C0 (RVA 0x3439C0)  -> [0x1430E1210 (RVA 0x30E1210)] sub_1403439C0
+  fn 0x1403439D0 (RVA 0x3439D0)  -> [0x1430E1248 (RVA 0x30E1248)] sub_1403439D0
+  fn 0x1403439E0 (RVA 0x3439E0)  -> [0x1430E1280 (RVA 0x30E1280)] sub_1403439E0
+  fn 0x140343A10 (RVA 0x343A10)  -> [0x1430E12F0 (RVA 0x30E12F0)] sub_140343A10
+  fn 0x140369BA0 (RVA 0x369BA0)  -> [0x1430E1E78 (RVA 0x30E1E78)] sub_140369BA0
+  fn 0x140373C10 (RVA 0x373C10)  -> [0x1430EB0C0 (RVA 0x30EB0C0)] sub_140373C10
+  fn 0x140386970 (RVA 0x386970)  -> [0x1430EC718 (RVA 0x30EC718)] sub_140386970
+  fn 0x140439330 (RVA 0x439330)  -> [0x1430EF360 (RVA 0x30EF360)] sub_140439330
+  fn 0x14044C4B0 (RVA 0x44C4B0)  -> [0x1430EF7A0 (RVA 0x30EF7A0)] sub_14044C4B0
+  fn 0x140450CF0 (RVA 0x450CF0)  -> [0x142ED5F50 (RVA 0x2ED5F50)] sub_140450CF0
+  fn 0x140451190 (RVA 0x451190)  -> [0x142ED5FB0 (RVA 0x2ED5FB0)] sub_140451190
+  fn 0x1404558A0 (RVA 0x4558A0)  -> [0x1430EF858 (RVA 0x30EF858)] sub_1404558A0
+  fn 0x1404BC010 (RVA 0x4BC010)  -> [0x1431E2988 (RVA 0x31E2988)] sub_1404BC010
+  fn 0x1404BC020 (RVA 0x4BC020)  -> [0x1431E2920 (RVA 0x31E2920)] sub_1404BC020
+  fn 0x1404D2D80 (RVA 0x4D2D80)  -> [0x142ED9218 (RVA 0x2ED9218)] sub_1404D2D80
+  fn 0x14057EBF0 (RVA 0x57EBF0)  -> [0x1431E5488 (RVA 0x31E5488)] sub_14057EBF0
+  fn 0x140591E30 (RVA 0x591E30)  -> [0x142EDD2F8 (RVA 0x2EDD2F8)] sub_140591E30
+
+== Correlation: singleton accessors pointing into matrix-containing structs ==
+
+== Tiny singleton accessor (lea rax, [rip+disp] ; ret) ==
+ LEA accessor count: 2132
+
+== Known global cross-references: 0x3E5AE58 and 0x3E5AE70 ==
+  g1 @ 0x143E5AE58 (RVA 0x3E5AE58)  is_matrix_base=False
+    nearby XMM store offsets count: {-808: 2, -792: 2, -776: 2, -728: 1, -712: 1, -696: 1, -680: 1, -344: 1, -264: 1, -256: 1, -248: 1, -240: 1, -232: 1, -224: 1, -216: 2, -208: 1, -200: 2, -192: 2, -184: 2, -176: 1, -168: 1, -128: 2, -72: 2, -64: 1, -56: 2, -48: 1, -40: 1, -24: 2, -8: 1, 48: 1, 560: 3, 568: 3, 576: 1, 584: 1, 752: 1}
+  g2 @ 0x143E5AE70 (RVA 0x3E5AE70)  is_matrix_base=False
+    nearby XMM store offsets count: {-832: 2, -816: 2, -800: 2, -752: 1, -736: 1, -720: 1, -704: 1, -368: 1, -288: 1, -280: 1, -272: 1, -264: 1, -256: 1, -248: 1, -240: 2, -232: 1, -224: 2, -216: 2, -208: 2, -200: 1, -192: 1, -152: 2, -96: 2, -88: 1, -80: 2, -72: 1, -64: 1, -48: 2, -32: 1, 24: 1, 536: 3, 544: 3, 552: 1, 560: 1, 728: 1}
+  g3 @ 0x143A0F400 (RVA 0x3A0F400)  is_matrix_base=False
+    nearby XMM store offsets count: {}
+  g4 @ 0x1438CAA98 (RVA 0x38CAA98)  is_matrix_base=False
+    nearby XMM store offsets count: {}
+
+== TLS-based accessor scan (NtCurrentTeb-pattern small funcs) ==
+
+== Top 5 matrix_base clusters: writer function summary ==

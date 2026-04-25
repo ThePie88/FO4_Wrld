@@ -1,0 +1,353 @@
+[+] Image base: 0x140000000
+
+========================================================================
+== sub_1410412B0 (ContainerMenu factory) FULL
+========================================================================
+__int64 sub_1410412B0()
+{
+  __int64 v0; // r15
+  __int64 v1; // rcx
+  int v2; // ebx
+  __int64 v3; // rax
+  __int64 v4; // r14
+  void (__fastcall ***v5)(_QWORD, __int64); // rdi
+  char *v6; // rsi
+  __int64 v7; // rbp
+  void *v8; // rax
+  void (__fastcall ***v9)(_QWORD, __int64); // rcx
+  void (__fastcall **v10)(_QWORD, __int64); // rax
+  __int64 v11; // r8
+  __int64 v12; // rsi
+  __int64 v13; // rdx
+  __int64 result; // rax
+  char v15; // [rsp+20h] [rbp-38h] BYREF
+  _QWORD v16[6]; // [rsp+28h] [rbp-30h] BYREF
+
+  v0 = *((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex);
+  v1 = *(_QWORD *)qword_143DA7480;
+  v2 = *(_DWORD *)(v0 + 2496);
+  *(_DWORD *)(v0 + 2496) = 66;
+  v3 = (*(__int64 (__fastcall **)(__int64, __int64, _QWORD))(*(_QWORD *)v1 + 80LL))(v1, 1088, 0);
+  v4 = v3;
+  if ( !v3 )
+  {
+    result = 0;
+    goto LABEL_14;
+  }
+  sub_140A533F0(v3, aContainermenu);
+  v5 = nullptr;
+  *(_QWORD *)v4 = &ContainerMenu::`vftable';
+  v6 = (char *)(v4 + 1072);
+  *(_QWORD *)(v4 + 16) = &ContainerMenu::`vftable';
+  *(_QWORD *)(v4 + 224) = &ContainerMenu::`vftable';
+  *(_QWORD *)(v4 + 232) = &ContainerMenu::`vftable';
+  *(_QWORD *)(v4 + 1072) = 0;
+  v7 = *(_QWORD *)(v4 + 64);
+  *(_QWORD *)(v4 + 1080) = 0;
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v8 = sub_1416579C0((__int64)&unk_143E5E0F0, 0xB0u, 0, 0);
+  if ( v8 )
+    v5 = (void (__fastcall ***)(_QWORD, __int64))sub_141B03B80(
+                                                   v8,
+                                                   v7,
+                                                   "root1.FilterHolder_mc.Menu_mc.PickpocketInfo_mc");
+  if ( v6 == &v15 )
+  {
+    if ( v5 )
+    {
+      v10 = *v5;
+      v9 = v5;
+      goto LABEL_11;
+    }
+  }
+  else
+  {
+    v9 = *(void (__fastcall ****)(_QWORD, __int64))v6;
+    *(_QWORD *)v6 = v5;
+    if ( v9 )
+    {
+      v10 = *v9;
+LABEL_11:
+      (*v10)(v9, 1);
+    }
+  }
+  sub_141B03F20(*(_QWORD *)v6, 2);
+  v11 = *(unsigned int *)(v4 + 120);
+  v12 = *(_QWORD *)v6;
+  v16[0] = &BSTArrayAllocatorFunctor<BSTArrayHeapAllocator>::`vftable';
+  v16[1] = v4 + 112;
+  v13 = (unsigned int)sub_141659520(v4 + 128, v16, v11, 8);
+  v16[0] = &BSTArrayBase::IAllocatorFunctor::`vftable';
+  result = v4;
+  *(_QWORD *)(*(_QWORD *)(v4 + 112) + 8 * v13) = v12;
+  ++*(_DWORD *)(qword_143E47AF0 + 432);
+LABEL_14:
+  *(_DWORD *)(v0 + 2496) = v2;
+  return result;
+}
+
+
+========================================================================
+== sub_14103C460 (ContainerMenu ctor) FULL
+========================================================================
+__int64 __fastcall sub_14103C460(__int64 a1)
+{
+  void (__fastcall ***v2)(_QWORD, __int64); // rbx
+  char *v3; // rdi
+  __int64 v4; // rbp
+  void *v5; // rax
+  void (__fastcall ***v6)(_QWORD, __int64); // rcx
+  void (__fastcall **v7)(_QWORD, __int64); // rax
+  __int64 v8; // r8
+  __int64 v9; // rdi
+  char v11; // [rsp+20h] [rbp-28h] BYREF
+  _QWORD v12[4]; // [rsp+28h] [rbp-20h] BYREF
+
+  sub_140A533F0(a1, aContainermenu);
+  v2 = nullptr;
+  *(_QWORD *)a1 = &ContainerMenu::`vftable';
+  v3 = (char *)(a1 + 1072);
+  *(_QWORD *)(a1 + 16) = &ContainerMenu::`vftable';
+  *(_QWORD *)(a1 + 224) = &ContainerMenu::`vftable';
+  *(_QWORD *)(a1 + 232) = &ContainerMenu::`vftable';
+  *(_QWORD *)(a1 + 1072) = 0;
+  v4 = *(_QWORD *)(a1 + 64);
+  *(_QWORD *)(a1 + 1080) = 0;
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v5 = sub_1416579C0((__int64)&unk_143E5E0F0, 0xB0u, 0, 0);
+  if ( v5 )
+    v2 = (void (__fastcall ***)(_QWORD, __int64))sub_141B03B80(
+                                                   v5,
+                                                   v4,
+                                                   "root1.FilterHolder_mc.Menu_mc.PickpocketInfo_mc");
+  if ( v3 == &v11 )
+  {
+    if ( v2 )
+    {
+      v7 = *v2;
+      v6 = v2;
+      goto LABEL_10;
+    }
+  }
+  else
+  {
+    v6 = *(void (__fastcall ****)(_QWORD, __int64))v3;
+    *(_QWORD *)v3 = v2;
+    if ( v6 )
+    {
+      v7 = *v6;
+LABEL_10:
+      (*v7)(v6, 1);
+    }
+  }
+  sub_141B03F20(*(_QWORD *)v3, 2);
+  v8 = *(unsigned int *)(a1 + 120);
+  v9 = *(_QWORD *)v3;
+  v12[0] = &BSTArrayAllocatorFunctor<BSTArrayHeapAllocator>::`vftable';
+  v12[1] = a1 + 112;
+  *(_QWORD *)(*(_QWORD *)(a1 + 112) + 8LL * (unsigned int)sub_141659520(a1 + 128, v12, v8, 8)) = v9;
+  ++*(_DWORD *)(qword_143E47AF0 + 432);
+  return a1;
+}
+
+
+========================================================================
+== callers of sub_1410412B0 (ContainerMenu factory)
+========================================================================
+  0x140163996 in RVA 0x163970  
+    --- caller decomp (first 6000 chars) ---
+__int64 sub_140163970()
+{
+  __int64 v0; // rax
+
+  v0 = qword_1430DD830;
+  if ( !qword_1430DD830 )
+  {
+    v0 = sub_141A7F600(&unk_14326F040);
+    qword_1430DD830 = v0;
+  }
+  return sub_141A820F0(v0, aContainermenu, sub_1410412B0, 0);
+}
+
+    ---
+  0x1410405F2 in RVA 0x10405C0  
+    --- caller decomp (first 6000 chars) ---
+__int64 __fastcall sub_1410405C0(__int64 a1, __int64 a2)
+{
+  __int64 v2; // rax
+
+  v2 = qword_1430DD830;
+  if ( !qword_1430DD830 )
+  {
+    v2 = sub_141A7F600(&unk_14326F040);
+    qword_1430DD830 = v2;
+  }
+  sub_141A820F0(v2, aContainermenu, sub_1410412B0, a2);
+  return a1;
+}
+
+    ---
+  0x142CB328C in <no func>  
+  0x142CB32A0 in <no func>  
+  0x142CB32B0 in <no func>  
+  0x143FA6088 in <no func>  
+
+========================================================================
+== callers of sub_14103C460 (ContainerMenu ctor)
+========================================================================
+  0x143FA5BFC in <no func>
+
+========================================================================
+== ContainerMenu string xref contexts
+========================================================================
+
+  ---- sub_14016399D (in 0x163970) ----
+__int64 sub_140163970()
+{
+  __int64 v0; // rax
+
+  v0 = qword_1430DD830;
+  if ( !qword_1430DD830 )
+  {
+    v0 = sub_141A7F600(&unk_14326F040);
+    qword_1430DD830 = v0;
+  }
+  return sub_141A820F0(v0, aContainermenu, sub_1410412B0, 0);
+}
+
+
+  ---- sub_14103C474 (in 0x103C460) ----
+__int64 __fastcall sub_14103C460(__int64 a1)
+{
+  void (__fastcall ***v2)(_QWORD, __int64); // rbx
+  char *v3; // rdi
+  __int64 v4; // rbp
+  void *v5; // rax
+  void (__fastcall ***v6)(_QWORD, __int64); // rcx
+  void (__fastcall **v7)(_QWORD, __int64); // rax
+  __int64 v8; // r8
+  __int64 v9; // rdi
+  char v11; // [rsp+20h] [rbp-28h] BYREF
+  _QWORD v12[4]; // [rsp+28h] [rbp-20h] BYREF
+
+  sub_140A533F0(a1, aContainermenu);
+  v2 = nullptr;
+  *(_QWORD *)a1 = &ContainerMenu::`vftable';
+  v3 = (char *)(a1 + 1072);
+  *(_QWORD *)(a1 + 16) = &ContainerMenu::`vftable';
+  *(_QWORD *)(a1 + 224) = &ContainerMenu::`vftable';
+  *(_QWORD *)(a1 + 232) = &ContainerMenu::`vftable';
+  *(_QWORD *)(a1 + 1072) = 0;
+  v4 = *(_QWORD *)(a1 + 64);
+  *(_QWORD *)(a1 + 1080) = 0;
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v5 = sub_1416579C0((__int64)&unk_143E5E0F0, 0xB0u, 0, 0);
+  if ( v5 )
+    v2 = (void (__fastcall ***)(_QWORD, __int64))sub_141B03B80(
+                                                   v5,
+                                                   v4,
+                                                   "root1.FilterHolder_mc.Menu_mc.PickpocketInfo_mc");
+  if ( v3 == &v11 )
+  {
+    if ( v2 )
+    {
+      v7 = *v2;
+      v6 = v2;
+      goto LABEL_10;
+    }
+  }
+  else
+  {
+    v6 = *(void (__fastcall ****)(_QWORD, __int64))v3;
+    *(_QWORD *)v3 = v2;
+    if ( v6 )
+    {
+      v7 = *v6;
+LABEL_10:
+      (*v7)(v6, 1);
+    }
+  }
+  sub_141B03F20(*(_QWORD *)v3, 2);
+  v8 = *(unsigned int *)(a1 + 120);
+  v9 = *(_QWORD *)v3;
+  v12[0] = &BSTArrayAllocatorFunctor<BSTArrayHeapAllocator>::`vftable';
+  v12[1] = a1 + 112;
+  *(_QWORD *)(*(_QWORD *)(a1 + 112) + 8LL * (unsigned int)sub_141659520(a1 + 128, v12, v8, 8)) = v9;
+  ++*(_DWORD *)(qword_143E47AF0 + 432);
+  return a1;
+}
+
+
+  ---- sub_1410405F9 (in 0x10405C0) ----
+__int64 __fastcall sub_1410405C0(__int64 a1, __int64 a2)
+{
+  __int64 v2; // rax
+
+  v2 = qword_1430DD830;
+  if ( !qword_1430DD830 )
+  {
+    v2 = sub_141A7F600(&unk_14326F040);
+    qword_1430DD830 = v2;
+  }
+  sub_141A820F0(v2, aContainermenu, sub_1410412B0, a2);
+  return a1;
+}
+
+
+========================================================================
+== TESObjectREFR vtable slots 50-90 (Activate candidates)
+========================================================================
+  slot[ 50] (off 0x190) -> 0x140525070 (RVA 0x525070)  sub_140525070
+  slot[ 51] (off 0x198) -> 0x140525060 (RVA 0x525060)  sub_140525060
+  slot[ 52] (off 0x1A0) -> 0x1402672C0 (RVA 0x2672C0)  sub_1402672C0
+  slot[ 53] (off 0x1A8) -> 0x140312F90 (RVA 0x312F90)  sub_140312F90
+  slot[ 54] (off 0x1B0) -> 0x140312FC0 (RVA 0x312FC0)  nullsub_46
+  slot[ 55] (off 0x1B8) -> 0x1404F39F0 (RVA 0x4F39F0)  sub_1404F39F0
+  slot[ 56] (off 0x1C0) -> 0x1404F3AD0 (RVA 0x4F3AD0)  sub_1404F3AD0
+  slot[ 57] (off 0x1C8) -> 0x140262180 (RVA 0x262180)  sub_140262180
+  slot[ 58] (off 0x1D0) -> 0x1405130B0 (RVA 0x5130B0)  sub_1405130B0
+  slot[ 59] (off 0x1D8) -> 0x140262540 (RVA 0x262540)  sub_140262540
+  slot[ 60] (off 0x1E0) -> 0x140313210 (RVA 0x313210)  sub_140313210
+  slot[ 61] (off 0x1E8) -> 0x140313220 (RVA 0x313220)  sub_140313220
+  slot[ 62] (off 0x1F0) -> 0x140262380 (RVA 0x262380)  sub_140262380
+  slot[ 63] (off 0x1F8) -> 0x140262460 (RVA 0x262460)  sub_140262460
+  slot[ 64] (off 0x200) -> 0x140267230 (RVA 0x267230)  sub_140267230
+  slot[ 65] (off 0x208) -> 0x1403132A0 (RVA 0x3132A0)  sub_1403132A0
+  slot[ 66] (off 0x210) -> 0x140262230 (RVA 0x262230)  sub_140262230
+  slot[ 67] (off 0x218) -> 0x1402624C0 (RVA 0x2624C0)  sub_1402624C0
+  slot[ 68] (off 0x220) -> 0x1402672A0 (RVA 0x2672A0)  sub_1402672A0
+  slot[ 69] (off 0x228) -> 0x1402672B0 (RVA 0x2672B0)  sub_1402672B0
+  slot[ 70] (off 0x230) -> 0x1402672D0 (RVA 0x2672D0)  sub_1402672D0
+  slot[ 71] (off 0x238) -> 0x140313850 (RVA 0x313850)  sub_140313850
+  slot[ 72] (off 0x240) -> 0x140313890 (RVA 0x313890)  sub_140313890
+  slot[ 73] (off 0x248) -> 0x140C78790 (RVA 0xC78790)  sub_140C78790
+  slot[ 74] (off 0x250) -> 0x140C58150 (RVA 0xC58150)  sub_140C58150
+  slot[ 75] (off 0x258) -> 0x1404F1B70 (RVA 0x4F1B70)  nullsub_5046
+  slot[ 76] (off 0x260) -> 0x140CC0DD0 (RVA 0xCC0DD0)  sub_140CC0DD0
+  slot[ 77] (off 0x268) -> 0x140C5E600 (RVA 0xC5E600)  sub_140C5E600
+  slot[ 78] (off 0x270) -> 0x140C5CB80 (RVA 0xC5CB80)  sub_140C5CB80
+  slot[ 79] (off 0x278) -> 0x140C5E450 (RVA 0xC5E450)  sub_140C5E450
+  slot[ 80] (off 0x280) -> 0x140C611B0 (RVA 0xC611B0)  sub_140C611B0
+  slot[ 81] (off 0x288) -> 0x140C7D5F0 (RVA 0xC7D5F0)  sub_140C7D5F0
+  slot[ 82] (off 0x290) -> 0x140C59920 (RVA 0xC59920)  sub_140C59920
+  slot[ 83] (off 0x298) -> 0x140C8CFA0 (RVA 0xC8CFA0)  sub_140C8CFA0
+  slot[ 84] (off 0x2A0) -> 0x140C8CFC0 (RVA 0xC8CFC0)  sub_140C8CFC0
+  slot[ 85] (off 0x2A8) -> 0x1404FA660 (RVA 0x4FA660)  sub_1404FA660
+  slot[ 86] (off 0x2B0) -> 0x1404FA6A0 (RVA 0x4FA6A0)  sub_1404FA6A0
+  slot[ 87] (off 0x2B8) -> 0x140C80F70 (RVA 0xC80F70)  sub_140C80F70
+  slot[ 88] (off 0x2C0) -> 0x140D91E90 (RVA 0xD91E90)  sub_140D91E90
+  slot[ 89] (off 0x2C8) -> 0x140D75F90 (RVA 0xD75F90)  sub_140D75F90
+  slot[ 90] (off 0x2D0) -> 0x140C5A8A0 (RVA 0xC5A8A0)  sub_140C5A8A0
+
+========================================================================
+== strings 'Activate' xrefs (search for activation path)
+========================================================================
+  string 'Activate' @ 0x14291B8F0 (RVA 0x291B8F0)
+    xref 0x14070A3C8 in RVA 0x709F80
+    xref 0x140713AC4 in RVA 0x713AC0
+    xref 0x1409BD735 in RVA 0x9BD420
+
+==== done ====

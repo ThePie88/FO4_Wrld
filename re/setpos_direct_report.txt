@@ -1,0 +1,17 @@
+[+] Image base: 0x140000000
+
+==== A. Console command 'setpos' ====
+  string 'SetPos': 1 hit(s)
+    @ 0x1424C1CC4 (RVA 0x24C1CC4)
+      xref 0x142EDF430 in <no func>
+        data+0x30 -> possible fn 0x1405C0F60 (RVA 0x5C0F60)
+        data+0x38 -> possible fn 0x1405B6150 (RVA 0x5B6150)
+  string 'SetPosition': 1 hit(s)
+    @ 0x1425CE430 (RVA 0x25CE430)
+      xref 0x141165520 in func 0x14115EFB0
+
+==== B. SetPositionFunctor vtable lookup ====
+
+==== C. MoveToBaseFunctor vtable (related) ====
+
+==== done ====

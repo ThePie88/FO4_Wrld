@@ -1,0 +1,141 @@
+[+] Image base: 0x140000000
+
+==============================================================================
+== Search .text for 'mov <mem>, imm=0x85' (event-ID writer candidates)
+==============================================================================
+  Scanning .text 0x140001000..0x14242D000 (37,928,960 bytes)
+  Total hits: 4 (scanned 5,000,001 insns)
+  Unique enclosing functions: 4
+
+-- in sub_140262560  RVA=0x262560  (1 write-site(s))
+    0x1402625CF  mov     [rbx+90h], eax
+    0x1402625D5  mov     rax, rbx
+    0x1402625D8  mov     byte ptr [rbx+1Ah], 85h <==
+    0x1402625DC  add     rsp, 20h
+    0x1402625E0  pop     rbx
+    0x1402625E1  retn
+
+-- in sub_140262870  RVA=0x262870  (1 write-site(s))
+    0x1402628A4  mov     [rbx+90h], eax
+    0x1402628AA  mov     rax, rbx
+    0x1402628AD  mov     byte ptr [rbx+1Ah], 85h <==
+    0x1402628B1  add     rsp, 20h
+    0x1402628B5  pop     rbx
+    0x1402628B6  retn
+
+-- in sub_1402A5090  RVA=0x2A5090  (1 write-site(s))
+    0x1402A507C  db 14h dup(0CCh)
+    0x1402A5090  xor     edx, edx
+    0x1402A5092  mov     byte ptr [rcx+12h], 85h <==
+    0x1402A5096  lea     rax, ??_7ExtraAshPileRef@@6B@; const ExtraAshPileRef::`vftable'
+    0x1402A509D  mov     [rcx+8], rdx
+    0x1402A50A1  mov     [rcx], rax
+
+-- in sub_140C4C9A0  RVA=0xC4C9A0  (1 write-site(s))
+    0x140C4C9E3  movzx   eax, [rsp+0A8h+arg_20]
+    0x140C4C9EB  mov     [rsp+0A8h+var_68], al
+    0x140C4C9EF  mov     [rsp+0A8h+var_88], 85h <==
+    0x140C4C9F7  mov     [rsp+0A8h+var_78], rdi
+    0x140C4C9FC  mov     [rsp+0A8h+var_70], sil
+    0x140C4CA01  jz      short loc_140C4CA5E
+
+==============================================================================
+== Decompilations of top candidate producer functions
+==============================================================================
+
+=== sub_140262560  RVA=0x262560 ===
+_QWORD *sub_140262560()
+{
+  _QWORD *result; // rax
+  _QWORD *v1; // rbx
+
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  result = sub_1416579C0((__int64)&unk_143E5E0F0, 0x98u, 0, 0);
+  v1 = result;
+  if ( result )
+  {
+    sub_140457000(result);
+    *v1 = &BGSDualCastData::`vftable';
+    v1[13] = 0;
+    v1[14] = 0;
+    v1[15] = 0;
+    v1[16] = 0;
+    v1[17] = 0;
+    *((_DWORD *)v1 + 36) = 0;
+    *((_BYTE *)v1 + 26) = -123;
+    return v1;
+  }
+  return result;
+}
+
+
+=== sub_140262870  RVA=0x262870 ===
+__int64 __fastcall sub_140262870(__int64 a1)
+{
+  sub_140457000(a1);
+  *(_QWORD *)a1 = &BGSDualCastData::`vftable';
+  *(_QWORD *)(a1 + 104) = 0;
+  *(_QWORD *)(a1 + 112) = 0;
+  *(_QWORD *)(a1 + 120) = 0;
+  *(_QWORD *)(a1 + 128) = 0;
+  *(_QWORD *)(a1 + 136) = 0;
+  *(_DWORD *)(a1 + 144) = 0;
+  *(_BYTE *)(a1 + 26) = -123;
+  return a1;
+}
+
+
+=== sub_1402A5090  RVA=0x2A5090 ===
+__int64 __fastcall sub_1402A5090(__int64 a1)
+{
+  *(_BYTE *)(a1 + 18) = -123;
+  *(_QWORD *)(a1 + 8) = 0;
+  *(_QWORD *)a1 = &ExtraAshPileRef::`vftable';
+  *(_WORD *)(a1 + 16) = 0;
+  *(_DWORD *)(a1 + 24) = 0;
+  return a1;
+}
+
+
+=== sub_140C4C9A0  RVA=0xC4C9A0 ===
+char __fastcall sub_140C4C9A0(__int64 a1, _DWORD *a2, __int64 a3, char a4, char a5)
+{
+  __int64 v9; // rdx
+  __int64 v10; // r8
+  char v11; // r9
+  int v12; // ebx
+  char result; // al
+  _QWORD v14[16]; // [rsp+20h] [rbp-88h] BYREF
+
+  memset(v14, 0, sizeof(v14));
+  LODWORD(v14[1]) = *a2;
+  LOBYTE(v14[4]) = a5;
+  LODWORD(v14[0]) = 133;
+  v14[2] = a3;
+  LOBYTE(v14[3]) = a4;
+  if ( !byte_142F28020 )
+    return sub_140C4CE00((int *)v14, v9, v10, v11);
+  v12 = dword_1432F46F0;
+  if ( v12 == GetCurrentThreadId() )
+    return sub_140C4CE00((int *)v14, v9, v10, v11);
+  sub_1402DD4E0((__int64)&dword_1432F4710);
+  v9 = (*(unsigned __int8 (__fastcall **)(_QWORD, _QWORD *))(**(_QWORD **)(a1 + 16) + 8LL))(*(_QWORD *)(a1 + 16), v14);
+  result = dword_1432F4714;
+  if ( dword_1432F4714 == 1 )
+  {
+    dword_1432F4710 = 0;
+    _mm_mfence();
+    result = _InterlockedCompareExchange(&dword_1432F4714, dword_1432F4714 - 1, 1);
+  }
+  else
+  {
+    _InterlockedDecrement(&dword_1432F4714);
+  }
+  if ( !(_BYTE)v9 )
+    return sub_140C4CE00((int *)v14, v9, v10, v11);
+  return result;
+}
+
+
+==== done ====

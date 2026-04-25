@@ -1,0 +1,737 @@
+[+] Image base: 0x140000000
+
+==== quest_registrar (RVA 0x11861C0) ====
+__int64 __fastcall sub_1411861C0(_QWORD *a1)
+{
+  bool v1; // zf
+  __int64 v3; // r13
+  int v4; // r14d
+  __int64 v5; // rax
+  _QWORD *v6; // rdi
+  int v7; // eax
+  __int64 v8; // rax
+  _QWORD *v9; // rdi
+  int v10; // ecx
+  __int64 v11; // rax
+  _QWORD *v12; // rdi
+  int v13; // ecx
+  __int64 v14; // rax
+  _QWORD *v15; // r12
+  int v16; // esi
+  __int64 *v17; // rax
+  void (__fastcall ***v18)(_QWORD, __int64); // rcx
+  __int64 v19; // rdi
+  __int64 v20; // rcx
+  __int64 v21; // rax
+  _QWORD *v22; // rdi
+  int v23; // eax
+  __int64 v24; // rax
+  _QWORD *v25; // rdi
+  int v26; // eax
+  __int64 v27; // rax
+  _QWORD *v28; // rdi
+  int v29; // eax
+  __int64 v30; // rax
+  _QWORD *v31; // rdi
+  int v32; // eax
+  __int64 v33; // rax
+  _QWORD *v34; // rdi
+  int v35; // eax
+  __int64 v36; // rax
+  _QWORD *v37; // rdi
+  int v38; // ecx
+  __int64 v39; // rax
+  _QWORD *v40; // rdi
+  int v41; // eax
+  __int64 v42; // rax
+  _QWORD *v43; // rdi
+  int v44; // eax
+  __int64 v45; // rax
+  _QWORD *v46; // rdi
+  int v47; // ecx
+  __int64 v48; // rax
+  _QWORD *v49; // rdi
+  int v50; // eax
+  __int64 v51; // rax
+  _QWORD *v52; // rdi
+  int v53; // eax
+  __int64 v54; // rax
+  _QWORD *v55; // rdi
+  int v56; // ecx
+  __int64 v57; // rax
+  _QWORD *v58; // rdi
+  int v59; // eax
+  __int64 v60; // rax
+  _QWORD *v61; // rdi
+  int v62; // eax
+  __int64 v63; // rax
+  _QWORD *v64; // rdi
+  int v65; // ecx
+  __int64 v66; // rdx
+  __int64 v67; // rax
+  __int64 v68; // rdi
+  int v69; // eax
+  __int64 v70; // rax
+  _QWORD *v71; // rdi
+  int v72; // eax
+  __int64 v73; // rdx
+  __int64 v74; // rax
+  _QWORD *v75; // rdi
+  int v76; // ecx
+  __int64 v77; // rdx
+  __int64 v78; // rax
+  _QWORD *v79; // rdi
+  int v80; // eax
+  __int64 v81; // rdx
+  __int64 v82; // rax
+  __int64 v83; // rdi
+  __int64 v84; // rax
+  _QWORD *v85; // rdi
+  int v86; // ecx
+  __int64 v87; // rax
+  _QWORD *v88; // rsi
+  int v89; // edi
+  __int64 v90; // rcx
+  __int64 *v91; // rax
+  void (__fastcall ***v92)(_QWORD, __int64); // rcx
+  __int64 v93; // rbx
+  __int64 result; // rax
+  _QWORD v95[4]; // [rsp+120h] [rbp+20h] BYREF
+  _BYTE v96[8]; // [rsp+140h] [rbp+40h] BYREF
+  __int64 v97; // [rsp+148h] [rbp+48h]
+  __int64 v98; // [rsp+150h] [rbp+50h]
+  __int64 v99; // [rsp+158h] [rbp+58h]
+  __int64 v100; // [rsp+160h] [rbp+60h]
+  __int64 v101; // [rsp+168h] [rbp+68h]
+  __int64 v102; // [rsp+170h] [rbp+70h]
+  __int64 v103; // [rsp+178h] [rbp+78h]
+  _BYTE v104[24]; // [rsp+180h] [rbp+80h] BYREF
+  __int64 v105; // [rsp+1E0h] [rbp+E0h] BYREF
+  __int64 v106; // [rsp+1E8h] [rbp+E8h] BYREF
+  __int64 v107; // [rsp+1F0h] [rbp+F0h] BYREF
+  __int64 v108; // [rsp+1F8h] [rbp+F8h]
+
+  v1 = qword_143308C78 == 0;
+  v3 = *((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex);
+  v4 = *(_DWORD *)(v3 + 2496);
+  *(_DWORD *)(v3 + 2496) = 23;
+  if ( v1 )
+    qword_143308C78 = sub_1410D4010(&unk_14330A6F0);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v5 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v6 = (_QWORD *)v5;
+  if ( v5 )
+  {
+    sub_1420F9D00(v5, (unsigned int)"CompleteAllObjectives", (unsigned int)"Quest", 0, 0);
+    *v6 = &BSScript::NativeFunction0<TESQuest,void>::`vftable';
+    v6[10] = sub_1411887F0;
+    v7 = *(_DWORD *)(v3 + 2496);
+    v6[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v7;
+    v95[1] = 0;
+  }
+  else
+  {
+    v6 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v6);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v8 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v9 = (_QWORD *)v8;
+  if ( v8 )
+  {
+    sub_1420F9D00(v8, (unsigned int)"CompleteQuest", (unsigned int)"Quest", 0, 0);
+    *v9 = &BSScript::NativeFunction0<TESQuest,void>::`vftable';
+    v9[10] = sub_141185670;
+    v10 = *(_DWORD *)(v3 + 2496);
+    v9[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v10;
+    v95[2] = 0;
+  }
+  else
+  {
+    v9 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v9);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v11 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v12 = (_QWORD *)v11;
+  if ( v11 )
+  {
+    sub_1420F9D00(v11, (unsigned int)"FailAllObjectives", (unsigned int)"Quest", 0, 0);
+    *v12 = &BSScript::NativeFunction0<TESQuest,void>::`vftable';
+    v12[10] = sub_141188800;
+    v13 = *(_DWORD *)(v3 + 2496);
+    v12[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v13;
+    v95[3] = 0;
+  }
+  else
+  {
+    v12 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v12);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v14 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v15 = (_QWORD *)v14;
+  if ( v14 )
+  {
+    sub_1420F9D00(v14, (unsigned int)"GetAlias", (unsigned int)"Quest", 0, 1);
+    v105 = 0;
+    *v15 = &BSScript::NativeFunction1<TESQuest,BGSBaseAlias *,unsigned int>::`vftable';
+    v15[10] = sub_141188810;
+    v16 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    if ( (*(unsigned __int8 (__fastcall **)(_QWORD, __int64, __int64 *))(*(_QWORD *)*a1 + 72LL))(*a1, 160, &v105) )
+    {
+      v17 = (__int64 *)sub_1420ED2A0(v96, &v105, 0);
+    }
+    else
+    {
+      v17 = &v107;
+      v107 = 1;
+    }
+    v18 = (void (__fastcall ***)(_QWORD, __int64))v105;
+    v19 = *v17;
+    if ( v105 && _InterlockedExchangeAdd((volatile signed __int32 *)(v105 + 8), 0xFFFFFFFF) == 1 )
+      (**v18)(v18, 1);
+    v15[5] = v19;
+    v20 = v15[6];
+    v108 = 3;
+    *(_QWORD *)(v20 + 8) = 3;
+    *(_DWORD *)(v3 + 2496) = v16;
+  }
+  else
+  {
+    v15 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v15);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v21 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v22 = (_QWORD *)v21;
+  if ( v21 )
+  {
+    sub_1420F9D00(v21, (unsigned int)"GetCurrentStageID", (unsigned int)"Quest", 0, 0);
+    *v22 = &BSScript::NativeFunction0<TESQuest,unsigned int>::`vftable';
+    v22[10] = sub_141188820;
+    v23 = *(_DWORD *)(v3 + 2496);
+    v22[5] = 3;
+    *(_DWORD *)(v3 + 2496) = v23;
+  }
+  else
+  {
+    v22 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v22);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v24 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v25 = (_QWORD *)v24;
+  if ( v24 )
+  {
+    sub_1420F9D00(v24, (unsigned int)"HasObjective", (unsigned int)"Quest", 0, 1);
+    *v25 = &BSScript::NativeFunction1<TESQuest,bool,unsigned int>::`vftable';
+    v25[10] = sub_1411856E0;
+    v26 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v25[5] = 5;
+    *(_QWORD *)(v25[6] + 8LL) = 3;
+    *(_DWORD *)(v3 + 2496) = v26;
+  }
+  else
+  {
+    v25 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v25);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v27 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v28 = (_QWORD *)v27;
+  if ( v27 )
+  {
+    sub_1420F9D00(v27, (unsigned int)"IsActive", (unsigned int)"Quest", 0, 0);
+    *v28 = &BSScript::NativeFunction0<TESQuest,bool>::`vftable';
+    v28[10] = sub_141188830;
+    v29 = *(_DWORD *)(v3 + 2496);
+    v28[5] = 5;
+    *(_DWORD *)(v3 + 2496) = v29;
+  }
+  else
+  {
+    v28 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v28);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v30 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v31 = (_QWORD *)v30;
+  if ( v30 )
+  {
+    sub_1420F9D00(v30, (unsigned int)"IsCompleted", (unsigned int)"Quest", 0, 0);
+    *v31 = &BSScript::NativeFunction0<TESQuest,bool>::`vftable';
+    v31[10] = sub_141188840;
+    v32 = *(_DWORD *)(v3 + 2496);
+    v31[5] = 5;
+    *(_DWORD *)(v3 + 2496) = v32;
+  }
+  else
+  {
+    v31 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v31);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v33 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v34 = (_QWORD *)v33;
+  if ( v33 )
+  {
+    sub_1420F9D00(v33, (unsigned int)"IsObjectiveCompleted", (unsigned int)"Quest", 0, 1);
+    *v34 = &BSScript::NativeFunction1<TESQuest,bool,unsigned int>::`vftable';
+    v34[10] = sub_141185780;
+    v35 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v34[5] = 5;
+    *(_QWORD *)(v34[6] + 8LL) = 3;
+    *(_DWORD *)(v3 + 2496) = v35;
+  }
+  else
+  {
+    v34 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v34);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v36 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v37 = (_QWORD *)v36;
+  if ( v36 )
+  {
+    sub_1420F9D00(v36, (unsigned int)"IsObjectiveDisplayed", (unsigned int)"Quest", 0, 1);
+    *v37 = &BSScript::NativeFunction1<TESQuest,bool,unsigned int>::`vftable';
+    v37[10] = sub_141185820;
+    v38 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v37[5] = 5;
+    *(_QWORD *)(v37[6] + 8LL) = 3;
+    *(_DWORD *)(v3 + 2496) = v38;
+  }
+  else
+  {
+    v37 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v37);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v39 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v40 = (_QWORD *)v39;
+  if ( v39 )
+  {
+    sub_1420F9D00(v39, (unsigned int)"IsObjectiveFailed", (unsigned int)"Quest", 0, 1);
+    *v40 = &BSScript::NativeFunction1<TESQuest,bool,unsigned int>::`vftable';
+    v40[10] = sub_1411858C0;
+    v41 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v40[5] = 5;
+    *(_QWORD *)(v40[6] + 8LL) = 3;
+    *(_DWORD *)(v3 + 2496) = v41;
+  }
+  else
+  {
+    v40 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v40);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v42 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v43 = (_QWORD *)v42;
+  if ( v42 )
+  {
+    sub_1420F9D00(v42, (unsigned int)"IsRunning", (unsigned int)"Quest", 0, 0);
+    *v43 = &BSScript::NativeFunction0<TESQuest,bool>::`vftable';
+    v43[10] = sub_141188850;
+    v44 = *(_DWORD *)(v3 + 2496);
+    v43[5] = 5;
+    *(_DWORD *)(v3 + 2496) = v44;
+  }
+  else
+  {
+    v43 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v43);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v45 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v46 = (_QWORD *)v45;
+  if ( v45 )
+  {
+    sub_1420F9D00(v45, (unsigned int)"IsStageDone", (unsigned int)"Quest", 0, 1);
+    *v46 = &BSScript::NativeFunction1<TESQuest,bool,unsigned int>::`vftable';
+    v46[10] = sub_141185700;
+    v47 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v46[5] = 5;
+    *(_QWORD *)(v46[6] + 8LL) = 3;
+    *(_DWORD *)(v3 + 2496) = v47;
+  }
+  else
+  {
+    v46 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v46);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v48 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v49 = (_QWORD *)v48;
+  if ( v48 )
+  {
+    sub_1420F9D00(v48, (unsigned int)"IsStarting", (unsigned int)"Quest", 0, 0);
+    v49[10] = sub_141188880;
+    *v49 = &BSScript::NativeFunction0<TESQuest,bool>::`vftable';
+    v50 = *(_DWORD *)(v3 + 2496);
+    v49[5] = 5;
+    *(_DWORD *)(v3 + 2496) = v50;
+  }
+  else
+  {
+    v49 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v49);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v51 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v52 = (_QWORD *)v51;
+  if ( v51 )
+  {
+    sub_1420F9D00(v51, (unsigned int)"IsStopping", (unsigned int)"Quest", 0, 0);
+    *v52 = &BSScript::NativeFunction0<TESQuest,bool>::`vftable';
+    v52[10] = sub_1411888C0;
+    v53 = *(_DWORD *)(v3 + 2496);
+    v52[5] = 5;
+    *(_DWORD *)(v3 + 2496) = v53;
+  }
+  else
+  {
+    v52 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v52);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v54 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v55 = (_QWORD *)v54;
+  if ( v54 )
+  {
+    sub_1420F9D00(v54, (unsigned int)"IsStopped", (unsigned int)"Quest", 0, 0);
+    *v55 = &BSScript::NativeFunction0<TESQuest,bool>::`vftable';
+    v55[10] = sub_1411888B0;
+    v56 = *(_DWORD *)(v3 + 2496);
+    v55[5] = 5;
+    *(_DWORD *)(v3 + 2496) = v56;
+  }
+  else
+  {
+    v55 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v55);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v57 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v58 = (_QWORD *)v57;
+  if ( v57 )
+  {
+    sub_1420F9D00(v57, (unsigned int)"Reset", (unsigned int)"Quest", 0, 0);
+    v97 = 0;
+    v58[10] = sub_141185960;
+    *v58 = &BSScript::NativeFunction0<TESQuest,void>::`vftable';
+    v59 = *(_DWORD *)(v3 + 2496);
+    v58[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v59;
+  }
+  else
+  {
+    v58 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v58);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v60 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v61 = (_QWORD *)v60;
+  if ( v60 )
+  {
+    sub_1420F9D00(v60, (unsigned int)"ResetSpeechChallenges", (unsigned int)"Quest", 0, 0);
+    *v61 = &BSScript::NativeFunction0<TESQuest,void>::`vftable';
+    v61[10] = sub_1411888E0;
+    v62 = *(_DWORD *)(v3 + 2496);
+    v61[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v62;
+    v98 = 0;
+  }
+  else
+  {
+    v61 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v61);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v63 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v64 = (_QWORD *)v63;
+  if ( v63 )
+  {
+    sub_1420F9D00(v63, (unsigned int)"SetActive", (unsigned int)"Quest", 0, 1);
+    *v64 = &BSScript::NativeFunction1<TESQuest,void,bool>::`vftable';
+    v64[10] = sub_1411888F0;
+    v65 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v64[5] = 0;
+    v66 = v64[6];
+    v99 = 0;
+    *(_QWORD *)(v66 + 8) = 5;
+    *(_DWORD *)(v3 + 2496) = v65;
+  }
+  else
+  {
+    v64 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v64);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v67 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v68 = v67;
+  if ( v67 )
+  {
+    sub_1420F9D00(v67, (unsigned int)"SetCurrentStageID", (unsigned int)"Quest", 0, 1);
+    *(_QWORD *)v68 = &BSScript::NativeFunction1<TESQuest,bool,int>::`vftable';
+    *(_QWORD *)(v68 + 80) = sub_141185DD0;
+    v69 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    *(_QWORD *)(v68 + 40) = 5;
+    *(_QWORD *)(*(_QWORD *)(v68 + 48) + 8LL) = 3;
+    *(_DWORD *)(v3 + 2496) = v69;
+    *(_QWORD *)v68 = &BSScript::NativeLatentFunction1<TESQuest,bool,int>::`vftable';
+    *(_QWORD *)(v68 + 40) = 5;
+    *(_BYTE *)(v68 + 66) = 1;
+  }
+  else
+  {
+    v68 = 0;
+  }
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v68);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v70 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v71 = (_QWORD *)v70;
+  if ( v70 )
+  {
+    sub_1420F9D00(v70, (unsigned int)"SetObjectiveCompleted", (unsigned int)"Quest", 0, 2);
+    *v71 = &BSScript::NativeFunction2<TESQuest,void,unsigned int,bool>::`vftable';
+    v71[10] = sub_141185A00;
+    v72 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v71[5] = 0;
+    *(_QWORD *)(v71[6] + 8LL) = 3;
+    v73 = v71[6];
+    v100 = 0;
+    *(_QWORD *)(v73 + 24) = 5;
+    *(_DWORD *)(v3 + 2496) = v72;
+  }
+  else
+  {
+    v71 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v71);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v74 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v75 = (_QWORD *)v74;
+  if ( v74 )
+  {
+    sub_1420F9D00(v74, (unsigned int)"SetObjectiveDisplayed", (unsigned int)"Quest", 0, 3);
+    *v75 = &BSScript::NativeFunction3<TESQuest,void,unsigned int,bool,bool>::`vftable';
+    v75[10] = sub_141185B50;
+    v76 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v75[5] = 0;
+    *(_QWORD *)(v75[6] + 8LL) = 3;
+    *(_QWORD *)(v75[6] + 24LL) = 5;
+    v77 = v75[6];
+    v101 = 0;
+    *(_QWORD *)(v77 + 40) = 5;
+    *(_DWORD *)(v3 + 2496) = v76;
+  }
+  else
+  {
+    v75 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v75);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v78 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v79 = (_QWORD *)v78;
+  if ( v78 )
+  {
+    sub_1420F9D00(v78, (unsigned int)"SetObjectiveFailed", (unsigned int)"Quest", 0, 2);
+    *v79 = &BSScript::NativeFunction2<TESQuest,void,unsigned int,bool>::`vftable';
+    v79[10] = sub_141185C90;
+    v80 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v79[5] = 0;
+    *(_QWORD *)(v79[6] + 8LL) = 3;
+    v81 = v79[6];
+    v102 = 0;
+    *(_QWORD *)(v81 + 24) = 5;
+    *(_DWORD *)(v3 + 2496) = v80;
+  }
+  else
+  {
+    v79 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v79);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v82 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v83 = v82;
+  if ( v82 )
+  {
+    sub_1420F9D00(v82, (unsigned int)"Start", (unsigned int)"Quest", 0, 0);
+    *(_QWORD *)v83 = &BSScript::NativeFunction0<TESQuest,bool>::`vftable';
+    *(_QWORD *)(v83 + 80) = sub_141185FF0;
+    *(_DWORD *)(v3 + 2496) = *(_DWORD *)(v3 + 2496);
+    *(_QWORD *)v83 = &BSScript::NativeLatentFunction0<TESQuest,bool>::`vftable';
+    *(_QWORD *)(v83 + 40) = 5;
+    *(_BYTE *)(v83 + 66) = 1;
+  }
+  else
+  {
+    v83 = 0;
+  }
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v83);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v84 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v85 = (_QWORD *)v84;
+  if ( v84 )
+  {
+    sub_1420F9D00(v84, (unsigned int)"Stop", (unsigned int)"Quest", 0, 0);
+    v103 = 0;
+    *v85 = &BSScript::NativeFunction0<TESQuest,void>::`vftable';
+    v85[10] = sub_141186120;
+    v86 = *(_DWORD *)(v3 + 2496);
+    v85[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v86;
+  }
+  else
+  {
+    v85 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v85);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v87 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v88 = (_QWORD *)v87;
+  if ( v87 )
+  {
+    sub_1420F9D00(v87, (unsigned int)"UpdateCurrentInstanceGlobal", (unsigned int)"Quest", 0, 1);
+    *v88 = &BSScript::NativeFunction1<TESQuest,bool,TESGlobal *>::`vftable';
+    v88[10] = sub_141188900;
+    v89 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v88[5] = 5;
+    v90 = *a1;
+    v106 = 0;
+    if ( (*(unsigned __int8 (__fastcall **)(__int64, __int64, __int64 *))(*(_QWORD *)v90 + 72LL))(v90, 11, &v106) )
+    {
+      v91 = (__int64 *)sub_1420ED2A0(v104, &v106, 0);
+    }
+    else
+    {
+      v91 = v95;
+      v95[0] = 1;
+    }
+    v92 = (void (__fastcall ***)(_QWORD, __int64))v106;
+    v93 = *v91;
+    if ( v106 && _InterlockedExchangeAdd((volatile signed __int32 *)(v106 + 8), 0xFFFFFFFF) == 1 )
+      (**v92)(v92, 1);
+    *(_QWORD *)(v88[6] + 8LL) = v93;
+    *(_DWORD *)(v3 + 2496) = v89;
+  }
+  else
+  {
+    v88 = nullptr;
+  }
+  result = (*(__int64 (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v88);
+  *(_DWORD *)(v3 + 2496) = v4;
+  return result;
+}
+
+
+==== complete_quest_native (RVA 0x1185670) ====
+__int64 __fastcall sub_141185670(__int64 a1, __int64 a2, __int64 a3)
+{
+  int v3; // ebp
+  int v6; // ebx
+  __int64 result; // rax
+
+  v3 = a2;
+  LOBYTE(a2) = 1;
+  sub_14066A9A0(a3, a2);
+  v6 = *(_DWORD *)(a3 + 20);
+  result = sub_1410E07F0(a1);
+  if ( (_DWORD)result == v6 )
+    return sub_1410DD940(a3, (unsigned int)"Quest completed", a1, v3, 0);
+  return result;
+}
+
+
+==== set_completed_state (RVA 0x66A9A0) ====
+__int64 __fastcall sub_14066A9A0(__int64 *a1, __int64 a2)
+{
+  __int64 v3; // rcx
+  __int64 v4; // rax
+  __int64 v5; // rdx
+  __int64 v6; // rcx
+  __int64 v7; // rax
+  __int64 v8; // rax
+  __int64 v9; // rax
+  __int64 v10; // rax
+  int v12; // [rsp+20h] [rbp-18h] BYREF
+  __int64 *v13; // [rsp+28h] [rbp-10h]
+
+  v3 = *((unsigned __int16 *)a1 + 122);
+  if ( (_BYTE)a2 )
+  {
+    if ( (v3 & 2) == 0 )
+    {
+      v4 = *a1;
+      *((_WORD *)a1 + 122) = v3 | 2;
+      (*(void (__fastcall **)(__int64 *, __int64))(v4 + 104))(a1, 2);
+      v12 = 0;
+      v13 = a1;
+      v7 = sub_1406803B0(v6, v5);
+      sub_14067FD10(v7, &v12);
+      sub_140D60060(qword_1432D2260, a1);
+      if ( *((_BYTE *)a1 + 247) != 6 )
+      {
+        v12 = 0;
+        *((_WORD *)a1 + 122) &= ~0x800u;
+        v13 = a1;
+        v8 = sub_140680470(v3, a2);
+        sub_14067FFA0(v8, &v12);
+      }
+    }
+  }
+  else if ( (v3 & 2) != 0 )
+  {
+    v9 = *a1;
+    *((_WORD *)a1 + 122) = v3 & 0xFFFD;
+    (*(void (__fastcall **)(__int64 *, __int64))(v9 + 104))(a1, 2);
+  }
+  v12 = 1;
+  v13 = a1;
+  v10 = sub_140680470(v3, a2);
+  return sub_14067FFA0(v10, &v12);
+}
+
+

@@ -1,0 +1,61 @@
+[+] Image base: 0x140000000
+[+] Dumping ±15/40 around 0x141165520
+
+      0x1411654E2  call    sub_14116D1F0
+      0x1411654E7  mov     rdx, rax
+      0x1411654EA  jmp     short loc_1411654EF
+      0x1411654EC  mov     rdx, rdi
+      0x1411654EF  mov     rcx, [r14]
+      0x1411654F2  mov     rax, [rcx]
+      0x1411654F5  call    qword ptr [rax+0D8h]
+      0x1411654FB  mov     ecx, 58h ; 'X'
+      0x141165500  call    sub_1401E0000
+      0x141165505  test    rax, rax
+      0x141165508  jz      short loc_141165531
+      0x14116550A  lea     r9, sub_14115D9E0
+      0x141165511  mov     [rsp+710h+var_6F0], r14
+      0x141165516  lea     r8, aObjectreferenc; "ObjectReference"
+      0x14116551D  mov     rcx, rax
+  >>> 0x141165520  lea     rdx, aSetposition; "SetPosition"
+      0x141165527  call    sub_14116FC50
+      0x14116552C  mov     rdx, rax
+      0x14116552F  jmp     short loc_141165534
+      0x141165531  mov     rdx, rdi
+      0x141165534  mov     rcx, [r14]
+      0x141165537  mov     rax, [rcx]
+      0x14116553A  call    qword ptr [rax+0D8h]
+      0x141165540  mov     ecx, 58h ; 'X'
+      0x141165545  call    sub_1401E0000
+      0x14116554A  test    rax, rax
+      0x14116554D  jz      short loc_141165576
+      0x14116554F  lea     r9, sub_14115DBD0
+      0x141165556  mov     [rsp+710h+var_6F0], r14
+      0x14116555B  lea     r8, aObjectreferenc; "ObjectReference"
+      0x141165562  mov     rcx, rax
+      0x141165565  lea     rdx, aSetradioon; "SetRadioOn"
+      0x14116556C  call    sub_14116D940
+      0x141165571  mov     rdx, rax
+      0x141165574  jmp     short loc_141165579
+      0x141165576  mov     rdx, rdi
+      0x141165579  mov     rcx, [r14]
+      0x14116557C  mov     rax, [rcx]
+      0x14116557F  call    qword ptr [rax+0D8h]
+      0x141165585  mov     rcx, [r14]
+      0x141165588  lea     r8, aSetradioon; "SetRadioOn"
+      0x14116558F  mov     r9b, 1
+      0x141165592  lea     rdx, aObjectreferenc; "ObjectReference"
+      0x141165599  mov     rax, [rcx]
+      0x14116559C  call    qword ptr [rax+0E8h]
+      0x1411655A2  mov     ecx, 58h ; 'X'
+      0x1411655A7  call    sub_1401E0000
+      0x1411655AC  test    rax, rax
+      0x1411655AF  jz      short loc_1411655D8
+      0x1411655B1  lea     r9, sub_14115DC50
+      0x1411655B8  mov     [rsp+710h+var_6F0], r14
+      0x1411655BD  lea     r8, aObjectreferenc; "ObjectReference"
+      0x1411655C4  mov     rcx, rax
+      0x1411655C7  lea     rdx, aSetradiofreque; "SetRadioFrequency"
+      0x1411655CE  call    sub_14116D5B0
+      0x1411655D3  mov     rdx, rax
+
+==== done ====

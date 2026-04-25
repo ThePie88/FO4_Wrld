@@ -1,0 +1,33 @@
+[+] Image base: 0x140000000
+
+==== 'GetParentCell' ====
+  string @ 0x1425CDCE8 (RVA 0x25CDCE8)
+    xref 0x141161D8E in registrar 0x14115EFB0 (RVA 0x115EFB0)
+      <no lea rax, sub_X before next call>
+
+==== 'GetBaseObject' ====
+  string @ 0x1425B17F8 (RVA 0x25B17F8)
+    xref 0x1410F5905 in registrar 0x1410F57E0 (RVA 0x10F57E0)
+      <no lea rax, sub_X before next call>
+    xref 0x1411611B3 in registrar 0x14115EFB0 (RVA 0x115EFB0)
+      <no lea rax, sub_X before next call>
+
+==== 'GetWorldSpace' ====
+  string @ 0x1425CDE40 (RVA 0x25CDE40)
+    xref 0x1411626DA in registrar 0x14115EFB0 (RVA 0x115EFB0)
+      <no lea rax, sub_X before next call>
+
+==== 'GetActorBase' ====
+  <string not found in binary>
+
+==== 'GetLeveledActorBase' ====
+  string @ 0x1425B62A0 (RVA 0x25B62A0)
+    xref 0x1410FE776 in registrar 0x1410FC980 (RVA 0x10FC980)
+      <no lea rax, sub_X before next call>
+
+==== 'GetPositionX' ====
+  string @ 0x1425CDCF8 (RVA 0x25CDCF8)
+    xref 0x141161DD1 in registrar 0x14115EFB0 (RVA 0x115EFB0)
+      <no lea rax, sub_X before next call>
+
+==== done ====

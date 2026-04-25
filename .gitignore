@@ -1,0 +1,138 @@
+# =============================================================================
+# FO4_Wrld — .gitignore
+# Rule of thumb: only commit OUR code + analysis. Never commit Bethesda IP,
+# third-party emulators with separate licenses, or large regenerable artifacts.
+# =============================================================================
+
+# -- Bethesda binaries / data files (IP, never push) --------------------------
+**/Fallout4.exe
+**/Fallout4Launcher.exe
+**/Fallout4Custom.ini
+**/Fallout4Prefs.ini
+**/*.ba2
+# save files (user data + game state)
+**/*.fos
+# backup saves
+**/*.bak
+# second-instance install copy (full Bethesda binary)
+/FO4_b/
+FO4_b/**
+re/Fallout4.exe*
+re/Fallout4.exe.unpacked
+
+# -- Claude Code session data (per-user, regeneratable) ----------------------
+.claude/
+.claude/**
+
+# -- Manual ops + scratch state files ----------------------------------------
+.manual_ops_*.offset
+# personal absolute paths
+tool-paths.txt
+
+# -- Submodules / nested git repos (vendored deps) ---------------------------
+fw_native/deps/MinHook/
+tools/PIEassetDecompiler/
+
+# -- IDA Pro databases (proprietary format, hundreds of MB, regenerable) ------
+*.i64
+*.idb
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+*.til*
+
+# -- Goldberg / SteamCMD / Steam emulators (third-party, separate licenses) ---
+goldberg/
+steamcmd/
+**/steam_settings/
+**/steam_api64.dll
+**/steamclient*.dll
+**/ColdClientLoader.exe
+**/ColdAPI/
+
+# -- Build artifacts (regenerable from CMake/build.bat) -----------------------
+**/build/
+**/CMakeCache.txt
+**/CMakeFiles/
+**/*.obj
+**/*.lib
+**/*.exp
+**/*.pdb
+**/*.ilk
+**/*.dll
+**/*.exe
+# but keep build/deploy scripts
+!**/*.bat
+**/CMakeUserPresets.json
+
+# Vendored deps that are submodules / fetchable separately
+fw_native/deps/MinHook/build/
+fw_native/deps/MinHook/.git/
+
+# -- Python (cache + venv + dist) --------------------------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+*.egg-info/
+dist/
+.pytest_cache/
+
+# -- Runtime logs (regenerable, may contain runtime addresses or save state) -
+*.log
+fw_native.log
+m7_trace.log
+run.log
+
+# -- Large RE intermediate files (regenerable from IDA scripts) --------------
+re/_*_raw.log
+re/_*_raw*.log
+re/_*.dump.log
+re/_ida_*.log
+re/_anim_graph_m7_raw*.log
+re/_bone_drive_correct[2-9]*.log
+
+# -- IDE / OS --------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# -- Local config / secrets --------------------------------------------------
+fw_config.ini
+*.env
+.env.*
+secrets/
+**/auth.token
+
+# -- F4SE / mod manager runtime files ----------------------------------------
+**/F4SE/
+**/Data/F4SE/
+**/Data/Scripts/Source/Temp/
+
+# -- Frida runtime artifacts (state.json etc) -------------------------------
+frida/*.frida
+frida/*.cache
+
+# -- Tools binaries (we don't ship these in repo) ---------------------------
+tools/*.exe
+
+# -- BAE / archive2 / etc. (extracted assets) -------------------------------
+BAE/
+ALTRE-AI/
+re_unpacked/
+re/cache/
+
+# -- patch test / scratch files ---------------------------------------------
+patch_*.py
+setup_fo4_b*.py
+
+# -- one-off launcher tools --------------------------------------------------
+FoM.exe

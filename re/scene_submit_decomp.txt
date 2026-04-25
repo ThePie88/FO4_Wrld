@@ -1,0 +1,496 @@
+==== waiting for auto_wait ====
+
+============================================================
+  Renderer_sub2 / scene submit
+  ea=0x140C37D20  RVA=0xC37D20
+============================================================
+  size=0x23E
+---- BEGIN DECOMP ----
+__int64 __fastcall sub_140C37D20(__int64 a1, char a2)
+{
+  int *v4; // r14
+  int v5; // ebx
+  char v6; // di
+  __int64 v7; // rdx
+  int v8; // eax
+  int v9; // eax
+  __int64 v10; // rdi
+  __int64 v11; // rax
+  __int64 v12; // rax
+
+  v4 = (int *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex) + 2496LL);
+  byte_1438C8DA0 = 1;
+  v5 = *v4;
+  *v4 = 24;
+  if ( (unsigned __int8)sub_140C39760(a1) )
+  {
+    sub_140C39760(a1);
+    goto LABEL_24;
+  }
+  sub_1421E8FB0();
+  if ( byte_142F26F50 && (unsigned __int8)sub_141A7FEA0(qword_1430DD830) || byte_1432D1FE9 )
+  {
+    v6 = 1;
+    if ( !byte_1432D252C )
+    {
+      dword_142F27E6C = dword_143D7094C;
+      dword_143D7094C = 0;
+      byte_1432D252C = 1;
+    }
+    if ( byte_1432D1FE8 )
+      goto LABEL_12;
+  }
+  else
+  {
+    v6 = 0;
+    if ( byte_1432D252C )
+    {
+      dword_143D7094C = dword_142F27E6C;
+      byte_1432D252C = 0;
+    }
+  }
+  sub_1421F2180();
+  if ( v6 )
+  {
+    nullsub_621(&byte_143A0F400, "CopyMainToMenuBG");
+    sub_14217E540(1, 15);
+    nullsub_622(&byte_143A0F400);
+  }
+LABEL_12:
+  byte_1432D1FE8 = v6;
+  if ( !a2 )
+  {
+    sub_1421F1E00();
+    sub_141697E10(5u);
+    v6 = byte_1432D1FE8;
+  }
+  if ( v6 )
+    sub_14217E540(15, 1);
+  if ( (unsigned __int8)sub_140BD4B70(1) )
+  {
+    sub_141817CA0(&byte_143A0F400);
+    sub_141697EB0(0, 1);
+    sub_141817C80(&byte_143A0F400, v7);
+  }
+  sub_141A815B0(qword_1430DD830);
+  sub_1421F26F0();
+  v8 = *(_DWORD *)(a1 + 32);
+  if ( v8 )
+  {
+    v9 = v8 - 1;
+    *(_DWORD *)(a1 + 32) = v9;
+    if ( !v9 )
+    {
+      v10 = qword_1430DD830;
+      v11 = sub_141A879F0();
+      if ( (unsigned __int8)sub_141A7FD40(v10, v11) )
+        sub_140ADBBA0();
+    }
+  }
+  sub_1421F28A0();
+  sub_1421F2E20();
+LABEL_24:
+  *v4 = v5;
+  byte_1438C8DA0 = 0;
+  if ( !a2 )
+  {
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v12 = sub_141656E30(&unk_143E5E0F0);
+    sub_14165C5A0(v12);
+  }
+  sub_141A81BB0(qword_1430DD830);
+  return sub_141A81DB0(qword_1430DD830);
+}
+
+---- END DECOMP ----
+
+============================================================
+  sub_141A815B0
+  ea=0x141A815B0  RVA=0x1A815B0
+============================================================
+  size=0xFC
+---- BEGIN DECOMP ----
+void __fastcall sub_141A815B0(__int64 a1)
+{
+  int *v2; // r15
+  __int64 v3; // rcx
+  int v4; // edi
+  __int64 v5; // rax
+  __int64 **v6; // rbx
+  __int64 **i; // r14
+  __int64 *v8; // rsi
+  __int64 v9; // rbp
+  __int64 v10; // rax
+
+  v2 = (int *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex) + 2496LL);
+  v3 = qword_1430EAC90;
+  v4 = *v2;
+  *v2 = 66;
+  sub_141A89D00(*(_QWORD *)(v3 + 24));
+  sub_141A83090(a1);
+  sub_141658FE0((__int64)&unk_143DA6A68);
+  v5 = *(unsigned int *)(a1 + 416);
+  if ( (_DWORD)v5 )
+  {
+    v6 = *(__int64 ***)(a1 + 400);
+    for ( i = &v6[v5]; v6 != i; ++v6 )
+    {
+      v8 = *v6;
+      if ( *v6 )
+      {
+        sub_141B18B50(*v6);
+        v8 = *v6;
+      }
+      v9 = *v8;
+      v10 = sub_1403150B0();
+      if ( (*(unsigned __int8 (__fastcall **)(__int64 *, __int64, __int64))(v9 + 56))(v8, 1, v10)
+        && (unsigned __int8)sub_141B19670(v8) )
+      {
+        (*(void (__fastcall **)(__int64 *))(*v8 + 40))(v8);
+      }
+      sub_141B18BD0(v8);
+    }
+  }
+  sub_1416592B0((__int64)&unk_143DA6A68);
+  *v2 = v4;
+}
+
+---- END DECOMP ----
+
+============================================================
+  sub_141DEBC20
+  ea=0x141DEBC20  RVA=0x1DEBC20
+============================================================
+  size=0x175
+---- BEGIN DECOMP ----
+char __fastcall sub_141DEBC20(__int64 a1)
+{
+  int *v2; // rsi
+  int v3; // ebx
+  __int64 v4; // rcx
+  char v5; // r15
+  __int64 *v6; // r14
+  __int64 v7; // rdi
+  char v9; // [rsp+40h] [rbp+8h] BYREF
+
+  v2 = (int *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex) + 2496LL);
+  v3 = *v2;
+  *v2 = 70;
+  v4 = *(_QWORD *)(a1 + 24);
+  if ( v4 && *(_DWORD *)(v4 + 48) )
+  {
+    v5 = sub_141DECED0(v4, *(unsigned __int8 *)(a1 + 67), *(unsigned __int8 *)(a1 + 66));
+    if ( v5 )
+    {
+      *v2 = v3;
+      return v5;
+    }
+    else
+    {
+      v6 = (__int64 *)qword_14327C710;
+      if ( !qword_14327C710 )
+      {
+        v7 = qword_1430DBDC0;
+        v6 = &qword_14327C720;
+        qword_14327C720 = (__int64)&BSTEventSink<BSTGlobalEvent::KillSDMEvent>::`vftable';
+        qword_14327C710 = (__int64)&qword_14327C720;
+        dword_14327C730 = 0;
+        dword_14327C734 = 0;
+        sub_1416597B0((__int64)&unk_14327C738);
+        sub_141659470(dword_14327C748);
+        sub_1416597B0((__int64)&unk_14327C750);
+        sub_141659470(dword_14327C760);
+        sub_1416597B0((__int64)&unk_14327C768);
+        sub_141659470(dword_14327C778);
+        byte_14327C780 = v5;
+        qword_14327C720 = (__int64)off_142535F28;
+        sub_140233620(v7 + 16, &qword_14327C720);
+        qword_14327C710 = (__int64)&qword_14327C720;
+      }
+      sub_141DEC770(v6 + 2, &v9);
+      *(_BYTE *)(a1 + 65) = 1;
+      sub_141DEBDA0(a1);
+      *v2 = v3;
+      return v5;
+    }
+  }
+  else
+  {
+    *v2 = v3;
+    return 0;
+  }
+}
+
+---- END DECOMP ----
+
+============================================================
+  sub_141A81BB0
+  ea=0x141A81BB0  RVA=0x1A81BB0
+============================================================
+  size=0x1F7
+---- BEGIN DECOMP ----
+__int64 __fastcall sub_141A81BB0(__int64 a1)
+{
+  __int64 v2; // r15
+  int v3; // edi
+  int v4; // edx
+  int v5; // r8d
+  int v6; // r9d
+  __int64 v7; // rax
+  _DWORD *v8; // rax
+  __int64 v9; // rcx
+  __int64 v10; // rax
+  __int64 **v11; // rbx
+  __int64 **i; // rbp
+  __int64 *v13; // r14
+  __int64 v14; // rsi
+  __int64 v15; // rax
+  unsigned __int8 v16; // al
+  __int64 v17; // rcx
+  __int64 result; // rax
+
+  v2 = *((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex);
+  v3 = *(_DWORD *)(v2 + 2496);
+  *(_DWORD *)(v2 + 2496) = 66;
+  sub_14181E960(&byte_143A0F400);
+  sub_141818060((unsigned int)&byte_143A0F400, v4, v5, v6, 1065353216);
+  v7 = *(_QWORD *)(v2 + 2848);
+  if ( !v7 )
+    v7 = qword_1438CAA98;
+  v8 = (_DWORD *)(v7 + 7024);
+  if ( v8[42] )
+  {
+    *v8 |= 4u;
+    v8[42] = 0;
+  }
+  sub_1418396A0(&dword_142F42710, 0, 3);
+  if ( (unsigned int)sub_141839330(&dword_142F42710) == -1 )
+    sub_141839590(&dword_142F42710, 0, *(_QWORD *)(qword_143E47AF0 + 104) != 0, 0);
+  sub_141839880(&dword_142F42710);
+  sub_141818050(&byte_143A0F400);
+  sub_141A89EE0(*(_QWORD *)(qword_1430EAC90 + 24));
+  sub_141658FE0((__int64)&unk_143DA6A68);
+  v10 = *(unsigned int *)(a1 + 416);
+  if ( (_DWORD)v10 )
+  {
+    v11 = *(__int64 ***)(a1 + 400);
+    for ( i = &v11[v10]; v11 != i; ++v11 )
+    {
+      v13 = *v11;
+      if ( *v11 )
+      {
+        sub_141B18B50(*v11);
+        v13 = *v11;
+      }
+      v14 = *v13;
+      v15 = sub_1403150B0(v9);
+      if ( (*(unsigned __int8 (__fastcall **)(__int64 *, __int64, __int64))(v14 + 56))(v13, 2, v15) )
+      {
+        sub_141A89D80(*(_QWORD *)(qword_1430EAC90 + 24));
+        v16 = sub_141B19670(v13);
+        sub_141B19440(v13, v16, 0);
+        sub_141A89E00(*(_QWORD *)(qword_1430EAC90 + 24));
+      }
+      sub_141B18BD0(v13);
+    }
+  }
+  sub_1416592B0((__int64)&unk_143DA6A68);
+  result = sub_141B22FF0(v17);
+  *(_DWORD *)(v2 + 2496) = v3;
+  return result;
+}
+
+---- END DECOMP ----
+
+============================================================
+  sub_141A81DB0
+  ea=0x141A81DB0  RVA=0x1A81DB0
+============================================================
+  size=0x1A2
+---- BEGIN DECOMP ----
+__int64 __fastcall sub_141A81DB0(__int64 a1)
+{
+  int *v2; // r12
+  int v3; // edi
+  __int64 v4; // rcx
+  __int64 v5; // rax
+  __int64 **v6; // rbx
+  __int64 **i; // rbp
+  __int64 *v8; // r14
+  __int64 v9; // rsi
+  __int64 v10; // rax
+  __int64 v11; // rcx
+  __int64 v12; // rax
+  __int64 **v13; // rbx
+  __int64 **j; // r14
+  __int64 *v15; // rsi
+  __int64 v16; // rbp
+  __int64 v17; // rax
+  __int64 result; // rax
+
+  v2 = (int *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex) + 2496LL);
+  v3 = *v2;
+  *v2 = 66;
+  sub_141658FE0((__int64)&unk_143DA6A68);
+  v5 = *(unsigned int *)(a1 + 416);
+  if ( (_DWORD)v5 )
+  {
+    v6 = *(__int64 ***)(a1 + 400);
+    for ( i = &v6[v5]; v6 != i; ++v6 )
+    {
+      v8 = *v6;
+      if ( *v6 )
+      {
+        sub_141B18B50(*v6);
+        v8 = *v6;
+      }
+      v9 = *v8;
+      v10 = sub_1403150B0(v4);
+      if ( (*(unsigned __int8 (__fastcall **)(__int64 *, __int64, __int64))(v9 + 56))(v8, 5, v10) )
+      {
+        sub_141A89D80(*(_QWORD *)(qword_1430EAC90 + 24));
+        sub_141B19440(v8, 0, 0);
+        sub_141A89E00(*(_QWORD *)(qword_1430EAC90 + 24));
+      }
+      sub_141B18BD0(v8);
+    }
+  }
+  sub_1416592B0((__int64)&unk_143DA6A68);
+  sub_141658FE0((__int64)&unk_143DA6A68);
+  v12 = *(unsigned int *)(a1 + 416);
+  if ( (_DWORD)v12 )
+  {
+    v13 = *(__int64 ***)(a1 + 400);
+    for ( j = &v13[v12]; v13 != j; ++v13 )
+    {
+      v15 = *v13;
+      if ( *v13 )
+      {
+        sub_141B18B50(*v13);
+        v15 = *v13;
+      }
+      v16 = *v15;
+      v17 = sub_1403150B0(v11);
+      if ( (*(unsigned __int8 (__fastcall **)(__int64 *, __int64, __int64))(v16 + 56))(v15, 6, v17)
+        && (unsigned __int8)sub_141B19670(v15) )
+      {
+        (*(void (__fastcall **)(__int64 *))(*v15 + 48))(v15);
+      }
+      sub_141B18BD0(v15);
+    }
+  }
+  sub_1416592B0((__int64)&unk_143DA6A68);
+  result = sub_141A89D50(*(_QWORD *)(qword_1430EAC90 + 24));
+  *v2 = v3;
+  return result;
+}
+
+---- END DECOMP ----
+
+============================================================
+  sub_140A3B300
+  ea=0x140A3B300  RVA=0xA3B300
+============================================================
+  size=0x7
+---- BEGIN DECOMP ----
+__int64 __fastcall sub_140A3B300(__int64 a1, __int64 a2)
+{
+  LOBYTE(a2) = 1;
+  return sub_140A3C890(a1, a2);
+}
+
+---- END DECOMP ----
+
+============================================================
+  Renderer_set_flag0 (sub_1421F2EA0)
+  ea=0x1421F2EA0  RVA=0x21F2EA0
+============================================================
+  size=0x7
+---- BEGIN DECOMP ----
+void __fastcall sub_1421F2EA0(char a1)
+{
+  byte_143E4B896 = a1;
+}
+
+---- END DECOMP ----
+
+============================================================
+  Renderer_set_A (sub_1421F2970)
+  ea=0x1421F2970  RVA=0x21F2970
+============================================================
+  size=0x27
+---- BEGIN DECOMP ----
+void __fastcall sub_1421F2970(int *a1)
+{
+  dword_143E4B8F8 = *a1;
+  dword_143E4B8FC = a1[1];
+  dword_143E4B900 = a1[2];
+}
+
+---- END DECOMP ----
+
+============================================================
+  Renderer_set_last (sub_1421F2AF0)
+  ea=0x1421F2AF0  RVA=0x21F2AF0
+============================================================
+  size=0x7
+---- BEGIN DECOMP ----
+void __fastcall sub_1421F2AF0(int a1)
+{
+  dword_143E4B880 = a1;
+}
+
+---- END DECOMP ----
+
+============================================================
+  Renderer_set_4 (sub_1421F2B00)
+  ea=0x1421F2B00  RVA=0x21F2B00
+============================================================
+  size=0x7
+---- BEGIN DECOMP ----
+void __fastcall sub_1421F2B00(int a1)
+{
+  dword_143E4B884 = a1;
+}
+
+---- END DECOMP ----
+
+============================================================
+  Renderer_set_3 (sub_1421F2B10)
+  ea=0x1421F2B10  RVA=0x21F2B10
+============================================================
+  size=0x7
+---- BEGIN DECOMP ----
+void __fastcall sub_1421F2B10(int a1)
+{
+  dword_143E4B888 = a1;
+}
+
+---- END DECOMP ----
+
+============================================================
+  VTABLE SLOT SCAN (D3D11 context calls)
+============================================================
+
+--- vtbl-slot scan in 0x140C32D30 (size 0x404) ---
+
+--- vtbl-slot scan in 0x140C351B0 (size 0x4CB) ---
+
+--- vtbl-slot scan in 0x140C334B0 (size 0xF7C) ---
+
+--- vtbl-slot scan in 0x140C38910 (size 0x665) ---
+
+--- vtbl-slot scan in 0x140C37D20 (size 0x23E) ---
+
+--- vtbl-slot scan in 0x1417EE8F0 (size 0x89) ---
+
+--- vtbl-slot scan in 0x141A815B0 (size 0xFC) ---
+
+--- vtbl-slot scan in 0x141DEBC20 (size 0x175) ---
+
+--- vtbl-slot scan in 0x141A81BB0 (size 0x1F7) ---
+
+--- vtbl-slot scan in 0x141A81DB0 (size 0x1A2) ---
+
+==== Report complete ====

@@ -1,0 +1,109 @@
+FO4 1.11.191 Shader CB Report  (IMAGE_BASE = 0x140000000)
+===========================================================
+
+1. CLASSES FOUND (vtable RVAs — all CONFIRMED via RTTI)
+-------------------------------------------------------
+  BSShader                     vt=0x290DBB8  dtor=0x222ACE0  13 virtuals
+  BSLightingShader             vt=0x290E458  dtor=0x2236750  13 virtuals
+  BSShaderAccumulator          vt=0x290A6B0  dtor=0x21CFAE0  26+ virtuals
+  BSShaderProperty             vt=0x28F7BB0
+  BSLightingShaderProperty     vt=0x28F9FF8
+  BSEffectShaderProperty       vt=0x28F9B20
+  BSSkyShaderProperty          vt=0x290CC80
+  BSWaterShaderProperty        vt=0x290A860
+  BSGrassShaderProperty        vt=0x2909958
+  BSLightingShaderMaterial     vt=0x28F8908
+  BSLightingShaderMaterialBase vt=0x2909CD0
+
+Three-tier CB model CONFIRMED by strings "PerTechnique", "PerMaterial",
+"PerGeometry" (.rdata 0x269C6E8/0xF8/0x708). Each referenced 5× inside
+0x1826400-0x1827B00 — 5 shader classes register the trio at init. Same model
+as Skyrim SE (CommonLibSSE-documented). No single "PerFrame" CB exists; the
+scene matrices live in a DFPrePass VS CB, fog in Grass/Utility VS CBs, lights
+in DFLight PS CB.
+
+2. CB FIELD ORDER (from .rdata enum-name blocks, HIGH confidence)
+------------------------------------------------------------------
+BSDFPrePassShaderVertexConstants (contains view/proj):
+  off    field              type
+  0x000  PreviousWorld      float4x4
+  0x040  WorldView          float4x4
+  0x080  ViewProj           float4x4
+  0x0C0  DisplacementData   float4
+  0x0D0..0x120  Dismember* (6× float4)
+  0x130  LandLODParamsVS    float4
+  0x140  BoneTintIndices    uint4
+  0x150/0x160  VertexAttribOffsets1/2
+  0x170  ClipVolume         float4
+  0x180+ PreviousBones (bone palette)
+
+BSLightingShaderVertexConstants:
+  0x00 HighDetailRange(float4x4); 0x40 TextureProj(float4x4);
+  0x80 EyePosition; 0x90 LandBlendParams; 0xA0 TexcoordOffset;
+  0xB0 TreeParams; 0xC0 IndexScale; 0xD0/0xE0 LeftEye/RightEye;
+  0xF0 WorldMapOverlayParameters.  Total ~0x100.
+
+BSLightingShaderPixelConstants (~24 fields, ~0x180):
+  PointLightPosition, PointLightColor, DirectionalAmbient,
+  AmbientSpecularTintAndFresnelPower, MaterialData, SpecularParam,
+  ShadowSampleParam, ShadowLightCounts, DirShadowMapProj, SplitDistances,
+  EmitColor, SpecularColor, EnvmapData, ParallaxOccData, LODTexParams,
+  MultiLayerParallaxData, LightingEffectParams, MenuScreenParams,
+  ProjectedUVParams(2), TintColor, WorldWetnessLevel, WorldRainLevel,
+  SplitDistance.
+
+Exact jumptable walk needs IDA run (decomp_shader_cb_layout.py does this).
+
+3. CB-UPDATER RVAs
+--------------------
+BSLightingShader virtuals:
+  vt[4]  0x2232DC0  SetupTechnique       writes PerTechnique CB
+  vt[5]  0x2233720  RestoreTechnique
+  vt[7]  0x2233730  SetupMaterial        writes PerMaterial CB
+  vt[8]  0x22342C0  SetupGeometry        writes PerGeometry CB (deferred)
+  vt[9]  0x22344E0  RestoreGeometry
+  vt[12] 0x2236740  ReloadShaders
+
+CB-Map chokepoint helpers (wrap ID3D11DeviceContext::Map with
+D3D11_MAP_WRITE_DISCARD):
+  0x21A0680  CB_Map_A — 35 callers, TLS idx @ 0x1CBBFB8
+  0x21A05E0  CB_Map_B — 32 callers, TLS idx @ 0x1CBC058
+
+CB globals (filled at boot, read every Setup*):
+  0x3E5AE58  CB pointer A (PerTechnique / VS)
+  0x3E5AE70  CB pointer B (PerMaterial / PS)
+  0x3A0F400  CB descriptor table (passed as arg 1 to Map helper)
+
+4. IDA SCRIPTS WRITTEN (in re/)
+--------------------------------
+  find_shader_cbs.py          — dumps vtables, xrefs all CB strings, decompiles
+                                Setup*/Restore*, enumerates CB-helper callers.
+                                Output: shader_cb_scan_report.txt
+  find_d3d11_cb_sites.py      — scans every call-site of VSSet/PSSet/CSSet/Map/
+                                Unmap vtable slots; lists xrefs to CB globals.
+                                Output: d3d11_cb_sites_report.txt
+  decomp_shader_cb_layout.py  — walks each "ShaderConstants::GetString" jumptable,
+                                resolves string per case → deterministic CB
+                                field order → offsets via HLSL packoffset rules.
+                                Output: shader_cb_layout_report.txt
+
+5. RECOMMENDED HOOK POINT (minimum intrusion)
+----------------------------------------------
+DO NOT hook ID3D11DeviceContext::VSSetConstantBuffers directly — 1453 call
+sites, no signal on which CB/slot is which.
+
+BEST: hook **BSShaderAccumulator::SetCamera** (one of the small methods at
+0x239490/0x2394A0/0x2394B0/0x2394C0 on vtable 0x290A6B0 — identify with
+decomp_shader_cb_layout.py). This is the upstream single-producer for view/
+proj/camera-pos every frame, BEFORE any shader writes a CB. Capturing here
+gives you clean matrices once per frame with zero D3D11 coupling.
+
+FALLBACK: hook **CB_Map_A @ 0x21A0680** as a trailing hook. Copy the first
+0xC0 bytes of the returned CB (rax) whenever the caller is SetupTechnique of
+the DFPrePass shader — that captures PreviousWorld/WorldView/ViewProj.
+
+Per-object geometry capture: hook **BSLightingShader::SetupGeometry @ 0x22342C0**
+— arg2 is the BSGeometry* with its local world matrix. Cheaper than reading
+PerGeometry CB because the caller has the data in registers already.
+
+[end]

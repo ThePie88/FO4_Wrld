@@ -1,0 +1,61 @@
+image base: 0x140000000
+
+== PART A: D3D11 device creator callers ==
+  string hits: ['0x142ecbc78']
+  unique callers: []
+
+== PART C: BSShaderAccumulator vtbl-24/25 SetCamera-like ==
+
+-- slot RVA 0x239490 --
+__int64 sub_140239490()
+{
+  return 0;
+}
+
+
+-- slot RVA 0x2394A0 --
+__int64 sub_1402394A0()
+{
+  return 0;
+}
+
+
+-- slot RVA 0x2394B0 --
+__int64 sub_1402394B0()
+{
+  return 0;
+}
+
+
+-- slot RVA 0x2394C0 --
+__int64 sub_1402394C0()
+{
+  return 0;
+}
+
+
+-- slot RVA 0x2394D0 --
+__int64 sub_1402394D0()
+{
+  return 0;
+}
+
+
+-- slot RVA 0x239560 --
+__int64 sub_140239560()
+{
+  return 0;
+}
+
+
+-- slot RVA 0x239570 --
+__int64 sub_140239570()
+{
+  return 0;
+}
+
+
+== PART D: pattern scan for viewProjMat writer ==
+  viewProjMat writer candidates: []
+
+== DONE ==

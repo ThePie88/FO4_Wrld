@@ -1,0 +1,73 @@
+[+] image base: 0x140000000
+
+==============================================================================
+== sub_140A53270  (real inventory-transfer worker — thunked by sub_140A56360)
+==============================================================================
+  xrefs TO 0x140A53270 (sub_140A53270):
+    from sub_140A55E80 0x140A55E80 (RVA 0xA55E80) site 0x140A55F1F
+    from sub_140A56360 0x140A56360 (RVA 0xA56360) site 0x140A56370
+    raw @ 0x142C07274
+    raw @ 0x142C07284
+    raw @ 0x143F312C8
+-- callees --
+    call-> 0x140349B50 RVA=0x349B50  sub_140349B50
+    call-> 0x140321CA0 RVA=0x321CA0  sub_140321CA0
+-- Hex-Rays --
+char sub_140A53270(float *a1, __int64 *a2, unsigned int a3, int a4, int *a5, char a6, ...)
+{
+  float v7; // xmm7_4
+  float v8; // xmm6_4
+  __int64 v9; // rbx
+  __int64 v10; // rax
+  float v11; // xmm0_4
+
+  if ( a6 )
+  {
+    v7 = *a1;
+    v8 = a1[1];
+  }
+  else
+  {
+    v7 = a1[2];
+    v8 = a1[3];
+  }
+  v9 = *a2;
+  v10 = sub_140349B50(a2, a3);
+  v11 = fmaxf(sub_140321CA0(v9, v10), 0.0);
+  if ( v11 <= 0.0 || (float)((float)((float)a4 * v11) + v7) <= v8 )
+  {
+    *a5 = a4;
+    return 0;
+  }
+  else
+  {
+    *a5 = (int)(float)((float)(v8 - v7) / v11);
+    return 1;
+  }
+}
+
+
+==============================================================================
+== xrefs TO sub_14103E950 (ContainerMenu::TransferItem)
+==============================================================================
+  xrefs TO 0x14103E950 (sub_14103E950):
+    raw @ 0x1425A4670
+    raw @ 0x143FA5CC8
+
+==============================================================================
+== Call-graph reach: ContainerMenu::TransferItem -> vt[0x7A]?
+==============================================================================
+  vt[0x7A] slot addr = 0x142564C08; target fn = 0x140C7A500
+  traversed 2467 funcs; depth cap 7
+  <no DIRECT call to vt[0x7A] target>
+  <no direct reference to vt[0x7A] slot addr>
+
+==============================================================================
+== Call-graph reach: sub_140A53270 worker -> vt[0x7A]?
+==============================================================================
+  vt[0x7A] slot addr = 0x142564C08; target fn = 0x140C7A500
+  traversed 6 funcs; depth cap 7
+  <no DIRECT call to vt[0x7A] target>
+  <no direct reference to vt[0x7A] slot addr>
+
+==== done ====

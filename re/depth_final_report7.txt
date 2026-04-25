@@ -1,0 +1,51 @@
+[*] imagebase = 0x140000000
+[*] mov-from-global counts: device=92 ctxA=25 ctxB=1
+
+[*] Call counts through BSGraphics globals by slot:
+   disp=0x108 (OMSetRenderTargets): 0 calls via ctx global
+   disp=0x110 (OMSetRenderTargetsAndUnorderedAccessViews): 0 calls via ctx global
+   disp=0x120 (OMSetDepthStencilState): 0 calls via ctx global
+   disp=0x1a0 (ClearRenderTargetView): 0 calls via ctx global
+   disp=0x1a8 (ClearDepthStencilView): 0 calls via ctx global
+   disp=0x1b0 (ClearUnorderedAccessViewUint): 0 calls via ctx global
+   disp=0x28 (CreateTexture2D): 0 calls via device global
+   disp=0x48 (CreateDepthStencilView): 0 calls via device global
+   disp=0x50 (CreateShaderResourceView (maybe)): 0 calls via device global
+   disp=0xa0 (CreateDepthStencilState): 0 calls via device global
+
+========================================================================
+Q1A: ClearDepthStencilView (slot 0x1A8) — depth clear values
+========================================================================
+  total confirmed-through-ctx calls: 0
+  depth-clear-value freq: {}
+
+========================================================================
+Q1B: CreateDepthStencilState (slot 0xA0) — DepthFunc values
+========================================================================
+  total confirmed-through-device calls: 0
+  stack-desc (dynamic): 0   mem-desc (static): 0
+  DepthFunc freq (static descs):
+  first 50 samples:
+
+========================================================================
+Q4: CreateTexture2D (slot 0x28) — DSV-bound formats
+========================================================================
+  total confirmed CreateTexture2D calls: 0
+  stack-desc: 0   mem-desc: 0
+  mem-desc with BIND_DEPTH_STENCIL: 0
+  format distribution (mem-desc DSV): {}
+
+  stack-desc CreateTexture2D calls (top callers):
+
+========================================================================
+Q2: OMSetRenderTargets (slot 0x108) — caller functions
+========================================================================
+  total confirmed calls: 0
+  unique callers: 0
+
+========================================================================
+Q2 extra: CreateDepthStencilView (slot 0x48) — callers
+========================================================================
+  total calls: 0
+
+[DONE]

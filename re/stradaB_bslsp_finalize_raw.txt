@@ -1,0 +1,478 @@
+==== Strada B — BSLSP finalize RE pass ====
+image base = 0x140000000
+
+=========================================
+  PART A — The 'outer' callers of sub_1421C6870
+=========================================
+
+---- decomp sub_140360A90 (bind caller) @ 0x140360A90 (RVA 0x360A90) ----
+  size=0x1A1
+__int64 __fastcall sub_140360A90(int *a1, __int64 a2)
+{
+  __int64 result; // rax
+  __int64 v4; // rsi
+  _QWORD *v5; // rbx
+  __int64 v6; // rax
+  __int64 v7; // rcx
+  __int64 v8; // rbp
+  __int64 v9; // rax
+  __int64 v10; // r14
+  volatile signed __int32 *v11; // rcx
+  __int64 v12; // rax
+  volatile signed __int32 *v13; // rax
+  __int64 v14; // r8
+  __int64 v15; // rcx
+  __int64 v16; // [rsp+60h] [rbp+18h] BYREF
+
+  result = (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)a2 + 64LL))(a2);
+  v4 = result;
+  if ( result )
+  {
+    v5 = *(_QWORD **)(result + 312);
+    if ( !v5 )
+      return 0;
+    if ( (_UNKNOWN *)(*(__int64 (__fastcall **)(_QWORD))(*v5 + 16LL))(*(_QWORD *)(result + 312)) != &unk_143E47310 )
+      return 0;
+    sub_14021E170(&v16, a1 + 4);
+    if ( !v16 )
+      return 0;
+    v6 = sub_140653690(*(_QWORD *)(v16 + 224));
+    v7 = v5[6];
+    if ( (v7 & 0x200000) != 0 )
+    {
+      v8 = v5[11];
+      sub_1406555D0(v6, v8 + 192, 0, 0, 0);
+      v9 = *a1;
+      if ( (_DWORD)v9 == -1 )
+        goto LABEL_19;
+      v10 = *(_QWORD *)(88 * v9 + *((_QWORD *)a1 + 1) + 40);
+      if ( !v10 )
+        goto LABEL_19;
+      v11 = *(volatile signed __int32 **)(v8 + 72);
+      v12 = qword_143D709B0;
+      if ( v11 != (volatile signed __int32 *)qword_143D709B0 )
+      {
+        if ( qword_143D709B0 )
+          _InterlockedIncrement((volatile signed __int32 *)(qword_143D709B0 + 8));
+        *(_QWORD *)(v8 + 72) = v12;
+        if ( v11 && _InterlockedExchangeAdd(v11 + 2, 0xFFFFFFFF) == 1 )
+          (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v11 + 8LL))(v11);
+      }
+      v13 = (volatile signed __int32 *)sub_140596EA0(v10);
+      sub_1421C6870((volatile signed __int32 *)v8, 0, v13);
+      if ( (unsigned int)sub_14167C200(v10 + 120) )
+        sub_142169F20(v10 + 368, v5);
+    }
+    else
+    {
+      if ( (v7 & 0x400) == 0 )
+        goto LABEL_19;
+      sub_142161950((__int64)v5, 10, 0);
+    }
+    sub_1421718E0((__int64)v5, v4, v14);
+LABEL_19:
+    v15 = v16 + 32;
+    if ( (((unsigned __int16)_InterlockedExchangeAdd((volatile signed __int32 *)(v16 + 40), 0xFFFFFFFF) - 1) & 0x3FF) == 0 )
+      (*(void (__fastcall **)(__int64))(*(_QWORD *)v15 + 8LL))(v15);
+    return 0;
+  }
+  return result;
+}
+
+
+---- decomp sub_14040AB10 (bind caller) @ 0x14040AB10 (RVA 0x40AB10) ----
+  size=0x220
+_QWORD *__fastcall sub_14040AB10(__int64 a1, __int64 a2, __int64 a3)
+{
+  int *v6; // r15
+  int v7; // edi
+  void *v8; // rax
+  signed __int64 v9; // rsi
+  _QWORD *v10; // r14
+  int v11; // eax
+  _QWORD *v12; // rsi
+  void *v13; // rax
+  volatile signed __int32 *v14; // rbp
+  __int64 v15; // r8
+  volatile signed __int32 **v16; // rcx
+  volatile signed __int32 **v17; // r8
+  _QWORD *v18; // rax
+
+  v6 = (int *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex) + 2496LL);
+  v7 = *v6;
+  *v6 = 60;
+  if ( !*(_QWORD *)(a1 + 32) )
+  {
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v8 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x20u, 0, 0);
+    if ( v8 )
+      v9 = sub_14040CA00(v8, 1);
+    else
+      v9 = 0;
+    if ( _InterlockedCompareExchange64((volatile signed __int64 *)(a1 + 32), v9, 0) && v9 )
+    {
+      sub_141659060(v9 + 24);
+      if ( v9 != -24 )
+        sub_1416592C0(v9 + 24);
+      sub_140364610(v9);
+      sub_1422B6BC8(v9, 32);
+    }
+  }
+  v10 = *(_QWORD **)(a1 + 32);
+  sub_141659060(v10 + 3);
+  v11 = sub_1416BBE80(v10, a2);
+  if ( v11 < 0 )
+  {
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v13 = sub_1416579C0((__int64)&unk_143E5E0F0, 0xC8u, 0, 0);
+    if ( v13 )
+      v14 = (volatile signed __int32 *)sub_1421C9340(v13);
+    else
+      v14 = nullptr;
+    v15 = *(_QWORD *)(a3 + 8);
+    v16 = (volatile signed __int32 **)(v15 + 88);
+    v17 = (volatile signed __int32 **)(v15 + 96);
+    if ( !**(_BYTE **)a3 )
+      v17 = v16;
+    sub_1421C6870(v14, 0, *v17);
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v18 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x20u, 0, 0);
+    v12 = v18;
+    if ( v18 )
+    {
+      sub_1416BBAB0(v18);
+      v12[3] = v14;
+      *v12 = &BSShaderMaterialExtraData::`vftable';
+      sub_1416BBB90(v12, &unk_143E48C40);
+      sub_14040A100(v10, v12);
+      nullsub_591(v10);
+    }
+    else
+    {
+      v12 = nullptr;
+    }
+  }
+  else
+  {
+    v12 = *(_QWORD **)(*v10 + 8LL * (unsigned int)v11);
+  }
+  if ( v10 != (_QWORD *)-24LL )
+    sub_1416592C0(v10 + 3);
+  *v6 = v7;
+  return v12;
+}
+
+
+---- decomp sub_142171F90 (bind caller) @ 0x142171F90 (RVA 0x2171F90) ----
+  size=0x19
+__int64 __fastcall sub_142171F90(__int64 a1, __int64 a2)
+{
+  return sub_1421C6870(*(volatile signed __int32 **)(a1 + 88), a2, nullptr);
+}
+
+
+=========================================
+  PART B — sub_1421711F0 (BSLSP::LoadTextures) full
+=========================================
+
+---- decomp sub_1421711F0 FULL @ 0x1421711F0 (RVA 0x21711F0) ----
+  size=0x209
+__int64 __fastcall sub_1421711F0(__int64 a1, __int64 a2)
+{
+  int *v4; // r12
+  int v5; // ebx
+  __int64 v6; // rdi
+  __int64 v7; // rax
+  volatile signed __int32 *v8; // rcx
+  void (__fastcall ***v9)(_QWORD, _QWORD); // rdi
+  __int64 v10; // rax
+  __int64 result; // rax
+  void *v12; // rax
+  __int64 v13; // r14
+  __int64 v14; // rsi
+  __int64 v15; // rdi
+  __int64 v16; // rax
+  volatile signed __int32 *v17; // rcx
+
+  v4 = (int *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex) + 2496LL);
+  v5 = *v4;
+  *v4 = 28;
+  sub_142160C10(a1);
+  v6 = *(_QWORD *)(a1 + 88);
+  v7 = sub_1416DE030(a2);
+  v8 = *(volatile signed __int32 **)(v6 + 120);
+  if ( v8 != (volatile signed __int32 *)v7 )
+  {
+    if ( v7 )
+      _InterlockedIncrement((volatile signed __int32 *)(v7 + 8));
+    *(_QWORD *)(v6 + 120) = v7;
+    if ( v8 && _InterlockedExchangeAdd(v8 + 2, 0xFFFFFFFF) == 1 )
+      (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v8 + 8LL))(v8);
+  }
+  v9 = *(void (__fastcall ****)(_QWORD, _QWORD))(a1 + 88);
+  *(_QWORD *)(a1 + 88) = 0;
+  sub_142161B10((_QWORD *)a1, (__int64)v9, 0);
+  if ( v9 )
+  {
+    (**v9)(v9, 0);
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v10 = sub_141656E30((__int64)&unk_143E5E0F0);
+    sub_14165C3F0(v10, (unsigned __int64)v9);
+  }
+  result = sub_14167C200(a1 + 16);
+  if ( !(_DWORD)result )
+  {
+    result = *(unsigned int *)(a1 + 48);
+    if ( (result & 0x1000000) == 0 )
+    {
+      if ( !*(_QWORD *)(*(_QWORD *)(a1 + 88) + 120LL) )
+      {
+        if ( dword_143E5F2D0 != 2 )
+          sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+        v12 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x60u, 0, 0);
+        v13 = (__int64)v12;
+        if ( v12 )
+        {
+          memset(v12, 0, 0x60u);
+          sub_1416BAB90(v13);
+          v14 = 10;
+          *(_QWORD *)v13 = &BSShaderTextureSet::`vftable';
+          v15 = v13 + 16;
+          do
+          {
+            sub_14167BCF0(v15);
+            v15 += 8;
+            --v14;
+          }
+          while ( v14 );
+        }
+        else
+        {
+          v13 = 0;
+        }
+        v16 = *(_QWORD *)(a1 + 88);
+        v17 = *(volatile signed __int32 **)(v16 + 120);
+        if ( v17 != (volatile signed __int32 *)v13 )
+        {
+          if ( v13 )
+            _InterlockedIncrement((volatile signed __int32 *)(v13 + 8));
+          *(_QWORD *)(v16 + 120) = v13;
+          if ( v17 && _InterlockedExchangeAdd(v17 + 2, 0xFFFFFFFF) == 1 )
+            (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v17 + 8LL))(v17);
+        }
+      }
+      result = sub_1421C6870(*(volatile signed __int32 **)(a1 + 88), a2 + 520, nullptr);
+    }
+  }
+  *v4 = v5;
+  return result;
+}
+
+
+=========================================
+  PART C — sub_142160C10 (material prep?)
+=========================================
+
+---- decomp sub_142160C10 @ 0x142160C10 (RVA 0x2160C10) ----
+  size=0x5
+// attributes: thunk
+__int64 sub_142160C10()
+{
+  return sub_1416F0130();
+}
+
+
+=========================================
+  PART D — sub_1416DE030 (type factory lookup)
+=========================================
+
+---- decomp sub_1416DE030 @ 0x1416DE030 (RVA 0x16DE030) ----
+  size=0x4C
+__int64 __fastcall sub_1416DE030(__int64 a1)
+{
+  __int64 v1; // r8
+  __int64 v3; // rdx
+  __int64 v4; // rcx
+
+  v1 = *(unsigned int *)(a1 + 936);
+  v3 = (unsigned int)TlsIndex;
+  *(_DWORD *)(a1 + 936) = v1 + 1;
+  v4 = *(unsigned int *)(*(_QWORD *)(*(_QWORD *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + v3) + 2824LL)
+                                   + 8LL)
+                       + 4 * v1);
+  if ( (_DWORD)v4 == -1 )
+    return 0;
+  else
+    return *(_QWORD *)(*(_QWORD *)(a1 + 800) + 8 * v4);
+}
+
+
+=========================================
+  PART E — sub_14217A2E0 (BSLSP alloc caller)
+=========================================
+
+---- decomp sub_14217A2E0 @ 0x14217A2E0 (RVA 0x217A2E0) ----
+  size=0x19C
+__int64 sub_14217A2E0()
+{
+  sub_1416DE200((__int64)"BSLightingShaderProperty", (__int64)sub_142171050);
+  sub_1416DE200((__int64)"BSWaterShaderProperty", (__int64)sub_1421D2020);
+  sub_1416DE200((__int64)"BSEffectShaderProperty", (__int64)sub_14216F8E0);
+  sub_1416DE200((__int64)"BSSkyShaderProperty", (__int64)sub_142214A60);
+  sub_1416DE200((__int64)"BSGrassShaderProperty", (__int64)sub_1421C5910);
+  sub_1416DE200((__int64)"BSShaderTextureSet", (__int64)sub_142162890);
+  sub_142177450();
+  sub_1416DE200((__int64)"BSTreeNode", (__int64)sub_142178B50);
+  sub_1416DE200((__int64)"BSLightingShaderPropertyFloatController", (__int64)sub_142243020);
+  sub_1416DE200((__int64)"BSLightingShaderPropertyUShortController", (__int64)sub_142243510);
+  sub_1416DE200((__int64)"BSLightingShaderPropertyColorController", (__int64)sub_142243AE0);
+  sub_1416DE200((__int64)"BSEffectShaderPropertyFloatController", (__int64)sub_142244170);
+  sub_1416DE200((__int64)"BSEffectShaderPropertyColorController", (__int64)sub_1422447A0);
+  sub_1416DE200((__int64)"BSNiAlphaPropertyTestRefController", (__int64)sub_142244C40);
+  sub_1416DE200((__int64)"BSPSysSimpleColorModifier", (__int64)sub_142245AB0);
+  sub_1416DE200((__int64)"BSPSysLODModifier", (__int64)sub_142246250);
+  sub_1416DE200((__int64)"BSOrderedNode", (__int64)sub_14223D7C0);
+  sub_1416DE200((__int64)"BSLeafAnimNode", (__int64)sub_142177FC0);
+  sub_1416DE200((__int64)"BSMeshLODTriShape", (__int64)sub_14223BDD0);
+  sub_1416DE200((__int64)"BSPackedCombinedGeomDataExtra", (__int64)sub_1421E45B0);
+  sub_1416DE200((__int64)"BSEyeCenterExtraData", (__int64)sub_1422382D0);
+  return sub_1416DE200((__int64)"BSPackedCombinedSharedGeomDataExtra", (__int64)sub_1421E4640);
+}
+
+
+=========================================
+  PART F — callers of sub_1421711F0 (BSLSP::LoadTextures)
+=========================================
+
+==== Callers of sub_1421711F0 ====
+
+=========================================
+  PART G — callers of sub_142170E60 (BSLSP template)
+=========================================
+
+==== Callers of sub_142170E60 ====
+
+=========================================
+  PART H — sub_142174A70 (dup alloc?) callers
+=========================================
+
+==== Callers of sub_142174A70 ====
+
+---- decomp sub_142174A70 @ 0x142174A70 (RVA 0x2174A70) ----
+  size=0x87
+__int64 sub_142174A70()
+{
+  int *v0; // rdi
+  bool v1; // zf
+  int v2; // ebx
+  __int64 result; // rax
+
+  v0 = (int *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex) + 2496LL);
+  v1 = dword_143E5F2D0 == 2;
+  v2 = *v0;
+  *v0 = 59;
+  if ( !v1 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  result = (__int64)sub_1416579C0((__int64)&unk_143E5E0F0, 0xE8u, 0, 0);
+  if ( result )
+    result = sub_142171620(result);
+  *v0 = v2;
+  return result;
+}
+
+
+=========================================
+  PART I — scanning for 'mov [reg+138h], reg2' patterns
+=========================================
+  0x1400181AF (fn 0x0 RVA=0x0 ?): mov     [rcx+138h], rdx
+  0x1401F071A (fn 0x1401F04A0 RVA=0x1F04A0 sub_1401F04A0): mov     [rsi+138h], rdi
+  0x1401F0770 (fn 0x1401F04A0 RVA=0x1F04A0 sub_1401F04A0): mov     [rsi+138h], rax
+  0x1401F07AF (fn 0x1401F04A0 RVA=0x1F04A0 sub_1401F04A0): mov     [rsi+138h], rax
+  0x14020ADED (fn 0x14020AD60 RVA=0x20AD60 sub_14020AD60): mov     qword ptr [rbx+138h], 0Fh
+  0x14024AFC3 (fn 0x14024AEE0 RVA=0x24AEE0 sub_14024AEE0): mov     [rcx+138h], r9
+  0x140260E36 (fn 0x140260D20 RVA=0x260D20 sub_140260D20): mov     [rbx+138h], rax
+  0x14026115B (fn 0x140261060 RVA=0x261060 sub_140261060): mov     [rbx+138h], rax
+  0x1402612CE (fn 0x140261250 RVA=0x261250 sub_140261250): mov     [rcx+138h], rax
+  0x140264A7A (fn 0x140264940 RVA=0x264940 sub_140264940): mov     [rsi+138h], rdi
+  0x140264F07 (fn 0x140264C30 RVA=0x264C30 sub_140264C30): mov     [r12+138h], rax
+  0x14026595E (fn 0x140265490 RVA=0x265490 sub_140265490): mov     [rbx+138h], rax
+  0x140265EE5 (fn 0x140265C70 RVA=0x265C70 sub_140265C70): mov     [rdi+138h], rax
+  0x140286E38 (fn 0x140286AB0 RVA=0x286AB0 sub_140286AB0): mov     [rdi+138h], r14
+  0x140308617 (fn 0x1403080F0 RVA=0x3080F0 sub_1403080F0): mov     [rdi+138h], rax
+  0x140332D6D (fn 0x140332CC0 RVA=0x332CC0 sub_140332CC0): mov     [rcx+138h], rsi
+  0x14033D9B7 (fn 0x14033D1E0 RVA=0x33D1E0 sub_14033D1E0): mov     [rsi+138h], rbx
+  0x1403573F7 (fn 0x140357330 RVA=0x357330 sub_140357330): mov     [rdi+138h], rax
+  0x14036D314 (fn 0x14036D1D0 RVA=0x36D1D0 sub_14036D1D0): mov     qword ptr [rax+138h], 0FFFFFFFFFFFFFFFFh
+  0x140373296 (fn 0x140372CC0 RVA=0x372CC0 sub_140372CC0): mov     [rsi+138h], rbx
+  0x1403772E4 (fn 0x140376620 RVA=0x376620 sub_140376620): mov     [rsi+138h], rbx
+  0x140377409 (fn 0x140376620 RVA=0x376620 sub_140376620): mov     [rsi+138h], rbx
+  0x140404750 (fn 0x140404120 RVA=0x404120 sub_140404120): mov     [rdi+138h], rax
+  0x14040EABA (fn 0x14040E510 RVA=0x40E510 sub_14040E510): mov     [rbx+138h], r12
+  0x14042E845 (fn 0x14042E700 RVA=0x42E700 sub_14042E700): mov     [r14+138h], ecx
+  0x14042E8D8 (fn 0x14042E700 RVA=0x42E700 sub_14042E700): mov     [r14+138h], ecx
+  0x14042F100 (fn 0x14042F040 RVA=0x42F040 sub_14042F040): mov     [r14+138h], eax
+  0x14042F193 (fn 0x14042F040 RVA=0x42F040 sub_14042F040): mov     [r14+138h], eax
+  0x14042F2D2 (fn 0x14042F2D0 RVA=0x42F2D0 sub_14042F2D0): mov     dword ptr [rcx+138h], 1
+  0x140437C5F (fn 0x140437B00 RVA=0x437B00 sub_140437B00): mov     [rsi+138h], rdi
+  0x140437D10 (fn 0x140437B00 RVA=0x437B00 sub_140437B00): mov     [rsi+138h], rdi
+  0x14043861F (fn 0x140438500 RVA=0x438500 sub_140438500): mov     [rsi+138h], rdi
+  0x1404386D0 (fn 0x140438500 RVA=0x438500 sub_140438500): mov     [rsi+138h], rdi
+  0x140438887 (fn 0x1404387F0 RVA=0x4387F0 sub_1404387F0): mov     [rcx+138h], rax
+  0x140438AE8 (fn 0x1404388C0 RVA=0x4388C0 sub_1404388C0): mov     [r15+138h], rax
+  0x1404390DE (fn 0x140438E40 RVA=0x438E40 sub_140438E40): mov     [rbx+138h], rax
+  0x140444B2D (fn 0x1404449B0 RVA=0x4449B0 sub_1404449B0): mov     [rsi+138h], rax
+  0x140444E20 (fn 0x140444CE0 RVA=0x444CE0 sub_140444CE0): mov     [r14+138h], rax
+  0x140444F7C (fn 0x140444EB0 RVA=0x444EB0 sub_140444EB0): mov     [rax+138h], rcx
+  0x1404464B8 (fn 0x1404463F0 RVA=0x4463F0 sub_1404463F0): mov     [rax+138h], rcx
+  0x140459E8F (fn 0x140459D10 RVA=0x459D10 sub_140459D10): mov     [rbp+138h], r12
+  0x14045A20A (fn 0x14045A0D0 RVA=0x45A0D0 sub_14045A0D0): mov     [rbp+138h], r12
+  0x14045A3B0 (fn 0x14045A3A0 RVA=0x45A3A0 sub_14045A3A0): mov     [rcx+138h], rax
+  0x14045AA7A (fn 0x14045A710 RVA=0x45A710 sub_14045A710): mov     [r14+138h], rax
+  0x14045AE9A (fn 0x14045ADC0 RVA=0x45ADC0 sub_14045ADC0): mov     [rbx+138h], rax
+  0x140464E48 (fn 0x1404647E0 RVA=0x4647E0 sub_1404647E0): mov     [r15+138h], rax
+  0x1404669D0 (fn 0x140466810 RVA=0x466810 sub_140466810): mov     [r13+138h], rax
+  0x140466C70 (fn 0x140466B10 RVA=0x466B10 sub_140466B10): mov     [r13+138h], rax
+  0x140466D7B (fn 0x140466CC0 RVA=0x466CC0 sub_140466CC0): mov     [rbp+138h], r12
+  0x14046827B (fn 0x1404681C0 RVA=0x4681C0 sub_1404681C0): mov     [r12+138h], r13
+  0x140472ECF (fn 0x140472D30 RVA=0x472D30 sub_140472D30): mov     [rdi+138h], rax
+  0x14047638B (fn 0x140476220 RVA=0x476220 sub_140476220): mov     [rdi+138h], rax
+  0x140476533 (fn 0x1404764A0 RVA=0x4764A0 sub_1404764A0): mov     [rdi+138h], rax
+  0x140476710 (fn 0x1404764A0 RVA=0x4764A0 sub_1404764A0): mov     [rdi+138h], rbx
+  0x140483F5F (fn 0x140483BD0 RVA=0x483BD0 sub_140483BD0): mov     dword ptr [rdi+138h], 0FFFFFFFFh
+  0x1404858CC (fn 0x1404854B0 RVA=0x4854B0 sub_1404854B0): mov     dword ptr [r14+138h], 0FFFFFFFFh
+  0x14048862C (fn 0x140488530 RVA=0x488530 sub_140488530): mov     dword ptr [r14+138h], 0FFFFFFFFh
+  0x14048BD13 (fn 0x14048BB70 RVA=0x48BB70 sub_14048BB70): mov     [rdi+138h], eax
+  0x14049970E (fn 0x140499630 RVA=0x499630 sub_140499630): mov     [rdi+138h], rsi
+  0x1404A7DC9 (fn 0x1404A7550 RVA=0x4A7550 sub_1404A7550): mov     [rsi+138h], rbx
+
+=========================================
+  PART J — sub_140360A90 deep (already done above, full)
+=========================================
+
+=========================================
+  PART K — BSEffectShader vt[42] (compare to BSLSP vt[42])
+=========================================
+
+---- decomp sub_14216F9C0 BSEffectShader ctor (find vtable) @ 0x14216F9C0 (RVA 0x216F9C0) ----
+  size=0x5D
+_QWORD *__fastcall sub_14216F9C0(_QWORD *a1)
+{
+  __int64 v2; // r8
+  __int64 v3; // r8
+
+  sub_142160DA0();
+  *a1 = &BSEffectShaderProperty::`vftable';
+  a1[14] = 0;
+  a1[15] = 0;
+  sub_142161B10(a1, qword_143E5ACF0, 0);
+  LOBYTE(v2) = 1;
+  sub_142161950(a1, 31, v2);
+  LOBYTE(v3) = 1;
+  sub_142161950(a1, 32, v3);
+  return a1;
+}
+

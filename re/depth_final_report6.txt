@@ -1,0 +1,370 @@
+[*] imagebase = 0x140000000
+[*] thunk fn: RVA0x22bd1c9..RVA0x22bd1cf
+[*] finding callers to thunk fn @ 0x1422bd1c9
+   call from RVA0x1824760 in fn RVA0x1824350 (sub_141824350)
+[*] real caller fn: RVA0x1824350
+
+[*] Decompiled (first 400 lines):
+       0: _QWORD *__fastcall sub_141824350(char *Dst)
+       1: {
+       2:   unsigned int v2; // esi
+       3:   __int64 v3; // r8
+       4:   __int64 v4; // rbx
+       5:   __int64 v5; // rax
+       6:   __int64 v6; // rdi
+       7:   char v7; // r14
+       8:   int *v8; // rbx
+       9:   __int64 v9; // rcx
+      10:   int v10; // r15d
+      11:   int v11; // r12d
+      12:   float v12; // xmm7_4
+      13:   float v13; // xmm6_4
+      14:   __int64 v14; // rax
+      15:   HDC DC; // rax
+      16:   unsigned int v16; // eax
+      17:   _QWORD *v17; // rdx
+      18:   __int64 v18; // rbx
+      19:   __int64 v19; // rax
+      20:   void *v20; // rcx
+      21:   __int64 v21; // rcx
+      22:   int Context_D3D11; // ebx
+      23:   _QWORD *v23; // rax
+      24:   _QWORD *result; // rax
+      25:   ID3D11DeviceContext **ppImmediateContext[2]; // [rsp+60h] [rbp-A8h] BYREF
+      26:   __int64 v26; // [rsp+70h] [rbp-98h]
+      27:   void *ppFactory; // [rsp+78h] [rbp-90h] BYREF
+      28:   __int64 v28; // [rsp+80h] [rbp-88h] BYREF
+      29:   DXGI_SWAP_CHAIN_DESC pSwapChainDesc; // [rsp+88h] [rbp-80h] BYREF
+      30:   _QWORD v30[2]; // [rsp+D8h] [rbp-30h] BYREF
+      31:   wchar_t Src[128]; // [rsp+E8h] [rbp-20h] BYREF
+      32:   int v32; // [rsp+1E8h] [rbp+E0h]
+      33:   int v33; // [rsp+1ECh] [rbp+E4h]
+      34:   int v34; // [rsp+1F0h] [rbp+E8h]
+      35:   int v35; // [rsp+1F4h] [rbp+ECh]
+      36:   unsigned __int64 v36; // [rsp+1F8h] [rbp+F0h]
+      37:   unsigned __int64 v37; // [rsp+200h] [rbp+F8h]
+      38:   void *v38; // [rsp+290h] [rbp+188h] BYREF
+      39:   D3D_FEATURE_LEVEL pFeatureLevel; // [rsp+298h] [rbp+190h] BYREF
+      40:   IDXGIAdapter *pAdapter; // [rsp+2A0h] [rbp+198h] BYREF
+      41: 
+      42:   CreateDXGIFactory(&stru_14269C640, &ppFactory);
+      43:   v2 = 0;
+      44:   pAdapter = nullptr;
+      45:   (*(void (__fastcall **)(void *, _QWORD, IDXGIAdapter **))(*(_QWORD *)ppFactory + 56LL))(
+      46:     ppFactory,
+      47:     *(unsigned int *)(qword_1438CAAA0 + 16),
+      48:     &pAdapter);
+      49:   v3 = qword_1438CAAA0;
+      50:   if ( *(_BYTE *)(qword_1438CAAA0 + 48) )
+      51:   {
+      52:     ((void (__fastcall *)(IDXGIAdapter *, _QWORD, ID3D11DeviceContext ***))pAdapter->lpVtbl->EnumOutputs)(
+      53:       pAdapter,
+      54:       0,
+      55:       &ppImmediateContext[1]);
+      56:     LODWORD(v38) = 0;
+      57:     ((void (__fastcall *)(ID3D11DeviceContext **, __int64, __int64, void **, _QWORD))(*ppImmediateContext[1])[8].lpVtbl)(
+      58:       ppImmediateContext[1],
+      59:       28,
+      60:       1,
+      61:       &v38,
+      62:       0);
+      63:     if ( dword_143E5F2D0 != 2 )
+      64:       sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+      65:     v4 = 28LL * (unsigned int)v38;
+      66:     v5 = sub_141656E30(&unk_143E5E0F0);
+      67:     v6 = sub_14165BE20(v5, v4, 8);
+      68:     ((void (__fastcall *)(ID3D11DeviceContext **, __int64, __int64, void **, __int64))(*ppImmediateContext[1])[8].lpVtbl)(
+      69:       ppImmediateContext[1],
+      70:       28,
+      71:       1,
+      72:       &v38,
+      73:       v6);
+      74:     v7 = 0;
+      75:     if ( (_DWORD)v38 )
+      76:     {
+      77:       v8 = (int *)qword_1438CAAA0;
+      78:       while ( 1 )
+      79:       {
+      80:         v9 = 28LL * v2;
+      81:         if ( *(_DWORD *)(v9 + v6) != xRight || *(_DWORD *)(v9 + v6 + 4) != yBottom )
+      82:           goto LABEL_15;
+      83:         if ( *(_DWORD *)(v9 + v6 + 24) )
+      84:         {
+      85:           v8[9] = 2;
+      86:           v8 = (int *)qword_1438CAAA0;
+      87:         }
+      88:         if ( !v7 )
+      89:           break;
+      90:         v10 = *(_DWORD *)(v9 + v6 + 8);
+      91:         v11 = *(_DWORD *)(v9 + v6 + 12);
+      92:         v12 = (float)v8[5] / (float)v8[6];
+      93:         v13 = v12 - fmodf((float)v10 / (float)v11, v12);
+      94:         if ( fabs(v13) < fabs(v12 - fmodf((float)v8[7] / (float)v8[8], v12)) )
+      95:         {
+      96:           v8[7] = v10;
+      97:           *(_DWORD *)(qword_1438CAAA0 + 32) = v11;
+      98:           goto LABEL_14;
+      99:         }
+     100: LABEL_15:
+     101:         if ( ++v2 >= (unsigned int)v38 )
+     102:           goto LABEL_16;
+     103:       }
+     104:       v7 = 1;
+     105:       *(_QWORD *)(v8 + 7) = *(_QWORD *)(v9 + v6 + 8);
+     106: LABEL_14:
+     107:       v8 = (int *)qword_1438CAAA0;
+     108:       goto LABEL_15;
+     109:     }
+     110: LABEL_16:
+     111:     ((void (__fastcall *)(ID3D11DeviceContext **))(*ppImmediateContext[1])[2].lpVtbl)(ppImmediateContext[1]);
+     112:     if ( !v7 )
+     113:       *(_BYTE *)(qword_1438CAAA0 + 48) = 0;
+     114:     if ( dword_143E5F2D0 != 2 )
+     115:       sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+     116:     v14 = sub_141656E30(&unk_143E5E0F0);
+     117:     sub_14165C3F0(v14, v6);
+     118:     v3 = qword_1438CAAA0;
+     119:   }
+     120:   if ( !*(_BYTE *)(v3 + 48) )
+     121:   {
+     122:     DC = GetDC(*(HWND *)(v3 + 88));
+     123:     *(_DWORD *)(qword_1438CAAA0 + 28) = GetDeviceCaps(DC, 116);
+     124:     *(_DWORD *)(qword_1438CAAA0 + 32) = 1;
+     125:     v3 = qword_1438CAAA0;
+     126:   }
+     127:   if ( *(_BYTE *)(v3 + 50) )
+     128:   {
+     129:     v16 = (unsigned int)(*(_DWORD *)(v3 + 20) + *(_DWORD *)(v3 + 28) / *(_DWORD *)(v3 + 32) - 1) / *(_DWORD *)(v3 + 20);
+     130:     if ( !v16 )
+     131:       v16 = 1;
+     132:     *(_DWORD *)(v3 + 64) = v16;
+     133:     v3 = qword_1438CAAA0;
+     134:   }
+     135:   pSwapChainDesc.BufferDesc.Width = xRight;
+     136:   pSwapChainDesc.BufferDesc.Height = yBottom;
+     137:   memset(&pSwapChainDesc.BufferDesc.ScanlineOrdering, 0, 20);
+     138:   *(_QWORD *)&pSwapChainDesc.SwapEffect = 0;
+     139:   pSwapChainDesc.BufferDesc.RefreshRate = 0;
+     140:   *(_OWORD *)(&pSwapChainDesc.BufferCount + 1) = 0u;
+     141:   *(&pSwapChainDesc.Flags + 1) = 0;
+     142:   pSwapChainDesc.BufferCount = 2;
+     143:   pSwapChainDesc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+     144:   pSwapChainDesc.BufferDesc.RefreshRate = *(DXGI_RATIONAL *)(v3 + 28);
+     145:   pSwapChainDesc.BufferDesc.Scaling = *(_DWORD *)(v3 + 36);
+     146:   pSwapChainDesc.BufferDesc.ScanlineOrdering = *(_DWORD *)(v3 + 40);
+     147:   pSwapChainDesc.BufferUsage = 1072;
+     148:   pSwapChainDesc.OutputWindow = *(HWND *)(v3 + 88);
+     149:   pSwapChainDesc.SampleDesc = (DXGI_SAMPLE_DESC)1LL;
+     150:   *(_QWORD *)&pSwapChainDesc.Windowed = 1;
+     151:   pSwapChainDesc.Flags = 2;
+     152:   pFeatureLevel = D3D_FEATURE_LEVEL_9_1;
+     153:   D3D11CreateDeviceAndSwapChain(
+     154:     pAdapter,
+     155:     D3D_DRIVER_TYPE_UNKNOWN,
+     156:     nullptr,
+     157:     0,
+     158:     nullptr,
+     159:     0,
+     160:     7u,
+     161:     &pSwapChainDesc,
+     162:     (IDXGISwapChain **)(v3 + 112),
+     163:     (ID3D11Device **)(v3 + 72),
+     164:     &pFeatureLevel,
+     165:     (ID3D11DeviceContext **)(v3 + 80));
+     166:   v17 = (_QWORD *)(qword_1438CAAA0 + 88);
+     167:   qword_1438CAAB0 = qword_1438CAAA0 + 88;
+     168:   qword_1438CAAA8 = *(_QWORD *)(qword_1438CAAA0 + 72);
+     169:   v18 = *((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex);
+     170:   v19 = *(_QWORD *)(qword_1438CAAA0 + 80);
+     171:   v20 = ppFactory;
+     172:   qword_1438CAA90 = v19;
+     173:   *(_QWORD *)(v18 + 2840) = v19;
+     174:   qword_1438CAAB8 = v19;
+     175:   (*(void (__fastcall **)(void *, _QWORD, __int64))(*(_QWORD *)v20 + 64LL))(v20, *v17, 3);
+     176:   if ( ((int (__fastcall *)(IDXGIAdapter *, wchar_t *))pAdapter->lpVtbl->GetDesc)(pAdapter, Src) >= 0 )
+     177:   {
+     178:     qword_142F43740 = v36 - 671088640;
+     179:     wcstombs_s(nullptr, Dst, 0x40u, Src, 0x40u);
+     180:     *((_DWORD *)Dst + 17) = v32;
+     181:     *((_DWORD *)Dst + 20) = v36 >> 20;
+     182:     *((_DWORD *)Dst + 21) = v37 >> 20;
+     183:     *((_DWORD *)Dst + 16) = v33;
+     184:     *((_DWORD *)Dst + 19) = v35;
+     185:     *((_DWORD *)Dst + 18) = v34;
+     186:   }
+     187:   ((void (__fastcall *)(IDXGIAdapter *))pAdapter->lpVtbl->Release)(pAdapter);
+     188:   (*(void (__fastcall **)(void *))(*(_QWORD *)ppFactory + 16LL))(ppFactory);
+     189:   *(_BYTE *)(qword_1438CAAA0 + 9656) = (unsigned int)sub_140029D80() == 0;
+     190:   sub_142210DD0();
+     191:   v21 = *(_QWORD *)(v18 + 2840);
+     192:   v30[0] = sub_1401E0000;
+     193:   v28 = 0;
+     194:   v30[1] = sub_1401E0080;
+     195:   (*(void (__fastcall **)(__int64, __int64 *))(*(_QWORD *)v21 + 24LL))(v21, &v28);
+     196:   ppImmediateContext[1] = (ID3D11DeviceContext **)3;
+     197:   v26 = 0x1313EF100000001LL;
+     198:   Context_D3D11 = GFSDK_SSAO_CreateContext_D3D11(qword_1438CAAA8, &qword_1438CAA88, v30, &ppImmediateContext[1]);
+     199:   if ( v28 )
+     200:     (*(void (__fastcall **)(__int64))(*(_QWORD *)v28 + 16LL))(v28);
+     201:   if ( Context_D3D11 )
+     202:   {
+     203:     byte_142F42230 = 0;
+     204:     sub_14179F920(&off_142F42228);
+     205:     qword_1438CAA88 = 0;
+     206:   }
+     207:   else
+     208:   {
+     209:     dword_142F42240 = dword_142F422B8;
+     210:     dword_142F42250 = dword_142F422E8;
+     211:     dword_142F42278 = dword_142F42330;
+     212:     dword_142F42270 = (unsigned __int8)dword_142F42300;
+     213:     dword_142F42280 = dword_142F42360;
+     214:     dword_142F42274 = dword_142F42318;
+     215:     dword_142F42288 = dword_142F42390;
+     216:     dword_142F42244 = dword_142F422D0;
+     217:     dword_142F4227C = (unsigned __int8)dword_142F42348;
+     218:     dword_142F4224C = dword_142F423C0;
+     219:     dword_142F42284 = dword_142F42378;
+     220:     dword_142F42260 = dword_142F423D8;
+     221:     dword_142F42268 = dword_142F42408;
+     222:     dword_142F42248 = dword_142F423A8;
+     223:     dword_142F42264 = (unsigned __int8)dword_142F423F0;
+     224:     dword_142F42258 = dword_142F42450;
+     225:     dword_142F4226C = dword_142F42420;
+     226:     dword_142F42290 = 0;
+     227:     dword_142F42254 = (unsigned __int8)dword_142F42438;
+     228:   }
+     229:   if ( dword_143E5F2D0 != 2 )
+     230:     sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+     231:   v23 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x38u, 0, 0);
+     232:   v38 = v23;
+     233:   if ( v23 )
+     234:   {
+     235:     *v23 = 0;
+     236:     v23[1] = v23;
+     237:     v23[2] = 0;
+     238:     v23[3] = 0;
+     239:     v23[4] = 0;
+     240:     v23[5] = 0;
+     241:     *((_DWORD *)v23 + 12) = 0;
+     242:   }
+     243:   else
+     244:   {
+     245:     v23 = nullptr;
+     246:   }
+     247:   qword_1438CAAC8 = (__int64)v23;
+     248:   if ( dword_143E5F2D0 != 2 )
+     249:     sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+     250:   result = sub_1416579C0((__int64)&unk_143E5E0F0, 0x38u, 0, 0);
+     251:   v38 = result;
+     252:   if ( result )
+     253:   {
+     254:     *result = 0;
+     255:     result[1] = result;
+     256:     result[2] = 0;
+     257:     result[3] = 0;
+     258:     result[4] = 0;
+     259:     result[5] = 0;
+     260:     *((_DWORD *)result + 12) = 0;
+     261:     qword_1438CB358 = (__int64)result;
+     262:   }
+     263:   else
+     264:   {
+     265:     qword_1438CB358 = 0;
+     266:   }
+     267:   return result;
+     268: }
+     269: 
+
+[*] Raw asm around thunk call at 0x141824760:
+    0x1418245eb: lea     rdx, dword_143E5F2D0
+    0x1418245f2: lea     rcx, unk_143E5E0F0
+    0x1418245f9: call    sub_141657F90
+    0x1418245fe: lea     rcx, unk_143E5E0F0
+    0x141824605: call    sub_141656E30
+    0x14182460a: mov     rcx, rax
+    0x14182460d: mov     rdx, rdi
+    0x141824610: call    sub_14165C3F0
+    0x141824615: mov     r8, cs:qword_1438CAAA0
+    0x14182461c: xor     esi, esi
+    0x14182461e: lea     r14d, [rsi+1]
+    0x141824622: cmp     byte ptr [r8+30h], 0
+    0x141824627: jnz     short loc_14182465D
+    0x141824629: mov     rcx, [r8+58h]; hWnd
+    0x14182462d: call    cs:__imp_GetDC
+    0x141824633: mov     rcx, rax; hdc
+    0x141824636: mov     edx, 74h ; 't'; index
+    0x14182463b: call    cs:__imp_GetDeviceCaps
+    0x141824641: mov     rcx, cs:qword_1438CAAA0
+    0x141824648: mov     [rcx+1Ch], eax
+    0x14182464b: mov     rax, cs:qword_1438CAAA0
+    0x141824652: mov     [rax+20h], r14d
+    0x141824656: mov     r8, cs:qword_1438CAAA0
+    0x14182465d: cmp     byte ptr [r8+32h], 0
+    0x141824662: jz      short loc_14182468C
+    0x141824664: mov     eax, [r8+1Ch]
+    0x141824668: xor     edx, edx
+    0x14182466a: div     dword ptr [r8+20h]
+    0x14182466e: xor     edx, edx
+    0x141824670: dec     eax
+    0x141824672: add     eax, [r8+14h]
+    0x141824676: div     dword ptr [r8+14h]
+    0x14182467a: cmp     eax, 1
+    0x14182467d: cmovb   eax, r14d
+    0x141824681: mov     [r8+40h], eax
+    0x141824685: mov     r8, cs:qword_1438CAAA0
+    0x14182468c: mov     eax, cs:xRight
+    0x141824692: lea     rcx, [r8+48h]
+    0x141824696: mov     [rbp+170h+var_1F0.BufferDesc.Width], eax
+    0x141824699: lea     rdx, [r8+70h]
+    0x14182469d: mov     eax, cs:yBottom
+    0x1418246a3: xor     r9d, r9d; Flags
+    0x1418246a6: mov     [rbp+170h+var_1F0.BufferDesc.Height], eax
+    0x1418246a9: mov     qword ptr [rbp+170h+var_1F0.BufferDesc.ScanlineOrdering], rsi
+    0x1418246ad: mov     [rbp+170h+var_1F0.OutputWindow+4], rsi
+    0x1418246b1: mov     qword ptr [rbp+170h+var_1F0.SwapEffect], rsi
+    0x1418246b5: mov     qword ptr [rbp+170h+var_1F0.BufferDesc.RefreshRate.Numerator], rsi
+    0x1418246b9: mov     qword ptr [rbp+170h+var_1F0.SampleDesc.Count], rsi
+    0x1418246bd: mov     [rbp+170h+var_1F0.BufferUsage], esi
+    0x1418246c0: mov     qword ptr [rbp+170h+var_1F0+2Ch], rsi
+    0x1418246c4: mov     dword ptr [rbp+170h+var_1F0+44h], esi
+    0x1418246c7: mov     [rbp+170h+var_1F0.BufferCount], 2
+    0x1418246ce: mov     [rbp+170h+var_1F0.BufferDesc.Format], 1Ch
+    0x1418246d5: mov     rax, [r8+1Ch]
+    0x1418246d9: mov     qword ptr [rbp+170h+var_1F0.BufferDesc.RefreshRate.Numerator], rax
+    0x1418246dd: mov     eax, [r8+24h]
+    0x1418246e1: mov     [rbp+170h+var_1F0.BufferDesc.Scaling], eax
+    0x1418246e4: mov     eax, [r8+28h]
+    0x1418246e8: mov     [rbp+170h+var_1F0.BufferDesc.ScanlineOrdering], eax
+    0x1418246eb: mov     [rbp+170h+var_1F0.BufferUsage], 430h
+    0x1418246f2: mov     rax, [r8+58h]
+    0x1418246f6: mov     [rbp+170h+var_1F0.OutputWindow], rax
+    0x1418246fa: lea     rax, [r8+50h]
+    0x1418246fe: mov     [rsp+270h+ppImmediateContext], rax; ppImmediateContext
+    0x141824703: xor     r8d, r8d; Software
+    0x141824706: lea     rax, [rbp+170h+arg_10]
+    0x14182470d: mov     qword ptr [rbp+170h+var_1F0.SampleDesc.Count], 1
+    0x141824715: mov     [rsp+270h+pFeatureLevel], rax; pFeatureLevel
+    0x14182471a: lea     rax, [rbp+170h+var_1F0]
+    0x14182471e: mov     [rsp+270h+ppDevice], rcx; ppDevice
+    0x141824723: mov     rcx, [rbp+170h+pAdapter]; pAdapter
+    0x14182472a: mov     [rsp+270h+ppSwapChain], rdx; ppSwapChain
+    0x14182472f: xor     edx, edx; DriverType
+    0x141824731: mov     [rsp+270h+pSwapChainDesc], rax; pSwapChainDesc
+    0x141824736: mov     [rsp+270h+SDKVersion], 7; SDKVersion
+    0x14182473e: mov     [rsp+270h+FeatureLevels], esi; FeatureLevels
+    0x141824742: mov     [rsp+270h+pFeatureLevels], rsi; pFeatureLevels
+    0x141824747: mov     qword ptr [rbp+170h+var_1F0.Windowed], 1
+    0x14182474f: mov     [rbp+170h+var_1F0.Flags], 2
+    0x141824756: mov     [rbp+170h+arg_10], 9100h
+    0x141824760: call    D3D11CreateDeviceAndSwapChain
+    0x141824765: mov     r8, cs:qword_1438CAAA0
+    0x14182476c: mov     ecx, cs:TlsIndex
+    0x141824772: mov     edi, 0B18h
+    0x141824777: lea     rdx, [r8+58h]
+    0x14182477b: mov     cs:qword_1438CAAB0, rdx
+    0x141824782: mov     rax, [r8+48h]
+    0x141824786: mov     cs:qword_1438CAAA8, rax
+    0x14182478d: mov     rax, gs:58h
+
+[DONE]

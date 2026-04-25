@@ -1,0 +1,2549 @@
+[+] Image base: 0x140000000
+
+========== PAPYRUS GetPlayer CONTEXT ==========
+
+[*] xref @ 0x141124B68 (RVA 0x1124B68)
+     0x141124B57  mov     r9b, 1
+     0x141124B5A  mov     dword ptr [rsp+410h+var_3F0], edi
+     0x141124B5E  lea     r8, aGame; "Game"
+     0x141124B65  mov     rcx, rax
+  >> 0x141124B68  lea     rdx, aGetplayer; "GetPlayer"
+     0x141124B6F  call    sub_1420F9D00
+     0x141124B74  lea     rax, ??_7?$NativeFunction0@UStaticFunctionTag@BSScript@@PEAVActor@@@BSScript@@6B@; const BSScript::NativeFunction0<BSScript::StaticFunctionTag,Actor *>::`vftable'
+     0x141124B7B  mov     [rbp+310h+arg_10], rdi
+     0x141124B82  mov     [r12], rax
+     0x141124B86  lea     r8, [rbp+310h+arg_10]
+     0x141124B8D  lea     rax, sub_141122670
+     0x141124B94  mov     edx, 41h ; 'A'
+     0x141124B99  mov     [r12+50h], rax
+     0x141124B9E  mov     esi, [rsi+r13]
+     0x141124BA2  mov     eax, 9C0h
+
+[*] xref @ 0x141124C30 (RVA 0x1124C30)
+     0x141124C21  mov     rdx, r12
+     0x141124C24  mov     rax, [rcx]
+     0x141124C27  call    qword ptr [rax+0D8h]
+     0x141124C2D  mov     rcx, [r15]
+  >> 0x141124C30  lea     r8, aGetplayer; "GetPlayer"
+     0x141124C37  mov     r9b, 1
+     0x141124C3A  lea     rdx, aGame; "Game"
+     0x141124C41  mov     rax, [rcx]
+     0x141124C44  call    qword ptr [rax+0E8h]
+     0x141124C4A  cmp     cs:dword_143E5F2D0, 2
+     0x141124C51  jz      short loc_141124C66
+     0x141124C53  lea     rdx, dword_143E5F2D0
+     0x141124C5A  lea     rcx, unk_143E5E0F0
+     0x141124C61  call    sub_141657F90
+     0x141124C66  xor     r9d, r9d
+
+[*] Decompile containing function sub_141123910:
+=== Decompiled GetPlayer registrar function @ 0x141123910 (RVA 0x1123910) ===
+__int64 __fastcall sub_141123910(_QWORD *a1)
+{
+  bool v1; // zf
+  __int64 v3; // r13
+  int v4; // r14d
+  __int64 v5; // rax
+  int v6; // r9d
+  _QWORD *v7; // rbx
+  __int64 v8; // rdi
+  int v9; // eax
+  __int64 v10; // rdx
+  __int64 v11; // rax
+  int v12; // r9d
+  _QWORD *v13; // rbx
+  int v14; // ecx
+  __int64 v15; // rdx
+  __int64 v16; // rax
+  int v17; // r9d
+  _QWORD *v18; // rbx
+  int v19; // eax
+  __int64 v20; // rdx
+  __int64 v21; // rdx
+  __int64 v22; // rax
+  int v23; // r9d
+  _QWORD *v24; // rbx
+  int v25; // eax
+  __int64 v26; // rax
+  int v27; // r9d
+  _QWORD *v28; // rbx
+  int v29; // eax
+  __int64 v30; // rax
+  int v31; // r9d
+  _QWORD *v32; // rbx
+  int v33; // eax
+  __int64 v34; // rdx
+  __int64 v35; // rax
+  int v36; // r9d
+  _QWORD *v37; // rbx
+  int v38; // ecx
+  __int64 v39; // rdx
+  __int64 v40; // rax
+  int v41; // r9d
+  _QWORD *v42; // rbx
+  int v43; // eax
+  __int64 v44; // rdx
+  __int64 v45; // rdx
+  __int64 v46; // rdx
+  __int64 v47; // rdx
+  __int64 v48; // rax
+  __int64 v49; // rdx
+  __int64 v50; // rax
+  __int64 v51; // rdx
+  __int64 v52; // rax
+  __int64 v53; // rdx
+  __int64 v54; // rax
+  __int64 v55; // rdx
+  __int64 v56; // rax
+  __int64 v57; // rdx
+  __int64 v58; // rax
+  __int64 v59; // rdx
+  __int64 v60; // rax
+  __int64 v61; // rdx
+  __int64 v62; // rax
+  int v63; // r9d
+  _QWORD *v64; // rbx
+  int v65; // ecx
+  __int64 v66; // rdx
+  __int64 v67; // rdx
+  __int64 v68; // rdx
+  __int64 v69; // rax
+  int v70; // r9d
+  _QWORD *v71; // rbx
+  int v72; // ecx
+  __int64 v73; // rax
+  int v74; // r9d
+  _QWORD *v75; // rbx
+  int v76; // eax
+  __int64 v77; // rax
+  int v78; // r9d
+  _QWORD *v79; // rbx
+  int v80; // eax
+  __int64 v81; // rdx
+  __int64 v82; // rax
+  int v83; // r9d
+  _QWORD *v84; // rbx
+  int v85; // ecx
+  __int64 v86; // rax
+  int v87; // r9d
+  _QWORD *v88; // rbx
+  int v89; // eax
+  __int64 v90; // rax
+  int v91; // r9d
+  _QWORD *v92; // r12
+  int v93; // esi
+  __int64 *v94; // rax
+  void (__fastcall ***v95)(_QWORD, __int64); // rcx
+  __int64 v96; // rbx
+  __int64 v97; // rcx
+  __int64 v98; // r9
+  __int64 v99; // rax
+  int v100; // r9d
+  _QWORD *v101; // r12
+  int v102; // esi
+  __int64 *v103; // rax
+  void (__fastcall ***v104)(_QWORD, __int64); // rcx
+  __int64 v105; // rbx
+  __int64 v106; // rcx
+  __int64 v107; // rcx
+  __int64 v108; // r9
+  __int64 v109; // rax
+  int v110; // r9d
+  _QWORD *v111; // rbx
+  int v112; // eax
+  __int64 v113; // rdx
+  __int64 v114; // rax
+  int v115; // r9d
+  _QWORD *v116; // rbx
+  int v117; // eax
+  __int64 v118; // rdx
+  __int64 v119; // rax
+  int v120; // r9d
+  _QWORD *v121; // rbx
+  int v122; // ecx
+  __int64 v123; // rdx
+  __int64 v124; // rax
+  int v125; // r9d
+  _QWORD *v126; // r12
+  int v127; // esi
+  __int64 *v128; // rax
+  void (__fastcall ***v129)(_QWORD, __int64); // rcx
+  __int64 v130; // rbx
+  __int64 v131; // r9
+  __int64 v132; // rax
+  int v133; // r9d
+  _QWORD *v134; // rsi
+  int v135; // ebx
+  __int64 v136; // rax
+  int v137; // r9d
+  _QWORD *v138; // r12
+  int v139; // esi
+  __int64 *v140; // rax
+  void (__fastcall ***v141)(_QWORD, __int64); // rcx
+  __int64 v142; // rbx
+  __int64 v143; // rax
+  int v144; // r9d
+  _QWORD *v145; // rbx
+  int v146; // eax
+  __int64 v147; // rax
+  __int64 v148; // rdx
+  __int64 v149; // rax
+  int v150; // r9d
+  _QWORD *v151; // rbx
+  int v152; // ecx
+  __int64 v153; // rax
+  int v154; // r9d
+  _QWORD *v155; // rbx
+  int v156; // eax
+  __int64 v157; // rdx
+  __int64 v158; // r9
+  __int64 v159; // rax
+  int v160; // r9d
+  _QWORD *v161; // r12
+  int v162; // esi
+  __int64 *v163; // rax
+  void (__fastcall ***v164)(_QWORD, __int64); // rcx
+  __int64 v165; // rbx
+  __int64 v166; // rax
+  __int64 v167; // rax
+  int v168; // r9d
+  _QWORD *v169; // rbx
+  int v170; // eax
+  __int64 v171; // rdx
+  __int64 v172; // rdx
+  __int64 v173; // rax
+  int v174; // r9d
+  _QWORD *v175; // rbx
+  int v176; // ecx
+  __int64 v177; // rax
+  int v178; // r9d
+  _QWORD *v179; // rbx
+  int v180; // eax
+  __int64 v181; // rax
+  int v182; // r9d
+  _QWORD *v183; // rbx
+  int v184; // eax
+  __int64 v185; // rax
+  int v186; // r9d
+  _QWORD *v187; // rbx
+  int v188; // ecx
+  __int64 v189; // rax
+  int v190; // r9d
+  _QWORD *v191; // rbx
+  int v192; // eax
+  __int64 v193; // rax
+  int v194; // r9d
+  _QWORD *v195; // rbx
+  int v196; // eax
+  __int64 v197; // rax
+  int v198; // r9d
+  _QWORD *v199; // rbx
+  int v200; // ecx
+  __int64 v201; // rax
+  __int64 v202; // rax
+  int v203; // r9d
+  _QWORD *v204; // rbx
+  int v205; // eax
+  __int64 v206; // rax
+  __int64 v207; // rax
+  int v208; // r9d
+  _QWORD *v209; // rbx
+  int v210; // eax
+  __int64 v211; // rax
+  int v212; // r9d
+  _QWORD *v213; // rbx
+  int v214; // eax
+  __int64 v215; // rax
+  int v216; // r9d
+  _QWORD *v217; // rbx
+  int v218; // eax
+  __int64 v219; // rax
+  int v220; // r9d
+  _QWORD *v221; // rbx
+  int v222; // eax
+  __int64 v223; // rax
+  __int64 v224; // rdx
+  __int64 v225; // rax
+  __int64 v226; // rdx
+  __int64 v227; // rax
+  int v228; // r9d
+  _QWORD *v229; // rbx
+  int v230; // ecx
+  __int64 v231; // rax
+  int v232; // r9d
+  _QWORD *v233; // rbx
+  int v234; // eax
+  __int64 v235; // rdx
+  __int64 v236; // r9
+  __int64 v237; // rax
+  __int64 v238; // rdx
+  __int64 v239; // rax
+  __int64 v240; // rdx
+  __int64 v241; // rax
+  int v242; // r9d
+  _QWORD *v243; // rbx
+  int v244; // eax
+  __int64 v245; // rax
+  __int64 v246; // rdx
+  __int64 v247; // rax
+  int v248; // r9d
+  __int64 v249; // rbx
+  int v250; // eax
+  __int64 v251; // rdx
+  __int64 v252; // rdx
+  __int64 v253; // rdx
+  __int64 v254; // rdx
+  __int64 v255; // rax
+  int v256; // r9d
+  _QWORD *v257; // rbx
+  int v258; // eax
+  __int64 v259; // rax
+  int v260; // r9d
+  _QWORD *v261; // rbx
+  int v262; // eax
+  __int64 v263; // rax
+  __int64 v264; // rdx
+  __int64 v265; // rax
+  int v266; // r9d
+  _QWORD *v267; // rbx
+  int v268; // eax
+  __int64 v269; // rax
+  int v270; // r9d
+  _QWORD *v271; // rbx
+  int v272; // eax
+  __int64 v273; // rax
+  __int64 v274; // rdx
+  __int64 v275; // rax
+  int v276; // r9d
+  _QWORD *v277; // rbx
+  int v278; // eax
+  __int64 v279; // rax
+  int v280; // r9d
+  _QWORD *v281; // rbx
+  int v282; // eax
+  __int64 v283; // rdx
+  __int64 v284; // rdx
+  __int64 v285; // rax
+  int v286; // r9d
+  _QWORD *v287; // rbx
+  int v288; // eax
+  __int64 v289; // rax
+  __int64 v290; // rdx
+  __int64 v291; // rax
+  __int64 v292; // rdx
+  __int64 v293; // rax
+  __int64 v294; // rdx
+  __int64 v295; // rax
+  int v296; // r9d
+  _QWORD *v297; // r12
+  int v298; // esi
+  __int64 v299; // rax
+  __int64 *v300; // rax
+  void (__fastcall ***v301)(_QWORD, __int64); // rcx
+  __int64 v302; // rbx
+  __int64 v303; // r9
+  __int64 v304; // rax
+  __int64 v305; // rdx
+  __int64 v306; // rax
+  __int64 v307; // rdx
+  __int64 v308; // rax
+  __int64 v309; // rdx
+  __int64 v310; // rax
+  __int64 v311; // rdx
+  __int64 v312; // rax
+  __int64 v313; // rdx
+  __int64 v314; // rax
+  __int64 v315; // rdx
+  __int64 v316; // rax
+  int v317; // r9d
+  _QWORD *v318; // r12
+  int v319; // ebx
+  __int64 v320; // rsi
+  _QWORD *v321; // rax
+  __int64 v322; // rcx
+  __int64 v323; // rax
+  int v324; // r9d
+  _QWORD *v325; // rbx
+  int v326; // eax
+  __int64 v327; // rdx
+  __int64 v328; // rdx
+  __int64 v329; // rdx
+  __int64 v330; // rax
+  int v331; // r9d
+  _QWORD *v332; // rbx
+  int v333; // eax
+  __int64 v334; // rax
+  int v335; // r9d
+  _QWORD *v336; // rbx
+  int v337; // eax
+  __int64 v338; // rax
+  int v339; // r9d
+  _QWORD *v340; // rbx
+  int v341; // eax
+  __int64 v342; // rax
+  __int64 v343; // rdx
+  __int64 v344; // rax
+  __int64 v345; // rdx
+  __int64 v346; // rax
+  int v347; // r9d
+  _QWORD *v348; // rbx
+  int v349; // eax
+  __int64 v350; // rax
+  __int64 v351; // rdx
+  __int64 v352; // rax
+  int v353; // r9d
+  _QWORD *v354; // rbx
+  int v355; // eax
+  __int64 v356; // rax
+  __int64 v357; // rdx
+  __int64 v358; // rax
+  __int64 v359; // rdx
+  __int64 v360; // rax
+  int v361; // r9d
+  _QWORD *v362; // r12
+  int v363; // esi
+  __int64 *v364; // rax
+  void (__fastcall ***v365)(_QWORD, __int64); // rcx
+  __int64 v366; // rbx
+  __int64 v367; // rbx
+  __int64 v368; // rax
+  __int64 v369; // rdx
+  __int64 v370; // rax
+  int v371; // r9d
+  _QWORD *v372; // rbx
+  int v373; // eax
+  __int64 v374; // rdx
+  __int64 v375; // rdx
+  __int64 v376; // rax
+  __int64 v377; // rdx
+  __int64 v378; // rax
+  __int64 v379; // rdx
+  __int64 v380; // rax
+  __int64 v381; // rdx
+  __int64 v382; // rax
+  __int64 v383; // rdx
+  __int64 v384; // r9
+  __int64 v385; // rax
+  __int64 v386; // rdx
+  __int64 v387; // r9
+  __int64 v388; // rax
+  __int64 v389; // rdx
+  __int64 v390; // r9
+  __int64 v391; // rax
+  __int64 v392; // rdx
+  __int64 v393; // r9
+  __int64 v394; // rax
+  __int64 v395; // rdx
+  __int64 v396; // r9
+  __int64 v397; // rax
+  __int64 v398; // rdx
+  __int64 v399; // r9
+  __int64 v400; // rax
+  __int64 v401; // rdx
+  __int64 v402; // r9
+  __int64 v403; // rax
+  __int64 v404; // rdx
+  __int64 v405; // r9
+  __int64 v406; // rax
+  __int64 v407; // rdx
+  __int64 v408; // r9
+  __int64 v409; // rax
+  __int64 v410; // rdx
+  __int64 v411; // r9
+  __int64 v412; // rax
+  __int64 v413; // r9
+  __int64 result; // rax
+  __int64 v415; // [rsp+30h] [rbp-D0h] BYREF
+  __int64 v416; // [rsp+38h] [rbp-C8h] BYREF
+  _QWORD v417[3]; // [rsp+40h] [rbp-C0h] BYREF
+  __int64 v418; // [rsp+58h] [rbp-A8h]
+  __int64 v419; // [rsp+60h] [rbp-A0h]
+  __int64 v420; // [rsp+68h] [rbp-98h]
+  __int64 v421; // [rsp+70h] [rbp-90h]
+  __int64 v422; // [rsp+78h] [rbp-88h]
+  __int64 v423; // [rsp+80h] [rbp-80h]
+  __int64 v424; // [rsp+88h] [rbp-78h]
+  __int64 v425; // [rsp+90h] [rbp-70h]
+  __int64 v426; // [rsp+98h] [rbp-68h]
+  __int64 v427; // [rsp+A0h] [rbp-60h]
+  __int64 v428; // [rsp+A8h] [rbp-58h]
+  __int64 v429; // [rsp+B0h] [rbp-50h]
+  __int64 v430; // [rsp+B8h] [rbp-48h]
+  __int64 v431; // [rsp+C0h] [rbp-40h]
+  _QWORD v432[2]; // [rsp+C8h] [rbp-38h] BYREF
+  _QWORD v433[2]; // [rsp+D8h] [rbp-28h] BYREF
+  __int64 v434; // [rsp+E8h] [rbp-18h]
+  __int64 v435; // [rsp+F0h] [rbp-10h]
+  __int64 v436; // [rsp+F8h] [rbp-8h]
+  __int64 v437; // [rsp+100h] [rbp+0h]
+  __int64 v438; // [rsp+108h] [rbp+8h]
+  __int64 v439; // [rsp+110h] [rbp+10h]
+  __int64 v440; // [rsp+118h] [rbp+18h]
+  __int64 v441; // [rsp+120h] [rbp+20h] BYREF
+  _QWORD v442[3]; // [rsp+128h] [rbp+28h] BYREF
+  __int64 v443; // [rsp+140h] [rbp+40h]
+  __int64 v444; // [rsp+148h] [rbp+48h]
+  __int64 v445; // [rsp+150h] [rbp+50h] BYREF
+  __int64 v446; // [rsp+158h] [rbp+58h]
+  __int64 v447; // [rsp+160h] [rbp+60h]
+  __int64 v448; // [rsp+168h] [rbp+68h]
+  __int64 v449; // [rsp+170h] [rbp+70h]
+  __int64 v450; // [rsp+178h] [rbp+78h]
+  __int64 v451; // [rsp+180h] [rbp+80h]
+  __int64 v452; // [rsp+188h] [rbp+88h]
+  __int64 v453; // [rsp+190h] [rbp+90h]
+  __int64 v454; // [rsp+198h] [rbp+98h]
+  __int64 v455; // [rsp+1A0h] [rbp+A0h]
+  __int64 v456; // [rsp+1A8h] [rbp+A8h]
+  __int64 v457; // [rsp+1B0h] [rbp+B0h]
+  __int64 v458; // [rsp+1B8h] [rbp+B8h]
+  __int64 v459; // [rsp+1C0h] [rbp+C0h]
+  __int64 v460; // [rsp+1C8h] [rbp+C8h]
+  __int64 v461; // [rsp+1D0h] [rbp+D0h]
+  __int64 v462; // [rsp+1D8h] [rbp+D8h]
+  __int64 v463; // [rsp+1E0h] [rbp+E0h]
+  __int64 v464; // [rsp+1E8h] [rbp+E8h]
+  __int64 v465; // [rsp+1F0h] [rbp+F0h]
+  __int64 v466; // [rsp+1F8h] [rbp+F8h]
+  __int64 v467; // [rsp+200h] [rbp+100h]
+  __int64 v468; // [rsp+208h] [rbp+108h]
+  __int64 v469; // [rsp+210h] [rbp+110h]
+  __int64 v470; // [rsp+218h] [rbp+118h]
+  __int64 v471; // [rsp+220h] [rbp+120h]
+  __int64 v472; // [rsp+228h] [rbp+128h]
+  __int64 v473; // [rsp+230h] [rbp+130h]
+  _QWORD v474[2]; // [rsp+238h] [rbp+138h] BYREF
+  __int64 v475; // [rsp+248h] [rbp+148h]
+  __int64 v476; // [rsp+250h] [rbp+150h]
+  __int64 v477; // [rsp+258h] [rbp+158h]
+  __int64 v478; // [rsp+260h] [rbp+160h]
+  __int64 v479; // [rsp+268h] [rbp+168h] BYREF
+  __int64 v480; // [rsp+270h] [rbp+170h]
+  __int64 v481; // [rsp+278h] [rbp+178h]
+  _QWORD v482[14]; // [rsp+280h] [rbp+180h] BYREF
+  _BYTE v483[8]; // [rsp+2F0h] [rbp+1F0h] BYREF
+  _BYTE v484[8]; // [rsp+2F8h] [rbp+1F8h] BYREF
+  _BYTE v485[8]; // [rsp+300h] [rbp+200h] BYREF
+  _BYTE v486[8]; // [rsp+308h] [rbp+208h] BYREF
+  __int64 v487; // [rsp+310h] [rbp+210h]
+  _BYTE v488[8]; // [rsp+318h] [rbp+218h] BYREF
+  __int64 v489; // [rsp+320h] [rbp+220h]
+  __int64 v490; // [rsp+328h] [rbp+228h]
+  __int64 v491; // [rsp+330h] [rbp+230h]
+  __int64 v492; // [rsp+338h] [rbp+238h]
+  __int64 v493; // [rsp+340h] [rbp+240h]
+  __int64 v494; // [rsp+348h] [rbp+248h]
+  __int64 v495; // [rsp+350h] [rbp+250h]
+  __int64 v496; // [rsp+358h] [rbp+258h]
+  __int64 v497; // [rsp+360h] [rbp+260h]
+  __int64 v498; // [rsp+368h] [rbp+268h]
+  _BYTE v499[8]; // [rsp+370h] [rbp+270h] BYREF
+  __int64 v500; // [rsp+378h] [rbp+278h]
+  _BYTE v501[8]; // [rsp+380h] [rbp+280h] BYREF
+  __int64 v502; // [rsp+388h] [rbp+288h]
+  __int64 v503; // [rsp+390h] [rbp+290h]
+  __int64 v504; // [rsp+398h] [rbp+298h]
+  __int64 v505; // [rsp+3A0h] [rbp+2A0h]
+  __int64 v506; // [rsp+3A8h] [rbp+2A8h]
+  __int64 v507; // [rsp+3B0h] [rbp+2B0h]
+  __int64 v508; // [rsp+3B8h] [rbp+2B8h]
+  _BYTE v509[8]; // [rsp+3C0h] [rbp+2C0h] BYREF
+  _BYTE v510[72]; // [rsp+3C8h] [rbp+2C8h] BYREF
+  __int64 v511; // [rsp+420h] [rbp+320h] BYREF
+  __int64 v512; // [rsp+428h] [rbp+328h] BYREF
+  __int64 v513; // [rsp+430h] [rbp+330h] BYREF
+  __int64 v514; // [rsp+438h] [rbp+338h] BYREF
+
+  v1 = dword_143E5F2D0 == 2;
+  v3 = *((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex);
+  v4 = *(_DWORD *)(v3 + 2496);
+  *(_DWORD *)(v3 + 2496) = 23;
+  if ( !v1 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v5 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v7 = (_QWORD *)v5;
+  if ( v5 )
+  {
+    LOBYTE(v6) = 1;
+    sub_1420F9D00(v5, (unsigned int)"AddAchievement", (unsigned int)"Game", v6, 1);
+    *v7 = &BSScript::NativeFunction1<BSScript::StaticFunctionTag,void,int>::`vftable';
+    v7[10] = sub_1411210E0;
+    v8 = 0;
+    v9 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v7[5] = 0;
+    v10 = v7[6];
+    v417[1] = 3;
+    *(_QWORD *)(v10 + 8) = 3;
+    *(_DWORD *)(v3 + 2496) = v9;
+    v482[1] = 0;
+  }
+  else
+  {
+    v8 = 0;
+    v7 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v7);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v11 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v13 = (_QWORD *)v11;
+  if ( v11 )
+  {
+    LOBYTE(v12) = 1;
+    sub_1420F9D00(v11, (unsigned int)"AddPerkPoints", (unsigned int)"Game", v12, 1);
+    *v13 = &BSScript::NativeFunction1<BSScript::StaticFunctionTag,void,int>::`vftable';
+    v13[10] = sub_1411211A0;
+    v14 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v13[5] = 0;
+    v15 = v13[6];
+    v417[2] = 3;
+    *(_QWORD *)(v15 + 8) = 3;
+    *(_DWORD *)(v3 + 2496) = v14;
+    v482[2] = 0;
+  }
+  else
+  {
+    v13 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v13);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v16 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v18 = (_QWORD *)v16;
+  if ( v16 )
+  {
+    LOBYTE(v17) = 1;
+    sub_1420F9D00(v16, (unsigned int)"AdvanceSkill", (unsigned int)"Game", v17, 2);
+    v418 = 0;
+    *v18 = &BSScript::NativeFunction2<BSScript::StaticFunctionTag,void,BSFixedString const &,float>::`vftable';
+    v18[10] = sub_141120FD0;
+    v19 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v18[5] = 0;
+    v20 = v18[6];
+    v419 = 0;
+    LODWORD(v418) = 2;
+    *(_QWORD *)(v20 + 8) = v418;
+    v21 = v18[6];
+    LODWORD(v419) = 4;
+    v482[3] = 0;
+    *(_QWORD *)(v21 + 24) = v419;
+    *(_DWORD *)(v3 + 2496) = v19;
+  }
+  else
+  {
+    v18 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v18);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v22 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v24 = (_QWORD *)v22;
+  if ( v22 )
+  {
+    LOBYTE(v23) = 1;
+    sub_1420F9D00(v22, (unsigned int)"ClearTempEffects", (unsigned int)"Game", v23, 0);
+    *v24 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,void>::`vftable';
+    v24[10] = sub_141129950;
+    v25 = *(_DWORD *)(v3 + 2496);
+    v24[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v25;
+    v482[4] = 0;
+  }
+  else
+  {
+    v24 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v24);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v26 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v28 = (_QWORD *)v26;
+  if ( v26 )
+  {
+    LOBYTE(v27) = 1;
+    sub_1420F9D00(v26, (unsigned int)"ClearPrison", (unsigned int)"Game", v27, 0);
+    *v28 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,void>::`vftable';
+    v28[10] = sub_141129940;
+    v29 = *(_DWORD *)(v3 + 2496);
+    v28[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v29;
+    v482[5] = 0;
+  }
+  else
+  {
+    v28 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v28);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v30 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v32 = (_QWORD *)v30;
+  if ( v30 )
+  {
+    LOBYTE(v31) = 1;
+    sub_1420F9D00(v30, (unsigned int)"EnablePipboyHDRMask", (unsigned int)"Game", v31, 1);
+    *v32 = &BSScript::NativeFunction1<BSScript::StaticFunctionTag,void,bool>::`vftable';
+    v32[10] = sub_141129960;
+    v33 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v32[5] = 0;
+    v34 = v32[6];
+    v420 = 5;
+    *(_QWORD *)(v34 + 8) = 5;
+    *(_DWORD *)(v3 + 2496) = v33;
+    v482[6] = 0;
+  }
+  else
+  {
+    v32 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v32);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v35 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v37 = (_QWORD *)v35;
+  if ( v35 )
+  {
+    LOBYTE(v36) = 1;
+    sub_1420F9D00(v35, (unsigned int)"Error", (unsigned int)"Game", v36, 1);
+    v421 = 0;
+    *v37 = &BSScript::NativeFunction1<BSScript::StaticFunctionTag,void,BSFixedString const &>::`vftable';
+    v37[10] = sub_1411211E0;
+    v38 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v37[5] = 0;
+    v39 = v37[6];
+    LODWORD(v421) = 2;
+    v482[7] = 0;
+    *(_QWORD *)(v39 + 8) = v421;
+    *(_DWORD *)(v3 + 2496) = v38;
+  }
+  else
+  {
+    v37 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v37);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v40 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v42 = (_QWORD *)v40;
+  if ( v40 )
+  {
+    LOBYTE(v41) = 1;
+    sub_1420F9D00(v40, (unsigned int)"FadeOutGame", (unsigned int)"Game", v41, 5);
+    v422 = 0;
+    *v42 = &BSScript::NativeFunction5<BSScript::StaticFunctionTag,void,bool,bool,float,float,bool>::`vftable';
+    v42[10] = sub_141121260;
+    v43 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v42[5] = 0;
+    v44 = v42[6];
+    v423 = 0;
+    v424 = 0;
+    v425 = 0;
+    v426 = 0;
+    LODWORD(v422) = 5;
+    *(_QWORD *)(v44 + 8) = v422;
+    v45 = v42[6];
+    LODWORD(v423) = 5;
+    LODWORD(v424) = 4;
+    *(_QWORD *)(v45 + 24) = v423;
+    v46 = v42[6];
+    LODWORD(v425) = 4;
+    LODWORD(v426) = 5;
+    *(_QWORD *)(v46 + 40) = v424;
+    v47 = v42[6];
+    v482[8] = 0;
+    *(_QWORD *)(v47 + 56) = v425;
+    *(_QWORD *)(v42[6] + 72LL) = v426;
+    *(_DWORD *)(v3 + 2496) = v43;
+  }
+  else
+  {
+    v42 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v42);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v48 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  if ( v48 )
+    v49 = sub_1411285D0(v48, (unsigned int)"FastTravel", (unsigned int)"Game", (unsigned int)sub_1411212A0, (__int64)a1);
+  else
+    v49 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v49);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v50 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  if ( v50 )
+    v51 = sub_141128BE0(
+            v50,
+            (unsigned int)"FindClosestReferenceOfType",
+            (unsigned int)"Game",
+            (unsigned int)sub_141121350,
+            (__int64)a1);
+  else
+    v51 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v51);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v52 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  if ( v52 )
+    v53 = sub_141128A30(
+            v52,
+            (unsigned int)"FindClosestReferenceOfAnyTypeInList",
+            (unsigned int)"Game",
+            (unsigned int)sub_141121540,
+            (__int64)a1);
+  else
+    v53 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v53);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v54 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  if ( v54 )
+    v55 = sub_141128BE0(
+            v54,
+            (unsigned int)"FindRandomReferenceOfType",
+            (unsigned int)"Game",
+            (unsigned int)sub_141121830,
+            (__int64)a1);
+  else
+    v55 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v55);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v56 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  if ( v56 )
+    v57 = sub_141128A30(
+            v56,
+            (unsigned int)"FindRandomReferenceOfAnyTypeInList",
+            (unsigned int)"Game",
+            (unsigned int)sub_141121A20,
+            (__int64)a1);
+  else
+    v57 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v57);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v58 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  if ( v58 )
+    v59 = sub_1411288C0(
+            v58,
+            (unsigned int)"FindClosestActor",
+            (unsigned int)"Game",
+            (unsigned int)sub_141121D10,
+            (__int64)a1);
+  else
+    v59 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v59);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v60 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  if ( v60 )
+    v61 = sub_1411288C0(
+            v60,
+            (unsigned int)"FindRandomActor",
+            (unsigned int)"Game",
+            (unsigned int)sub_141121DA0,
+            (__int64)a1);
+  else
+    v61 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v61);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v62 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v64 = (_QWORD *)v62;
+  if ( v62 )
+  {
+    LOBYTE(v63) = 1;
+    sub_1420F9D00(v62, (unsigned int)"ForceDisableSSRGodraysDirLight", (unsigned int)"Game", v63, 3);
+    v427 = 0;
+    *v64 = &BSScript::NativeFunction3<BSScript::StaticFunctionTag,void,bool,bool,bool>::`vftable';
+    v64[10] = sub_141129970;
+    v65 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v64[5] = 0;
+    v66 = v64[6];
+    v428 = 0;
+    v429 = 0;
+    LODWORD(v427) = 5;
+    *(_QWORD *)(v66 + 8) = v427;
+    v67 = v64[6];
+    LODWORD(v428) = 5;
+    LODWORD(v429) = 5;
+    *(_QWORD *)(v67 + 24) = v428;
+    v68 = v64[6];
+    v482[9] = 0;
+    *(_QWORD *)(v68 + 40) = v429;
+    *(_DWORD *)(v3 + 2496) = v65;
+  }
+  else
+  {
+    v64 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v64);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v69 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v71 = (_QWORD *)v69;
+  if ( v69 )
+  {
+    LOBYTE(v70) = 1;
+    sub_1420F9D00(v69, (unsigned int)"ForceThirdPerson", (unsigned int)"Game", v70, 0);
+    v482[10] = 0;
+    *v71 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,void>::`vftable';
+    v71[10] = sub_1411299B0;
+    v72 = *(_DWORD *)(v3 + 2496);
+    v71[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v72;
+  }
+  else
+  {
+    v71 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v71);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v73 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v75 = (_QWORD *)v73;
+  if ( v73 )
+  {
+    LOBYTE(v74) = 1;
+    sub_1420F9D00(v73, (unsigned int)"ForceFirstPerson", (unsigned int)"Game", v74, 0);
+    v482[11] = 0;
+    *v75 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,void>::`vftable';
+    v75[10] = sub_1411299A0;
+    v76 = *(_DWORD *)(v3 + 2496);
+    v75[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v76;
+  }
+  else
+  {
+    v75 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v75);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v77 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v79 = (_QWORD *)v77;
+  if ( v77 )
+  {
+    LOBYTE(v78) = 1;
+    sub_1420F9D00(v77, (unsigned int)"ShowFirstPersonGeometry", (unsigned int)"Game", v78, 1);
+    *v79 = &BSScript::NativeFunction1<BSScript::StaticFunctionTag,void,bool>::`vftable';
+    v79[10] = sub_141121EB0;
+    v80 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v79[5] = 0;
+    v81 = v79[6];
+    v430 = 5;
+    *(_QWORD *)(v81 + 8) = 5;
+    *(_DWORD *)(v3 + 2496) = v80;
+    v482[12] = 0;
+  }
+  else
+  {
+    v79 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v79);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v82 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v84 = (_QWORD *)v82;
+  if ( v82 )
+  {
+    LOBYTE(v83) = 1;
+    sub_1420F9D00(v82, (unsigned int)"ShowAllMapMarkers", (unsigned int)"Game", v83, 0);
+    v482[13] = 0;
+    *v84 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,void>::`vftable';
+    v84[10] = sub_141121F60;
+    v85 = *(_DWORD *)(v3 + 2496);
+    v84[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v85;
+  }
+  else
+  {
+    v84 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v84);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v86 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v88 = (_QWORD *)v86;
+  if ( v86 )
+  {
+    LOBYTE(v87) = 1;
+    sub_1420F9D00(v86, (unsigned int)"GetDifficulty", (unsigned int)"Game", v87, 0);
+    v431 = 0;
+    *v88 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,int>::`vftable';
+    v88[10] = sub_1411299C0;
+    v89 = *(_DWORD *)(v3 + 2496);
+    LODWORD(v431) = 3;
+    v88[5] = v431;
+    *(_DWORD *)(v3 + 2496) = v89;
+  }
+  else
+  {
+    v88 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v88);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v90 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v92 = (_QWORD *)v90;
+  if ( v90 )
+  {
+    LOBYTE(v91) = 1;
+    sub_1420F9D00(v90, (unsigned int)"GetForm", (unsigned int)"Game", v91, 1);
+    v511 = 0;
+    *v92 = &BSScript::NativeFunction1<BSScript::StaticFunctionTag,TESForm *,int>::`vftable';
+    v92[10] = sub_1411299D0;
+    v93 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    if ( (*(unsigned __int8 (__fastcall **)(_QWORD, _QWORD, __int64 *))(*(_QWORD *)*a1 + 72LL))(*a1, 0, &v511) )
+    {
+      v94 = (__int64 *)sub_1420ED2A0(v483, &v511, 0);
+    }
+    else
+    {
+      v94 = v432;
+      v432[0] = 1;
+    }
+    v95 = (void (__fastcall ***)(_QWORD, __int64))v511;
+    v96 = *v94;
+    if ( v511 && _InterlockedExchangeAdd((volatile signed __int32 *)(v511 + 8), 0xFFFFFFFF) == 1 )
+      (**v95)(v95, 1);
+    v92[5] = v96;
+    v97 = v92[6];
+    v432[1] = 3;
+    *(_QWORD *)(v97 + 8) = 3;
+    *(_DWORD *)(v3 + 2496) = v93;
+  }
+  else
+  {
+    v92 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v92);
+  LOBYTE(v98) = 1;
+  (*(void (__fastcall **)(_QWORD, const char *, const char *, __int64))(*(_QWORD *)*a1 + 232LL))(
+    *a1,
+    "Game",
+    "GetForm",
+    v98);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v99 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v101 = (_QWORD *)v99;
+  if ( v99 )
+  {
+    LOBYTE(v100) = 1;
+    sub_1420F9D00(v99, (unsigned int)"GetFormFromFile", (unsigned int)"Game", v100, 2);
+    v512 = 0;
+    *v101 = &BSScript::NativeFunction2<BSScript::StaticFunctionTag,TESForm *,unsigned int,BSFixedString const &>::`vftable';
+    v101[10] = sub_1411221C0;
+    v102 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    if ( (*(unsigned __int8 (__fastcall **)(_QWORD, _QWORD, __int64 *))(*(_QWORD *)*a1 + 72LL))(*a1, 0, &v512) )
+    {
+      v103 = (__int64 *)sub_1420ED2A0(v484, &v512, 0);
+    }
+    else
+    {
+      v103 = v433;
+      v433[0] = 1;
+    }
+    v104 = (void (__fastcall ***)(_QWORD, __int64))v512;
+    v105 = *v103;
+    if ( v512 && _InterlockedExchangeAdd((volatile signed __int32 *)(v512 + 8), 0xFFFFFFFF) == 1 )
+      (**v104)(v104, 1);
+    v101[5] = v105;
+    v106 = v101[6];
+    v434 = 0;
+    v433[1] = 3;
+    *(_QWORD *)(v106 + 8) = 3;
+    v107 = v101[6];
+    LODWORD(v434) = 2;
+    *(_QWORD *)(v107 + 24) = v434;
+    *(_DWORD *)(v3 + 2496) = v102;
+  }
+  else
+  {
+    v101 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v101);
+  LOBYTE(v108) = 1;
+  (*(void (__fastcall **)(_QWORD, const char *, const char *, __int64))(*(_QWORD *)*a1 + 232LL))(
+    *a1,
+    "Game",
+    "GetFormFromFile",
+    v108);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v109 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v111 = (_QWORD *)v109;
+  if ( v109 )
+  {
+    LOBYTE(v110) = 1;
+    sub_1420F9D00(v109, (unsigned int)"GetGameSettingFloat", (unsigned int)"Game", v110, 1);
+    *v111 = &BSScript::NativeFunction1<BSScript::StaticFunctionTag,float,BSFixedString const &>::`vftable';
+    v111[10] = sub_141122230;
+    v435 = 0;
+    v112 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v436 = 0;
+    LODWORD(v435) = 4;
+    v111[5] = v435;
+    v113 = v111[6];
+    LODWORD(v436) = 2;
+    *(_QWORD *)(v113 + 8) = v436;
+    *(_DWORD *)(v3 + 2496) = v112;
+  }
+  else
+  {
+    v111 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v111);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v114 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v116 = (_QWORD *)v114;
+  if ( v114 )
+  {
+    LOBYTE(v115) = 1;
+    sub_1420F9D00(v114, (unsigned int)"GetGameSettingInt", (unsigned int)"Game", v115, 1);
+    v437 = 0;
+    *v116 = &BSScript::NativeFunction1<BSScript::StaticFunctionTag,int,BSFixedString const &>::`vftable';
+    v116[10] = sub_141122370;
+    v117 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v438 = 0;
+    LODWORD(v437) = 3;
+    v116[5] = v437;
+    v118 = v116[6];
+    LODWORD(v438) = 2;
+    *(_QWORD *)(v118 + 8) = v438;
+    *(_DWORD *)(v3 + 2496) = v117;
+  }
+  else
+  {
+    v116 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v116);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v119 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v121 = (_QWORD *)v119;
+  if ( v119 )
+  {
+    LOBYTE(v120) = 1;
+    sub_1420F9D00(v119, (unsigned int)"GetGameSettingString", (unsigned int)"Game", v120, 1);
+    v439 = 0;
+    *v121 = &BSScript::NativeFunction1<BSScript::StaticFunctionTag,BSFixedString,BSFixedString const &>::`vftable';
+    v121[10] = sub_141122500;
+    v122 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v440 = 0;
+    LODWORD(v439) = 2;
+    v121[5] = v439;
+    v123 = v121[6];
+    LODWORD(v440) = 2;
+    *(_QWORD *)(v123 + 8) = v440;
+    *(_DWORD *)(v3 + 2496) = v122;
+  }
+  else
+  {
+    v121 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v121);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v124 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v126 = (_QWORD *)v124;
+  if ( v124 )
+  {
+    LOBYTE(v125) = 1;
+    sub_1420F9D00(v124, (unsigned int)"GetPlayer", (unsigned int)"Game", v125, 0);
+    v513 = 0;
+    *v126 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,Actor *>::`vftable';
+    v126[10] = sub_141122670;
+    v127 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    if ( (*(unsigned __int8 (__fastcall **)(_QWORD, __int64, __int64 *))(*(_QWORD *)*a1 + 72LL))(*a1, 65, &v513) )
+    {
+      v128 = (__int64 *)sub_1420ED2A0(v485, &v513, 0);
+    }
+    else
+    {
+      v128 = &v441;
+      v441 = 1;
+    }
+    v129 = (void (__fastcall ***)(_QWORD, __int64))v513;
+    v130 = *v128;
+    if ( v513 && _InterlockedExchangeAdd((volatile signed __int32 *)(v513 + 8), 0xFFFFFFFF) == 1 )
+      (**v129)(v129, 1);
+    v126[5] = v130;
+    *(_DWORD *)(v3 + 2496) = v127;
+  }
+  else
+  {
+    v126 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v126);
+  LOBYTE(v131) = 1;
+  (*(void (__fastcall **)(_QWORD, const char *, const char *, __int64))(*(_QWORD *)*a1 + 232LL))(
+    *a1,
+    "Game",
+    "GetPlayer",
+    v131);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v132 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v134 = (_QWORD *)v132;
+  if ( v132 )
+  {
+    LOBYTE(v133) = 1;
+    sub_1420F9D00(v132, (unsigned int)"GetPlayerFollowers", (unsigned int)"Game", v133, 0);
+    *v134 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,BSScript::ArrayWrapper<Actor *>>::`vftable';
+    v134[10] = sub_141122680;
+    v135 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    sub_14110D0F0(v482, *a1);
+    v134[5] = v482[0];
+    *(_DWORD *)(v3 + 2496) = v135;
+  }
+  else
+  {
+    v134 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v134);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v136 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v138 = (_QWORD *)v136;
+  if ( v136 )
+  {
+    LOBYTE(v137) = 1;
+    sub_1420F9D00(v136, (unsigned int)"GetPlayerGrabbedRef", (unsigned int)"Game", v137, 0);
+    v514 = 0;
+    *v138 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,TESObjectREFR *>::`vftable';
+    v138[10] = sub_141122A50;
+    v139 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    if ( (*(unsigned __int8 (__fastcall **)(_QWORD, __int64, __int64 *))(*(_QWORD *)*a1 + 72LL))(*a1, 64, &v514) )
+    {
+      v140 = (__int64 *)sub_1420ED2A0(v486, &v514, 0);
+    }
+    else
+    {
+      v140 = v442;
+      v442[0] = 1;
+    }
+    v141 = (void (__fastcall ***)(_QWORD, __int64))v514;
+    v142 = *v140;
+    if ( v514 && _InterlockedExchangeAdd((volatile signed __int32 *)(v514 + 8), 0xFFFFFFFF) == 1 )
+      (**v141)(v141, 1);
+    v138[5] = v142;
+    *(_DWORD *)(v3 + 2496) = v139;
+  }
+  else
+  {
+    v138 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v138);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v143 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v145 = (_QWORD *)v143;
+  if ( v143 )
+  {
+    LOBYTE(v144) = 1;
+    sub_1420F9D00(v143, (unsigned int)"GetPlayerRadioFrequency", (unsigned int)"Game", v144, 0);
+    *v145 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,float>::`vftable';
+    v145[10] = sub_1411299E0;
+    v442[1] = 4;
+    v146 = *(_DWORD *)(v3 + 2496);
+    v145[5] = 4;
+    *(_DWORD *)(v3 + 2496) = v146;
+  }
+  else
+  {
+    v145 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v145);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v147 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  if ( v147 )
+    v148 = sub_141128020(
+             v147,
+             (unsigned int)"GetPlayersLastRiddenHorse",
+             (unsigned int)"Game",
+             (unsigned int)sub_141122B30,
+             (__int64)a1);
+  else
+    v148 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v148);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v149 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v151 = (_QWORD *)v149;
+  if ( v149 )
+  {
+    LOBYTE(v150) = 1;
+    sub_1420F9D00(v149, (unsigned int)"GetRealHoursPassed", (unsigned int)"Game", v150, 0);
+    *v151 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,float>::`vftable';
+    v151[10] = sub_141122B90;
+    v152 = *(_DWORD *)(v3 + 2496);
+    v442[2] = 4;
+    v151[5] = 4;
+    *(_DWORD *)(v3 + 2496) = v152;
+  }
+  else
+  {
+    v151 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v151);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v153 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v155 = (_QWORD *)v153;
+  if ( v153 )
+  {
+    LOBYTE(v154) = 1;
+    sub_1420F9D00(v153, (unsigned int)"GetXPForLevel", (unsigned int)"Game", v154, 1);
+    v443 = 0;
+    *v155 = &BSScript::NativeFunction1<BSScript::StaticFunctionTag,unsigned int,unsigned int>::`vftable';
+    v155[10] = sub_141122C10;
+    v156 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v444 = 0;
+    LODWORD(v443) = 3;
+    v155[5] = v443;
+    v157 = v155[6];
+    LODWORD(v444) = 3;
+    *(_QWORD *)(v157 + 8) = v444;
+    *(_DWORD *)(v3 + 2496) = v156;
+  }
+  else
+  {
+    v155 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v155);
+  LOBYTE(v158) = 1;
+  (*(void (__fastcall **)(_QWORD, const char *, const char *, __int64))(*(_QWORD *)*a1 + 232LL))(
+    *a1,
+    "Game",
+    "GetXPForLevel",
+    v158);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v159 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v161 = (_QWORD *)v159;
+  if ( v159 )
+  {
+    LOBYTE(v160) = 1;
+    sub_1420F9D00(v159, (unsigned int)"IncrementSkill", (unsigned int)"Game", v160, 2);
+    v487 = 0;
+    *v161 = &BSScript::NativeFunction2<BSScript::StaticFunctionTag,void,ActorValueInfo *,unsigned int>::`vftable';
+    v415 = 0;
+    v161[10] = sub_141122C40;
+    v162 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v161[5] = 0;
+    if ( (*(unsigned __int8 (__fastcall **)(_QWORD, __int64, __int64 *))(*(_QWORD *)*a1 + 72LL))(*a1, 98, &v415) )
+    {
+      v163 = (__int64 *)sub_1420ED2A0(v488, &v415, 0);
+    }
+    else
+    {
+      v163 = &v445;
+      v445 = 1;
+    }
+    v164 = (void (__fastcall ***)(_QWORD, __int64))v415;
+    v165 = *v163;
+    if ( v415 && _InterlockedExchangeAdd((volatile signed __int32 *)(v415 + 8), 0xFFFFFFFF) == 1 )
+      (**v164)(v164, 1);
+    v166 = v161[6];
+    v446 = 3;
+    *(_QWORD *)(v166 + 8) = v165;
+    *(_QWORD *)(v161[6] + 24LL) = v446;
+    *(_DWORD *)(v3 + 2496) = v162;
+  }
+  else
+  {
+    v161 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v161);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v167 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v169 = (_QWORD *)v167;
+  if ( v167 )
+  {
+    LOBYTE(v168) = 1;
+    sub_1420F9D00(v167, (unsigned int)"IncrementStat", (unsigned int)"Game", v168, 2);
+    *v169 = &BSScript::NativeFunction2<BSScript::StaticFunctionTag,void,BSFixedString const &,int>::`vftable';
+    v169[10] = sub_141122D20;
+    v447 = 0;
+    v170 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v169[5] = 0;
+    v171 = v169[6];
+    v448 = 0;
+    LODWORD(v447) = 2;
+    *(_QWORD *)(v171 + 8) = v447;
+    v172 = v169[6];
+    LODWORD(v448) = 3;
+    v489 = 0;
+    *(_QWORD *)(v172 + 24) = v448;
+    *(_DWORD *)(v3 + 2496) = v170;
+  }
+  else
+  {
+    v169 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v169);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v173 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v175 = (_QWORD *)v173;
+  if ( v173 )
+  {
+    LOBYTE(v174) = 1;
+    sub_1420F9D00(v173, (unsigned int)"InitializeMarkerDistances", (unsigned int)"Game", v174, 0);
+    v490 = 0;
+    *v175 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,void>::`vftable';
+    v175[10] = sub_141129A00;
+    v176 = *(_DWORD *)(v3 + 2496);
+    v175[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v176;
+  }
+  else
+  {
+    v175 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v175);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v177 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v179 = (_QWORD *)v177;
+  if ( v177 )
+  {
+    LOBYTE(v178) = 1;
+    sub_1420F9D00(v177, (unsigned int)"IsActivateControlsEnabled", (unsigned int)"Game", v178, 0);
+    *v179 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,bool>::`vftable';
+    v179[10] = sub_141122EC0;
+    v180 = *(_DWORD *)(v3 + 2496);
+    v449 = 5;
+    v179[5] = 5;
+    *(_DWORD *)(v3 + 2496) = v180;
+  }
+  else
+  {
+    v179 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v179);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v181 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v183 = (_QWORD *)v181;
+  if ( v181 )
+  {
+    LOBYTE(v182) = 1;
+    sub_1420F9D00(v181, (unsigned int)"IsCamSwitchControlsEnabled", (unsigned int)"Game", v182, 0);
+    *v183 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,bool>::`vftable';
+    v183[10] = sub_141122F00;
+    v184 = *(_DWORD *)(v3 + 2496);
+    v450 = 5;
+    v183[5] = 5;
+    *(_DWORD *)(v3 + 2496) = v184;
+  }
+  else
+  {
+    v183 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v183);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v185 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v187 = (_QWORD *)v185;
+  if ( v185 )
+  {
+    LOBYTE(v186) = 1;
+    sub_1420F9D00(v185, (unsigned int)"IsFastTravelControlsEnabled", (unsigned int)"Game", v186, 0);
+    *v187 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,bool>::`vftable';
+    v187[10] = sub_141122F20;
+    v188 = *(_DWORD *)(v3 + 2496);
+    v451 = 5;
+    v187[5] = 5;
+    *(_DWORD *)(v3 + 2496) = v188;
+  }
+  else
+  {
+    v187 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v187);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v189 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v191 = (_QWORD *)v189;
+  if ( v189 )
+  {
+    LOBYTE(v190) = 1;
+    sub_1420F9D00(v189, (unsigned int)"IsFastTravelEnabled", (unsigned int)"Game", v190, 0);
+    *v191 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,bool>::`vftable';
+    v191[10] = sub_141122F40;
+    v192 = *(_DWORD *)(v3 + 2496);
+    v452 = 5;
+    v191[5] = 5;
+    *(_DWORD *)(v3 + 2496) = v192;
+  }
+  else
+  {
+    v191 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v191);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v193 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v195 = (_QWORD *)v193;
+  if ( v193 )
+  {
+    LOBYTE(v194) = 1;
+    sub_1420F9D00(v193, (unsigned int)"IsFavoritesControlsEnabled", (unsigned int)"Game", v194, 0);
+    *v195 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,bool>::`vftable';
+    v195[10] = sub_141122FC0;
+    v196 = *(_DWORD *)(v3 + 2496);
+    v453 = 5;
+    v195[5] = 5;
+    *(_DWORD *)(v3 + 2496) = v196;
+  }
+  else
+  {
+    v195 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v195);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v197 = sub_1416579C0(&unk_143E5E0F0, 88, 0);
+  v199 = (_QWORD *)v197;
+  if ( v197 )
+  {
+    LOBYTE(v198) = 1;
+    sub_1420F9D00(v197, (unsigned int)"IsFightingControlsEnabled", (unsigned int)"Game", v198, 0);
+    *v199 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,bool>::`vftable';
+    v199[10] = sub_141122FE0;
+    v200 = *(_DWORD *)(v3 + 2496);
+    v454 = 5;
+    v199[5] = 5;
+    *(_DWORD *)(v3 + 2496) = v200;
+  }
+  else
+  {
+    v199 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v199);
+  v201 = sub_1401DFF80();
+  v202 = sub_1416579C0(v201, 88, 0);
+  v204 = (_QWORD *)v202;
+  if ( v202 )
+  {
+    LOBYTE(v203) = 1;
+    sub_1420F9D00(v202, (unsigned int)"IsJournalControlsEnabled", (unsigned int)"Game", v203, 0);
+    *v204 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,bool>::`vftable';
+    v204[10] = sub_141123000;
+    v205 = *(_DWORD *)(v3 + 2496);
+    v455 = 5;
+    v204[5] = 5;
+    *(_DWORD *)(v3 + 2496) = v205;
+  }
+  else
+  {
+    v204 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v204);
+  v206 = sub_1401DFF80();
+  v207 = sub_1416579C0(v206, 88, 0);
+  v209 = (_QWORD *)v207;
+  if ( v207 )
+  {
+    LOBYTE(v208) = 1;
+    sub_1420F9D00(v207, (unsigned int)"IsJumpingControlsEnabled", (unsigned int)"Game", v208, 0);
+    *v209 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,bool>::`vftable';
+    v209[10] = sub_141123020;
+    v210 = *(_DWORD *)(v3 + 2496);
+    v456 = 5;
+    v209[5] = 5;
+    *(_DWORD *)(v3 + 2496) = v210;
+  }
+  else
+  {
+    v209 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v209);
+  v211 = sub_1401E0000(88);
+  v213 = (_QWORD *)v211;
+  if ( v211 )
+  {
+    LOBYTE(v212) = 1;
+    sub_1420F9D00(v211, (unsigned int)"IsLookingControlsEnabled", (unsigned int)"Game", v212, 0);
+    *v213 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,bool>::`vftable';
+    v213[10] = sub_141123040;
+    v214 = *(_DWORD *)(v3 + 2496);
+    v457 = 5;
+    v213[5] = 5;
+    *(_DWORD *)(v3 + 2496) = v214;
+  }
+  else
+  {
+    v213 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v213);
+  v215 = sub_1401E0000(88);
+  v217 = (_QWORD *)v215;
+  if ( v215 )
+  {
+    LOBYTE(v216) = 1;
+    sub_1420F9D00(v215, (unsigned int)"IsMenuControlsEnabled", (unsigned int)"Game", v216, 0);
+    *v217 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,bool>::`vftable';
+    v217[10] = sub_141123060;
+    v218 = *(_DWORD *)(v3 + 2496);
+    v458 = 5;
+    v217[5] = 5;
+    *(_DWORD *)(v3 + 2496) = v218;
+  }
+  else
+  {
+    v217 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v217);
+  v219 = sub_1401E0000(88);
+  v221 = (_QWORD *)v219;
+  if ( v219 )
+  {
+    LOBYTE(v220) = 1;
+    sub_1420F9D00(v219, (unsigned int)"IsMovementControlsEnabled", (unsigned int)"Game", v220, 0);
+    *v221 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,bool>::`vftable';
+    v221[10] = sub_141123080;
+    v222 = *(_DWORD *)(v3 + 2496);
+    v459 = 5;
+    v221[5] = 5;
+    *(_DWORD *)(v3 + 2496) = v222;
+  }
+  else
+  {
+    v221 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v221);
+  v223 = sub_1401E0000(88);
+  if ( v223 )
+    v224 = sub_141128760(v223, "IsPlayerInRadioRange", "Game", sub_141129A10, a1);
+  else
+    v224 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v224);
+  v225 = sub_1401E0000(88);
+  if ( v225 )
+    v226 = sub_141128760(v225, "IsPlayerListening", "Game", sub_141129A20, a1);
+  else
+    v226 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v226);
+  v227 = sub_1401E0000(88);
+  v229 = (_QWORD *)v227;
+  if ( v227 )
+  {
+    LOBYTE(v228) = 1;
+    sub_1420F9D00(v227, (unsigned int)"IsPlayerRadioOn", (unsigned int)"Game", v228, 0);
+    *v229 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,bool>::`vftable';
+    v229[10] = sub_141129A30;
+    v230 = *(_DWORD *)(v3 + 2496);
+    v460 = 5;
+    v229[5] = 5;
+    *(_DWORD *)(v3 + 2496) = v230;
+  }
+  else
+  {
+    v229 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v229);
+  v231 = sub_1401E0000(88);
+  v233 = (_QWORD *)v231;
+  if ( v231 )
+  {
+    LOBYTE(v232) = 1;
+    sub_1420F9D00(v231, (unsigned int)"IsPluginInstalled", (unsigned int)"Game", v232, 1);
+    v461 = 0;
+    *v233 = &BSScript::NativeFunction1<BSScript::StaticFunctionTag,bool,BSFixedString const &>::`vftable';
+    v233[10] = sub_1411230D0;
+    v234 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v462 = 0;
+    LODWORD(v461) = 5;
+    v233[5] = v461;
+    v235 = v233[6];
+    LODWORD(v462) = 2;
+    *(_QWORD *)(v235 + 8) = v462;
+    *(_DWORD *)(v3 + 2496) = v234;
+  }
+  else
+  {
+    v233 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v233);
+  LOBYTE(v236) = 1;
+  (*(void (__fastcall **)(_QWORD, const char *, const char *, __int64))(*(_QWORD *)*a1 + 232LL))(
+    *a1,
+    "Game",
+    "IsPluginInstalled",
+    v236);
+  v237 = sub_1401E0000(88);
+  if ( v237 )
+    v238 = sub_141128200(v237, "IsSneakingControlsEnabled", "Game", sub_141123110, a1);
+  else
+    v238 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v238);
+  v239 = sub_1401E0000(88);
+  if ( v239 )
+    v240 = sub_141128200(v239, "IsVATSControlsEnabled", "Game", sub_141122EE0, a1);
+  else
+    v240 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v240);
+  v241 = sub_1401E0000(88);
+  v243 = (_QWORD *)v241;
+  if ( v241 )
+  {
+    LOBYTE(v242) = 1;
+    sub_1420F9D00(v241, (unsigned int)"IsVATSPlaybackActive", (unsigned int)"Game", v242, 0);
+    *v243 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,bool>::`vftable';
+    v243[10] = sub_141129A40;
+    v244 = *(_DWORD *)(v3 + 2496);
+    v463 = 5;
+    v243[5] = 5;
+    *(_DWORD *)(v3 + 2496) = v244;
+  }
+  else
+  {
+    v243 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v243);
+  v245 = sub_1401E0000(88);
+  if ( v245 )
+    v246 = sub_1411283B0(v245, "PassTime", "Game", sub_141123130, a1);
+  else
+    v246 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v246);
+  v247 = sub_1401E0000(88);
+  v249 = v247;
+  if ( v247 )
+  {
+    LOBYTE(v248) = 1;
+    sub_1420F9D00(v247, (unsigned int)"PlayBink", (unsigned int)"Game", v248, 6);
+    v464 = 0;
+    *(_QWORD *)v249 = &BSScript::NativeFunction6<BSScript::StaticFunctionTag,bool,BSFixedString const &,bool,bool,bool,bool,bool>::`vftable';
+    *(_QWORD *)(v249 + 80) = sub_141123150;
+    v250 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v465 = 0;
+    v466 = 0;
+    v467 = 0;
+    v468 = 0;
+    v469 = 0;
+    LODWORD(v464) = 5;
+    *(_QWORD *)(v249 + 40) = v464;
+    v251 = *(_QWORD *)(v249 + 48);
+    v470 = 0;
+    LODWORD(v465) = 2;
+    *(_QWORD *)(v251 + 8) = v465;
+    v252 = *(_QWORD *)(v249 + 48);
+    LODWORD(v466) = 5;
+    LODWORD(v467) = 5;
+    *(_QWORD *)(v252 + 24) = v466;
+    v253 = *(_QWORD *)(v249 + 48);
+    LODWORD(v468) = 5;
+    LODWORD(v469) = 5;
+    *(_QWORD *)(v253 + 40) = v467;
+    v254 = *(_QWORD *)(v249 + 48);
+    LODWORD(v470) = 5;
+    *(_QWORD *)(v254 + 56) = v468;
+    *(_QWORD *)(*(_QWORD *)(v249 + 48) + 72LL) = v469;
+    *(_QWORD *)(*(_QWORD *)(v249 + 48) + 88LL) = v470;
+    *(_DWORD *)(v3 + 2496) = v250;
+    *(_QWORD *)v249 = &BSScript::NativeLatentFunction6<BSScript::StaticFunctionTag,void,BSFixedString const &,bool,bool,bool,bool,bool>::`vftable';
+    *(_QWORD *)(v249 + 40) = 0;
+    *(_BYTE *)(v249 + 66) = 1;
+  }
+  else
+  {
+    v249 = 0;
+  }
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v249);
+  v255 = sub_1401E0000(88);
+  v257 = (_QWORD *)v255;
+  if ( v255 )
+  {
+    LOBYTE(v256) = 1;
+    sub_1420F9D00(v255, (unsigned int)"PrecacheCharGen", (unsigned int)"Game", v256, 0);
+    v491 = 0;
+    v257[10] = sub_141129A50;
+    *v257 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,void>::`vftable';
+    v258 = *(_DWORD *)(v3 + 2496);
+    v257[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v258;
+  }
+  else
+  {
+    v257 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v257);
+  v259 = sub_1401E0000(88);
+  v261 = (_QWORD *)v259;
+  if ( v259 )
+  {
+    LOBYTE(v260) = 1;
+    sub_1420F9D00(v259, (unsigned int)"PrecacheCharGenClear", (unsigned int)"Game", v260, 0);
+    *v261 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,void>::`vftable';
+    v261[10] = sub_141129A60;
+    v262 = *(_DWORD *)(v3 + 2496);
+    v261[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v262;
+    v492 = 0;
+  }
+  else
+  {
+    v261 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v261);
+  v263 = sub_1401E0000(88);
+  if ( v263 )
+    v264 = sub_141128280(v263, "QueryStat", "Game", sub_1411232B0, a1);
+  else
+    v264 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v264);
+  v265 = sub_1401E0000(88);
+  v267 = (_QWORD *)v265;
+  if ( v265 )
+  {
+    LOBYTE(v266) = 1;
+    sub_1420F9D00(v265, (unsigned int)"QuitToMainMenu", (unsigned int)"Game", v266, 0);
+    *v267 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,void>::`vftable';
+    v267[10] = sub_141123380;
+    v268 = *(_DWORD *)(v3 + 2496);
+    v267[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v268;
+    v493 = 0;
+  }
+  else
+  {
+    v267 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v267);
+  v269 = sub_1401E0000(88);
+  v271 = (_QWORD *)v269;
+  if ( v269 )
+  {
+    LOBYTE(v270) = 1;
+    sub_1420F9D00(v269, (unsigned int)"RequestAutosave", (unsigned int)"Game", v270, 0);
+    *v271 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,void>::`vftable';
+    v271[10] = sub_1411233F0;
+    v272 = *(_DWORD *)(v3 + 2496);
+    v271[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v272;
+    v494 = 0;
+  }
+  else
+  {
+    v271 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v271);
+  v273 = sub_1401E0000(88);
+  if ( v273 )
+    v274 = sub_141128320(v273, "RequestModel", "Game", sub_141123410, a1);
+  else
+    v274 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v274);
+  v275 = sub_1401E0000(88);
+  v277 = (_QWORD *)v275;
+  if ( v275 )
+  {
+    LOBYTE(v276) = 1;
+    sub_1420F9D00(v275, (unsigned int)"RequestSave", (unsigned int)"Game", v276, 0);
+    *v277 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,void>::`vftable';
+    v277[10] = sub_1411234A0;
+    v278 = *(_DWORD *)(v3 + 2496);
+    v277[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v278;
+    v495 = 0;
+  }
+  else
+  {
+    v277 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v277);
+  v279 = sub_1401E0000(88);
+  v281 = (_QWORD *)v279;
+  if ( v279 )
+  {
+    LOBYTE(v280) = 1;
+    sub_1420F9D00(v279, (unsigned int)"RewardPlayerXP", (unsigned int)"Game", v280, 2);
+    v471 = 0;
+    *v281 = &BSScript::NativeFunction2<BSScript::StaticFunctionTag,void,unsigned int,bool>::`vftable';
+    v281[10] = sub_1411234C0;
+    v282 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v281[5] = 0;
+    v283 = v281[6];
+    v472 = 0;
+    LODWORD(v471) = 3;
+    *(_QWORD *)(v283 + 8) = v471;
+    v284 = v281[6];
+    LODWORD(v472) = 5;
+    v496 = 0;
+    *(_QWORD *)(v284 + 24) = v472;
+    *(_DWORD *)(v3 + 2496) = v282;
+  }
+  else
+  {
+    v281 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v281);
+  v285 = sub_1401E0000(88);
+  v287 = (_QWORD *)v285;
+  if ( v285 )
+  {
+    LOBYTE(v286) = 1;
+    sub_1420F9D00(v285, (unsigned int)"ServeTime", (unsigned int)"Game", v286, 0);
+    *v287 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,void>::`vftable';
+    v287[10] = sub_141129A70;
+    v288 = *(_DWORD *)(v3 + 2496);
+    v287[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v288;
+    v497 = 0;
+  }
+  else
+  {
+    v287 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v287);
+  v289 = sub_1401E0000(88);
+  if ( v289 )
+    v290 = sub_1411284D0(
+             v289,
+             (unsigned int)"SetCameraTarget",
+             (unsigned int)"Game",
+             (unsigned int)sub_141129A90,
+             (__int64)a1);
+  else
+    v290 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v290);
+  v291 = sub_1401E0000(88);
+  if ( v291 )
+    v292 = sub_1411283B0(v291, "SetCharGenHUDMode", "Game", sub_141129AA0, a1);
+  else
+    v292 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v292);
+  v293 = sub_1401E0000(88);
+  if ( v293 )
+    v294 = sub_141128800(v293, "SetInChargen", "Game", sub_141129AB0, a1);
+  else
+    v294 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v294);
+  v295 = sub_1401E0000(88);
+  v297 = (_QWORD *)v295;
+  if ( v295 )
+  {
+    LOBYTE(v296) = 1;
+    sub_1420F9D00(v295, (unsigned int)"ShowPerkVaultBoyOnHUD", (unsigned int)"Game", v296, 2);
+    HIDWORD(v473) = 0;
+    *v297 = &BSScript::NativeFunction2<BSScript::StaticFunctionTag,void,BSFixedString const &,BGSSoundDescriptorForm *>::`vftable';
+    LODWORD(v473) = 2;
+    v297[10] = sub_141129B70;
+    v498 = 0;
+    v416 = 0;
+    v298 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v299 = v473;
+    v297[5] = 0;
+    *(_QWORD *)(v297[6] + 8LL) = v299;
+    if ( (*(unsigned __int8 (__fastcall **)(_QWORD, __int64, __int64 *))(*(_QWORD *)*a1 + 72LL))(*a1, 132, &v416) )
+    {
+      v300 = (__int64 *)sub_1420ED2A0(v499, &v416, 0);
+    }
+    else
+    {
+      v300 = v474;
+      v474[0] = 1;
+    }
+    v301 = (void (__fastcall ***)(_QWORD, __int64))v416;
+    v302 = *v300;
+    if ( v416 && _InterlockedExchangeAdd((volatile signed __int32 *)(v416 + 8), 0xFFFFFFFF) == 1 )
+      (**v301)(v301, 1);
+    *(_QWORD *)(v297[6] + 24LL) = v302;
+    *(_DWORD *)(v3 + 2496) = v298;
+  }
+  else
+  {
+    v297 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v297);
+  LOBYTE(v303) = 1;
+  (*(void (__fastcall **)(_QWORD, const char *, const char *, __int64))(*(_QWORD *)*a1 + 232LL))(
+    *a1,
+    "Game",
+    "ShowPerkVaultBoyOnHUD",
+    v303);
+  v304 = sub_1401E0000(88);
+  if ( v304 )
+    v305 = sub_1411286D0(v304, "SetInsideMemoryHUDMode", "Game", sub_141129B10, a1);
+  else
+    v305 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v305);
+  v306 = sub_1401E0000(88);
+  if ( v306 )
+    v307 = sub_1411286D0(v306, "SetPlayerAIDriven", "Game", sub_141129B20, a1);
+  else
+    v307 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v307);
+  v308 = sub_1401E0000(88);
+  if ( v308 )
+    v309 = sub_1411286D0(v308, "SetPlayerOnElevator", "Game", sub_141129B30, a1);
+  else
+    v309 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v309);
+  v310 = sub_1401E0000(88);
+  if ( v310 )
+    v311 = sub_141128440(v310, "SetPlayerRadioFrequency", "Game", sub_141129B40, a1);
+  else
+    v311 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v311);
+  v312 = sub_1401E0000(88);
+  if ( v312 )
+    v313 = sub_1411286D0(v312, "SetPlayerReportCrime", "Game", sub_141129B50, a1);
+  else
+    v313 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v313);
+  v314 = sub_1401E0000(88);
+  if ( v314 )
+    v315 = sub_141128440(v314, "SetSittingRotation", "Game", sub_1411235F0, a1);
+  else
+    v315 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v315);
+  v316 = sub_1401E0000(88);
+  v318 = (_QWORD *)v316;
+  if ( v316 )
+  {
+    LOBYTE(v317) = 1;
+    sub_1420F9D00(v316, (unsigned int)"ShakeCamera", (unsigned int)"Game", v317, 3);
+    v500 = 0;
+    *v318 = &BSScript::NativeFunction3<BSScript::StaticFunctionTag,void,TESObjectREFR *,float,float>::`vftable';
+    v318[10] = sub_1411234F0;
+    v319 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v318[5] = 0;
+    v320 = v318[6];
+    v321 = (_QWORD *)sub_14110D5B0(v501, *a1);
+    v475 = 0;
+    v474[1] = 4;
+    *(_QWORD *)(v320 + 8) = *v321;
+    v322 = v318[6];
+    LODWORD(v475) = 4;
+    *(_QWORD *)(v322 + 24) = 4;
+    *(_QWORD *)(v318[6] + 40LL) = v475;
+    *(_DWORD *)(v3 + 2496) = v319;
+  }
+  else
+  {
+    v318 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v318);
+  v323 = sub_1401E0000(88);
+  v325 = (_QWORD *)v323;
+  if ( v323 )
+  {
+    LOBYTE(v324) = 1;
+    sub_1420F9D00(v323, (unsigned int)"ShakeController", (unsigned int)"Game", v324, 3);
+    v476 = 0;
+    *v325 = &BSScript::NativeFunction3<BSScript::StaticFunctionTag,void,float,float,float>::`vftable';
+    v325[10] = sub_141123590;
+    v326 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v325[5] = 0;
+    v327 = v325[6];
+    v477 = 0;
+    v478 = 0;
+    LODWORD(v476) = 4;
+    *(_QWORD *)(v327 + 8) = v476;
+    v328 = v325[6];
+    LODWORD(v477) = 4;
+    LODWORD(v478) = 4;
+    *(_QWORD *)(v328 + 24) = v477;
+    v329 = v325[6];
+    v502 = 0;
+    *(_QWORD *)(v329 + 40) = v478;
+    *(_DWORD *)(v3 + 2496) = v326;
+  }
+  else
+  {
+    v325 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v325);
+  v330 = sub_1401E0000(88);
+  v332 = (_QWORD *)v330;
+  if ( v330 )
+  {
+    LOBYTE(v331) = 1;
+    sub_1420F9D00(v330, (unsigned int)"ShowFatigueWarningOnHUD", (unsigned int)"Game", v331, 0);
+    v503 = 0;
+    v332[10] = sub_141129B60;
+    *v332 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,void>::`vftable';
+    v333 = *(_DWORD *)(v3 + 2496);
+    v332[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v333;
+  }
+  else
+  {
+    v332 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v332);
+  v334 = sub_1401E0000(88);
+  v336 = (_QWORD *)v334;
+  if ( v334 )
+  {
+    LOBYTE(v335) = 1;
+    sub_1420F9D00(v334, (unsigned int)"ShowTitleSequenceMenu", (unsigned int)"Game", v335, 0);
+    *v336 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,void>::`vftable';
+    v336[10] = sub_141129BD0;
+    v337 = *(_DWORD *)(v3 + 2496);
+    v336[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v337;
+    v504 = 0;
+  }
+  else
+  {
+    v336 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v336);
+  v338 = sub_1401E0000(88);
+  v340 = (_QWORD *)v338;
+  if ( v338 )
+  {
+    LOBYTE(v339) = 1;
+    sub_1420F9D00(v338, (unsigned int)"HideTitleSequenceMenu", (unsigned int)"Game", v339, 0);
+    *v340 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,void>::`vftable';
+    v340[10] = sub_1411299F0;
+    v341 = *(_DWORD *)(v3 + 2496);
+    v340[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v341;
+    v505 = 0;
+  }
+  else
+  {
+    v340 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v340);
+  v342 = sub_1401E0000(88);
+  if ( v342 )
+    v343 = sub_141128320(v342, "StartTitleSequence", "Game", sub_141129C00, a1);
+  else
+    v343 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v343);
+  v344 = sub_1401E0000(88);
+  if ( v344 )
+    v345 = sub_141128320(v344, "ShowPipboyBootSequence", "Game", sub_141129B80, a1);
+  else
+    v345 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v345);
+  v346 = sub_1401E0000(88);
+  v348 = (_QWORD *)v346;
+  if ( v346 )
+  {
+    LOBYTE(v347) = 1;
+    sub_1420F9D00(v346, (unsigned int)"ShowPipboyPlugin", (unsigned int)"Game", v347, 0);
+    *v348 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,void>::`vftable';
+    v348[10] = sub_141129B90;
+    v349 = *(_DWORD *)(v3 + 2496);
+    v348[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v349;
+    v506 = 0;
+  }
+  else
+  {
+    v348 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v348);
+  v350 = sub_1401E0000(88);
+  if ( v350 )
+    v351 = sub_141128D90(
+             v350,
+             (unsigned int)"ShowRaceMenu",
+             (unsigned int)"Game",
+             (unsigned int)sub_141129BA0,
+             (__int64)a1);
+  else
+    v351 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v351);
+  v352 = sub_1401E0000(88);
+  v354 = (_QWORD *)v352;
+  if ( v352 )
+  {
+    LOBYTE(v353) = 1;
+    sub_1420F9D00(v352, (unsigned int)"ShowSPECIALMenu", (unsigned int)"Game", v353, 0);
+    *v354 = &BSScript::NativeFunction0<BSScript::StaticFunctionTag,void>::`vftable';
+    v354[10] = sub_141129BC0;
+    v355 = *(_DWORD *)(v3 + 2496);
+    v354[5] = 0;
+    *(_DWORD *)(v3 + 2496) = v355;
+    v507 = 0;
+  }
+  else
+  {
+    v354 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v354);
+  v356 = sub_1401E0000(88);
+  if ( v356 )
+    v357 = sub_1411284D0(
+             v356,
+             (unsigned int)"ShowTrainingMenu",
+             (unsigned int)"Game",
+             (unsigned int)sub_141129BE0,
+             (__int64)a1);
+  else
+    v357 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v357);
+  v358 = sub_1401E0000(88);
+  if ( v358 )
+    v359 = sub_1411283B0(v358, "TriggerScreenBlood", "Game", sub_141129C30, a1);
+  else
+    v359 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v359);
+  v360 = sub_1401E0000(88);
+  v362 = (_QWORD *)v360;
+  if ( v360 )
+  {
+    LOBYTE(v361) = 1;
+    sub_1420F9D00(v360, (unsigned int)"PlayEventCamera", (unsigned int)"Game", v361, 2);
+    v508 = 0;
+    *v362 = &BSScript::NativeFunction2<BSScript::StaticFunctionTag,void,BGSCameraShot *,TESObjectREFR *>::`vftable';
+    v417[0] = 0;
+    v362[10] = sub_141123610;
+    v363 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v362[5] = 0;
+    if ( (*(unsigned __int8 (__fastcall **)(_QWORD, __int64, _QWORD *))(*(_QWORD *)*a1 + 72LL))(*a1, 99, v417) )
+    {
+      v364 = (__int64 *)sub_1420ED2A0(v509, v417, 0);
+    }
+    else
+    {
+      v364 = &v479;
+      v479 = 1;
+    }
+    v365 = (void (__fastcall ***)(_QWORD, __int64))v417[0];
+    v366 = *v364;
+    if ( v417[0] && _InterlockedExchangeAdd((volatile signed __int32 *)(v417[0] + 8LL), 0xFFFFFFFF) == 1 )
+      (**v365)(v365, 1);
+    *(_QWORD *)(v362[6] + 8LL) = v366;
+    v367 = v362[6];
+    *(_QWORD *)(v367 + 24) = *(_QWORD *)sub_14110D5B0(v510, *a1);
+    *(_DWORD *)(v3 + 2496) = v363;
+  }
+  else
+  {
+    v362 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v362);
+  v368 = sub_1401E0000(88);
+  if ( v368 )
+    v369 = sub_1411285D0(
+             v368,
+             (unsigned int)"StartDialogueCameraOrCenterOnTarget",
+             (unsigned int)"Game",
+             (unsigned int)sub_141129BF0,
+             (__int64)a1);
+  else
+    v369 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v369);
+  v370 = sub_1401E0000(88);
+  v372 = (_QWORD *)v370;
+  if ( v370 )
+  {
+    LOBYTE(v371) = 1;
+    sub_1420F9D00(v370, (unsigned int)"StopDialogueCamera", (unsigned int)"Game", v371, 2);
+    *v372 = &BSScript::NativeFunction2<BSScript::StaticFunctionTag,void,bool,bool>::`vftable';
+    v372[10] = sub_141129C10;
+    v480 = 0;
+    v373 = *(_DWORD *)(v3 + 2496);
+    *(_DWORD *)(v3 + 2496) = 18;
+    v372[5] = 0;
+    v374 = v372[6];
+    v481 = 0;
+    LODWORD(v480) = 5;
+    *(_QWORD *)(v374 + 8) = v480;
+    v375 = v372[6];
+    LODWORD(v481) = 5;
+    *(_QWORD *)(v375 + 24) = v481;
+    *(_DWORD *)(v3 + 2496) = v373;
+  }
+  else
+  {
+    v372 = nullptr;
+  }
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(*(_QWORD *)*a1 + 216LL))(*a1, v372);
+  v376 = sub_1401E0000(88);
+  if ( v376 )
+    v377 = sub_1411286D0(v376, "TurnPlayerRadioOn", "Game", sub_141129C40, a1);
+  else
+    v377 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v377);
+  v378 = sub_1401E0000(88);
+  if ( v378 )
+    v379 = sub_141128200(v378, "UsingGamepad", "Game", sub_141129C50, a1);
+  else
+    v379 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v379);
+  v380 = sub_1401E0000(88);
+  if ( v380 )
+    v381 = sub_141128320(v380, "Warning", "Game", sub_141123730, a1);
+  else
+    v381 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v381);
+  v382 = sub_1401E0000(88);
+  if ( v382 )
+    v383 = sub_141128110(
+             v382,
+             (unsigned int)"GetAggressionAV",
+             (unsigned int)"Game",
+             (unsigned int)sub_1411237B0,
+             (__int64)a1);
+  else
+    v383 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v383);
+  LOBYTE(v384) = 1;
+  (*(void (__fastcall **)(_QWORD, const char *, const char *, __int64))(*(_QWORD *)*a1 + 232LL))(
+    *a1,
+    "Game",
+    "GetAggressionAV",
+    v384);
+  v385 = sub_1401E0000(88);
+  if ( v385 )
+    v386 = sub_141128110(
+             v385,
+             (unsigned int)"GetConfidenceAV",
+             (unsigned int)"Game",
+             (unsigned int)sub_1411237D0,
+             (__int64)a1);
+  else
+    v386 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v386);
+  LOBYTE(v387) = 1;
+  (*(void (__fastcall **)(_QWORD, const char *, const char *, __int64))(*(_QWORD *)*a1 + 232LL))(
+    *a1,
+    "Game",
+    "GetConfidenceAV",
+    v387);
+  v388 = sub_1401E0000(88);
+  if ( v388 )
+    v389 = sub_141128110(
+             v388,
+             (unsigned int)"GetSuspiciousAV",
+             (unsigned int)"Game",
+             (unsigned int)sub_1411237F0,
+             (__int64)a1);
+  else
+    v389 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v389);
+  LOBYTE(v390) = 1;
+  (*(void (__fastcall **)(_QWORD, const char *, const char *, __int64))(*(_QWORD *)*a1 + 232LL))(
+    *a1,
+    "Game",
+    "GetSuspiciousAV",
+    v390);
+  v391 = sub_1401E0000(88);
+  if ( v391 )
+    v392 = sub_141128110(
+             v391,
+             (unsigned int)"GetHealthAV",
+             (unsigned int)"Game",
+             (unsigned int)sub_141123810,
+             (__int64)a1);
+  else
+    v392 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v392);
+  LOBYTE(v393) = 1;
+  (*(void (__fastcall **)(_QWORD, const char *, const char *, __int64))(*(_QWORD *)*a1 + 232LL))(
+    *a1,
+    "Game",
+    "GetHealthAV",
+    v393);
+  v394 = sub_1401E0000(88);
+  if ( v394 )
+    v395 = sub_141128110(
+             v394,
+             (unsigned int)"GetStrengthAV",
+             (unsigned int)"Game",
+             (unsigned int)sub_141123830,
+             (__int64)a1);
+  else
+    v395 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v395);
+  LOBYTE(v396) = 1;
+  (*(void (__fastcall **)(_QWORD, const char *, const char *, __int64))(*(_QWORD *)*a1 + 232LL))(
+    *a1,
+    "Game",
+    "GetStrengthAV",
+    v396);
+  v397 = sub_1401E0000(88);
+  if ( v397 )
+    v398 = sub_141128110(
+             v397,
+             (unsigned int)"GetPerceptionAV",
+             (unsigned int)"Game",
+             (unsigned int)sub_141123850,
+             (__int64)a1);
+  else
+    v398 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v398);
+  LOBYTE(v399) = 1;
+  (*(void (__fastcall **)(_QWORD, const char *, const char *, __int64))(*(_QWORD *)*a1 + 232LL))(
+    *a1,
+    "Game",
+    "GetPerceptionAV",
+    v399);
+  v400 = sub_1401E0000(88);
+  if ( v400 )
+    v401 = sub_141128110(
+             v400,
+             (unsigned int)"GetEnduranceAV",
+             (unsigned int)"Game",
+             (unsigned int)sub_141123870,
+             (__int64)a1);
+  else
+    v401 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v401);
+  LOBYTE(v402) = 1;
+  (*(void (__fastcall **)(_QWORD, const char *, const char *, __int64))(*(_QWORD *)*a1 + 232LL))(
+    *a1,
+    "Game",
+    "GetEnduranceAV",
+    v402);
+  v403 = sub_1401E0000(88);
+  if ( v403 )
+    v404 = sub_141128110(
+             v403,
+             (unsigned int)"GetCharismaAV",
+             (unsigned int)"Game",
+             (unsigned int)sub_141123890,
+             (__int64)a1);
+  else
+    v404 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v404);
+  LOBYTE(v405) = 1;
+  (*(void (__fastcall **)(_QWORD, const char *, const char *, __int64))(*(_QWORD *)*a1 + 232LL))(
+    *a1,
+    "Game",
+    "GetCharismaAV",
+    v405);
+  v406 = sub_1401E0000(88);
+  if ( v406 )
+    v407 = sub_141128110(
+             v406,
+             (unsigned int)"GetIntelligenceAV",
+             (unsigned int)"Game",
+             (unsigned int)sub_1411238B0,
+             (__int64)a1);
+  else
+    v407 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v407);
+  LOBYTE(v408) = 1;
+  (*(void (__fastcall **)(_QWORD, const char *, const char *, __int64))(*(_QWORD *)*a1 + 232LL))(
+    *a1,
+    "Game",
+    "GetIntelligenceAV",
+    v408);
+  v409 = sub_1401E0000(88);
+  if ( v409 )
+    v410 = sub_141128110(
+             v409,
+             (unsigned int)"GetAgilityAV",
+             (unsigned int)"Game",
+             (unsigned int)sub_1411238D0,
+             (__int64)a1);
+  else
+    v410 = 0;
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v410);
+  LOBYTE(v411) = 1;
+  (*(void (__fastcall **)(_QWORD, const char *, const char *, __int64))(*(_QWORD *)*a1 + 232LL))(
+    *a1,
+    "Game",
+    "GetAgilityAV",
+    v411);
+  v412 = sub_1401E0000(88);
+  if ( v412 )
+    v8 = sub_141128110(v412, (unsigned int)"GetLuckAV", (unsigned int)"Game", (unsigned int)sub_1411238F0, (__int64)a1);
+  (*(void (__fastcall **)(_QWORD, __int64))(*(_QWORD *)*a1 + 216LL))(*a1, v8);
+  LOBYTE(v413) = 1;
+  result = (*(__int64 (__fastcall **)(_QWORD, const char *, const char *, __int64))(*(_QWORD *)*a1 + 232LL))(
+             *a1,
+             "Game",
+             "GetLuckAV",
+             v413);
+  *(_DWORD *)(v3 + 2496) = v4;
+  return result;
+}
+
+=== end decompile ===
+
+========== CONSOLE GetPos CONTEXT ==========
+
+[*] GetPos table entry @ 0x142EDF3E0 (RVA 0x2EDF3E0)
+[*] Raw bytes around table entry:
+     0x142EDF3D0 [RVA 0x2EDF3D0]: 0x00000001405A0440  sub_1405A0440
+     0x142EDF3D8 [RVA 0x2EDF3D8]: 0x0000000000000000  
+  >> 0x142EDF3E0 [RVA 0x2EDF3E0]: 0x00000001424C1CBC  aGetpos
+     0x142EDF3E8 [RVA 0x2EDF3E8]: 0x000000014291B82D  Default
+     0x142EDF3F0 [RVA 0x2EDF3F0]: 0x0000000000001006  
+     0x142EDF3F8 [RVA 0x2EDF3F8]: 0x000000014291B82D  Default
+     0x142EDF400 [RVA 0x2EDF400]: 0x0000000000010001  
+     0x142EDF408 [RVA 0x2EDF408]: 0x0000000142EDE820  off_142EDE820
+     0x142EDF410 [RVA 0x2EDF410]: 0x00000001405C0ED0  sub_1405C0ED0
+     0x142EDF418 [RVA 0x2EDF418]: 0x00000001405B6150  sub_1405B6150
+     0x142EDF420 [RVA 0x2EDF420]: 0x000000014059A3F0  sub_14059A3F0
+     0x142EDF428 [RVA 0x2EDF428]: 0x0000000000000000  
+
+========== PlayerCharacter COLs (25 xrefs to TD) ==========
+[*] Scanning xrefs TO COL range 0x1429CC800 - 0x1429CD200
+[+] Found 125 potential vtable refs:
+    COL 0x1429CC808 referenced from 0x1429CC7F8 (seg .rdata) → vtable @ 0x1429CC800 (RVA 0x29CC800)
+    COL 0x1429CC808 referenced from 0x1429CD150 (seg .rdata) → vtable @ 0x1429CD158 (RVA 0x29CD158)
+    COL 0x1429CC820 referenced from 0x1429CC814 (seg .rdata) → vtable @ 0x1429CC81C (RVA 0x29CC81C)
+    COL 0x1429CC830 referenced from 0x142564830 (seg .rdata) → vtable @ 0x142564838 (RVA 0x2564838)
+    COL 0x1429CC830 referenced from 0x1429CC844 (seg .rdata) → vtable @ 0x1429CC84C (RVA 0x29CC84C)
+    COL 0x1429CC858 referenced from 0x1429CC840 (seg .rdata) → vtable @ 0x1429CC848 (RVA 0x29CC848)
+    COL 0x1429CC858 referenced from 0x1429CC9D8 (seg .rdata) → vtable @ 0x1429CC9E0 (RVA 0x29CC9E0)
+    COL 0x1429CC858 referenced from 0x1429CCD90 (seg .rdata) → vtable @ 0x1429CCD98 (RVA 0x29CCD98)
+    COL 0x1429CC858 referenced from 0x1429CCDB8 (seg .rdata) → vtable @ 0x1429CCDC0 (RVA 0x29CCDC0)
+    COL 0x1429CC858 referenced from 0x1429CCDE0 (seg .rdata) → vtable @ 0x1429CCDE8 (RVA 0x29CCDE8)
+    COL 0x1429CC858 referenced from 0x1429CCE08 (seg .rdata) → vtable @ 0x1429CCE10 (RVA 0x29CCE10)
+    COL 0x1429CC858 referenced from 0x1429CCE30 (seg .rdata) → vtable @ 0x1429CCE38 (RVA 0x29CCE38)
+    COL 0x1429CC858 referenced from 0x1429CCE58 (seg .rdata) → vtable @ 0x1429CCE60 (RVA 0x29CCE60)
+    COL 0x1429CC858 referenced from 0x1429CCE80 (seg .rdata) → vtable @ 0x1429CCE88 (RVA 0x29CCE88)
+    COL 0x1429CC858 referenced from 0x1429CCEA8 (seg .rdata) → vtable @ 0x1429CCEB0 (RVA 0x29CCEB0)
+    COL 0x1429CC858 referenced from 0x1429CCED0 (seg .rdata) → vtable @ 0x1429CCED8 (RVA 0x29CCED8)
+    COL 0x1429CC858 referenced from 0x1429CCEF8 (seg .rdata) → vtable @ 0x1429CCF00 (RVA 0x29CCF00)
+    COL 0x1429CC858 referenced from 0x1429CCF20 (seg .rdata) → vtable @ 0x1429CCF28 (RVA 0x29CCF28)
+    COL 0x1429CC858 referenced from 0x1429CCF48 (seg .rdata) → vtable @ 0x1429CCF50 (RVA 0x29CCF50)
+    COL 0x1429CC858 referenced from 0x1429CCF70 (seg .rdata) → vtable @ 0x1429CCF78 (RVA 0x29CCF78)
+    COL 0x1429CC858 referenced from 0x1429CCF98 (seg .rdata) → vtable @ 0x1429CCFA0 (RVA 0x29CCFA0)
+    COL 0x1429CC858 referenced from 0x1429CCFC0 (seg .rdata) → vtable @ 0x1429CCFC8 (RVA 0x29CCFC8)
+    COL 0x1429CC858 referenced from 0x1429CCFE8 (seg .rdata) → vtable @ 0x1429CCFF0 (RVA 0x29CCFF0)
+    COL 0x1429CC858 referenced from 0x1429CD010 (seg .rdata) → vtable @ 0x1429CD018 (RVA 0x29CD018)
+    COL 0x1429CC858 referenced from 0x1429CD038 (seg .rdata) → vtable @ 0x1429CD040 (RVA 0x29CD040)
+    COL 0x1429CC858 referenced from 0x1429CD060 (seg .rdata) → vtable @ 0x1429CD068 (RVA 0x29CD068)
+    COL 0x1429CC858 referenced from 0x1429CD088 (seg .rdata) → vtable @ 0x1429CD090 (RVA 0x29CD090)
+    COL 0x1429CC858 referenced from 0x1429CD0B0 (seg .rdata) → vtable @ 0x1429CD0B8 (RVA 0x29CD0B8)
+    COL 0x1429CC858 referenced from 0x1429CD0D8 (seg .rdata) → vtable @ 0x1429CD0E0 (RVA 0x29CD0E0)
+    COL 0x1429CC858 referenced from 0x1429CD100 (seg .rdata) → vtable @ 0x1429CD108 (RVA 0x29CD108)
+
+==== decomp_report complete ====

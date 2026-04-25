@@ -1,0 +1,988 @@
+================================================================================
+PART A :: sub_14221E6A0 disasm around key CB writes
+================================================================================
+
+-- window around 0x14221EE4A --
+  14221EDEA  movaps  xmm6, [rsp+2B0h+var_278+8]
+  14221EDEB  mulss   xmm0, xmm8
+  14221EDF0  movss   dword ptr [rax+rdi], xmm0
+  14221EDF5  movss   xmm1, dword ptr [rbx+0A0h]
+  14221EDFD  subss   xmm1, cs:dword_143E47730
+  14221EE05  movss   xmm0, dword ptr [rbx+0A4h]
+  14221EE0D  subss   xmm0, cs:dword_143E47734
+  14221EE15  movss   xmm2, dword ptr [rbx+0A8h]
+  14221EE1D  subss   xmm2, cs:dword_143E47738
+  14221EE25  mov     rax, [rbp+1B0h+arg_0]
+  14221EE2C  movss   xmm6, xmm1
+  14221EE30  shufps  xmm6, xmm6, 0E1h
+  14221EE34  movss   xmm6, xmm0
+  14221EE38  shufps  xmm6, xmm6, 0C6h
+  14221EE3C  mov     eax, [rax+190h]
+  14221EE42  movss   xmm6, xmm2
+  14221EE46  shufps  xmm6, xmm6, 0C9h
+  14221EE4A  movaps  [rsp+2B0h+var_278+8], xmm6 <--
+  14221EE4F  test    al, al
+  14221EE51  jns     loc_14221EED8
+  14221EE57  mov     rax, [rbp+1B0h+arg_10]
+  14221EE5E  movaps  xmm4, xmm6
+  14221EE61  movaps  xmm3, [rbp+1B0h+var_130]
+  14221EE68  movaps  xmm0, xmm6
+  14221EE6B  shufps  xmm4, xmm6, 0AAh
+  14221EE6F  mulps   xmm4, [rbp+1B0h+var_190]
+  14221EE73  movss   xmm1, dword ptr [rax+124h]
+  14221EE7B  movss   xmm2, dword ptr [rax+128h]
+  14221EE83  shufps  xmm0, xmm6, 55h ; 'U'
+  14221EE87  addps   xmm4, [rbp+1B0h+var_180]
+
+-- window around 0x14221EECA --
+  14221EE6A  movaps  xmm0, xmm6
+  14221EE6B  shufps  xmm4, xmm6, 0AAh
+  14221EE6F  mulps   xmm4, [rbp+1B0h+var_190]
+  14221EE73  movss   xmm1, dword ptr [rax+124h]
+  14221EE7B  movss   xmm2, dword ptr [rax+128h]
+  14221EE83  shufps  xmm0, xmm6, 55h ; 'U'
+  14221EE87  addps   xmm4, [rbp+1B0h+var_180]
+  14221EE8B  mulps   xmm0, [rbp+1B0h+var_1A0]
+  14221EE8F  shufps  xmm6, xmm6, 0
+  14221EE93  mulps   xmm6, [rbp+1B0h+var_1B0]
+  14221EE97  addps   xmm4, xmm0
+  14221EE9A  addps   xmm4, xmm6
+  14221EE9D  movaps  xmm0, xmm4
+  14221EEA0  shufps  xmm0, xmm4, 0FFh
+  14221EEA4  divps   xmm4, xmm0
+  14221EEA7  movss   xmm0, dword ptr [rax+120h]
+  14221EEAF  movss   xmm3, xmm0
+  14221EEB3  shufps  xmm3, xmm3, 0E1h
+  14221EEB7  movss   xmm3, xmm1
+  14221EEBB  shufps  xmm3, xmm3, 0C6h
+  14221EEBF  movss   xmm3, xmm2
+  14221EEC3  shufps  xmm3, xmm3, 0C9h
+  14221EEC7  subps   xmm4, xmm3
+  14221EECA  movaps  [rbp+1B0h+var_130], xmm3 <--
+  14221EED1  movaps  [rsp+2B0h+var_278+8], xmm4
+  14221EED6  jmp     short loc_14221EF38
+  14221EED8  test    al, 2
+  14221EEDA  jz      short loc_14221EEFA
+  14221EEDC  lea     rcx, byte_143A0F400
+  14221EEE3  call    sub_142220CD0
+  14221EEE8  movss   xmm0, dword ptr [rbx+138h]
+  14221EEF0  subps   xmm6, xmmword ptr [rax]
+  14221EEF3  movaps  [rsp+2B0h+var_278+8], xmm6
+  14221EEF8  jmp     short loc_14221EF48
+  14221EEFA  mov     rax, [rbp+1B0h+arg_10]
+  14221EF01  movaps  xmm1, xmm6
+  14221EF04  shufps  xmm1, xmm6, 0AAh
+  14221EF08  movaps  xmm0, xmm6
+
+-- window around 0x14221EED1 --
+  14221EE71  mulps   xmm4, [rbp+1B0h+var_190]
+  14221EE73  movss   xmm1, dword ptr [rax+124h]
+  14221EE7B  movss   xmm2, dword ptr [rax+128h]
+  14221EE83  shufps  xmm0, xmm6, 55h ; 'U'
+  14221EE87  addps   xmm4, [rbp+1B0h+var_180]
+  14221EE8B  mulps   xmm0, [rbp+1B0h+var_1A0]
+  14221EE8F  shufps  xmm6, xmm6, 0
+  14221EE93  mulps   xmm6, [rbp+1B0h+var_1B0]
+  14221EE97  addps   xmm4, xmm0
+  14221EE9A  addps   xmm4, xmm6
+  14221EE9D  movaps  xmm0, xmm4
+  14221EEA0  shufps  xmm0, xmm4, 0FFh
+  14221EEA4  divps   xmm4, xmm0
+  14221EEA7  movss   xmm0, dword ptr [rax+120h]
+  14221EEAF  movss   xmm3, xmm0
+  14221EEB3  shufps  xmm3, xmm3, 0E1h
+  14221EEB7  movss   xmm3, xmm1
+  14221EEBB  shufps  xmm3, xmm3, 0C6h
+  14221EEBF  movss   xmm3, xmm2
+  14221EEC3  shufps  xmm3, xmm3, 0C9h
+  14221EEC7  subps   xmm4, xmm3
+  14221EECA  movaps  [rbp+1B0h+var_130], xmm3
+  14221EED1  movaps  [rsp+2B0h+var_278+8], xmm4 <--
+  14221EED6  jmp     short loc_14221EF38
+  14221EED8  test    al, 2
+  14221EEDA  jz      short loc_14221EEFA
+  14221EEDC  lea     rcx, byte_143A0F400
+  14221EEE3  call    sub_142220CD0
+  14221EEE8  movss   xmm0, dword ptr [rbx+138h]
+  14221EEF0  subps   xmm6, xmmword ptr [rax]
+  14221EEF3  movaps  [rsp+2B0h+var_278+8], xmm6
+  14221EEF8  jmp     short loc_14221EF48
+  14221EEFA  mov     rax, [rbp+1B0h+arg_10]
+  14221EF01  movaps  xmm1, xmm6
+  14221EF04  shufps  xmm1, xmm6, 0AAh
+  14221EF08  movaps  xmm0, xmm6
+  14221EF0B  mulps   xmm1, [rbp+1B0h+var_190]
+  14221EF0F  shufps  xmm0, xmm6, 55h ; 'U'
+
+-- window around 0x14221EEF3 --
+  14221EE93  mulps   xmm6, [rbp+1B0h+var_1B0]
+  14221EE97  addps   xmm4, xmm0
+  14221EE9A  addps   xmm4, xmm6
+  14221EE9D  movaps  xmm0, xmm4
+  14221EEA0  shufps  xmm0, xmm4, 0FFh
+  14221EEA4  divps   xmm4, xmm0
+  14221EEA7  movss   xmm0, dword ptr [rax+120h]
+  14221EEAF  movss   xmm3, xmm0
+  14221EEB3  shufps  xmm3, xmm3, 0E1h
+  14221EEB7  movss   xmm3, xmm1
+  14221EEBB  shufps  xmm3, xmm3, 0C6h
+  14221EEBF  movss   xmm3, xmm2
+  14221EEC3  shufps  xmm3, xmm3, 0C9h
+  14221EEC7  subps   xmm4, xmm3
+  14221EECA  movaps  [rbp+1B0h+var_130], xmm3
+  14221EED1  movaps  [rsp+2B0h+var_278+8], xmm4
+  14221EED6  jmp     short loc_14221EF38
+  14221EED8  test    al, 2
+  14221EEDA  jz      short loc_14221EEFA
+  14221EEDC  lea     rcx, byte_143A0F400
+  14221EEE3  call    sub_142220CD0
+  14221EEE8  movss   xmm0, dword ptr [rbx+138h]
+  14221EEF0  subps   xmm6, xmmword ptr [rax]
+  14221EEF3  movaps  [rsp+2B0h+var_278+8], xmm6 <--
+  14221EEF8  jmp     short loc_14221EF48
+  14221EEFA  mov     rax, [rbp+1B0h+arg_10]
+  14221EF01  movaps  xmm1, xmm6
+  14221EF04  shufps  xmm1, xmm6, 0AAh
+  14221EF08  movaps  xmm0, xmm6
+  14221EF0B  mulps   xmm1, [rbp+1B0h+var_190]
+  14221EF0F  shufps  xmm0, xmm6, 55h ; 'U'
+  14221EF13  mulps   xmm0, [rbp+1B0h+var_1A0]
+  14221EF17  addps   xmm1, [rbp+1B0h+var_180]
+  14221EF1B  shufps  xmm6, xmm6, 0
+  14221EF1F  mulps   xmm6, [rbp+1B0h+var_1B0]
+  14221EF23  addps   xmm1, xmm0
+  14221EF26  addps   xmm1, xmm6
+  14221EF29  movaps  xmm0, xmm1
+  14221EF2C  shufps  xmm0, xmm1, 0FFh
+  14221EF30  divps   xmm1, xmm0
+
+-- window around 0x14221EF33 --
+  14221EED3  movaps  [rsp+2B0h+var_278+8], xmm4
+  14221EED6  jmp     short loc_14221EF38
+  14221EED8  test    al, 2
+  14221EEDA  jz      short loc_14221EEFA
+  14221EEDC  lea     rcx, byte_143A0F400
+  14221EEE3  call    sub_142220CD0
+  14221EEE8  movss   xmm0, dword ptr [rbx+138h]
+  14221EEF0  subps   xmm6, xmmword ptr [rax]
+  14221EEF3  movaps  [rsp+2B0h+var_278+8], xmm6
+  14221EEF8  jmp     short loc_14221EF48
+  14221EEFA  mov     rax, [rbp+1B0h+arg_10]
+  14221EF01  movaps  xmm1, xmm6
+  14221EF04  shufps  xmm1, xmm6, 0AAh
+  14221EF08  movaps  xmm0, xmm6
+  14221EF0B  mulps   xmm1, [rbp+1B0h+var_190]
+  14221EF0F  shufps  xmm0, xmm6, 55h ; 'U'
+  14221EF13  mulps   xmm0, [rbp+1B0h+var_1A0]
+  14221EF17  addps   xmm1, [rbp+1B0h+var_180]
+  14221EF1B  shufps  xmm6, xmm6, 0
+  14221EF1F  mulps   xmm6, [rbp+1B0h+var_1B0]
+  14221EF23  addps   xmm1, xmm0
+  14221EF26  addps   xmm1, xmm6
+  14221EF29  movaps  xmm0, xmm1
+  14221EF2C  shufps  xmm0, xmm1, 0FFh
+  14221EF30  divps   xmm1, xmm0
+  14221EF33  movaps  [rsp+2B0h+var_278+8], xmm1 <--
+  14221EF38  movss   xmm0, dword ptr [rbx+138h]
+  14221EF40  divss   xmm0, dword ptr [rax+0ACh]
+  14221EF48  mov     rax, [rbp+1B0h+var_160]
+  14221EF4C  movss   dword ptr [rdi+r13], xmm0
+  14221EF52  movss   xmm0, dword ptr [rsp+2B0h+var_278+8]
+  14221EF58  movss   xmm1, dword ptr [rsp+2B0h+var_278+0Ch]
+  14221EF5E  movss   dword ptr [rax+rdi], xmm0
+  14221EF63  mov     rax, [rbp+1B0h+var_158]
+  14221EF67  movss   xmm0, dword ptr [rsp+2B0h+var_268]
+  14221EF6D  movss   dword ptr [rax+rdi], xmm1
+  14221EF72  movaps  xmm1, xmm10
+
+================================================================================
+PART B :: callers of sub_14221E6A0
+================================================================================
+
+================================================================================
+PART C :: sub_14221E6A0 decomp - specific sections
+================================================================================
+  [300]   v11 = v241;
+  [301]   sub_1417A2060(&v7[7], 0, &v262);
+  [302]   v13 = *(unsigned int *)(v8 + 400);
+  [303]   v14 = &dword_143E47C10;
+  [304]   v15 = TlsIndex;
+  [305]   if ( (v13 & 2) != 0 )
+  [306]   {
+  [307]     v22 = (__m128)xmmword_14291B110;
+  [308]     v23 = (__m128)xmmword_14291AF90;
+  [309]     v24 = (__m128)xmmword_14291B290;
+  [310]     v30 = (__m128)xmmword_14291B520;
+  [311]     v261 = xmmword_14291B110;
+  [312]     v275 = xmmword_14291B110;
+  [313]     v276 = xmmword_14291AF90;
+  [314]     v277 = xmmword_14291B290;
+  [315]     v278 = xmmword_14291B520;
+  [316]   }
+  [317]   else
+  [318]   {
+  [319]     v16 = *(_BYTE *)(qword_143E5AE58 + 104);
+  [320]     if ( v16 == 0xFF )
+  [321]       v17 = &dword_143E47C10;
+  [322]     else
+  [323]       v17 = (int *)(v252[1] + 4LL * v16);
+  [324]     v18 = v7[10];
+  [325]     v19 = *(__m128 **)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex) + 2848LL);
+  [326]     v20 = v19 + 439;
+  [327]     if ( (v13 & 0x80u) == 0LL )
+  [328]     {
+  [329]       v25 = v7[10];
+  [330]       if ( !v19 )
+  [331]         v20 = (__m128 *)(qword_1438CAA98 + 7024);
+  [332]       v26 = _mm_shuffle_ps(v18, v18, 255);
+  [333]       v22 = _mm_mul_ps(v7[7], v26);
+  [334]       v23 = _mm_mul_ps(v7[8], v26);
+  [335]       v24 = _mm_mul_ps(v7[9], v26);
+  [336]     }
+  [337]     else
+  [338]     {
+  [339]       if ( !v19 )
+  [340]         v20 = (__m128 *)(qword_1438CAA98 + 7024);
+  [341]       v21 = _mm_shuffle_ps(v18, v18, 255);
+  [342]       v22 = _mm_mul_ps(v21, v7[7]);
+  [343]       v23 = _mm_mul_ps(v21, v7[8]);
+  [344]       v24 = _mm_mul_ps(v21, v7[9]);
+  [345]       v25 = _mm_add_ps(
+  [346]               _mm_mul_ps(
+  [347]                 _mm_add_ps(
+  [348]                   _mm_add_ps(
+  [349]                     _mm_mul_ps(_mm_shuffle_ps((__m128)v7[18].m128_u32[1], (__m128)v7[18].m128_u32[1], 0), v7[8]),
+  [350]                     _mm_mul_ps(_mm_shuffle_ps((__m128)v7[18].m128_u32[0], (__m128)v7[18].m128_u32[0], 0), v7[7])),
+  [351]                   _mm_mul_ps(_mm_shuffle_ps((__m128)v7[18].m128_u32[2], (__m128)v7[18].m128_u32[2], 0), v7[9])),
+  [352]                 v21),
+  [353]               v18);
+  [354]     }
+  [355]     v277 = (__int128)v24;
+  [356]     v276 = (__int128)v23;
+  [357]     v275 = (__int128)v22;
+  [358]     v261 = (__int128)v22;
+  [359]     v27 = _mm_sub_ps(v25, v20[107]);
+  [360]     v28 = (__int64)&v19[439];
+  [361]     v29 = _mm_shuffle_ps(v27, v27, 39);
+  [362]     v29.m128_f32[0] = 1.0;
+  [363]     v30 = _mm_shuffle_ps(v29, v29, 39);
+  [364]     v278 = (__int128)v30;
+  [365]     if ( !v19 )
+  [366]       v28 = qword_1438CAA98 + 7024;
+  [367]     *((_QWORD *)&v31 + 1) = v22.m128_u64[1];
+  [368]     *(double *)&v31 = sub_1406B92D0(qword_1438CAA98, v28 + 1952);
+  [369]     *(_OWORD *)v17 = v31;
+  [370]     *((__m128 *)v17 + 1) = v23;
+  [371]     *((__m128 *)v17 + 2) = v24;
+  [372]     *((__m128 *)v17 + 3) = v30;
+  [373]     v8 = a1;
+  [374]   }
+  [375]   v32 = v7[19].m128_i64[0];
+  [376]   v33 = &dword_143E47C50;
+  [377]   v273 = v32;
+  [378]   v34 = *(_BYTE *)(qword_143E5AE70 + 89);
+  [379]   if ( v34 == 0xFF )
+  [380]     v35 = &dword_143E47C50;
+  [381]   else
+  [382]     v35 = (int *)(v241[1] + 4LL * v34);
+  [383]   v260 = (float *)v35;
+  [384]   v36 = 0.0;
+  [385]   v35[1] = 1065353216;
+  [386]   v37 = *(_DWORD *)(v8 + 400);
+  [387]   if ( (v37 & 0x200) != 0 )
+  [388]   {
+  [389]     v38 = v287;
+  [390]     sub_142220050(v8, v287, (unsigned int)&v275, (unsigned int)&v262, v32, (__int64)v252, (__int64)v241);
+  [391]     goto LABEL_204;
+  [392]   }
+  [393]   LOWORD(v40) = *(_DWORD *)(v8 + 400);
+  [394]   if ( (v37 & 0x200010) != 0 && (v37 & 2) == 0 )
+  [395]   {
+  [396]     v41 = *(_BYTE *)(qword_143E5AE58 + 105);
+  [397]     if ( v41 == 0xFF )
+  [398]       v32 = (__int64)&dword_143E47C10;
+  [399]     else
+  [400]       v32 = v252[1] + 4LL * v41;
+  [401]     v42 = _mm_shuffle_ps(v24, v30, 68);
+  [402]     v43 = _mm_shuffle_ps(v22, v23, 68);
+  [403]     v44 = _mm_shuffle_ps(v22, v23, 238);
+  [404]     *(__m128 *)v32 = _mm_shuffle_ps(v43, v42, 136);
+  [405]     *(__m128 *)(v32 + 16) = _mm_shuffle_ps(v43, v42, 221);
+  [406]     v45 = _mm_shuffle_ps(v24, v30, 238);
+  [407]     *(__m128 *)(v32 + 32) = _mm_shuffle_ps(v44, v45, 136);
+  [408]     *(__m128 *)(v32 + 48) = _mm_shuffle_ps(v44, v45, 221);
+  [409]     v40 = *(_DWORD *)(v8 + 400);
+  [410]   }
+  [411]   if ( (v40 & 0x400) == 0 )
+  [412]     goto LABEL_121;
+  [413]   v46 = (_BYTE *)qword_143E5AE70;
+  [414]   v47 = *(_BYTE *)(qword_143E5AE70 + 104);
+  [415]   v48 = *(float **)(**(_QWORD **)(a2 + 48) + 184LL);
+  [416]   if ( v47 == 0xFF )
+  [417]     v49 = (float *)&dword_143E47C50;
+  [418]   else
+  [419]     v49 = (float *)(v241[1] + 4LL * v47);
+  [420]   v50 = powf(v48[95], 2.2);
+  [421]   v51 = powf(v48[96], 2.2);
+  [422]   v52 = v48[97];
+  [423]   v53 = v48[81] * *(float *)(qword_143E47AF0 + 152);
+  [424]   v49[1] = v51 * v53;
+  [425]   *v49 = v50 * v53;
+  [426]   v49[2] = powf(v52, 2.2) * v53;
+  [427]   v54 = v46[101];
+  [428]   if ( v54 == 0xFF )
+  [429]     v244 = &dword_143E47C50;
+  [430]   else
+  [431]     v244 = (int *)(v241[1] + 4LL * v54);
+  [432]   v55 = v46[102];
+  [433]   if ( v55 == 0xFF )
+  [434]     v56 = &dword_143E47C50;
+  [435]   else
+  [436]     v56 = (int *)(v241[1] + 4LL * v55);
+  [437]   v57 = v46[103];
+  [438]   v255 = v56;
+  [439]   if ( v57 == 0xFF )
+  [440]     v245 = &dword_143E47C50;
+  [441]   else
+  [442]     v245 = (int *)(v241[1] + 4LL * v57);
+  [443]   v58 = v46[92];
+  [444]   if ( v58 == 0xFF )
+  [445]     v246 = &dword_143E47C50;
+  [446]   else
+  [447]     v246 = (int *)(v241[1] + 4LL * v58);
+  [448]   v59 = v46[93];
+  [449]   if ( v59 == 0xFF )
+  [450]     v247 = &dword_143E47C50;
+  [451]   else
+  [452]     v247 = (int *)(v241[1] + 4LL * v59);
+  [453]   v60 = v46[94];
+  [454]   if ( v60 == 0xFF )
+  [455]     v248 = &dword_143E47C50;
+  [456]   else
+  [457]     v248 = (int *)(v241[1] + 4LL * v60);
+  [458]   v61 = v46[100];
+  [459]   if ( v61 == 0xFF )
+  [460]     v62 = &dword_143E47C50;
+  [461]   else
+  [462]     v62 = (int *)(v241[1] + 4LL * v61);
+  [463]   v63 = v46[95];
+  [464]   v256 = v62;
+  [465]   if ( v63 == 0xFF )
+  [466]     v249 = &dword_143E47C50;
+  [467]   else
+  [468]     v249 = (int *)(v241[1] + 4LL * v63);
+  [469]   v64 = v46[96];
+  [470]   if ( v64 == 0xFF )
+  [471]     v250 = &dword_143E47C50;
+  [472]   else
+  [473]     v250 = (int *)(v241[1] + 4LL * v64);
+  [474]   v65 = v46[97];
+  [475]   if ( v65 == 0xFF )
+  [476]     v66 = &dword_143E47C50;
+  [477]   else
+  [478]     v66 = (int *)(v241[1] + 4LL * v65);
+  [479]   v67 = v46[98];
+  [480]   v257 = v66;
+  [481]   if ( v67 == 0xFF )
+  [482]     v12 = &dword_143E47C50;
+  [483]   else
+  [484]     v12 = (int *)(v241[1] + 4LL * v67);
+  [485]   v68 = v46[99];
+  [486]   v258 = v12;
+  [487]   if ( v68 == 0xFF )
+  [488]     v69 = &dword_143E47C50;
+  [489]   else
+  [490]     v69 = (int *)(v241[1] + 4LL * v68);
+  [491]   v70 = a2;
+  [492]   v259 = v69;
+  [493]   LOBYTE(v71) = *(_BYTE *)(a2 + 80);
+  [494]   if ( (unsigned __int8)v71 <= 5u )
+  [495]     v71 = (unsigned __int8)v71;
+  [496]   else
+  [497]     v71 = 5;
+  [498]   v72 = 0;
+  [499]   v73 = v71 - 1;
+  [500]   if ( !v73 )
+  [501]   {
+  [502] LABEL_84:
+  [503]     v32 = v72;
+  [504]     v101 = 4LL * (4 - v72);
+  [505]     v102 = v101 >> 2;
+  [506]     v103 = &v244[v32];
+  [507]     while ( v102 )
+  [508]     {
+  [509]       *v103++ = 0;
+  [510]       --v102;
+  [511]     }
+  [512]     v104 = v101 >> 2;
+  [513]     v105 = &v255[v32];
+  [514]     while ( v104 )
+  [515]     {
+  [516]       *v105++ = 0;
+  [517]       --v104;
+  [518]     }
+  [519]     v106 = v101 >> 2;
+  [520]     v107 = &v245[v32];
+  [521]     while ( v106 )
+  [522]     {
+  [523]       *v107++ = 0;
+  [524]       --v106;
+  [525]     }
+  [526]     v108 = v101 >> 2;
+  [527]     v109 = &v246[v32];
+  [528]     while ( v108 )
+  [529]     {
+  [530]       *v109++ = 0;
+  [531]       --v108;
+  [532]     }
+  [533]     v110 = v101 >> 2;
+  [534]     v111 = &v247[v32];
+  [535]     while ( v110 )
+  [536]     {
+  [537]       *v111++ = 0;
+  [538]       --v110;
+  [539]     }
+  [540]     v112 = v101 >> 2;
+  [541]     v113 = &v248[v32];
+  [542]     while ( v112 )
+  [543]     {
+  [544]       *v113++ = 0;
+  [545]       --v112;
+  [546]     }
+  [547]     v114 = v101 >> 2;
+  [548]     v115 = &v256[v32];
+  [549]     while ( v114 )
+  [550]     {
+
+================================================================================
+PART D :: Look for functions that READ NiCamera+288/292/296...+332 (view mtx)
+   AND compute VP - candidates for the VP-matrix writer
+================================================================================
+functions that READ >= 3 XMM from [reg+0x120..0x150]: 304
+  fn 0x1412E5E30 size=0x3804 hits=13
+    1412E6687  read +0x140
+    1412E72E5  read +0x140
+    1412E773A  read +0x140
+    1412E777E  read +0x140
+    1412E78D6  read +0x140
+    1412E7A77  read +0x140
+  fn 0x141A0E8D0 size=0x203D hits=11
+    141A0ED90  read +0x120
+    141A0ED9C  read +0x130
+    141A0EDBE  read +0x120
+    141A0EE6F  read +0x150
+    141A0EE77  read +0x150
+    141A0EE83  read +0x140
+  fn 0x1414EB4A0 size=0x6AE2 hits=9
+    1414EBE9C  read +0x140
+    1414EC197  read +0x140
+    1414EC1F7  read +0x140
+    1414EC5D3  read +0x120
+    1414EC602  read +0x130
+    1414EF963  read +0x140
+  fn 0x1412FA4D0 size=0x683 hits=8
+    1412FA54A  read +0x130
+    1412FA56B  read +0x150
+    1412FA71E  read +0x130
+    1412FA72D  read +0x150
+    1412FAB0C  read +0x120
+    1412FAB15  read +0x140
+  fn 0x1413FB580 size=0x1D77 hits=8
+    1413FBAD2  read +0x130
+    1413FBAD9  read +0x120
+    1413FC052  read +0x130
+    1413FC0A7  read +0x120
+    1413FC2A4  read +0x120
+    1413FC2AB  read +0x130
+  fn 0x1419F9BA0 size=0x853 hits=8
+    1419F9F9F  read +0x120
+    1419F9FAD  read +0x130
+    1419FA002  read +0x140
+    1419FA0AB  read +0x150
+    1419FA1D1  read +0x140
+    1419FA1EA  read +0x120
+  fn 0x141A10920 size=0x1FE0 hits=8
+    141A10DB4  read +0x120
+    141A10E14  read +0x130
+    141A10E92  read +0x150
+    141A10EB2  read +0x140
+    141A1208E  read +0x120
+    141A12099  read +0x130
+  fn 0x141370E80 size=0x2D5D hits=7
+    141371300  read +0x140
+    14137130E  read +0x150
+    141372031  read +0x120
+    1413731A8  read +0x120
+    141373412  read +0x120
+    14137387D  read +0x130
+  fn 0x1422A4260 size=0x10F4 hits=7
+    1422A4DBF  read +0x120
+    1422A4DC8  read +0x130
+    1422A4DD1  read +0x140
+    1422A4E04  read +0x150
+    1422A50D8  read +0x150
+    1422A5171  read +0x140
+  fn 0x1412984D0 size=0x31F8 hits=6
+    141299561  read +0x140
+    14129A521  read +0x140
+    14129A643  read +0x150
+    14129A6C2  read +0x140
+    14129B17A  read +0x130
+    14129B285  read +0x150
+  fn 0x14129B6D0 size=0x31E4 hits=6
+    14129D833  read +0x150
+    14129D9B5  read +0x140
+    14129D9CD  read +0x130
+    14129DD3B  read +0x130
+    14129E03B  read +0x140
+    14129E473  read +0x150
+  fn 0x141300EC0 size=0x1FD4 hits=6
+    1413013D5  read +0x140
+    1413013DC  read +0x150
+    141302791  read +0x130
+    141302884  read +0x120
+    1413028C4  read +0x130
+    14130290F  read +0x130
+  fn 0x1413E0270 size=0xC7C hits=6
+    1413E0822  read +0x130
+    1413E0931  read +0x140
+    1413E0952  read +0x120
+    1413E0B46  read +0x120
+    1413E0CEA  read +0x120
+    1413E0EDF  read +0x120
+  fn 0x14154F500 size=0x1F31 hits=6
+    141550794  read +0x120
+    1415507A1  read +0x130
+    141550CCB  read +0x120
+    141550CD2  read +0x130
+    1415510E5  read +0x140
+    141551116  read +0x150
+  fn 0x1418A5AA0 size=0x8F0 hits=6
+    1418A5C86  read +0x150
+    1418A5D4F  read +0x150
+    1418A5D66  read +0x140
+    1418A60A3  read +0x150
+    1418A60D7  read +0x140
+    1418A60E0  read +0x130
+  fn 0x14191B140 size=0x16D0 hits=6
+    14191B99F  read +0x150
+    14191B9BC  read +0x140
+    14191C05A  read +0x140
+    14191C071  read +0x150
+    14191C51E  read +0x150
+    14191C52B  read +0x140
+  fn 0x140E2F800 size=0x58E hits=5
+    140E2FABA  read +0x130
+    140E2FAC4  read +0x140
+    140E2FBFF  read +0x150
+    140E2FCF7  read +0x130
+    140E2FD7B  read +0x140
+  fn 0x1412D76C0 size=0x815 hits=5
+    1412D77BC  read +0x150
+    1412D77E2  read +0x140
+    1412D7808  read +0x150
+    1412D782E  read +0x140
+    1412D7854  read +0x150
+  fn 0x1412E2930 size=0x34F4 hits=5
+    1412E4737  read +0x120
+    1412E48F3  read +0x120
+    1412E50ED  read +0x130
+    1412E533C  read +0x130
+    1412E542E  read +0x130
+  fn 0x1414F8E10 size=0x11C4 hits=5
+    1414F9BFD  read +0x140
+    1414F9C12  read +0x130
+    1414F9C19  read +0x150
+    1414F9C20  read +0x120
+    1414F9D39  read +0x120
+
+================================================================================
+PART E :: writers to offsets +288..+332 (NiCamera view mat) via ANY insn
+================================================================================
+fns writing to 4+ distinct offsets in +0x120..+0x158: 258
+  fn 0x1414EB4A0  total=18  {288: 4, 304: 6, 320: 4, 336: 4}
+  fn 0x141DDEC30  total=17  {288: 3, 292: 2, 296: 2, 300: 2, 304: 1, 308: 1, 312: 1, 316: 1, 320: 1, 324: 1, 328: 1, 332: 1}
+  fn 0x1416D20B0  total=15  {288: 1, 292: 1, 296: 1, 300: 1, 304: 1, 308: 1, 312: 1, 316: 1, 320: 1, 324: 1, 328: 1, 332: 1, 336: 1, 340: 1, 344: 1}
+  fn 0x141A1F6A0  total=14  {288: 2, 304: 4, 320: 4, 336: 4}
+  fn 0x142256650  total=13  {292: 1, 296: 1, 304: 1, 308: 1, 312: 1, 316: 1, 320: 1, 324: 1, 328: 1, 332: 1, 336: 1, 340: 1, 344: 1}
+  fn 0x1412E2930  total=12  {288: 1, 304: 1, 320: 2, 324: 2, 328: 2, 332: 2, 336: 2}
+  fn 0x1412ECFA0  total=12  {288: 1, 304: 2, 308: 2, 312: 2, 316: 2, 320: 2, 336: 1}
+  fn 0x14078C980  total=11  {320: 2, 328: 3, 336: 3, 344: 3}
+  fn 0x140C4CE00  total=11  {288: 1, 296: 1, 300: 1, 304: 1, 312: 1, 316: 1, 320: 1, 328: 1, 332: 1, 336: 1, 344: 1}
+  fn 0x140E1EFE0  total=11  {304: 1, 308: 1, 312: 1, 316: 1, 320: 1, 324: 1, 328: 1, 332: 1, 336: 1, 340: 1, 344: 1}
+  fn 0x140E2F590  total=11  {304: 1, 308: 1, 312: 1, 316: 1, 320: 1, 324: 1, 328: 1, 332: 1, 336: 1, 340: 1, 344: 1}
+  fn 0x141023660  total=11  {316: 2, 320: 2, 324: 2, 328: 2, 332: 2, 336: 1}
+  fn 0x141A210C0  total=11  {288: 4, 304: 4, 320: 1, 336: 2}
+  fn 0x141911A50  total=10  {288: 3, 304: 1, 320: 3, 336: 3}
+  fn 0x1419159A0  total=10  {288: 1, 304: 3, 320: 3, 336: 3}
+
+================================================================================
+PART F :: PlayerCharacter vtable - slot 139 target (called in sub_140C38910)
+================================================================================
+  0x142564838  ??_7PlayerCharacter@@6B@
+  0x1425651F8  ??_7PlayerCharacter@@6B@_0
+  0x142565210  ??_7PlayerCharacter@@6B@_1
+  0x142565228  ??_7PlayerCharacter@@6B@_2
+  0x142565240  ??_7PlayerCharacter@@6B@_3
+  0x142565258  ??_7PlayerCharacter@@6B@_4
+  0x142565330  ??_7PlayerCharacter@@6B@_5
+  0x142565350  ??_7PlayerCharacter@@6B@_6
+  0x1425653B0  ??_7PlayerCharacter@@6B@_7
+  0x142565420  ??_7PlayerCharacter@@6B@_9
+  0x142565560  ??_7PlayerCharacter@@6B@_11
+  0x142565578  ??_7PlayerCharacter@@6B@_13
+  0x142565590  ??_7PlayerCharacter@@6B@_15
+  0x1425655A8  ??_7PlayerCharacter@@6B@_17
+  0x1425655C0  ??_7PlayerCharacter@@6B@_18
+  0x1425655D8  ??_7PlayerCharacter@@6B@_19
+  0x1425655F0  ??_7PlayerCharacter@@6B@_20
+  0x142565608  ??_7PlayerCharacter@@6B@_21
+  0x142565620  ??_7PlayerCharacter@@6B@_22
+  0x142565638  ??_7PlayerCharacter@@6B@_8
+  vtbl 0x1425295E0 slot[0] = 0x1409E2A80 sub_1409E2A80
+  vtbl 0x1425295E0 slot[1] = 0x1409E5BC0 sub_1409E5BC0
+  vtbl 0x1425295E0 slot[2] = 0x14299BC30 unk_14299BC30
+  vtbl 0x1425295E0 slot[3] = 0x1409E2DA0 sub_1409E2DA0
+  vtbl 0x1425295E0 slot[4] = 0x1409E5E40 sub_1409E5E40
+  vtbl 0x1425295E0 slot[5] = 0x14299BF80 unk_14299BF80
+  vtbl 0x1425295E0 slot[6] = 0x1409E2B20 sub_1409E2B20
+  vtbl 0x1425295E0 slot[7] = 0x1409E5C40 sub_1409E5C40
+  vtbl 0x14252B828 slot[0] = 0x140A28AB0 sub_140A28AB0
+  vtbl 0x14252B828 slot[1] = 0x140A2C270 sub_140A2C270
+  vtbl 0x14252B828 slot[2] = 0x1429AB218 unk_1429AB218
+  vtbl 0x14252B828 slot[3] = 0x140A288D0 sub_140A288D0
+  vtbl 0x14252B828 slot[4] = 0x140A2C0F0 sub_140A2C0F0
+  vtbl 0x14252B828 slot[5] = 0x1429AB568 unk_1429AB568
+  vtbl 0x14252B828 slot[6] = 0x140A28880 sub_140A28880
+  vtbl 0x14252B828 slot[7] = 0x140A2C0B0 sub_140A2C0B0
+  vtbl 0x14252B828 slot[8] = 0x1429AB8B8 unk_1429AB8B8
+  vtbl 0x14252B828 slot[9] = 0x140A28970 sub_140A28970
+  vtbl 0x142564838 slot[0] = 0x140D89150 sub_140D89150
+  vtbl 0x142564838 slot[1] = 0x14024EE50 sub_14024EE50
+  vtbl 0x142564838 slot[2] = 0x140310BC0 nullsub_4767
+  vtbl 0x142564838 slot[3] = 0x140310CB0 sub_140310CB0
+  vtbl 0x142564838 slot[4] = 0x14024DAB0 nullsub_4592
+  vtbl 0x142564838 slot[5] = 0x14024DAD0 nullsub_4594
+  vtbl 0x142564838 slot[6] = 0x140312FD0 sub_140312FD0
+  vtbl 0x142564838 slot[7] = 0x1404F1B80 sub_1404F1B80
+  vtbl 0x142564838 slot[8] = 0x1404F1C20 sub_1404F1C20
+  vtbl 0x142564838 slot[9] = 0x1404F2430 sub_1404F2430
+  vtbl 0x1425651F8 slot[0] = 0x140D88BA0 sub_140D88BA0
+  vtbl 0x1425651F8 slot[1] = 0x1416BA6D0 sub_1416BA6D0
+  vtbl 0x1425651F8 slot[2] = 0x1429CCDA8 ??_R4PlayerCharacter@@6B@_1
+  vtbl 0x1425651F8 slot[3] = 0x140D88BAC sub_140D88BAC
+  vtbl 0x1425651F8 slot[4] = 0x140CAB470 sub_140CAB470
+  vtbl 0x1425651F8 slot[5] = 0x1429CCDD0 ??_R4PlayerCharacter@@6B@_2
+  vtbl 0x1425651F8 slot[6] = 0x140D88BB8 sub_140D88BB8
+  vtbl 0x1425651F8 slot[7] = 0x140CAB480 sub_140CAB480
+  vtbl 0x1425651F8 slot[8] = 0x1429CCDF8 ??_R4PlayerCharacter@@6B@_3
+  vtbl 0x1425651F8 slot[9] = 0x140D88BC4 sub_140D88BC4
+  vtbl 0x142565210 slot[0] = 0x140D88BAC sub_140D88BAC
+  vtbl 0x142565210 slot[1] = 0x140CAB470 sub_140CAB470
+  vtbl 0x142565210 slot[2] = 0x1429CCDD0 ??_R4PlayerCharacter@@6B@_2
+  vtbl 0x142565210 slot[3] = 0x140D88BB8 sub_140D88BB8
+  vtbl 0x142565210 slot[4] = 0x140CAB480 sub_140CAB480
+  vtbl 0x142565210 slot[5] = 0x1429CCDF8 ??_R4PlayerCharacter@@6B@_3
+  vtbl 0x142565210 slot[6] = 0x140D88BC4 sub_140D88BC4
+  vtbl 0x142565210 slot[7] = 0x140D79960 sub_140D79960
+  vtbl 0x142565210 slot[8] = 0x1429CCE20 ??_R4PlayerCharacter@@6B@_4
+  vtbl 0x142565210 slot[9] = 0x140D88BD0 sub_140D88BD0
+  vtbl 0x142565228 slot[0] = 0x140D88BB8 sub_140D88BB8
+  vtbl 0x142565228 slot[1] = 0x140CAB480 sub_140CAB480
+  vtbl 0x142565228 slot[2] = 0x1429CCDF8 ??_R4PlayerCharacter@@6B@_3
+  vtbl 0x142565228 slot[3] = 0x140D88BC4 sub_140D88BC4
+  vtbl 0x142565228 slot[4] = 0x140D79960 sub_140D79960
+  vtbl 0x142565228 slot[5] = 0x1429CCE20 ??_R4PlayerCharacter@@6B@_4
+  vtbl 0x142565228 slot[6] = 0x140D88BD0 sub_140D88BD0
+  vtbl 0x142565228 slot[7] = 0x140CB2870 sub_140CB2870
+  vtbl 0x142565228 slot[8] = 0x140CAA9B0 nullsub_6206
+  vtbl 0x142565228 slot[9] = 0x140CAA690 sub_140CAA690
+  vtbl 0x142565240 slot[0] = 0x140D88BC4 sub_140D88BC4
+  vtbl 0x142565240 slot[1] = 0x140D79960 sub_140D79960
+  vtbl 0x142565240 slot[2] = 0x1429CCE20 ??_R4PlayerCharacter@@6B@_4
+  vtbl 0x142565240 slot[3] = 0x140D88BD0 sub_140D88BD0
+  vtbl 0x142565240 slot[4] = 0x140CB2870 sub_140CB2870
+  vtbl 0x142565240 slot[5] = 0x140CAA9B0 nullsub_6206
+  vtbl 0x142565240 slot[6] = 0x140CAA690 sub_140CAA690
+  vtbl 0x142565240 slot[7] = 0x140CB2710 sub_140CB2710
+  vtbl 0x142565240 slot[8] = 0x140D7DC80 sub_140D7DC80
+  vtbl 0x142565240 slot[9] = 0x140D7DA20 sub_140D7DA20
+  vtbl 0x142565258 slot[0] = 0x140D88BD0 sub_140D88BD0
+  vtbl 0x142565258 slot[1] = 0x140CB2870 sub_140CB2870
+  vtbl 0x142565258 slot[2] = 0x140CAA9B0 nullsub_6206
+  vtbl 0x142565258 slot[3] = 0x140CAA690 sub_140CAA690
+  vtbl 0x142565258 slot[4] = 0x140CB2710 sub_140CB2710
+  vtbl 0x142565258 slot[5] = 0x140D7DC80 sub_140D7DC80
+  vtbl 0x142565258 slot[6] = 0x140D7DA20 sub_140D7DA20
+  vtbl 0x142565258 slot[7] = 0x140D7CFB0 sub_140D7CFB0
+  vtbl 0x142565258 slot[8] = 0x140D7DB10 sub_140D7DB10
+  vtbl 0x142565258 slot[9] = 0x140CA98C0 sub_140CA98C0
+  vtbl 0x142565330 slot[0] = 0x140D88C30 sub_140D88C30
+  vtbl 0x142565330 slot[1] = 0x1404FDA20 sub_1404FDA20
+  vtbl 0x142565330 slot[2] = 0x140C58DA0 sub_140C58DA0
+  vtbl 0x142565330 slot[3] = 0x1429CCE70 ??_R4PlayerCharacter@@6B@_6
+  vtbl 0x142565330 slot[4] = 0x140D88C3C sub_140D88C3C
+  vtbl 0x142565330 slot[5] = 0x140CC8EB0 sub_140CC8EB0
+  vtbl 0x142565330 slot[6] = 0x140CC9030 sub_140CC9030
+  vtbl 0x142565330 slot[7] = 0x140CC9150 sub_140CC9150
+  vtbl 0x142565330 slot[8] = 0x140CC9280 sub_140CC9280
+  vtbl 0x142565330 slot[9] = 0x140CC9400 sub_140CC9400
+  vtbl 0x142565350 slot[0] = 0x140D88C3C sub_140D88C3C
+  vtbl 0x142565350 slot[1] = 0x140CC8EB0 sub_140CC8EB0
+  vtbl 0x142565350 slot[2] = 0x140CC9030 sub_140CC9030
+  vtbl 0x142565350 slot[3] = 0x140CC9150 sub_140CC9150
+  vtbl 0x142565350 slot[4] = 0x140CC9280 sub_140CC9280
+  vtbl 0x142565350 slot[5] = 0x140CC9400 sub_140CC9400
+  vtbl 0x142565350 slot[6] = 0x140CC9620 sub_140CC9620
+  vtbl 0x142565350 slot[7] = 0x140CC98E0 sub_140CC98E0
+  vtbl 0x142565350 slot[8] = 0x140CC9590 sub_140CC9590
+  vtbl 0x142565350 slot[9] = 0x140526AC0 sub_140526AC0
+  vtbl 0x1425653B0 slot[0] = 0x140D88B34 sub_140D88B34
+  vtbl 0x1425653B0 slot[1] = 0x140CE1A00 sub_140CE1A00
+  vtbl 0x1425653B0 slot[2] = 0x140CC1040 sub_140CC1040
+  vtbl 0x1425653B0 slot[3] = 0x140CC1200 sub_140CC1200
+  vtbl 0x1425653B0 slot[4] = 0x140D5FBA0 sub_140D5FBA0
+  vtbl 0x1425653B0 slot[5] = 0x140CE26E0 sub_140CE26E0
+  vtbl 0x1425653B0 slot[6] = 0x140CE1D60 sub_140CE1D60
+  vtbl 0x1425653B0 slot[7] = 0x140CE1DA0 sub_140CE1DA0
+  vtbl 0x1425653B0 slot[8] = 0x140CDE670 sub_140CDE670
+  vtbl 0x1425653B0 slot[9] = 0x140D7E710 sub_140D7E710
+  vtbl 0x142565420 slot[0] = 0x140D88B40 sub_140D88B40
+  vtbl 0x142565420 slot[1] = 0x140CB1440 sub_140CB1440
+  vtbl 0x142565420 slot[2] = 0x140CB1450 sub_140CB1450
+  vtbl 0x142565420 slot[3] = 0x140CB14A0 sub_140CB14A0
+  vtbl 0x142565420 slot[4] = 0x140D79A40 sub_140D79A40
+  vtbl 0x142565420 slot[5] = 0x140CB1540 sub_140CB1540
+  vtbl 0x142565420 slot[6] = 0x140CB1590 sub_140CB1590
+  vtbl 0x142565420 slot[7] = 0x140CB15B0 sub_140CB15B0
+  vtbl 0x142565420 slot[8] = 0x140CB0FB0 sub_140CB0FB0
+  vtbl 0x142565420 slot[9] = 0x140CB14F0 sub_140CB14F0
+  vtbl 0x142565560 slot[0] = 0x140D88B4C sub_140D88B4C
+  vtbl 0x142565560 slot[1] = 0x140CAB800 sub_140CAB800
+  vtbl 0x142565560 slot[2] = 0x1429CCF10 ??_R4PlayerCharacter@@6B@_13
+  vtbl 0x142565560 slot[3] = 0x140D88B58 sub_140D88B58
+  vtbl 0x142565560 slot[4] = 0x140CAB890 sub_140CAB890
+  vtbl 0x142565560 slot[5] = 0x1429CCF38 ??_R4PlayerCharacter@@6B@_15
+  vtbl 0x142565560 slot[6] = 0x140D88B64 sub_140D88B64
+  vtbl 0x142565560 slot[7] = 0x140CAB840 sub_140CAB840
+  vtbl 0x142565560 slot[8] = 0x1429CCF60 ??_R4PlayerCharacter@@6B@_17
+  vtbl 0x142565560 slot[9] = 0x140D88B70 sub_140D88B70
+  vtbl 0x142565578 slot[0] = 0x140D88B58 sub_140D88B58
+  vtbl 0x142565578 slot[1] = 0x140CAB890 sub_140CAB890
+  vtbl 0x142565578 slot[2] = 0x1429CCF38 ??_R4PlayerCharacter@@6B@_15
+  vtbl 0x142565578 slot[3] = 0x140D88B64 sub_140D88B64
+  vtbl 0x142565578 slot[4] = 0x140CAB840 sub_140CAB840
+  vtbl 0x142565578 slot[5] = 0x1429CCF60 ??_R4PlayerCharacter@@6B@_17
+  vtbl 0x142565578 slot[6] = 0x140D88B70 sub_140D88B70
+  vtbl 0x142565578 slot[7] = 0x140CAC2B0 sub_140CAC2B0
+  vtbl 0x142565578 slot[8] = 0x1429CCF88 ??_R4PlayerCharacter@@6B@_18
+  vtbl 0x142565578 slot[9] = 0x140D88B7C sub_140D88B7C
+  vtbl 0x142565590 slot[0] = 0x140D88B64 sub_140D88B64
+  vtbl 0x142565590 slot[1] = 0x140CAB840 sub_140CAB840
+  vtbl 0x142565590 slot[2] = 0x1429CCF60 ??_R4PlayerCharacter@@6B@_17
+  vtbl 0x142565590 slot[3] = 0x140D88B70 sub_140D88B70
+  vtbl 0x142565590 slot[4] = 0x140CAC2B0 sub_140CAC2B0
+  vtbl 0x142565590 slot[5] = 0x1429CCF88 ??_R4PlayerCharacter@@6B@_18
+  vtbl 0x142565590 slot[6] = 0x140D88B7C sub_140D88B7C
+  vtbl 0x142565590 slot[7] = 0x140CAC650 sub_140CAC650
+  vtbl 0x142565590 slot[8] = 0x1429CCFB0 ??_R4PlayerCharacter@@6B@_19
+  vtbl 0x142565590 slot[9] = 0x140D88B88 sub_140D88B88
+  vtbl 0x1425655A8 slot[0] = 0x140D88B70 sub_140D88B70
+  vtbl 0x1425655A8 slot[1] = 0x140CAC2B0 sub_140CAC2B0
+  vtbl 0x1425655A8 slot[2] = 0x1429CCF88 ??_R4PlayerCharacter@@6B@_18
+  vtbl 0x1425655A8 slot[3] = 0x140D88B7C sub_140D88B7C
+  vtbl 0x1425655A8 slot[4] = 0x140CAC650 sub_140CAC650
+  vtbl 0x1425655A8 slot[5] = 0x1429CCFB0 ??_R4PlayerCharacter@@6B@_19
+  vtbl 0x1425655A8 slot[6] = 0x140D88B88 sub_140D88B88
+  vtbl 0x1425655A8 slot[7] = 0x140CAC8C0 sub_140CAC8C0
+  vtbl 0x1425655A8 slot[8] = 0x1429CCFD8 ??_R4PlayerCharacter@@6B@_20
+  vtbl 0x1425655A8 slot[9] = 0x140D88B94 sub_140D88B94
+  vtbl 0x1425655C0 slot[0] = 0x140D88B7C sub_140D88B7C
+  vtbl 0x1425655C0 slot[1] = 0x140CAC650 sub_140CAC650
+  vtbl 0x1425655C0 slot[2] = 0x1429CCFB0 ??_R4PlayerCharacter@@6B@_19
+  vtbl 0x1425655C0 slot[3] = 0x140D88B88 sub_140D88B88
+  vtbl 0x1425655C0 slot[4] = 0x140CAC8C0 sub_140CAC8C0
+  vtbl 0x1425655C0 slot[5] = 0x1429CCFD8 ??_R4PlayerCharacter@@6B@_20
+  vtbl 0x1425655C0 slot[6] = 0x140D88B94 sub_140D88B94
+  vtbl 0x1425655C0 slot[7] = 0x140CB2B60 sub_140CB2B60
+  vtbl 0x1425655C0 slot[8] = 0x1429CD000 ??_R4PlayerCharacter@@6B@_21
+  vtbl 0x1425655C0 slot[9] = 0x140D88BDC sub_140D88BDC
+  vtbl 0x1425655D8 slot[0] = 0x140D88B88 sub_140D88B88
+  vtbl 0x1425655D8 slot[1] = 0x140CAC8C0 sub_140CAC8C0
+  vtbl 0x1425655D8 slot[2] = 0x1429CCFD8 ??_R4PlayerCharacter@@6B@_20
+  vtbl 0x1425655D8 slot[3] = 0x140D88B94 sub_140D88B94
+  vtbl 0x1425655D8 slot[4] = 0x140CB2B60 sub_140CB2B60
+  vtbl 0x1425655D8 slot[5] = 0x1429CD000 ??_R4PlayerCharacter@@6B@_21
+  vtbl 0x1425655D8 slot[6] = 0x140D88BDC sub_140D88BDC
+  vtbl 0x1425655D8 slot[7] = 0x140D79470 sub_140D79470
+  vtbl 0x1425655D8 slot[8] = 0x1429CD028 ??_R4PlayerCharacter@@6B@_22
+  vtbl 0x1425655D8 slot[9] = 0x140D88BE8 sub_140D88BE8
+  vtbl 0x1425655F0 slot[0] = 0x140D88B94 sub_140D88B94
+  vtbl 0x1425655F0 slot[1] = 0x140CB2B60 sub_140CB2B60
+  vtbl 0x1425655F0 slot[2] = 0x1429CD000 ??_R4PlayerCharacter@@6B@_21
+  vtbl 0x1425655F0 slot[3] = 0x140D88BDC sub_140D88BDC
+  vtbl 0x1425655F0 slot[4] = 0x140D79470 sub_140D79470
+  vtbl 0x1425655F0 slot[5] = 0x1429CD028 ??_R4PlayerCharacter@@6B@_22
+  vtbl 0x1425655F0 slot[6] = 0x140D88BE8 sub_140D88BE8
+  vtbl 0x1425655F0 slot[7] = 0x140D79500 sub_140D79500
+  vtbl 0x1425655F0 slot[8] = 0x1429CD050 ??_R4PlayerCharacter@@6B@_8
+  vtbl 0x1425655F0 slot[9] = 0x140D88BF4 sub_140D88BF4
+  vtbl 0x142565608 slot[0] = 0x140D88BDC sub_140D88BDC
+  vtbl 0x142565608 slot[1] = 0x140D79470 sub_140D79470
+  vtbl 0x142565608 slot[2] = 0x1429CD028 ??_R4PlayerCharacter@@6B@_22
+  vtbl 0x142565608 slot[3] = 0x140D88BE8 sub_140D88BE8
+  vtbl 0x142565608 slot[4] = 0x140D79500 sub_140D79500
+  vtbl 0x142565608 slot[5] = 0x1429CD050 ??_R4PlayerCharacter@@6B@_8
+  vtbl 0x142565608 slot[6] = 0x140D88BF4 sub_140D88BF4
+  vtbl 0x142565608 slot[7] = 0x140D797C0 sub_140D797C0
+  vtbl 0x142565608 slot[8] = 0x1429CD078 ??_R4PlayerCharacter@@6B@_10
+  vtbl 0x142565608 slot[9] = 0x140D88C00 sub_140D88C00
+  vtbl 0x142565620 slot[0] = 0x140D88BE8 sub_140D88BE8
+  vtbl 0x142565620 slot[1] = 0x140D79500 sub_140D79500
+  vtbl 0x142565620 slot[2] = 0x1429CD050 ??_R4PlayerCharacter@@6B@_8
+  vtbl 0x142565620 slot[3] = 0x140D88BF4 sub_140D88BF4
+  vtbl 0x142565620 slot[4] = 0x140D797C0 sub_140D797C0
+  vtbl 0x142565620 slot[5] = 0x1429CD078 ??_R4PlayerCharacter@@6B@_10
+  vtbl 0x142565620 slot[6] = 0x140D88C00 sub_140D88C00
+  vtbl 0x142565620 slot[7] = 0x140D798E0 sub_140D798E0
+  vtbl 0x142565620 slot[8] = 0x1429CD0A0 ??_R4PlayerCharacter@@6B@_12
+  vtbl 0x142565620 slot[9] = 0x140D88C0C sub_140D88C0C
+  vtbl 0x142565638 slot[0] = 0x140D88BF4 sub_140D88BF4
+  vtbl 0x142565638 slot[1] = 0x140D797C0 sub_140D797C0
+  vtbl 0x142565638 slot[2] = 0x1429CD078 ??_R4PlayerCharacter@@6B@_10
+  vtbl 0x142565638 slot[3] = 0x140D88C00 sub_140D88C00
+  vtbl 0x142565638 slot[4] = 0x140D798E0 sub_140D798E0
+  vtbl 0x142565638 slot[5] = 0x1429CD0A0 ??_R4PlayerCharacter@@6B@_12
+  vtbl 0x142565638 slot[6] = 0x140D88C0C sub_140D88C0C
+  vtbl 0x142565638 slot[7] = 0x140D79540 sub_140D79540
+  vtbl 0x142565638 slot[8] = 0x1429CD0C8 ??_R4PlayerCharacter@@6B@_14
+  vtbl 0x142565638 slot[9] = 0x140D88C18 sub_140D88C18
+  vtbl 0x142565650 slot[0] = 0x140D88C00 sub_140D88C00
+  vtbl 0x142565650 slot[1] = 0x140D798E0 sub_140D798E0
+  vtbl 0x142565650 slot[2] = 0x1429CD0A0 ??_R4PlayerCharacter@@6B@_12
+  vtbl 0x142565650 slot[3] = 0x140D88C0C sub_140D88C0C
+  vtbl 0x142565650 slot[4] = 0x140D79540 sub_140D79540
+  vtbl 0x142565650 slot[5] = 0x1429CD0C8 ??_R4PlayerCharacter@@6B@_14
+  vtbl 0x142565650 slot[6] = 0x140D88C18 sub_140D88C18
+  vtbl 0x142565650 slot[7] = 0x140D79910 sub_140D79910
+  vtbl 0x142565650 slot[8] = 0x1429CD0F0 ??_R4PlayerCharacter@@6B@_16
+  vtbl 0x142565650 slot[9] = 0x140D88C24 sub_140D88C24
+  vtbl 0x142565668 slot[0] = 0x140D88C0C sub_140D88C0C
+  vtbl 0x142565668 slot[1] = 0x140D79540 sub_140D79540
+  vtbl 0x142565668 slot[2] = 0x1429CD0C8 ??_R4PlayerCharacter@@6B@_14
+  vtbl 0x142565668 slot[3] = 0x140D88C18 sub_140D88C18
+  vtbl 0x142565668 slot[4] = 0x140D79910 sub_140D79910
+  vtbl 0x142565668 slot[5] = 0x1429CD0F0 ??_R4PlayerCharacter@@6B@_16
+  vtbl 0x142565668 slot[6] = 0x140D88C24 sub_140D88C24
+  vtbl 0x142565668 slot[7] = 0x140D7F370 sub_140D7F370
+  vtbl 0x142565668 slot[8] = 0x140D7F700 sub_140D7F700
+  vtbl 0x142565668 slot[9] = 0x140D7F760 sub_140D7F760
+  vtbl 0x142565680 slot[0] = 0x140D88C18 sub_140D88C18
+  vtbl 0x142565680 slot[1] = 0x140D79910 sub_140D79910
+  vtbl 0x142565680 slot[2] = 0x1429CD0F0 ??_R4PlayerCharacter@@6B@_16
+  vtbl 0x142565680 slot[3] = 0x140D88C24 sub_140D88C24
+  vtbl 0x142565680 slot[4] = 0x140D7F370 sub_140D7F370
+  vtbl 0x142565680 slot[5] = 0x140D7F700 sub_140D7F700
+  vtbl 0x142565680 slot[6] = 0x140D7F760 sub_140D7F760
+  vtbl 0x142565680 slot[7] = 0x140D7F780 sub_140D7F780
+  vtbl 0x142565680 slot[8] = 0x140D7F7D0 sub_140D7F7D0
+  vtbl 0x142565680 slot[9] = 0x140D7F9E0 sub_140D7F9E0
+  vtbl 0x142565698 slot[0] = 0x140D88C24 sub_140D88C24
+  vtbl 0x142565698 slot[1] = 0x140D7F370 sub_140D7F370
+  vtbl 0x142565698 slot[2] = 0x140D7F700 sub_140D7F700
+  vtbl 0x142565698 slot[3] = 0x140D7F760 sub_140D7F760
+  vtbl 0x142565698 slot[4] = 0x140D7F780 sub_140D7F780
+  vtbl 0x142565698 slot[5] = 0x140D7F7D0 sub_140D7F7D0
+  vtbl 0x142565698 slot[6] = 0x140D7F9E0 sub_140D7F9E0
+  vtbl 0x142565698 slot[7] = 0x140D7FA00 sub_140D7FA00
+  vtbl 0x142565698 slot[8] = 0x140D7FAC0 sub_140D7FAC0
+  vtbl 0x142565698 slot[9] = 0x140D7FB00 sub_140D7FB00
+  vtbl 0x142F03588 slot[0] = 0x14245FC48 ??_7?$SettingT@VGameSettingCollection@@@@6B@
+
+Primary PlayerCharacter vtable @ 0x14252B828:
+
+Slot 139 target 0x6563 decomp:
+
+================================================================================
+PART G :: sub_14221E6A0 arg a2 type hints
+================================================================================
+  __int64 __fastcall sub_14221E6A0(__int64 a1, __int64 a2)
+  {
+    __int128 v2; // xmm9
+    __int128 v3; // xmm10
+    __int128 v4; // xmm11
+    __int128 v5; // xmm12
+    __int128 v6; // xmm13
+    __m128 *v7; // rsi
+    __int64 v8; // rdi
+    __int64 v9; // rcx
+    _QWORD *v10; // r15
+    __int64 *v11; // r12
+    int *v12; // r9
+    unsigned __int64 v13; // r8
+    int *v14; // r14
+    unsigned int v15; // r13d
+    unsigned __int8 v16; // cl
+    int *v17; // rdi
+    __m128 v18; // xmm4
+    __m128 *v19; // rax
+    __m128 *v20; // rdx
+    __m128 v21; // xmm3
+    __m128 v22; // xmm10
+    __m128 v23; // xmm12
+    __m128 v24; // xmm11
+    __m128 v25; // xmm9
+    __m128 v26; // xmm1
+    __m128 v27; // xmm9
+    __int64 v28; // rdx
+    __m128 v29; // xmm9
+    __m128 v30; // xmm9
+    __int128 v31; // xmm0
+    __int64 v32; // rdx
+    int *v33; // rsi
+    unsigned __int8 v34; // cl
+    int *v35; // rax
+    float v36; // xmm13_4
+    int v37; // eax
+    __int64 v38; // rbx
+    __int64 v39; // rdx
+    int v40; // ecx
+    unsigned __int8 v41; // cl
+    __m128 v42; // xmm0
+    __m128 v43; // xmm3
+    __m128 v44; // xmm4
+    __m128 v45; // xmm1
+    _BYTE *v46; // rbx
+    unsigned __int8 v47; // al
+    float *v48; // r13
+    float *v49; // rdi
+    float v50; // xmm6_4
+    float v51; // xmm0_4
+    float v52; // xmm2_4
+    float v53; // xmm7_4
+    unsigned __int8 v54; // al
+    unsigned __int8 v55; // al
+    int *v56; // rdx
+    unsigned __int8 v57; // al
+    unsigned __int8 v58; // al
+    unsigned __int8 v59; // al
+    unsigned __int8 v60; // al
+    unsigned __int8 v61; // al
+    int *v62; // r13
+    unsigned __int8 v63; // al
+    unsigned __int8 v64; // al
+    unsigned __int8 v65; // al
+    int *v66; // r11
+    unsigned __int8 v67; // al
+    unsigned __int8 v68; // al
+    int *v69; // r8
+    __int64 v70; // r10
+    int v71; // eax
+    unsigned int v72; // ecx
+    unsigned int v73; // eax
+    __int64 v74; // r14
+    signed __int64 v75; // r13
+    float *v76; // rdi
+    __int64 v77; // r15
+    signed __int64 v78; // r12
+    signed __int64 v79; // rsi

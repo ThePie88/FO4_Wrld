@@ -1,0 +1,110 @@
+[+] Image base: 0x140000000
+
+==============================================================================
+== Full decomp sub_140C4C9A0 (event-133 producer)
+==============================================================================
+char __fastcall sub_140C4C9A0(__int64 a1, _DWORD *a2, __int64 a3, char a4, char a5)
+{
+  __int64 v9; // rdx
+  __int64 v10; // r8
+  char v11; // r9
+  int v12; // ebx
+  char result; // al
+  _QWORD v14[16]; // [rsp+20h] [rbp-88h] BYREF
+
+  memset(v14, 0, sizeof(v14));
+  LODWORD(v14[1]) = *a2;
+  LOBYTE(v14[4]) = a5;
+  LODWORD(v14[0]) = 133;
+  v14[2] = a3;
+  LOBYTE(v14[3]) = a4;
+  if ( !byte_142F28020 )
+    return sub_140C4CE00((int *)v14, v9, v10, v11);
+  v12 = dword_1432F46F0;
+  if ( v12 == GetCurrentThreadId() )
+    return sub_140C4CE00((int *)v14, v9, v10, v11);
+  sub_1402DD4E0((__int64)&dword_1432F4710);
+  v9 = (*(unsigned __int8 (__fastcall **)(_QWORD, _QWORD *))(**(_QWORD **)(a1 + 16) + 8LL))(*(_QWORD *)(a1 + 16), v14);
+  result = dword_1432F4714;
+  if ( dword_1432F4714 == 1 )
+  {
+    dword_1432F4710 = 0;
+    _mm_mfence();
+    result = _InterlockedCompareExchange(&dword_1432F4714, dword_1432F4714 - 1, 1);
+  }
+  else
+  {
+    _InterlockedDecrement(&dword_1432F4714);
+  }
+  if ( !(_BYTE)v9 )
+    return sub_140C4CE00((int *)v14, v9, v10, v11);
+  return result;
+}
+
+
+==============================================================================
+== Is sub_140C4C9A0 in REFR vtable?
+==============================================================================
+  NO -- not in first 0x200 REFR vtable slots
+
+==============================================================================
+== Scan .rdata for any pointer == sub_140C4C9A0
+==============================================================================
+  Total .rdata qword refs: 0
+
+==============================================================================
+== Callers of sub_140C4C9A0
+==============================================================================
+Total unique caller funcs: 2
+
+-- caller sub_1410F80A0  RVA=0x10F80A0  site=0x1410F8145  seg=.text  type=17
+--- decomp (first 3500 chars) ---
+char __fastcall sub_1410F80A0(__int64 a1, unsigned int a2, __int64 a3, _BYTE *a4, char a5, char a6)
+{
+  __int64 v11; // rbx
+  _DWORD *v12; // rax
+  _QWORD v13[2]; // [rsp+30h] [rbp-28h] BYREF
+  _BYTE v14[24]; // [rsp+40h] [rbp-18h] BYREF
+  char v15; // [rsp+78h] [rbp+20h] BYREF
+
+  if ( a4 )
+  {
+    if ( (*(unsigned __int8 (__fastcall **)(_BYTE *))(*(_QWORD *)a4 + 368LL))(a4) )
+    {
+      if ( a4[26] != 29 || (unsigned __int8)sub_140462970(a4) )
+      {
+        v11 = qword_1432F46F8;
+        v12 = (_DWORD *)sub_140C73280(a3, &v15);
+        return sub_140C4C9A0(v11, v12, (__int64)a4, a5, a6);
+      }
+      else
+      {
+        return sub_1410DD940(
+                 (_DWORD)a4,
+                 (unsigned int)"armor cannot be equipped by the passed in actor's race",
+                 a1,
+                 a2,
+                 2);
+      }
+    }
+    else
+    {
+      return sub_1410DD940((_DWORD)a4, (unsigned int)"has no 3d and cannot be equipped", a1, a2, 2);
+    }
+  }
+  else
+  {
+    sub_1420F7170(v13);
+    v13[0] = &BSScript::Internal::CachedErrorMessageImpl<char *>::`vftable';
+    v13[1] = "Cannot equip a None item";
+    sub_14167BCF0(v14);
+    (*(void (__fastcall **)(__int64, _QWORD *, _QWORD, __int64))(*(_QWORD *)a1 + 480LL))(a1, v13, a2, 2);
+    sub_14167BEF0(v14);
+    return sub_1420F7190(v13);
+  }
+}
+
+
+-- raw xref from 0x143F55850  seg=.pdata  type=1
+
+==== done ====

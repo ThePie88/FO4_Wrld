@@ -1,0 +1,2175 @@
+==== Strada B — BSLSP render checklist RE pass ====
+image base = 0x140000000
+
+=========================================
+  PART A — callers of sub_1421C6870 (bind_mat_texset)
+=========================================
+
+==== xrefs TO sub_1421C6870 @ 0x1421C6870 (RVA 0x21C6870) ====
+  caller @ 0x140360BAC in sub_140360A90 (fn RVA 0x360A90)
+  caller @ 0x14040AC85 in sub_14040AB10 (fn RVA 0x40AB10)
+  caller @ 0x1421713DE in sub_1421711F0 (fn RVA 0x21711F0)
+  caller @ 0x142171FA4 in sub_142171F90 (fn RVA 0x2171F90)
+
+=========================================
+  PART B — callers of sub_142171050 (BSLSP alloc)
+=========================================
+
+==== xrefs TO sub_142171050 @ 0x142171050 (RVA 0x2171050) ====
+  caller @ 0x142179A85 in sub_1421792E0 (fn RVA 0x21792E0)
+  caller @ 0x14217A2E4 in sub_14217A2E0 (fn RVA 0x217A2E0)
+
+=========================================
+  PART B.2 — callers of sub_142171620 (BSLSP in-place ctor)
+=========================================
+
+==== xrefs TO sub_142171620 @ 0x142171620 (RVA 0x2171620) ====
+  caller @ 0x1404BF5F5 in sub_1404BE5B0 (fn RVA 0x4BE5B0)
+  caller @ 0x1417EB292 in sub_1417EA000 (fn RVA 0x17EA000)
+  caller @ 0x142163458 in sub_1421632A0 (fn RVA 0x21632A0)
+  caller @ 0x142170EDF in sub_142170E60 (fn RVA 0x2170E60)
+  caller @ 0x1421710B8 in sub_142171050 (fn RVA 0x2171050)
+  caller @ 0x142174AD8 in sub_142174A70 (fn RVA 0x2174A70)
+  caller @ 0x1421C31B3 in sub_1421C20F0 (fn RVA 0x21C20F0)
+  caller @ 0x1421C3D63 in sub_1421C3B50 (fn RVA 0x21C3B50)
+  caller @ 0x1421C59CD in sub_1421C59B0 (fn RVA 0x21C59B0)
+
+=========================================
+  PART C — intersection: functions that call BOTH BSLSP alloc AND bind
+=========================================
+  callers_bind     count = 4
+  combined_bslsp   count = 11
+  intersection     count = 0
+
+=========================================
+  PART D — qualifying intersections (call geo_builder OR AttachChild too)
+=========================================
+  Qualified set (score by flag count):
+
+=========================================
+  PART E — Full decomp of best intersecting callers
+=========================================
+
+=========================================
+  PART F — BSLightingShaderProperty vtable
+=========================================
+
+==== vtable BSLightingShaderProperty @ 0x1428F9FF8 (RVA 0x28F9FF8) first 80 slots ====
+  [  0] 0x142174B20  RVA=0x2174B20  sub_142174B20
+  [  1] 0x1416BA6D0  RVA=0x16BA6D0  sub_1416BA6D0
+  [  2] 0x142174C50  RVA=0x2174C50  sub_142174C50
+  [  3] 0x140239570  RVA=0x239570  sub_140239570
+  [  4] 0x140239560  RVA=0x239560  sub_140239560
+  [  5] 0x1402395C0  RVA=0x2395C0  sub_1402395C0
+  [  6] 0x1402394E0  RVA=0x2394E0  sub_1402394E0
+  [  7] 0x140239520  RVA=0x239520  sub_140239520
+  [  8] 0x1402394F0  RVA=0x2394F0  sub_1402394F0
+  [  9] 0x1402395E0  RVA=0x2395E0  sub_1402395E0
+  [ 10] 0x1402395D0  RVA=0x2395D0  sub_1402395D0
+  [ 11] 0x1402394D0  RVA=0x2394D0  sub_1402394D0
+  [ 12] 0x1402395A0  RVA=0x2395A0  sub_1402395A0
+  [ 13] 0x1402395B0  RVA=0x2395B0  sub_1402395B0
+  [ 14] 0x140239530  RVA=0x239530  sub_140239530
+  [ 15] 0x140239540  RVA=0x239540  sub_140239540
+  [ 16] 0x140239550  RVA=0x239550  sub_140239550
+  [ 17] 0x140239590  RVA=0x239590  sub_140239590
+  [ 18] 0x140239580  RVA=0x239580  sub_140239580
+  [ 19] 0x140239510  RVA=0x239510  sub_140239510
+  [ 20] 0x140239500  RVA=0x239500  sub_140239500
+  [ 21] 0x1402394B0  RVA=0x2394B0  sub_1402394B0
+  [ 22] 0x140239490  RVA=0x239490  sub_140239490
+  [ 23] 0x1402394C0  RVA=0x2394C0  sub_1402394C0
+  [ 24] 0x1402394A0  RVA=0x2394A0  sub_1402394A0
+  [ 25] 0x1402395F0  RVA=0x2395F0  sub_1402395F0
+  [ 26] 0x142170E60  RVA=0x2170E60  sub_142170E60
+  [ 27] 0x1421710E0  RVA=0x21710E0  sub_1421710E0
+  [ 28] 0x1421711F0  RVA=0x21711F0  sub_1421711F0
+  [ 29] 0x142171400  RVA=0x2171400  sub_142171400
+  [ 30] 0x142171470  RVA=0x2171470  sub_142171470
+  [ 31] 0x1421715C0  RVA=0x21715C0  sub_1421715C0
+  [ 32] 0x1416BD650  RVA=0x16BD650  sub_1416BD650
+  [ 33] 0x1421715D0  RVA=0x21715D0  sub_1421715D0
+  [ 34] 0x1416BAB30  RVA=0x16BAB30  sub_1416BAB30
+  [ 35] 0x1416BAB40  RVA=0x16BAB40  sub_1416BAB40
+  [ 36] 0x1416BAB50  RVA=0x16BAB50  sub_1416BAB50
+  [ 37] 0x1416BAB60  RVA=0x16BAB60  sub_1416BAB60
+  [ 38] 0x1416BAB70  RVA=0x16BAB70  nullsub_7767
+  [ 39] 0x1416BAB80  RVA=0x16BAB80  sub_1416BAB80
+  [ 40] 0x1416F0410  RVA=0x16F0410  sub_1416F0410
+  [ 41] 0x1416CEF20  RVA=0x16CEF20  sub_1416CEF20
+  [ 42] 0x1421718C0  RVA=0x21718C0  sub_1421718C0
+  [ 43] 0x142172540  RVA=0x2172540  sub_142172540
+  [ 44] 0x142173DE0  RVA=0x2173DE0  sub_142173DE0
+  [ 45] 0x142174150  RVA=0x2174150  sub_142174150
+  [ 46] 0x142174520  RVA=0x2174520  sub_142174520
+  [ 47] 0x142162090  RVA=0x2162090  sub_142162090
+  [ 48] 0x1421742F0  RVA=0x21742F0  sub_1421742F0
+  [ 49] 0x142171C30  RVA=0x2171C30  sub_142171C30
+  [ 50] 0x142174C70  RVA=0x2174C70  sub_142174C70
+  [ 51] 0x142174C60  RVA=0x2174C60  sub_142174C60
+  [ 52] 0x142172170  RVA=0x2172170  sub_142172170
+  [ 53] 0x142174820  RVA=0x2174820  sub_142174820
+  [ 54] 0x142171830  RVA=0x2171830  sub_142171830
+  [ 55] 0x142171B90  RVA=0x2171B90  sub_142171B90
+  [ 56] 0x142162020  RVA=0x2162020  sub_142162020
+  [ 57] 0x142174C30  RVA=0x2174C30  sub_142174C30
+  [ 58] 0x1421620C0  RVA=0x21620C0  sub_1421620C0
+  [ 59] 0x142174800  RVA=0x2174800  sub_142174800
+  [ 60] 0x1421620D0  RVA=0x21620D0  nullsub_9171
+  [ 61] 0x1421724A0  RVA=0x21724A0  sub_1421724A0
+  [ 62] 0x142174C40  RVA=0x2174C40  sub_142174C40
+  [ 63] 0x142174A00  RVA=0x2174A00  sub_142174A00
+  [ 64] 0x380BCF65  (not-a-func — possibly alignment) ?
+  [ 65] 0x646F4E6564614669  (not-a-func — possibly alignment) ?
+  [ 66] 0x7261654E6E694D65  (not-a-func — possibly alignment) ?
+  [ 67] 0x65636E6174736944  (not-a-func — possibly alignment) ?
+  [ 68] 0x444F4C3A  (not-a-func — possibly alignment) ?
+  [ 69] 0x444F4C6873654D66  (not-a-func — possibly alignment) ?
+  [ 70] 0x6146316C6576654C  (not-a-func — possibly alignment) ?
+  [ 71] 0x443A747369446564  (not-a-func — possibly alignment) ?
+  [ 72] 0x79616C707369  (not-a-func — possibly alignment) ?
+  [ 73] 0x444F4C6873654D66  (not-a-func — possibly alignment) ?
+  [ 74] 0x6146326C6576654C  (not-a-func — possibly alignment) ?
+  [ 75] 0x443A747369446564  (not-a-func — possibly alignment) ?
+  [ 76] 0x79616C707369  (not-a-func — possibly alignment) ?
+  [ 77] 0x6F697265746E4966  (not-a-func — possibly alignment) ?
+  [ 78] 0x444F4C6873654D72  (not-a-func — possibly alignment) ?
+  [ 79] 0x6146316C6576654C  (not-a-func — possibly alignment) ?
+
+=========================================
+  PART G — BSLSP vt[42] + install helpers
+=========================================
+  BSLSP vt[42] = 0x1421718C0 RVA=0x21718C0
+
+---- decomp BSLSP::vt[42] (AttachGeometry?) @ 0x1421718C0 (RVA 0x21718C0) ----
+  size=0x10
+char __fastcall sub_1421718C0(__int64 a1, __int64 a2, __int64 a3)
+{
+  sub_1421718E0(a1, a2, a3);
+  return 1;
+}
+
+  BSLSP vt[41] = 0x1416CEF20 RVA=0x16CEF20
+
+---- decomp BSLSP::vt[41] @ 0x1416CEF20 (RVA 0x16CEF20) ----
+  size=0x43
+__int64 __fastcall sub_1416CEF20(__int64 a1, __int64 a2)
+{
+  _QWORD *i; // rbx
+  __int64 result; // rax
+
+  for ( i = *(_QWORD **)(a1 + 24); i; i = (_QWORD *)i[8] )
+    result = (*(__int64 (__fastcall **)(_QWORD *, __int64))(*i + 336LL))(i, a2);
+  return result;
+}
+
+
+---- decomp sub_1421711F0 (BSLSP LoadTextures wrapper) @ 0x1421711F0 (RVA 0x21711F0) ----
+  size=0x209
+__int64 __fastcall sub_1421711F0(__int64 a1, __int64 a2)
+{
+  int *v4; // r12
+  int v5; // ebx
+  __int64 v6; // rdi
+  __int64 v7; // rax
+  volatile signed __int32 *v8; // rcx
+  void (__fastcall ***v9)(_QWORD, _QWORD); // rdi
+  __int64 v10; // rax
+  __int64 result; // rax
+  void *v12; // rax
+  __int64 v13; // r14
+  __int64 v14; // rsi
+  __int64 v15; // rdi
+  __int64 v16; // rax
+  volatile signed __int32 *v17; // rcx
+
+  v4 = (int *)(*((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex) + 2496LL);
+  v5 = *v4;
+  *v4 = 28;
+  sub_142160C10(a1);
+  v6 = *(_QWORD *)(a1 + 88);
+  v7 = sub_1416DE030(a2);
+  v8 = *(volatile signed __int32 **)(v6 + 120);
+  if ( v8 != (volatile signed __int32 *)v7 )
+  {
+    if ( v7 )
+      _InterlockedIncrement((volatile signed __int32 *)(v7 + 8));
+    *(_QWORD *)(v6 + 120) = v7;
+    if ( v8 && _InterlockedExchangeAdd(v8 + 2, 0xFFFFFFFF) == 1 )
+      (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v8 + 8LL))(v8);
+  }
+  v9 = *(void (__fastcall ****)(_QWORD, _QWORD))(a1 + 88);
+  *(_QWORD *)(a1 + 88) = 0;
+  sub_142161B10((_QWORD *)a1, (__int64)v9, 0);
+  if ( v9 )
+  {
+    (**v9)(v9, 0);
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v10 = sub_141656E30((__int64)&unk_143E5E0F0);
+    sub_14165C3F0(v10, (unsigned __int64)v9);
+  }
+  result = sub_14167C200(a1 + 16);
+  if ( !(_DWORD)result )
+  {
+    result = *(unsigned int *)(a1 + 48);
+    if ( (result & 0x1000000) == 0 )
+    {
+      if ( !*(_QWORD *)(*(_QWORD *)(a1 + 88) + 120LL) )
+      {
+        if ( dword_143E5F2D0 != 2 )
+          sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+        v12 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x60u, 0, 0);
+        v13 = (__int64)v12;
+        if ( v12 )
+        {
+          memset(v12, 0, 0x60u);
+          sub_1416BAB90(v13);
+          v14 = 10;
+          *(_QWORD *)v13 = &BSShaderTextureSet::`vftable';
+          v15 = v13 + 16;
+          do
+          {
+            sub_14167BCF0(v15);
+            v15 += 8;
+            --v14;
+          }
+          while ( v14 );
+        }
+        else
+        {
+          v13 = 0;
+        }
+        v16 = *(_QWORD *)(a1 + 88);
+        v17 = *(volatile signed __int32 **)(v16 + 120);
+        if ( v17 != (volatile signed __int32 *)v13 )
+        {
+          if ( v13 )
+            _InterlockedIncrement((volatile signed __int32 *)(v13 + 8));
+          *(_QWORD *)(v16 + 120) = v13;
+          if ( v17 && _InterlockedExchangeAdd(v17 + 2, 0xFFFFFFFF) == 1 )
+            (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v17 + 8LL))(v17);
+        }
+      }
+      result = sub_1421C6870(*(volatile signed __int32 **)(a1 + 88), a2 + 520, nullptr);
+    }
+  }
+  *v4 = v5;
+  return result;
+}
+
+
+---- decomp sub_1421C6690 (complementary load) @ 0x1421C6690 (RVA 0x21C6690) ----
+  size=0x8
+__int64 sub_1421C6690()
+{
+  return qword_143E488C8;
+}
+
+
+=========================================
+  PART H — sub_1421792E0 (startup shader registration)
+=========================================
+
+---- decomp sub_1421792E0 @ 0x1421792E0 (RVA 0x21792E0) ----
+  size=0xF37
+__int64 sub_1421792E0()
+{
+  bool v0; // zf
+  __int64 v1; // r13
+  int v2; // edi
+  __int64 v3; // r9
+  void *v4; // rax
+  __int64 v5; // rax
+  volatile signed __int32 *v6; // rcx
+  void *v7; // rax
+  __int64 v8; // rax
+  volatile signed __int32 *v9; // rcx
+  void *v10; // rax
+  __int64 v11; // rax
+  volatile signed __int32 *v12; // rcx
+  void *v13; // rax
+  __int64 v14; // rax
+  volatile signed __int32 *v15; // rcx
+  void *v16; // rax
+  __int64 v17; // rax
+  volatile signed __int32 *v18; // rcx
+  void *v19; // rax
+  __int64 v20; // rax
+  volatile signed __int32 *v21; // rcx
+  void *v22; // rax
+  __int64 v23; // rax
+  volatile signed __int32 *v24; // rcx
+  void *v25; // rax
+  __int64 v26; // rax
+  volatile signed __int32 *v27; // rcx
+  void *v28; // rax
+  __int64 v29; // rax
+  volatile signed __int32 *v30; // rcx
+  void *v31; // rax
+  __int64 v32; // rax
+  volatile signed __int32 *v33; // rcx
+  void *v34; // rax
+  __int64 v35; // rax
+  volatile signed __int32 *v36; // rcx
+  void *v37; // rax
+  __int64 v38; // rax
+  volatile signed __int32 *v39; // rcx
+  int v40; // ebx
+  void *v41; // rax
+  __int64 v42; // rax
+  int v43; // eax
+  int v44; // eax
+  __int64 v45; // rbx
+  volatile signed __int32 *v46; // rcx
+  char *v47; // rax
+  char *v48; // r12
+  __int64 v49; // r15
+  char *v50; // r14
+  __int64 result; // rax
+  __int64 v52; // rcx
+  _BYTE v53[32]; // [rsp+40h] [rbp-C0h] BYREF
+  _QWORD v54[2]; // [rsp+60h] [rbp-A0h] BYREF
+  char Destination[272]; // [rsp+70h] [rbp-90h] BYREF
+  char Buffer[320]; // [rsp+180h] [rbp+80h] BYREF
+  __int64 v57; // [rsp+2D8h] [rbp+1D8h]
+
+  v0 = byte_143E47464 == 0;
+  v1 = *((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex);
+  v2 = *(_DWORD *)(v1 + 2496);
+  *(_DWORD *)(v1 + 2496) = 26;
+  if ( v0 )
+  {
+    sub_14024BDC0(Buffer, 0x104u, "SHADERSFX/Shaders%03u.fxp");
+    LOBYTE(v3) = 1;
+    sub_1417D8650(v53, Buffer, 0, v3);
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v4 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x198u, 0, 0);
+    if ( v4 )
+      v5 = sub_1421D2790(v4);
+    else
+      v5 = 0;
+    v6 = (volatile signed __int32 *)qword_143E479D8;
+    if ( qword_143E479D8 != v5 )
+    {
+      if ( v5 )
+        _InterlockedIncrement((volatile signed __int32 *)(v5 + 8));
+      qword_143E479D8 = v5;
+      if ( v6 && _InterlockedExchangeAdd(v6 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v6 + 8LL))(v6);
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v7 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x198u, 0, 0);
+    if ( v7 )
+      v8 = sub_142221150(v7);
+    else
+      v8 = 0;
+    v9 = (volatile signed __int32 *)qword_143E479A0;
+    if ( qword_143E479A0 != v8 )
+    {
+      if ( v8 )
+        _InterlockedIncrement((volatile signed __int32 *)(v8 + 8));
+      qword_143E479A0 = v8;
+      if ( v9 && _InterlockedExchangeAdd(v9 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v9 + 8LL))(v9);
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v10 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x198u, 0, 0);
+    if ( v10 )
+      v11 = sub_14223D8F0(v10);
+    else
+      v11 = 0;
+    v12 = (volatile signed __int32 *)qword_143E479A8;
+    if ( qword_143E479A8 != v11 )
+    {
+      if ( v11 )
+        _InterlockedIncrement((volatile signed __int32 *)(v11 + 8));
+      qword_143E479A8 = v11;
+      if ( v12 && _InterlockedExchangeAdd(v12 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v12 + 8LL))(v12);
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v13 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x198u, 0, 0);
+    if ( v13 )
+      v14 = sub_142213000(v13);
+    else
+      v14 = 0;
+    v15 = (volatile signed __int32 *)qword_143E479C8;
+    if ( qword_143E479C8 != v14 )
+    {
+      if ( v14 )
+        _InterlockedIncrement((volatile signed __int32 *)(v14 + 8));
+      qword_143E479C8 = v14;
+      if ( v15 && _InterlockedExchangeAdd(v15 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v15 + 8LL))(v15);
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v16 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x198u, 0, 0);
+    if ( v16 )
+      v17 = sub_14221D430(v16);
+    else
+      v17 = 0;
+    v18 = (volatile signed __int32 *)qword_143E47990;
+    if ( qword_143E47990 != v17 )
+    {
+      if ( v17 )
+        _InterlockedIncrement((volatile signed __int32 *)(v17 + 8));
+      qword_143E47990 = v17;
+      if ( v18 && _InterlockedExchangeAdd(v18 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v18 + 8LL))(v18);
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v19 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x1D0u, 0, 0);
+    if ( v19 )
+      v20 = sub_1422321F0(v19);
+    else
+      v20 = 0;
+    v21 = (volatile signed __int32 *)qword_143E479D0;
+    if ( qword_143E479D0 != v20 )
+    {
+      if ( v20 )
+        _InterlockedIncrement((volatile signed __int32 *)(v20 + 8));
+      qword_143E479D0 = v20;
+      if ( v21 && _InterlockedExchangeAdd(v21 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v21 + 8LL))(v21);
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v22 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x198u, 0, 0);
+    if ( v22 )
+      v23 = sub_142238CC0(v22);
+    else
+      v23 = 0;
+    v24 = (volatile signed __int32 *)qword_143E47998;
+    if ( qword_143E47998 != v23 )
+    {
+      if ( v23 )
+        _InterlockedIncrement((volatile signed __int32 *)(v23 + 8));
+      qword_143E47998 = v23;
+      if ( v24 && _InterlockedExchangeAdd(v24 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v24 + 8LL))(v24);
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v25 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x198u, 0, 0);
+    if ( v25 )
+      v26 = sub_142223450(v25);
+    else
+      v26 = 0;
+    v27 = (volatile signed __int32 *)qword_143E479E0;
+    if ( qword_143E479E0 != v26 )
+    {
+      if ( v26 )
+        _InterlockedIncrement((volatile signed __int32 *)(v26 + 8));
+      qword_143E479E0 = v26;
+      if ( v27 && _InterlockedExchangeAdd(v27 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v27 + 8LL))(v27);
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v28 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x198u, 0, 0);
+    if ( v28 )
+      v29 = sub_1421FB8C0(v28);
+    else
+      v29 = 0;
+    v30 = (volatile signed __int32 *)qword_143E479B0;
+    if ( qword_143E479B0 != v29 )
+    {
+      if ( v29 )
+        _InterlockedIncrement((volatile signed __int32 *)(v29 + 8));
+      qword_143E479B0 = v29;
+      if ( v30 && _InterlockedExchangeAdd(v30 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v30 + 8LL))(v30);
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v31 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x1B8u, 0, 0);
+    if ( v31 )
+      v32 = sub_14223EA50(v31);
+    else
+      v32 = 0;
+    v33 = (volatile signed __int32 *)qword_143E479B8;
+    if ( qword_143E479B8 != v32 )
+    {
+      if ( v32 )
+        _InterlockedIncrement((volatile signed __int32 *)(v32 + 8));
+      qword_143E479B8 = v32;
+      if ( v33 && _InterlockedExchangeAdd(v33 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v33 + 8LL))(v33);
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v34 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x1A0u, 0, 0);
+    if ( v34 )
+      v35 = sub_14220EAF0((__int64)v34);
+    else
+      v35 = 0;
+    v36 = (volatile signed __int32 *)qword_143E479C0;
+    if ( qword_143E479C0 != v35 )
+    {
+      if ( v35 )
+        _InterlockedIncrement((volatile signed __int32 *)(v35 + 8));
+      qword_143E479C0 = v35;
+      if ( v36 && _InterlockedExchangeAdd(v36 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v36 + 8LL))(v36);
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v37 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x1A0u, 0, 0);
+    if ( v37 )
+      v38 = sub_14221BAE0(v37);
+    else
+      v38 = 0;
+    v39 = (volatile signed __int32 *)qword_143E479E8;
+    if ( qword_143E479E8 != v38 )
+    {
+      if ( v38 )
+        _InterlockedIncrement((volatile signed __int32 *)(v38 + 8));
+      qword_143E479E8 = v38;
+      if ( v39 && _InterlockedExchangeAdd(v39 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v39 + 8LL))(v39);
+    }
+    sub_142228DB0(qword_143E479D8, v53);
+    sub_142228DB0(qword_143E479A0, v53);
+    sub_142228DB0(qword_143E479A8, v53);
+    sub_142228DB0(qword_143E479C8, v53);
+    sub_142228DB0(qword_143E47990, v53);
+    sub_142228DB0(qword_143E479D0, v53);
+    sub_142228DB0(qword_143E47998, v53);
+    sub_142228DB0(qword_143E479E0, v53);
+    sub_142228DB0(qword_143E479B0, v53);
+    sub_142228DB0(qword_143E479B8, v53);
+    sub_142228DB0(qword_143E479C0, v53);
+    sub_142228DB0(qword_143E479E8, v53);
+    sub_142207200(v53);
+    sub_1421FA520(v53);
+    sub_142207470(v53);
+    v0 = dword_143E5F2D0 == 2;
+    v40 = *(_DWORD *)(v1 + 2496);
+    qword_143E5B318 = (__int64)v53;
+    *(_DWORD *)(v1 + 2496) = 31;
+    if ( !v0 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v41 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x1B8u, 0, 0);
+    if ( v41 )
+      v42 = sub_14217D0A0(v41);
+    else
+      v42 = 0;
+    qword_143E47AF0 = v42;
+    *(_DWORD *)(v1 + 2496) = v40;
+    sub_14181ECB0(&byte_143A0F400, v53);
+    sub_1421D6AF0(v53);
+    sub_1421FA5E0(v53);
+    sub_1416DE200("BSLightingShaderProperty", sub_142171050);
+    sub_1416DE200("BSWaterShaderProperty", sub_1421D2020);
+    sub_1416DE200("BSEffectShaderProperty", sub_14216F8E0);
+    sub_1416DE200("BSSkyShaderProperty", sub_142214A60);
+    sub_1416DE200("BSGrassShaderProperty", sub_1421C5910);
+    sub_1416DE200("BSShaderTextureSet", sub_142162890);
+    sub_142177450();
+    sub_1416DE200("BSTreeNode", sub_142178B50);
+    sub_1416DE200("BSLightingShaderPropertyFloatController", sub_142243020);
+    sub_1416DE200("BSLightingShaderPropertyUShortController", sub_142243510);
+    sub_1416DE200("BSLightingShaderPropertyColorController", sub_142243AE0);
+    sub_1416DE200("BSEffectShaderPropertyFloatController", sub_142244170);
+    sub_1416DE200("BSEffectShaderPropertyColorController", sub_1422447A0);
+    sub_1416DE200("BSNiAlphaPropertyTestRefController", sub_142244C40);
+    sub_1416DE200("BSPSysSimpleColorModifier", sub_142245AB0);
+    sub_1416DE200("BSPSysLODModifier", sub_142246250);
+    sub_1416DE200("BSOrderedNode", sub_14223D7C0);
+    sub_1416DE200("BSLeafAnimNode", sub_142177FC0);
+    sub_1416DE200("BSMeshLODTriShape", sub_14223BDD0);
+    sub_1416DE200("BSPackedCombinedGeomDataExtra", sub_1421E45B0);
+    sub_1416DE200("BSEyeCenterExtraData", sub_1422382D0);
+    sub_1416DE200("BSPackedCombinedSharedGeomDataExtra", sub_1421E4640);
+    *(_BYTE *)(*(_QWORD *)(*(_QWORD *)(qword_143E47AF0 + 24) + 136LL) + 8LL) = _stricmp(off_142F8C5B8, "fxaa") == 0;
+    v43 = _stricmp(off_142F8C5B8, "taa");
+    byte_143E47464 = 1;
+    dword_143E5B3C0 = dword_142F8DC08;
+    byte_143E47601 = byte_142F8C180;
+    dword_143D7094C = v43 == 0;
+    byte_143E47602 = byte_142F8C198;
+    sub_1417D88E0(v53);
+  }
+  qword_143E48A18 = 0;
+  qword_143E488D8 = (__int64)sub_1421CCEC0;
+  qword_143E48968 = (__int64)sub_1421CD570;
+  qword_143E488E0 = (__int64)sub_1421CCEC0;
+  qword_143E48970 = (__int64)sub_1421CD580;
+  qword_143E48A20 = 0;
+  qword_143E48938 = (__int64)sub_1421CD690;
+  qword_143E48948 = (__int64)sub_1421CD690;
+  qword_143E48950 = (__int64)sub_1421CD690;
+  qword_143E48958 = (__int64)sub_1421CD690;
+  qword_143E48978 = (__int64)sub_1421CD7A0;
+  qword_143E48980 = (__int64)sub_1421CD7A0;
+  qword_143E489D8 = (__int64)sub_1421CD830;
+  qword_143E489E0 = (__int64)sub_1421CD830;
+  qword_143E489E8 = (__int64)sub_1421CD830;
+  qword_143E489F0 = (__int64)sub_1421CD910;
+  qword_143E48940 = (__int64)sub_1421CD9B0;
+  qword_143E48AB0 = (__int64)sub_1421CE660;
+  qword_143E48A78 = (__int64)sub_1421CE670;
+  qword_143E48A88 = (__int64)sub_1421CE670;
+  qword_143E488E8 = (__int64)sub_1421CCEC0;
+  qword_143E48A28 = 0;
+  qword_143E488F0 = (__int64)sub_1421CCEC0;
+  qword_143E48A30 = 0;
+  qword_143E488F8 = (__int64)sub_1421CCEC0;
+  qword_143E48A38 = 0;
+  qword_143E48900 = (__int64)sub_1421CCEC0;
+  qword_143E48A40 = 0;
+  qword_143E48908 = (__int64)sub_1421CCEC0;
+  qword_143E48A48 = 0;
+  qword_143E48910 = (__int64)sub_1421CCEC0;
+  qword_143E48A50 = 0;
+  qword_143E48918 = (__int64)sub_1421CCEC0;
+  qword_143E48A58 = 0;
+  qword_143E48920 = (__int64)sub_1421CCEC0;
+  qword_143E48A60 = 0;
+  qword_143E48928 = (__int64)sub_1421CCEC0;
+  qword_143E48A68 = 0;
+  qword_143E48930 = (__int64)sub_1421CCEC0;
+  qword_143E48A70 = 0;
+  qword_143E48AA0 = 0;
+  qword_143E48AA8 = 0;
+  qword_143E48988 = (__int64)sub_1421CCEC0;
+  qword_143E48AC8 = 0;
+  qword_143E48990 = (__int64)sub_1421CCEC0;
+  qword_143E48AD0 = 0;
+  qword_143E48998 = (__int64)sub_1421CCEC0;
+  qword_143E48AD8 = 0;
+  qword_143E489A0 = (__int64)sub_1421CCEC0;
+  qword_143E48AE0 = 0;
+  qword_143E489A8 = (__int64)sub_1421CCEC0;
+  qword_143E48AE8 = 0;
+  qword_143E489B0 = (__int64)sub_1421CCEC0;
+  qword_143E48AF0 = 0;
+  qword_143E489B8 = (__int64)sub_1421CCEC0;
+  qword_143E48AF8 = 0;
+  qword_143E489C0 = (__int64)sub_1421CCEC0;
+  qword_143E48B00 = 0;
+  qword_143E489C8 = (__int64)sub_1421CCEC0;
+  qword_143E48B08 = 0;
+  qword_143E489D0 = (__int64)sub_1421CCEC0;
+  qword_143E48B10 = 0;
+  qword_143E48B38 = 0;
+  qword_143E48A00 = (__int64)sub_1421CCEC0;
+  qword_143E48B40 = 0;
+  qword_143E488D0 = (__int64)sub_1421CCEC0;
+  qword_143E48960 = (__int64)sub_1421CD600;
+  qword_143E489F8 = (__int64)sub_1421CD600;
+  qword_143E48A10 = (__int64)sub_1421CDAE0;
+  qword_143E48A90 = (__int64)sub_1421CE670;
+  qword_143E48A98 = (__int64)sub_1421CE670;
+  qword_143E48AB8 = (__int64)sub_1421CE6E0;
+  qword_143E48AC0 = (__int64)sub_1421CE6E0;
+  qword_143E48B20 = (__int64)sub_1421CE7F0;
+  qword_143E48B30 = (__int64)sub_1421CE8B0;
+  qword_143E48A80 = (__int64)sub_1421CE8F0;
+  qword_143E48B18 = (__int64)sub_1421CE730;
+  qword_143E48B28 = (__int64)sub_1421CE730;
+  qword_143E48A08 = (__int64)sub_1421CCEC0;
+  qword_143E48B48 = (__int64)sub_1421CDAE0;
+  sub_1422183C0();
+  sub_142176C70();
+  sub_142171840();
+  sub_1421CA960();
+  sub_1421F69B0();
+  dword_143E5B3C4 = LODWORD(flt_142F8E5F0);
+  dword_143E5B3C8 = powf(flt_142F8E5F0, 2.0);
+  dword_143E5B3D0 = 1065353216;
+  dword_142F8E5E4 = 1065353216;
+  dword_143E5B3CC = fmaxf(*(float *)&dword_142F8E608, 1000.0);
+  dword_143E47630 = dword_142F8C480;
+  dword_143E5B3D4 = fmaxf(*(float *)&dword_142F8CAD8, 0.0);
+  dword_143E4762C = dword_142F8C468;
+  sub_14182BFD0(&unk_143D708A0);
+  v57 = 0;
+  v44 = sub_1416C99E0();
+  sub_1417A3540("Textures\\Shared\\Cubemaps\\EyeCubeMap.dds", v44, 0, 1, 0);
+  v45 = 0;
+  v46 = (volatile signed __int32 *)qword_143D70978;
+  if ( qword_143D70978 )
+  {
+    v45 = qword_143D70978;
+    _InterlockedIncrement((volatile signed __int32 *)(qword_143D70978 + 8));
+    v46 = (volatile signed __int32 *)qword_143D70978;
+    v57 = v45;
+  }
+  if ( v46 != (volatile signed __int32 *)v45 )
+  {
+    if ( v45 )
+    {
+      _InterlockedIncrement((volatile signed __int32 *)(v45 + 8));
+      v45 = v57;
+    }
+    qword_143D70978 = v45;
+    if ( v46 )
+    {
+      if ( _InterlockedExchangeAdd(v46 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v46 + 8LL))(v46);
+      v45 = v57;
+    }
+  }
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v47 = (char *)sub_1416579C0((__int64)&unk_143E5E0F0, 0x60u, 0, 0);
+  v48 = v47;
+  if ( v47 )
+  {
+    sub_1416BAB90(v47);
+    v49 = 10;
+    *(_QWORD *)v48 = &BSShaderTextureSet::`vftable';
+    v50 = v48 + 16;
+    do
+    {
+      sub_14167BCF0(v50);
+      v50 += 8;
+      --v49;
+    }
+    while ( v49 );
+  }
+  else
+  {
+    v48 = nullptr;
+  }
+  strcpy_s(Destination, 0x104u, "Data\\Textures\\Effects\\TestMeatcapGore01_d.dds");
+  (*(void (__fastcall **)(char *, _QWORD, char *))(*(_QWORD *)v48 + 352LL))(v48, 0, Destination);
+  strcpy_s(Destination, 0x104u, "Data\\Textures\\Effects\\TestMeatcapGore01_n.dds");
+  (*(void (__fastcall **)(char *, __int64, char *))(*(_QWORD *)v48 + 352LL))(v48, 1, Destination);
+  strcpy_s(Destination, 0x104u, "Data\\Textures\\Effects\\TestMeatcapGore01_h.dds");
+  (*(void (__fastcall **)(char *, __int64, char *))(*(_QWORD *)v48 + 352LL))(v48, 3, Destination);
+  v54[0] = &BSTArrayAllocatorFunctor<BSTArrayHeapAllocator>::`vftable';
+  v54[1] = &qword_143E479F8;
+  result = sub_141659520(&dword_143E47A08, v54, (unsigned int)dword_143E47A00, 8);
+  if ( (_DWORD)result != -1 )
+  {
+    v52 = (unsigned int)result;
+    result = qword_143E479F8;
+    *(_QWORD *)(qword_143E479F8 + 8 * v52) = v48;
+  }
+  if ( v45 && _InterlockedExchangeAdd((volatile signed __int32 *)(v45 + 8), 0xFFFFFFFF) == 1 )
+    result = (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)v57 + 8LL))(v57);
+  *(_DWORD *)(v1 + 2496) = v2;
+  return result;
+}
+
+
+=========================================
+  PART I — FogOfWarOverlay installer (sub_140372CC0) — canonical template
+=========================================
+
+---- decomp sub_140372CC0 FogOfWarOverlay installer @ 0x140372CC0 (RVA 0x372CC0) ----
+  size=0x6D3
+__int64 __fastcall sub_140372CC0(_QWORD *a1, __int64 a2)
+{
+  int v4; // ebp
+  double v5; // xmm0_8
+  float v6; // xmm6_4
+  __int64 v7; // rbx
+  __int64 v8; // r15
+  __int64 v9; // r13
+  __int64 v10; // r12
+  unsigned __int16 v11; // r9
+  unsigned __int16 v12; // bx
+  unsigned int v13; // edx
+  __int64 v14; // r14
+  float v15; // xmm11_4
+  float v16; // xmm10_4
+  float v17; // xmm8_4
+  unsigned __int16 v18; // r8
+  int v19; // esi
+  unsigned __int16 v20; // cx
+  float v21; // xmm7_4
+  float v22; // xmm6_4
+  __int64 v23; // rdx
+  __int64 v24; // rbx
+  __int64 v25; // rcx
+  float v26; // xmm1_4
+  float v27; // xmm1_4
+  float v28; // xmm1_4
+  int v29; // eax
+  __m128 v30; // xmm0
+  __m128 v31; // xmm0
+  unsigned __int16 v32; // r8
+  unsigned __int16 v33; // r9
+  int v34; // r10d
+  int v35; // r11d
+  __int16 v36; // dx
+  __int64 v37; // rax
+  unsigned __int16 v38; // r8
+  __int64 v39; // rax
+  __int64 v40; // rax
+  __int16 v41; // cx
+  __int64 v42; // rax
+  __int64 v43; // rax
+  __int64 v44; // rax
+  volatile signed __int32 **v45; // rsi
+  _QWORD *v46; // rax
+  _QWORD *v47; // rax
+  __int64 v48; // r8
+  volatile signed __int32 *v49; // rbx
+  volatile signed __int32 *v50; // rcx
+  _QWORD *v51; // rax
+  _QWORD *v52; // rbx
+  __int64 v53; // r8
+  int v54; // xmm1_4
+  __int64 v56; // [rsp+80h] [rbp-C8h]
+  __int64 v57; // [rsp+88h] [rbp-C0h]
+  float v58[4]; // [rsp+90h] [rbp-B8h] BYREF
+  __m128 v59; // [rsp+A0h] [rbp-A8h]
+  __int64 v60; // [rsp+158h] [rbp+10h] BYREF
+  int v61; // [rsp+160h] [rbp+18h]
+  __int64 v62; // [rsp+168h] [rbp+20h] BYREF
+
+  if ( (*(_DWORD *)(a2 + 16) & 0x2000) == 0 )
+  {
+    v4 = 0;
+    if ( !*(_QWORD *)(qword_1432D2048 + 88) )
+    {
+      v5 = sub_1404C6B30(a2);
+      v6 = *(float *)&v5;
+      *(float *)&v5 = sub_1404C6B10(a2);
+      *((_DWORD *)a1 + 3) = LODWORD(v5);
+      *((float *)a1 + 4) = v6;
+      *((_DWORD *)a1 + 5) = 0;
+      *((_DWORD *)a1 + 8) = 0;
+      *((float *)a1 + 6) = *(float *)&v5 + 4096.0;
+      *((float *)a1 + 7) = v6 + 4096.0;
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v57 = sub_141656E30(&unk_143E5E0F0);
+    v7 = (unsigned __int16)(*((_WORD *)a1 + 4) * *((_WORD *)a1 + 4));
+    v61 = *((unsigned __int16 *)a1 + 4) * *((unsigned __int16 *)a1 + 4);
+    v8 = sub_14165BE20(v57, 12 * v7, 8);
+    v9 = sub_14165BE20(v57, 16LL * (unsigned int)v7, 8);
+    v10 = sub_14165BE20(v57, 8 * v7, 8);
+    v11 = 6 * (*((_WORD *)a1 + 4) - 1) * (*((_WORD *)a1 + 4) - 1);
+    v12 = v11 / 3u;
+    LODWORD(v60) = v11 / 3u;
+    sub_1416576D0(&v62, 2LL * v11, 8);
+    v13 = *((unsigned __int16 *)a1 + 4);
+    v14 = v62;
+    v15 = *((float *)a1 + 6) - *((float *)a1 + 3);
+    v16 = *((float *)a1 + 7) - *((float *)a1 + 4);
+    v56 = v62;
+    v17 = 1.0 / (float)(int)(v13 - 1);
+    if ( (_WORD)v13 )
+    {
+      v18 = v13;
+      do
+      {
+        v19 = 0;
+        v20 = v18;
+        if ( v18 )
+        {
+          v59.m128_u64[0] = 0;
+          v59.m128_i32[2] = 0;
+          v21 = (float)v4 * v17;
+          v22 = v21 * v15;
+          do
+          {
+            v23 = v4 + v19 * v13;
+            v24 = (unsigned int)v23;
+            v25 = 3 * v23;
+            *(float *)(v10 + 8 * v23) = v21;
+            v26 = (float)v19 * v17;
+            *(float *)(v10 + 8 * v23 + 4) = v26;
+            *(float *)(v8 + 4 * v25) = v22;
+            *(_DWORD *)(v8 + 4 * v25 + 8) = 0;
+            v27 = v26 * v16;
+            *(float *)(v8 + 4 * v25 + 4) = v27;
+            v28 = v27 + *((float *)a1 + 4);
+            v58[0] = v22 + *((float *)a1 + 3);
+            v58[2] = *((float *)a1 + 5);
+            v58[1] = v28;
+            v29 = sub_1404D8810(v58);
+            ++v19;
+            v30 = _mm_shuffle_ps(v59, v59, 147);
+            v30.m128_f32[0] = (float)v29 * 0.25;
+            v31 = _mm_shuffle_ps(v30, v30, 57);
+            *(__m128 *)(v9 + 16 * v24) = v31;
+            v13 = *((unsigned __int16 *)a1 + 4);
+            v59 = v31;
+          }
+          while ( v19 < v13 );
+          v20 = v13;
+        }
+        ++v4;
+        v18 = v20;
+      }
+      while ( v4 < (unsigned int)v20 );
+      v14 = v56;
+      LOWORD(v13) = v20;
+      v12 = v60;
+    }
+    v32 = 0;
+    v33 = 0;
+    if ( (unsigned __int16)v13 - 1 > 0 )
+    {
+      do
+      {
+        LOWORD(v34) = 0;
+        LOWORD(v35) = v13;
+        if ( (unsigned __int16)v13 - 1 > 0 )
+        {
+          do
+          {
+            v36 = v34 + 1;
+            v37 = v32;
+            v38 = v32 + 1;
+            *(_WORD *)(v14 + 2 * v37) = v33 + *((_WORD *)a1 + 4) * v34;
+            v39 = v38++;
+            *(_WORD *)(v14 + 2 * v39) = v33 + *((_WORD *)a1 + 4) * v34 + 1;
+            v40 = v38++;
+            *(_WORD *)(v14 + 2 * v40) = v33 + *((_WORD *)a1 + 4) * (v34 + 1) + 1;
+            v41 = *((_WORD *)a1 + 4) * v34;
+            v42 = v38++;
+            v34 = (unsigned __int16)(v34 + 1);
+            *(_WORD *)(v14 + 2 * v42) = v33 + v41;
+            v43 = v38++;
+            *(_WORD *)(v14 + 2 * v43) = v33 + *((_WORD *)a1 + 4) * v36 + 1;
+            v44 = v38;
+            v32 = v38 + 1;
+            *(_WORD *)(v14 + 2 * v44) = v33 + *((_WORD *)a1 + 4) * v36;
+            v35 = *((unsigned __int16 *)a1 + 4);
+          }
+          while ( v34 < v35 - 1 );
+        }
+        ++v33;
+        LOWORD(v13) = v35;
+      }
+      while ( v33 < (unsigned __int16)v35 - 1 );
+    }
+    v45 = (volatile signed __int32 **)sub_14182FFD0(
+                                        v12,
+                                        v14,
+                                        (unsigned __int16)v61,
+                                        v8,
+                                        v10,
+                                        0,
+                                        v8,
+                                        0,
+                                        0,
+                                        v9,
+                                        0,
+                                        0,
+                                        0,
+                                        0,
+                                        0,
+                                        0);
+    v46 = sub_14167BDC0(&v60, (__int64)"FogOfWarOverlay");
+    sub_1416BCD40(v45, v46);
+    sub_14167BEF0();
+    sub_14165C3F0(v57, v8);
+    sub_14165C3F0(v57, v9);
+    sub_14165C3F0(v57, v10);
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v47 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x88u, 0, 0);
+    if ( v47 )
+      v49 = (volatile signed __int32 *)sub_14216F9C0(v47);
+    else
+      v49 = nullptr;
+    LOBYTE(v48) = 1;
+    sub_142161B10(v49, *((_QWORD *)v49 + 11), v48);
+    *(_QWORD *)(*((_QWORD *)v49 + 11) + 72LL) = unk_1434391A0;
+    *(_DWORD *)(*((_QWORD *)v49 + 11) + 80LL) = MEMORY[0x1434391A8];
+    (*(void (__fastcall **)(volatile signed __int32 *, volatile signed __int32 **))(*(_QWORD *)v49 + 336LL))(v49, v45);
+    v50 = v45[39];
+    if ( v50 != v49 )
+    {
+      _InterlockedIncrement(v49 + 2);
+      v45[39] = v49;
+      if ( v50 )
+      {
+        if ( _InterlockedExchangeAdd(v50 + 2, 0xFFFFFFFF) == 1 )
+          (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v50 + 8LL))(v50);
+      }
+    }
+    if ( dword_143E5F2D0 != 2 )
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+    v51 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x30u, 0, 0);
+    v52 = v51;
+    if ( v51 )
+    {
+      sub_1416BD6F0(v51);
+      *v52 = &NiAlphaProperty::`vftable';
+      *((_WORD *)v52 + 20) = 236;
+      *((_BYTE *)v52 + 42) = 0;
+    }
+    else
+    {
+      v52 = nullptr;
+    }
+    *((_WORD *)v52 + 20) |= 1u;
+    (*((void (__fastcall **)(volatile signed __int32 **, _QWORD *))*v45 + 42))(v45, v52);
+    v45[33] = (volatile signed __int32 *)((unsigned __int64)v45[33] | 0x800);
+    LOBYTE(v53) = 1;
+    *((_DWORD *)v45 + 47) = 1065353216;
+    v54 = *((_DWORD *)a1 + 4);
+    *((_DWORD *)v45 + 24) = *((_DWORD *)a1 + 3);
+    *((_DWORD *)v45 + 25) = v54;
+    *((_DWORD *)v45 + 26) = 0;
+    (*(void (__fastcall **)(_QWORD, volatile signed __int32 **, __int64))(*(_QWORD *)*a1 + 464LL))(*a1, v45, v53);
+    sub_141657750(&v62);
+  }
+  return 1;
+}
+
+
+---- decomp sub_1406B60C0 Moon installer @ 0x1406B60C0 (RVA 0x6B60C0) ----
+  size=0x669
+__int64 __fastcall sub_1406B60C0(__int64 a1, __int64 a2, __int64 a3, __int64 a4)
+{
+  __int64 v5; // r12
+  int v6; // ebx
+  __int64 v7; // r9
+  __int64 v8; // r9
+  __int64 v9; // r9
+  __int64 v10; // r9
+  __int64 v11; // r9
+  __int64 v12; // rcx
+  float v13; // xmm1_4
+  __int64 v14; // rax
+  _QWORD *v15; // rax
+  __int64 v16; // rcx
+  _OWORD *v17; // rcx
+  _OWORD *v18; // rax
+  _DWORD *v19; // rdi
+  _DWORD *v20; // r15
+  volatile signed __int32 *v21; // rax
+  volatile signed __int32 *v22; // rcx
+  void *v23; // rax
+  __int64 v24; // rdi
+  __int64 v25; // rax
+  __int64 v26; // r14
+  volatile signed __int32 *v27; // rcx
+  volatile signed __int32 *v28; // rax
+  volatile signed __int32 *v29; // rcx
+  void *v30; // rax
+  __int64 v31; // rdi
+  __int64 v32; // rax
+  __int64 v33; // r14
+  volatile signed __int32 *v34; // rcx
+  _QWORD *v35; // rax
+  _QWORD *v36; // rdi
+  __int64 v37; // rdx
+  __int64 v38; // rcx
+  __int64 v39; // rdx
+  __int64 v40; // rcx
+  __int64 v41; // r8
+  __int64 v42; // r8
+  __int64 v44; // [rsp+80h] [rbp-68h] BYREF
+  _OWORD *v45; // [rsp+88h] [rbp-60h] BYREF
+  __int64 v46; // [rsp+90h] [rbp-58h] BYREF
+  __int64 v47[10]; // [rsp+98h] [rbp-50h] BYREF
+  _OWORD *v48; // [rsp+100h] [rbp+18h] BYREF
+  _QWORD *v49; // [rsp+108h] [rbp+20h] BYREF
+
+  LOBYTE(a4) = 1;
+  v5 = *((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex);
+  v6 = *(_DWORD *)(v5 + 2496);
+  *(_DWORD *)(v5 + 2496) = 90;
+  sub_1416D3D20(&v44, 4, 4, a4);
+  LOBYTE(v7) = 1;
+  sub_1416D3E00(&v48, 4, 4, v7);
+  LOBYTE(v8) = 1;
+  sub_1416D3E90(&v49, 4, 4, v8);
+  LOBYTE(v9) = 1;
+  sub_1416D3D20(v47, 4, 4, v9);
+  LOBYTE(v10) = 1;
+  sub_1416D3E00(&v45, 4, 4, v10);
+  LOBYTE(v11) = 1;
+  sub_1416D3E90(&v46, 4, 4, v11);
+  v12 = v47[0];
+  v13 = (float)*(int *)(a1 + 204);
+  v14 = v44;
+  *(_DWORD *)(v44 + 8) = 0;
+  *(float *)(v14 + 4) = v13;
+  *(float *)v14 = -v13;
+  *(float *)(v14 + 12) = -v13;
+  *(float *)(v14 + 16) = -v13;
+  *(_DWORD *)(v14 + 20) = 0;
+  *(float *)(v14 + 24) = v13;
+  *(float *)(v14 + 28) = v13;
+  *(_DWORD *)(v14 + 32) = 0;
+  *(float *)(v14 + 36) = v13;
+  *(float *)(v14 + 40) = -v13;
+  *(_DWORD *)(v14 + 44) = 0;
+  *(float *)v12 = -v13;
+  *(float *)(v12 + 4) = v13;
+  *(_DWORD *)(v12 + 8) = 0;
+  *(float *)(v12 + 12) = -v13;
+  *(float *)(v12 + 16) = -v13;
+  *(_DWORD *)(v12 + 20) = 0;
+  *(float *)(v12 + 24) = v13;
+  *(float *)(v12 + 28) = v13;
+  *(_DWORD *)(v12 + 32) = 0;
+  *(float *)(v12 + 36) = v13;
+  *(float *)(v12 + 40) = -v13;
+  *(_DWORD *)(v12 + 44) = 0;
+  v15 = v49;
+  v16 = v46;
+  *v49 = 0;
+  *((_DWORD *)v15 + 2) = 0;
+  *((_DWORD *)v15 + 3) = 1065353216;
+  v15[2] = 1065353216;
+  *((_DWORD *)v15 + 6) = 1065353216;
+  *((_DWORD *)v15 + 7) = 1065353216;
+  *(_QWORD *)v16 = 0;
+  *(_DWORD *)(v16 + 8) = 0;
+  *(_DWORD *)(v16 + 12) = 1065353216;
+  *(_QWORD *)(v16 + 16) = 1065353216;
+  *(_DWORD *)(v16 + 24) = 1065353216;
+  *(_DWORD *)(v16 + 28) = 1065353216;
+  v17 = v45;
+  v18 = v48;
+  *v48 = xmmword_1424D34E0;
+  v18[1] = xmmword_1424D34E0;
+  v18[2] = xmmword_1424D34E0;
+  v18[3] = xmmword_1424D34E0;
+  *v17 = xmmword_1424D34E0;
+  v17[1] = xmmword_1424D34E0;
+  v17[2] = xmmword_1424D34E0;
+  v17[3] = xmmword_1424D34E0;
+  v19 = (_DWORD *)sub_141677A80(12);
+  v20 = (_DWORD *)sub_141677A80(12);
+  *v19 = 0x10000;
+  v19[1] = 131074;
+  v19[2] = 196609;
+  *v20 = 0x10000;
+  v20[1] = 131074;
+  v20[2] = 196609;
+  v21 = (volatile signed __int32 *)sub_14182FFD0(
+                                     2,
+                                     (__int64)v19,
+                                     4u,
+                                     v44,
+                                     (__int64)v49,
+                                     0,
+                                     0,
+                                     0,
+                                     0,
+                                     (__int64)v48,
+                                     0,
+                                     0,
+                                     0,
+                                     0,
+                                     0,
+                                     0);
+  v22 = *(volatile signed __int32 **)(a1 + 40);
+  if ( v22 != v21 )
+  {
+    if ( v21 )
+      _InterlockedIncrement(v21 + 2);
+    *(_QWORD *)(a1 + 40) = v21;
+    if ( v22 && _InterlockedExchangeAdd(v22 + 2, 0xFFFFFFFF) == 1 )
+      (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v22 + 8LL))(v22);
+  }
+  *(_QWORD *)(*(_QWORD *)(a1 + 40) + 264LL) |= 2uLL;
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v23 = sub_1416579C0((__int64)&unk_143E5E0F0, 0xB0u, 0, 0);
+  if ( v23 )
+    v24 = sub_142214640((__int64)v23);
+  else
+    v24 = 0;
+  v25 = *(_QWORD *)v24;
+  *(_DWORD *)(v24 + 168) = 6;
+  v26 = *(_QWORD *)(a1 + 40);
+  (*(void (__fastcall **)(__int64, __int64))(v25 + 336))(v24, v26);
+  v27 = *(volatile signed __int32 **)(v26 + 312);
+  if ( v27 != (volatile signed __int32 *)v24 )
+  {
+    _InterlockedIncrement((volatile signed __int32 *)(v24 + 8));
+    *(_QWORD *)(v26 + 312) = v24;
+    if ( v27 )
+    {
+      if ( _InterlockedExchangeAdd(v27 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v27 + 8LL))(v27);
+    }
+  }
+  v28 = (volatile signed __int32 *)sub_14182FFD0(
+                                     2,
+                                     (__int64)v20,
+                                     4u,
+                                     v47[0],
+                                     v46,
+                                     0,
+                                     0,
+                                     0,
+                                     0,
+                                     (__int64)v45,
+                                     0,
+                                     0,
+                                     0,
+                                     0,
+                                     0,
+                                     0);
+  v29 = *(volatile signed __int32 **)(a1 + 48);
+  if ( v29 != v28 )
+  {
+    if ( v28 )
+      _InterlockedIncrement(v28 + 2);
+    *(_QWORD *)(a1 + 48) = v28;
+    if ( v29 && _InterlockedExchangeAdd(v29 + 2, 0xFFFFFFFF) == 1 )
+      (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v29 + 8LL))(v29);
+  }
+  *(_QWORD *)(*(_QWORD *)(a1 + 48) + 264LL) |= 2uLL;
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v30 = sub_1416579C0((__int64)&unk_143E5E0F0, 0xB0u, 0, 0);
+  if ( v30 )
+    v31 = sub_142214640((__int64)v30);
+  else
+    v31 = 0;
+  v32 = *(_QWORD *)v31;
+  *(_DWORD *)(v31 + 168) = 7;
+  v33 = *(_QWORD *)(a1 + 48);
+  (*(void (__fastcall **)(__int64, __int64))(v32 + 336))(v31, v33);
+  v34 = *(volatile signed __int32 **)(v33 + 312);
+  if ( v34 != (volatile signed __int32 *)v31 )
+  {
+    _InterlockedIncrement((volatile signed __int32 *)(v31 + 8));
+    *(_QWORD *)(v33 + 312) = v31;
+    if ( v34 )
+    {
+      if ( _InterlockedExchangeAdd(v34 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v34 + 8LL))(v34);
+    }
+  }
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v35 = sub_1416579C0((__int64)&unk_143E5E0F0, 0x30u, 0, 0);
+  v36 = v35;
+  if ( v35 )
+  {
+    sub_1416BD6F0(v35);
+    *v36 = &NiAlphaProperty::`vftable';
+    *((_WORD *)v36 + 20) = 236;
+    *((_BYTE *)v36 + 42) = 0;
+    _InterlockedIncrement((volatile signed __int32 *)v36 + 2);
+  }
+  else
+  {
+    v36 = nullptr;
+  }
+  *((_WORD *)v36 + 20) = v36[5] & 0xDE00 | 0x200D;
+  (*(void (__fastcall **)(_QWORD, _QWORD *))(**(_QWORD **)(a1 + 40) + 336LL))(*(_QWORD *)(a1 + 40), v36);
+  if ( _InterlockedExchangeAdd((volatile signed __int32 *)v36 + 2, 0xFFFFFFFF) == 1 )
+    (*(void (__fastcall **)(_QWORD *))(*v36 + 8LL))(v36);
+  if ( *(_DWORD *)(sub_1402F2410(v38, v37) + 876) == 3 || *(_DWORD *)(sub_1402F2410(v40, v39) + 876) == 2 )
+  {
+    sub_14217A910("Textures\\Sky\\MoonShadow.dds", 0, 0);
+    *(_QWORD *)(*(_QWORD *)(a1 + 48) + 264LL) &= ~0x20uLL;
+    *(_DWORD *)(a1 + 208) = 2;
+  }
+  sub_1416BE640(*(_QWORD *)(a1 + 24));
+  sub_1416BE640(*(_QWORD *)(a1 + 32));
+  LOBYTE(v41) = 1;
+  (*(void (__fastcall **)(_QWORD, _QWORD, __int64))(**(_QWORD **)(a1 + 24) + 464LL))(
+    *(_QWORD *)(a1 + 24),
+    *(_QWORD *)(a1 + 40),
+    v41);
+  LOBYTE(v42) = 1;
+  (*(void (__fastcall **)(_QWORD, _QWORD, __int64))(**(_QWORD **)(a1 + 32) + 464LL))(
+    *(_QWORD *)(a1 + 32),
+    *(_QWORD *)(a1 + 48),
+    v42);
+  *(_DWORD *)(v5 + 2496) = v6;
+  return 2496;
+}
+
+
+=========================================
+  PART J — sub_1406BF310 (direct texture slot install)
+=========================================
+
+---- decomp sub_1406BF310 @ 0x1406BF310 (RVA 0x6BF310) ----
+  size=0x315
+void __fastcall sub_1406BF310(__int64 a1)
+{
+  __int64 v2; // rax
+  __int64 v3; // rcx
+  char *v4; // rdi
+  __int64 v5; // r13
+  __int64 v6; // r14
+  volatile signed __int32 *v7; // r15
+  __int64 *v8; // r14
+  __int64 v9; // rax
+  __int64 v10; // rax
+  __int64 v11; // rax
+  CHAR *v12; // rcx
+  volatile signed __int32 *v13; // rcx
+  __int64 v14; // rdx
+  __int64 v15; // rax
+  __int64 v16; // rcx
+  unsigned __int64 v17; // rax
+  __int64 v18; // r13
+  __int64 v19; // r14
+  __int64 v20; // rax
+  __int64 v21; // rax
+  CHAR *v22; // rcx
+  volatile signed __int32 *v23; // rcx
+  __int64 v24; // r8
+  __int64 v25; // rax
+  __int64 v26; // rcx
+  unsigned __int64 v27; // rax
+  _QWORD *v28; // rcx
+  char *Source; // [rsp+30h] [rbp-9h] BYREF
+  int v30; // [rsp+38h] [rbp-1h]
+  int v31; // [rsp+40h] [rbp+7h] BYREF
+  __int64 v32; // [rsp+48h] [rbp+Fh]
+  __int64 v33; // [rsp+50h] [rbp+17h]
+  int v34; // [rsp+58h] [rbp+1Fh]
+  volatile signed __int32 *v35; // [rsp+A8h] [rbp+6Fh] BYREF
+  volatile signed __int32 *v36; // [rsp+B0h] [rbp+77h] BYREF
+
+  if ( (*(_BYTE *)(a1 + 916) & 0x40) != 0 )
+  {
+    if ( *(_QWORD *)(a1 + 120) && (unsigned int)(*(_DWORD *)(a1 + 876) - 2) <= 1 )
+    {
+      v2 = (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)(*(_QWORD *)(a1 + 64) + 32LL) + 56LL))(*(_QWORD *)(a1 + 64) + 32LL);
+      sub_1406C5950(*(_QWORD *)(a1 + 120), v2);
+    }
+    v3 = *(_QWORD *)(a1 + 128);
+    if ( v3 && (unsigned int)(*(_DWORD *)(a1 + 876) - 2) <= 1 )
+    {
+      v4 = nullptr;
+      v5 = *(_QWORD *)(*(_QWORD *)(v3 + 32) + 312LL);
+      v6 = *(_QWORD *)(a1 + 64);
+      v7 = nullptr;
+      Source = nullptr;
+      v30 = 0;
+      v8 = (__int64 *)(v6 + 96);
+      if ( v8 && (unsigned int)sub_14167C200(v8 + 1) )
+      {
+        v9 = *v8;
+        v35 = nullptr;
+        v10 = (*(__int64 (__fastcall **)(__int64 *))(v9 + 72))(v8);
+        sub_1401E61D0((__int64)&Source, v10, 0);
+        v11 = sub_14167C070(v8 + 1);
+        sub_140206600((__int64)&Source, v11);
+        v4 = Source;
+        v12 = (CHAR *)&Default;
+        if ( Source )
+          v12 = Source;
+        sub_14217A910(v12, 1, &v35, 0, 1, 0);
+        v7 = v35;
+        if ( v35 )
+        {
+          sub_1406C4FB0(v5, 0, v35);
+          v13 = v35;
+          if ( v35 )
+          {
+            if ( _InterlockedExchangeAdd(v35 + 2, 0xFFFFFFFF) == 1 )
+              (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v13 + 8LL))(v13);
+            v4 = Source;
+          }
+        }
+      }
+      v14 = *(_QWORD *)(*(_QWORD *)(a1 + 128) + 16LL);
+      v15 = *(_QWORD *)(v14 + 264);
+      v16 = v15 | 0x20;
+      v17 = v15 & 0xFFFFFFFFFFFFFFDFuLL;
+      if ( !v7 )
+        v16 = v17;
+      *(_QWORD *)(v14 + 264) = v16;
+      v18 = *(_QWORD *)(*(_QWORD *)(*(_QWORD *)(a1 + 128) + 48LL) + 312LL);
+      v19 = *(_QWORD *)(a1 + 64) + 112LL;
+      if ( *(_QWORD *)(a1 + 64) != -112 && (unsigned int)sub_14167C200(*(_QWORD *)(a1 + 64) + 120LL) )
+      {
+        v20 = (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)v19 + 72LL))(v19);
+        sub_1401E61D0((__int64)&Source, v20, 0);
+        v21 = sub_14167C070(v19 + 8);
+        sub_140206600((__int64)&Source, v21);
+        v4 = Source;
+        v22 = (CHAR *)&Default;
+        v36 = nullptr;
+        if ( Source )
+          v22 = Source;
+        sub_14217A910(v22, 1, &v36, 0, 1, 0);
+        v7 = v36;
+        if ( v36 )
+        {
+          sub_1406C4FB0(v18, 0, v36);
+          v23 = v36;
+          if ( v36 )
+          {
+            if ( _InterlockedExchangeAdd(v36 + 2, 0xFFFFFFFF) == 1 )
+              (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v23 + 8LL))(v23);
+            v4 = Source;
+          }
+        }
+      }
+      v24 = *(_QWORD *)(*(_QWORD *)(a1 + 128) + 24LL);
+      v25 = *(_QWORD *)(v24 + 264);
+      v26 = v25 | 0x20;
+      v27 = v25 & 0xFFFFFFFFFFFFFFDFuLL;
+      if ( !v7 )
+        v26 = v27;
+      *(_QWORD *)(v24 + 264) = v26;
+      if ( v4 )
+      {
+        if ( dword_143E5F2D0 != 2 )
+          sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+        sub_141657E20(&unk_143E5E0F0, v4, 0);
+      }
+    }
+    sub_1406BF630(a1);
+    v28 = *(_QWORD **)(a1 + 8);
+    v32 = 0;
+    v31 = 0;
+    v33 = 0;
+    v34 = 0;
+    sub_1416C8050(v28, (__int64)&v31);
+    *(_DWORD *)(a1 + 916) &= ~0x40u;
+  }
+}
+
+
+=========================================
+  PART K — sub_1421718E0 (possibly BSLSP facade) + sub_142170640 (alt)
+=========================================
+
+---- decomp sub_1421718E0 BSLSP facade @ 0x1421718E0 (RVA 0x21718E0) ----
+  size=0x29C
+__int64 __fastcall sub_1421718E0(__int64 a1, __int64 a2, __int64 a3)
+{
+  __int64 v5; // rbx
+  _DWORD *v6; // rcx
+  bool v7; // zf
+  __int64 v8; // rdx
+  __int64 v9; // rdx
+  __int64 v10; // rbp
+  volatile signed __int32 *v11; // rcx
+  __int64 v12; // rax
+  __int64 v13; // rdx
+  __int64 v14; // rcx
+  __int64 v15; // rax
+  float v16; // xmm1_4
+  __m128 v17; // xmm2
+  float v18; // xmm0_4
+  float v19; // xmm2_4
+  __int64 v20; // rax
+  __int64 v21; // rsi
+  volatile signed __int32 *v22; // rcx
+  __int64 v23; // rax
+
+  LOBYTE(a3) = (((unsigned __int64)*(unsigned int *)(a2 + 336) >> 22) & 0x3C) != 0;
+  sub_142161950(a1, 37, a3);
+  v5 = a2 + 40;
+  v6 = (_DWORD *)a2;
+  if ( *(_QWORD *)(a2 + 40) )
+  {
+    do
+    {
+      if ( (v6[66] & 0x4000LL) != 0 && (*(__int64 (__fastcall **)(_DWORD *))(*(_QWORD *)v6 + 48LL))(v6) )
+        break;
+      v6 = *(_DWORD **)v5;
+      v7 = *(_QWORD *)(*(_QWORD *)v5 + 40LL) == 0;
+      v5 = *(_QWORD *)v5 + 40LL;
+    }
+    while ( !v7 );
+  }
+  if ( (sub_1416D5640(a2) & 0x80200000000000LL) == 0 )
+  {
+    LOBYTE(v8) = 1;
+    (*(void (__fastcall **)(__int64, __int64))(*(_QWORD *)a2 + 360LL))(a2, v8);
+  }
+  if ( (sub_1416D5640(a2) & 0x401000000000000LL) == 0 && (*(_DWORD *)(a1 + 48) & 0x1000LL) == 0 )
+  {
+    LOBYTE(v9) = 1;
+    (*(void (__fastcall **)(__int64, __int64))(*(_QWORD *)a2 + 360LL))(a2, v9);
+  }
+  v10 = *(_QWORD *)(a1 + 88);
+  if ( (*(_DWORD *)(a1 + 48) & 0x100000) != 0 )
+  {
+    v11 = *(volatile signed __int32 **)(v10 + 72);
+    v12 = qword_143D70958;
+    if ( v11 != (volatile signed __int32 *)qword_143D70958 )
+    {
+      if ( qword_143D70958 )
+        _InterlockedIncrement((volatile signed __int32 *)(qword_143D70958 + 8));
+      *(_QWORD *)(v10 + 72) = v12;
+      if ( v11 && _InterlockedExchangeAdd(v11 + 2, 0xFFFFFFFF) == 1 )
+        (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v11 + 8LL))(v11);
+    }
+    *(_DWORD *)(v10 + 112) = 3;
+  }
+  v13 = *(_QWORD *)(a1 + 48);
+  if ( (v13 & 1) != 0 && *(float *)(*(_QWORD *)(a1 + 88) + 136LL) < 0.0 )
+  {
+    *(_DWORD *)(v10 + 136) = 1065353216;
+    v13 = *(_QWORD *)(a1 + 48);
+  }
+  v14 = v13;
+  if ( (v13 & 0x2000000000000000LL) != 0 && (v13 & 0x2000000000LL) == 0 )
+  {
+    sub_142161950(a1, 61, 0);
+    v14 = *(_QWORD *)(a1 + 48);
+  }
+  if ( (v14 & 0x20000) != 0 && !*(_QWORD *)(a2 + 320) )
+  {
+    sub_142161950(a1, 17, 0);
+    v14 = *(_QWORD *)(a1 + 48);
+  }
+  if ( (v14 & 1) != 0 )
+  {
+    v15 = *(_QWORD *)(a1 + 88);
+    v16 = *(float *)(v15 + 140);
+    v17 = (__m128)*(unsigned __int64 *)(v15 + 56);
+    v18 = v17.m128_f32[0] * v16;
+    v19 = _mm_shuffle_ps(v17, v17, 85).m128_f32[0] * v16;
+    if ( v18 == unk_1434391A0
+      && v19 == *(float *)&qword_1434391A4
+      && (float)(*(float *)(v15 + 64) * v16) == *((float *)&qword_1434391A4 + 1) )
+    {
+      sub_142161950(a1, 0, 0);
+      v14 = *(_QWORD *)(a1 + 48);
+    }
+  }
+  LOBYTE(v20) = v14;
+  if ( (v14 & 0x4000000000LL) != 0 && (v14 & 0x80) != 0 )
+  {
+    sub_142161950(a1, 38, 0);
+    v20 = *(_QWORD *)(a1 + 48);
+  }
+  if ( (v20 & 0x80) != 0 )
+  {
+    v21 = *(_QWORD *)(a1 + 88);
+    if ( !(unsigned __int8)sub_14181C130(&byte_143A0F400, *(_QWORD *)(v21 + 192)) )
+    {
+      v22 = *(volatile signed __int32 **)(v21 + 192);
+      v23 = qword_143D70978;
+      if ( v22 != (volatile signed __int32 *)qword_143D70978 )
+      {
+        if ( qword_143D70978 )
+          _InterlockedIncrement((volatile signed __int32 *)(qword_143D70978 + 8));
+        *(_QWORD *)(v21 + 192) = v23;
+        if ( v22 && _InterlockedExchangeAdd(v22 + 2, 0xFFFFFFFF) == 1 )
+          (*(void (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)v22 + 8LL))(v22);
+      }
+    }
+  }
+  return sub_142161950(a1, 40, 0);
+}
+
+
+---- decomp sub_142170640 BSLSP alt install @ 0x142170640 (RVA 0x2170640) ----
+  size=0x43D
+int __fastcall sub_142170640(_QWORD *a1, _QWORD *a2, __int64 a3)
+{
+  __int64 v5; // rbp
+  __int64 v6; // rcx
+  __int64 v7; // rax
+  bool v8; // r14
+  bool v9; // si
+  __int64 v10; // rax
+  char v11; // r15
+  __int64 v12; // rax
+  __int64 v13; // r13
+  char v14; // r12
+  bool v15; // bl
+  bool v16; // r8
+  __int64 v17; // rax
+  bool v18; // r9
+  __int16 v19; // cx
+  int v20; // ecx
+  int v21; // eax
+  int v22; // ecx
+  int v23; // eax
+  int v24; // ecx
+  int v25; // eax
+  int v26; // ecx
+  int v27; // eax
+  int v28; // ecx
+  int v29; // eax
+  int v30; // ecx
+  int v31; // eax
+  int v32; // ecx
+  int v33; // eax
+  int v34; // ecx
+  int v35; // eax
+  int v36; // ecx
+  int v37; // eax
+  int v38; // ecx
+  int v39; // eax
+  int v40; // ecx
+  int result; // eax
+  char v42; // [rsp+20h] [rbp-88h]
+  char v43; // [rsp+21h] [rbp-87h]
+  char v44; // [rsp+22h] [rbp-86h]
+  char v45; // [rsp+23h] [rbp-85h]
+  char v46; // [rsp+24h] [rbp-84h]
+  bool v47; // [rsp+28h] [rbp-80h]
+  bool v48; // [rsp+28h] [rbp-80h]
+  bool v49; // [rsp+2Ch] [rbp-7Ch]
+  __int64 v50; // [rsp+30h] [rbp-78h]
+  __int64 v51; // [rsp+38h] [rbp-70h]
+  __int64 v52; // [rsp+40h] [rbp-68h]
+  __int64 v53; // [rsp+48h] [rbp-60h]
+  __int64 v54; // [rsp+50h] [rbp-58h]
+  __int64 v55; // [rsp+58h] [rbp-50h]
+  bool v56; // [rsp+B0h] [rbp+8h]
+  bool v57; // [rsp+B8h] [rbp+10h]
+  char v59; // [rsp+C8h] [rbp+20h]
+
+  v50 = a1[6] & 0x2000000000LL;
+  v5 = a1[6] & 0x80LL;
+  v56 = true;
+  if ( !(unsigned int)sub_14167C200(a1[11] + 136LL) )
+  {
+    v6 = *(_QWORD *)(a1[11] + 88LL);
+    if ( !v6 || v6 == qword_143D709B0 )
+      v56 = false;
+  }
+  v7 = a1[6];
+  v51 = v7 & 2;
+  v49 = (v7 & 0x40) != 0;
+  v47 = (v7 & 0x100) != 0;
+  v8 = a2
+    && (*(__int64 (__fastcall **)(_QWORD *))(*a2 + 136LL))(a2)
+    && (_UNKNOWN *)(*(__int64 (__fastcall **)(_QWORD *))(*a2 + 16LL))(a2) != &unk_14343AC00;
+  if ( a2 )
+    v57 = (*(__int64 (__fastcall **)(_QWORD *))(*a2 + 16LL))(a2) == (_QWORD)&unk_14343AC00;
+  else
+    v57 = 0;
+  v9 = 0;
+  v59 = 0;
+  v42 = 0;
+  v52 = a1[6] & 0x4000000000000000LL;
+  v53 = a1[6] & 0x800000LL;
+  v54 = a1[6] & 0x40000000LL;
+  if ( (a1[6] & 0x10) == 0 || (v43 = 1, !(unsigned int)sub_14167C200(a1[11] + 144LL)) )
+    v43 = 0;
+  if ( (a1[6] & 0x20) == 0 || (v44 = 1, !(unsigned int)sub_14167C200(a1[11] + 144LL)) )
+    v44 = 0;
+  v10 = a1[6];
+  v55 = v10 & 0x200000000000LL;
+  if ( (v10 & 0x1000000000000000LL) != 0 && (v10 & 0x2000000000000000LL) == 0
+    || (v45 = 0, (v10 & 0x80000000000000LL) != 0) )
+  {
+    v45 = 1;
+  }
+  if ( !v8 || !(unsigned int)sub_14167C200(a1[11] + 168LL) || (v46 = 1, !(unsigned int)sub_14167C200(a1[11] + 160LL)) )
+    v46 = 0;
+  v11 = 0;
+  v12 = a1[14];
+  v13 = a1[6] & 0x20000;
+  v14 = 0;
+  if ( v12 )
+  {
+    if ( *(_WORD *)(v12 + 24) == 3 )
+      v14 = 1;
+    else
+      v11 = 1;
+  }
+  v15 = 0;
+  v16 = 0;
+  if ( !v8 )
+  {
+    v15 = v47;
+    v16 = v49;
+  }
+  v48 = v16;
+  v18 = a2
+     && (v17 = (*(__int64 (__fastcall **)(_QWORD *))(*a2 + 136LL))(a2), v16 = v48, v17)
+     && *(_DWORD *)(a2[44] + 120LL) != 0;
+  if ( a3 )
+  {
+    v19 = *(_WORD *)(a3 + 40);
+    v9 = (v19 & 0x1E0) == 0;
+    if ( (v19 & 0x1E) == 8 && (v19 & 0x1E0) == 0xE0 )
+    {
+      v42 = 1;
+    }
+    else if ( (v19 & 0x1E0) == 0x40 || (v19 & 0x1E) == 8 )
+    {
+      v59 = 1;
+    }
+  }
+  v20 = (v50 != 0) | 4;
+  if ( !v56 )
+    v20 = v50 != 0;
+  v21 = v20 | 8;
+  if ( !v56 || !v18 )
+    v21 = v20;
+  v22 = v21 | 2;
+  if ( !v51 )
+    v22 = v21;
+  v23 = v22 | 0x10;
+  if ( !v16 )
+    v23 = v22;
+  v24 = v23 | 0x200000;
+  if ( !v15 )
+    v24 = v23;
+  v25 = v24 | 0x80;
+  if ( !v8 )
+    v25 = v24;
+  v26 = v25 | 0x100;
+  if ( !v57 )
+    v26 = v25;
+  v27 = v26 | 0x20;
+  if ( !v9 )
+    v27 = v26;
+  v28 = v27 | 0x40;
+  if ( !v59 )
+    v28 = v27;
+  v29 = v28 | 0x10000;
+  if ( !v42 )
+    v29 = v28;
+  v30 = v29 | 0x400;
+  if ( !v52 )
+    v30 = v29;
+  v31 = v30 | 0x800;
+  if ( !v53 )
+    v31 = v30;
+  v32 = v31 | 0x1000;
+  if ( !v54 )
+    v32 = v31;
+  v33 = v32 | 0x2000;
+  if ( !v43 )
+    v33 = v32;
+  v34 = v33 | 0x4000;
+  if ( !v44 )
+    v34 = v33;
+  v35 = v34 | 0x40000;
+  if ( !v55 )
+    v35 = v34;
+  v36 = v35 | 0x80000;
+  if ( !v5 )
+    v36 = v35;
+  v37 = v36 | 0x100000;
+  if ( !v45 )
+    v37 = v36;
+  v38 = v37 | 0x400000;
+  if ( !v46 )
+    v38 = v37;
+  if ( !v16 && !v15 && !v53 )
+  {
+    v39 = v38;
+    if ( !v5 )
+    {
+      if ( !v11 )
+        goto LABEL_89;
+      goto LABEL_88;
+    }
+  }
+  if ( v11 )
+  {
+LABEL_88:
+    v39 = v38 | 0x1000000;
+    goto LABEL_89;
+  }
+  v39 = v38;
+  if ( !v14 )
+    v39 = v38 | 0x800000;
+LABEL_89:
+  v40 = v39 | 0x2000000;
+  if ( !v14 )
+    v40 = v39;
+  result = v40 | 0x4000000;
+  if ( !v13 )
+    return v40;
+  return result;
+}
+
+
+---- decomp sub_142170E60 BSLSP template init @ 0x142170E60 (RVA 0x2170E60) ----
+  size=0x136
+__int64 __fastcall sub_142170E60(__int64 a1, __int64 a2)
+{
+  bool v2; // zf
+  __int64 v5; // r14
+  int v6; // ebx
+  void *v7; // rax
+  __int64 v8; // rdi
+  __int64 v9; // rsi
+  __int64 v10; // rcx
+
+  v2 = dword_143E5F2D0 == 2;
+  v5 = *((_QWORD *)NtCurrentTeb()->ThreadLocalStoragePointer + (unsigned int)TlsIndex);
+  v6 = *(_DWORD *)(v5 + 2496);
+  *(_DWORD *)(v5 + 2496) = 28;
+  if ( !v2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v7 = sub_1416579C0((__int64)&unk_143E5E0F0, 0xE8u, 0, 0);
+  if ( v7 )
+    v8 = sub_142171620((__int64)v7);
+  else
+    v8 = 0;
+  sub_142160AB0(a1, v8, a2);
+  v9 = *(_QWORD *)(a1 + 184);
+  if ( (*(_DWORD *)(a1 + 48) & 0x400000) != 0 )
+  {
+    v10 = *(_QWORD *)(v8 + 184);
+    *(_QWORD *)v10 = *(_QWORD *)v9;
+    *(_DWORD *)(v10 + 8) = *(_DWORD *)(v9 + 8);
+  }
+  else
+  {
+    if ( (*(_DWORD *)(v8 + 48) & 0x400000) != 0 )
+      sub_1422B6BC8(*(_QWORD *)(v8 + 184), 12);
+    *(_QWORD *)(v8 + 184) = v9;
+    sub_142161950(v8, 22, 0);
+  }
+  *(_OWORD *)(v8 + 112) = *(_OWORD *)(a1 + 112);
+  *(_OWORD *)(v8 + 128) = *(_OWORD *)(a1 + 128);
+  *(_DWORD *)(v8 + 200) = *(_DWORD *)(a1 + 200);
+  *(_DWORD *)(v5 + 2496) = v6;
+  return v8;
+}
+
+
+=========================================
+  PART L — sub_142161B10 (shader material init)
+=========================================
+
+---- decomp sub_142161B10 @ 0x142161B10 (RVA 0x2161B10) ----
+  size=0xAE
+__int64 __fastcall sub_142161B10(_QWORD *a1, __int64 a2, char a3)
+{
+  __int64 v3; // rsi
+  __int64 v7; // rax
+  __int64 v8; // r8
+  __int64 v9; // r9
+  __int64 result; // rax
+
+  v3 = a1[11];
+  if ( a2 )
+  {
+    v7 = (*(__int64 (__fastcall **)(_QWORD *))(*a1 + 416LL))(a1);
+    if ( (unsigned int)sub_14167C200(v7) )
+      (*(void (__fastcall **)(__int64, _QWORD *))(*(_QWORD *)a2 + 56LL))(a2, a1);
+    if ( a3 || a1[3] )
+      LOBYTE(v8) = 1;
+    else
+      v8 = 0;
+    LOBYTE(v9) = (a1[6] & 0x4000000000LL) != 0;
+    result = sub_1421F9F00(qword_1431E5320, a2, v8, v9);
+  }
+  else
+  {
+    result = 0;
+  }
+  a1[11] = result;
+  if ( v3 )
+    return sub_1421FA3B0(qword_1431E5320, v3);
+  return result;
+}
+
+
+---- decomp sub_1421F9F00 (material cache lookup) @ 0x1421F9F00 (RVA 0x21F9F00) ----
+  size=0x4A3
+volatile signed __int32 *__fastcall sub_1421F9F00(__int64 a1, volatile signed __int32 *a2, char a3, unsigned __int8 a4)
+{
+  __int64 v4; // r15
+  __int64 v10; // rax
+  __int64 v11; // rbx
+  unsigned int v12; // ebx
+  __int64 v13; // r8
+  __int64 v14; // rdx
+  int v15; // eax
+  int v16; // r13d
+  unsigned int v17; // ebp
+  int v18; // r12d
+  __int64 v19; // rdi
+  __int64 v20; // rcx
+  unsigned int v21; // eax
+  unsigned int v22; // eax
+  unsigned __int8 v23; // al
+  unsigned int v24; // ebp
+  void *v25; // r14
+  __int64 v26; // r8
+  unsigned int i; // edx
+  __int64 v28; // r9
+  __int64 j; // rax
+  __int64 k; // rdi
+  __int64 v31; // rax
+  __int64 v32; // rdi
+  __int64 v33; // rax
+  unsigned int v34; // [rsp+20h] [rbp-48h]
+  unsigned int v35; // [rsp+24h] [rbp-44h]
+  unsigned int v36; // [rsp+28h] [rbp-40h]
+
+  v4 = 0;
+  if ( !byte_143E4BA70 || !a2 )
+    return nullptr;
+  if ( (*(unsigned int (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)a2 + 40LL))(a2) == 5 )
+    a3 = 1;
+  if ( a3
+    || (*((_DWORD *)a2 + 11) == -1 || *((_DWORD *)a2 + 12))
+    && a2 != (volatile signed __int32 *)(*(__int64 (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)a2 + 32LL))(a2) )
+  {
+    v10 = *(_QWORD *)a2;
+    if ( a3 )
+    {
+      v11 = (*(__int64 (__fastcall **)(volatile signed __int32 *))(v10 + 8))(a2);
+      (*(void (__fastcall **)(__int64, volatile signed __int32 *))(*(_QWORD *)v11 + 16LL))(v11, a2);
+      *(_DWORD *)(v11 + 44) = -1;
+      *(_DWORD *)(v11 + 48) = _InterlockedIncrement((volatile signed __int32 *)(a1 + 28));
+      _InterlockedIncrement((volatile signed __int32 *)(v11 + 8));
+      return (volatile signed __int32 *)v11;
+    }
+    else
+    {
+      v36 = a4 << 31;
+      v12 = 0;
+      v34 = (*(__int64 (__fastcall **)(volatile signed __int32 *, _QWORD, _QWORD))(v10 + 24))(a2, v36, 0);
+      v35 = 0;
+      v13 = v34;
+      while ( 1 )
+      {
+        v14 = *(unsigned int *)(a1 + 32);
+        LODWORD(v14) = v14 & 0x7FFFFFFF;
+        v15 = _InterlockedCompareExchange((volatile signed __int32 *)(a1 + 32), v14 + 1, v14);
+        if ( v15 != (_DWORD)v14 )
+        {
+          do
+          {
+            if ( v15 >= 0 )
+            {
+              v14 = (unsigned int)v15;
+            }
+            else
+            {
+              if ( v12 >= 0x2710 )
+              {
+                Sleep(1u);
+              }
+              else
+              {
+                ++v12;
+                Sleep(0);
+              }
+              v14 = *(unsigned int *)(a1 + 32);
+            }
+            LODWORD(v14) = v14 & 0x7FFFFFFF;
+            v15 = _InterlockedCompareExchange((volatile signed __int32 *)(a1 + 32), v14 + 1, v14);
+          }
+          while ( v15 != (_DWORD)v14 );
+          v13 = v34;
+          v35 = v12;
+        }
+        v16 = *(_DWORD *)(a1 + 16);
+        LOBYTE(v14) = 0;
+        v17 = -1;
+        v18 = v16 - 1;
+        v19 = (unsigned int)v13 & (v16 - 1);
+        do
+        {
+          if ( !v16 )
+            break;
+          v20 = *(_QWORD *)(8 * v19 + *(_QWORD *)(a1 + 8));
+          if ( v20 )
+          {
+            if ( (_UNKNOWN *)v20 == &unk_142F8D190 )
+            {
+              v22 = v19;
+              if ( v17 != -1 )
+                v22 = v17;
+              v17 = v22;
+            }
+            else if ( *(_DWORD *)(v20 + 44) == (_DWORD)v13 )
+            {
+              v23 = sub_1421D6770(v20, a2, v13, &unk_142F8D190);
+              v14 = v23;
+              if ( v23 )
+              {
+                v4 = *(_QWORD *)(8 * v19 + *(_QWORD *)(a1 + 8));
+                _InterlockedIncrement((volatile signed __int32 *)(v4 + 8));
+                _mm_mfence();
+                _InterlockedDecrement((volatile signed __int32 *)(a1 + 32));
+              }
+              _InterlockedIncrement(&dword_143E4BA74);
+              v13 = v34;
+            }
+          }
+          else
+          {
+            v21 = v19;
+            LOBYTE(v14) = 1;
+            if ( v17 != -1 )
+              v21 = v17;
+            v17 = v21;
+          }
+          --v16;
+          v19 = v18 & (unsigned int)(5 * v19 + 1);
+        }
+        while ( !(_BYTE)v14 );
+        v12 = v35;
+        if ( v4 )
+          break;
+        if ( _InterlockedCompareExchange((volatile signed __int32 *)(a1 + 32), 0x80000000, 1) == 1 )
+        {
+          _InterlockedIncrement(&dword_143E4BA78);
+          if ( *(_DWORD *)(a1 + 20) == *(_DWORD *)(a1 + 24) )
+          {
+            v24 = 2 * *(_DWORD *)(a1 + 16);
+            if ( dword_143E5F2D0 != 2 )
+              sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+            v25 = sub_1416579C0((__int64)&unk_143E5E0F0, 8LL * v24, 0, 0);
+            memset(v25, 0, 8LL * v24);
+            v26 = 0;
+            for ( i = v24 - 1; (unsigned int)v26 < *(_DWORD *)(a1 + 16); v26 = (unsigned int)(v26 + 1) )
+            {
+              v28 = *(_QWORD *)(*(_QWORD *)(a1 + 8) + 8 * v26);
+              if ( v28 )
+              {
+                for ( j = i & *(_DWORD *)(v28 + 44); *((_QWORD *)v25 + j); j = i & (5 * (_DWORD)j + 1) )
+                  ;
+                *((_QWORD *)v25 + j) = v28;
+              }
+            }
+            for ( k = v34 & i; *((_QWORD *)v25 + k); k = i & (5 * (_DWORD)k + 1) )
+              ;
+            v31 = (*(__int64 (__fastcall **)(volatile signed __int32 *))(*(_QWORD *)a2 + 8LL))(a2);
+            v4 = v31;
+            if ( v31 )
+            {
+              (*(void (__fastcall **)(__int64, volatile signed __int32 *))(*(_QWORD *)v31 + 16LL))(v31, a2);
+              *(_DWORD *)(v4 + 48) = v36;
+              *(_DWORD *)(v4 + 44) = v34;
+              _InterlockedIncrement((volatile signed __int32 *)(v4 + 8));
+              *((_QWORD *)v25 + k) = v4;
+              ++*(_DWORD *)(a1 + 20);
+              v32 = *(_QWORD *)(a1 + 8);
+              *(_DWORD *)(a1 + 16) = v24;
+              *(_DWORD *)(a1 + 24) = 2 * v24 / 3;
+              if ( dword_143E5F2D0 != 2 )
+                sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+              sub_141657E20(&unk_143E5E0F0, v32, 0);
+              *(_QWORD *)(a1 + 8) = v25;
+            }
+            v13 = v34;
+          }
+          else
+          {
+            v33 = (*(__int64 (__fastcall **)(volatile signed __int32 *, __int64, __int64, void *))(*(_QWORD *)a2 + 8LL))(
+                    a2,
+                    v14,
+                    v13,
+                    &unk_142F8D190);
+            v4 = v33;
+            if ( v33 )
+            {
+              (*(void (__fastcall **)(__int64, volatile signed __int32 *))(*(_QWORD *)v33 + 16LL))(v33, a2);
+              v13 = v34;
+              *(_DWORD *)(v4 + 44) = v34;
+              *(_DWORD *)(v4 + 48) = v36;
+              _InterlockedIncrement((volatile signed __int32 *)(v4 + 8));
+              *(_QWORD *)(*(_QWORD *)(a1 + 8) + 8LL * v17) = v4;
+              ++*(_DWORD *)(a1 + 20);
+            }
+            else
+            {
+              v13 = v34;
+            }
+          }
+          _mm_mfence();
+          _InterlockedExchange((volatile __int32 *)(a1 + 32), 0);
+          if ( v4 )
+            return (volatile signed __int32 *)v4;
+        }
+        else
+        {
+          _InterlockedDecrement((volatile signed __int32 *)(a1 + 32));
+          if ( v35 >= 0x2710 )
+          {
+            Sleep(1u);
+          }
+          else
+          {
+            v12 = ++v35;
+            Sleep(0);
+          }
+          v13 = v34;
+        }
+      }
+      return (volatile signed __int32 *)v4;
+    }
+  }
+  else
+  {
+    _InterlockedIncrement(a2 + 2);
+    return a2;
+  }
+}
+
+
+=========================================
+  PART M — BSLSP ctor sub_142171620
+=========================================
+
+---- decomp sub_142171620 BSLSP ctor @ 0x142171620 (RVA 0x2171620) ----
+  size=0x158
+__int64 __fastcall sub_142171620(__int64 a1)
+{
+  _DWORD *v2; // rax
+  __int64 v3; // r8
+  __int64 v4; // r8
+  __int64 v5; // r8
+
+  sub_142160DA0();
+  *(_QWORD *)a1 = &BSLightingShaderProperty::`vftable';
+  *(_QWORD *)(a1 + 112) = 0;
+  *(_QWORD *)(a1 + 120) = 0;
+  *(_QWORD *)(a1 + 144) = 0;
+  *(_QWORD *)(a1 + 152) = 0;
+  *(_QWORD *)(a1 + 160) = 0;
+  *(_DWORD *)(a1 + 128) = 1058642330;
+  *(_DWORD *)(a1 + 132) = 1060320051;
+  *(_DWORD *)(a1 + 136) = 1061997773;
+  *(_DWORD *)(a1 + 140) = 1065353216;
+  *(_QWORD *)(a1 + 168) = 0;
+  *(_QWORD *)(a1 + 176) = 0;
+  sub_14167BCF0(a1 + 192);
+  *(_QWORD *)(a1 + 200) = 1065353216;
+  *(_DWORD *)(a1 + 208) = 1065353216;
+  *(_DWORD *)(a1 + 212) = 1065353216;
+  *(_DWORD *)(a1 + 216) = -1;
+  *(_DWORD *)(a1 + 224) = 0xFFFF;
+  sub_142161B10((_QWORD *)a1, qword_143E488C8, 0);
+  if ( dword_143E5F2D0 != 2 )
+    sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+  v2 = sub_1416579C0((__int64)&unk_143E5E0F0, 0xCu, 0, 0);
+  if ( v2 )
+  {
+    *(_QWORD *)v2 = unk_1434391A0;
+    v2[2] = MEMORY[0x1434391A8];
+  }
+  else
+  {
+    v2 = nullptr;
+  }
+  LOBYTE(v3) = 1;
+  *(_QWORD *)(a1 + 184) = v2;
+  sub_142161950(a1, 22, v3);
+  LOBYTE(v4) = 1;
+  sub_142161950(a1, 31, v4);
+  LOBYTE(v5) = 1;
+  sub_142161950(a1, 32, v5);
+  return a1;
+}
+
+
+=========================================
+  PART N — xrefs to BSLightingShaderProperty::vftable
+=========================================
+  xref from 0x142171634 in sub_142171620 (fn RVA 0x2171620)
+  xref from 0x14217178F in sub_142171780 (fn RVA 0x2171780)
+  xref from 0x142174B34 in sub_142174B20 (fn RVA 0x2174B20)
+
+=========================================
+  PART O — find writes to BSGeometry+0x138 (shaderProperty slot)
+=========================================

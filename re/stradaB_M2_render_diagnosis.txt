@@ -1,0 +1,912 @@
+================================================================
+  STRADA B — M2 RENDER DIAGNOSIS  (Fallout4.exe 1.11.191 next-gen)
+  Goal:  diagnose why our factory-built BSTriShape is in the SSN
+         scene graph with correct world transform but NEVER renders.
+  Date:  2026-04-23    Image base: 0x140000000
+  Input: live log (cube @ 0x263E8D48450) + scene_inject.cpp +
+         dossiers M1, M2.3, M2.4
+  Output from IDA 9.3sp1 headless decomp of 5 investigation targets
+  Scripts produced:
+     re/decomp_stradaB_M2_rdiag.py         (5-task sweep, 74KB raw)
+     re/decomp_strada_quick_d5660.py       (drilldown, 18KB raw)
+  Raw reports:
+     re/stradaB_M2_rdiag_raw.txt           (2069 L)
+     re/stradaB_M2_d5660.txt               (~660 L)
+================================================================
+
+
+================================================================
+  TL;DR — RANKED ROOT CAUSES
+================================================================
+
+Confidence legend: H=≥80% chance, M=50-80%, L=<50%.
+
+  #1  [H]  BSVertexDesc / vertex-buffer mismatch with cloned shader.
+           Our packed desc 0x1300000300204 differs structurally from
+           source 0x3B00005430206. The source shader's input layout
+           expects at least POS(full)+UV+NORMAL+TANGENT+COLOR streams
+           (bits 44,45,46,48,49 set) but our buffer only has
+           POS+UV+NORMAL (bits 44,45,48 set — missing 46, 49, and the
+           "precision" high-dword 0x0003B000 vs our 0x00013000).
+           Result: the GPU dispatches the draw but transforms each
+           vertex through garbage TANGENT / COLOR bytes, producing
+           NaN / zero clip-space positions → everything culled after
+           vertex shader. See §3 below.
+
+  #2  [H]  AttachChild(reuseFirstEmpty=1) put the cube into a null
+           slot WITHOUT INCREMENTING SSN's children count (+0x132).
+           SSN has count=10 both before & after attach — this is
+           correct engine behavior (the log is telling the truth —
+           the REUSE path bumps a different word at +0x134, not +0x132).
+           Consequence: SSN's render-walk iterates
+           children[0..count) which is children[0..10), but our
+           cube sits at whatever null slot we grabbed.
+           THE NULL SLOT WE WROTE INTO MAY BE AT INDEX >= 10 which
+           means the renderer NEVER VISITS IT. See §2 below.
+
+  #3  [M]  SSN does not dispatch a normal NiNode child render walk.
+           sub_140C38F80 (SCENE_RENDER) uses a REFID-TO-OBJECT
+           lookup via qword_1430DA390 (FormID lookup table). Our
+           cube has no FormID, so even if it's in SSN's children
+           array, this specific render path can't reach it.
+           HOWEVER — there is a second render path that DOES walk
+           SSN's children (via vt[52] sub_1416C85A0 and vt[48]
+           sub_1416BEAC0 = UpdateControllers). Those DO propagate
+           via the children array. So #3 is unlikely to be the
+           sole cause — but if #2 makes the cube invisible to the
+           walker, this path also misses it.
+           See §1 below.
+
+
+================================================================
+  1. RENDER DISPATCH TRACE FROM SSN
+================================================================
+
+1.A  SSN vtable (RVA 0x2908F40, 67 slots, sizeof 0x330):
+       slot[ 0] dtor                    sub_1421B8980  (SSN-specific)
+       slot[26] CloneCreate             sub_1416BDA20  (same as NiNode)
+       slot[40] GetWorldScale           sub_1416BEA10
+       slot[46] UpdateSelectedSubtree   sub_1416BE990  (children walk)
+       slot[47] UpdateSelected          sub_1416BF500  (children walk)
+       slot[48] UpdateControllers       sub_1416BEAC0  ← primary TICK walker
+       slot[52] UpdateNodeBound         sub_1416C85A0
+       slot[58] AttachChild             sub_1416BE170  (same as NiNode)
+       slot[59] AttachChildAt           sub_1416BE2B0
+       slot[62] UpdateWorldBound        sub_1416BE520
+       slot[63..66] misc overrides
+       slot[67] SSN-specific extras (kind-of render-group)
+
+       SSN overrides slot[0] (dtor), slot[2] (RTTI), slot[57]
+       sub_1421B10C0 (SSN-specific detach), and slots 67+. Slots
+       26..66 are INHERITED from NiNode. So for UpdateDownwardPass
+       and AttachChild, SSN is effectively NiNode.
+
+1.B  SCENE_RENDER entry sub_140C38F80 (RVA 0xC38F80, size 0x723):
+       Does NOT walk SSN.children[] directly. Instead it:
+         - Reads qword_1430DBD58 + 40 (a "world state" ptr)
+         - Takes qword_1432D2260 (a camera / world ptr) and calls its
+           vt[1112/8] = vt[139] twice → returns a list
+         - Walks a linked list of nodes (v48/v49/v50 ring)
+         - For each entry, reads FormID at [v13+4] low 21 bits
+         - Looks up the form via `qword_1430DA390 + 16*formid`
+         - If the form has flag 0x4000000 (form active) and type
+           matches, calls vt[1112/8] on the form → returns a 3D
+           object, then calls sub_1421F2D60(obj, v4) on it.
+
+       sub_1421F2D60 (the actual "render-dispatcher" wrapper — RVA
+       0x21F2D60, size 0xB9):
+         - Reads globals dword_143E4B7E0 / _B7E4 / _B7E8 (render
+           queue caps + count)
+         - If queue not full, scans existing queue for a1 (the
+           3D object) in `*(QWORD*)(queue[i]+520)`
+         - If not found, **appends** a1 to queue and sets
+           `*(QWORD*)(a1 + 264) |= 0x10000000000` (i.e. flag bit 40)
+
+       >>> Two interesting bits:
+         (a) The renderer tracks a SEPARATE RENDER QUEUE (array at
+             qword_143E4B7D8), not SSN.children[]. Objects are
+             enqueued when they enter view frustum.
+         (b) The enqueue sets bit 40 of flags (+0x108), bit
+             0x10000000000 = 2^40. This is the "in render queue"
+             flag. Our cube doesn't get enqueued because nobody
+             finds it.
+
+       Who CALLS sub_1421F2D60 and enqueues objects? Primarily
+       sub_14043FB90, sub_1421B8500, sub_1421BBD20, sub_1421BC0F0
+       (the 80+ test [reg+108h] sites — see §5). These are
+       per-form code paths that walk a FormID LIST (TESObjectREFR
+       or similar), and resolve each to a 3D object by calling
+       vt[1112/8]. The 3D object they get is NOT an arbitrary
+       SSN descendant — it's the form's `bakedRoot3D` (see
+       CommonLibF4 TESObjectREFR::Get3D). Our cube has no owning
+       TESObjectREFR, so it doesn't appear in this list.
+
+1.C  DOES ANY PATH walk SSN.children[]?
+
+       Yes: BSFadeNode::UpdateDownwardPass (slot[48] =
+       sub_1421764B0 — DIFFERENT from NiNode, a 0x??? override).
+       And SSN itself's slot[48] (UpdateControllers =
+       sub_1416BEAC0, size 0x1F1). But sub_1416BEAC0 operates on
+       "controllers" (per-object anim updates), not on drawing.
+
+       Geometry-drawing for SSN's children happens via the
+       **UpdateSelectedSubtree path** (slot[46] sub_1416BE990)
+       and the **shadow-casting pass** which is SSN-specific
+       (slot[67]+). The shadow-casting pass IS fed from
+       SSN.children[], but only for objects that already have a
+       ShadowRenderTargetManager association — which for us is
+       none.
+
+       The actual "draw geometry" stage is invoked by
+       BSBatchRenderer (RVA ~0x1A8xxxx, not yet mapped), which
+       pulls from the render queue populated by sub_1421F2D60.
+       **Conclusion**: putting our cube in SSN.children[] is NOT
+       sufficient to make it render. It needs ALSO to be in the
+       render queue. Vanilla geometry gets there via the
+       TESObjectREFR form path. Our cube, lacking a form, never
+       gets enqueued.
+
+1.D  UpdateDownwardPass (sub_1416C8050, size 0x4F) decomp:
+         *(WORD*)(a2 + 18) = 0;       // NiUpdateData flags
+         *(DWORD*)(a2 + 20) = 0;
+         result = (*(vt[48]))(a1, a2, 0);    // vt+384 = slot 48
+         v5 = a1[5];                          // offset +0x28 = parent
+         if (v5 && !(a2[16] & 0x200))
+           return (*(vt-of-parent[66]))(v5, a2);   // vt+528 = slot 66
+
+       So the update traverses UP (to parent) not DOWN (to
+       children) by default. Each object's vt[48] is expected to
+       walk its children internally. For NiNode, vt[48] =
+       sub_1416BEAC0 (size 0x1F1) walks `a1[36..37]` = the
+       controllers array, then each child, then... we didn't
+       decomp that fully but it's the ANIMATION update, not the
+       render dispatch.
+
+1.E  Why does the ENGINE draw objects?
+
+       The fundamental draw pipeline:
+         1. BSShaderAccumulator::AccumulateSceneArray (RVA ~0x?)
+         2. BSBatchRenderer::Render (RVA ~0x1A8xxxx)
+         3. For each object in batch: BSGeometry::Render slot
+         4. That slot packs PSO state, sets IB/VB, DrawIndexed
+
+       The ENQUEUE path (step 1) walks SSN.children[] INCLUDING
+       our cube only IF the cube is reachable in the tree walk.
+       `BSShaderAccumulator::AccumulateSceneArray` iterates
+       `children[0..count)` recursively — so up-to-count, NOT
+       up-to-capacity.
+
+       >>> CONSEQUENCE: if our AttachChild put us at a slot with
+           index >= count, we're INVISIBLE to the BSShaderAccumulator
+           walk. See §2.
+
+       Note that the scene-render function sub_140C38F80 does NOT
+       call AccumulateSceneArray directly in the portion we
+       decomped; this is done inside the vt[139] return chain
+       (`(vt + 1112/8)(qword_1432D2260, 0)`). We did not trace
+       that full chain here — but the pattern matches vanilla
+       Creation Engine / Gamebryo scene render architecture.
+
+
+================================================================
+  2. ATTACHCHILD semantics with reuseFirstEmpty=1
+================================================================
+
+2.A  NiNode::AttachChild (sub_1416BE170, size 0x137). DECOMP:
+
+       if ( child ) {
+         InterlockedIncrement(&child->refcount);
+         SetParent(child, this);
+         InterlockedIncrement(&child->refcount);
+         v6 = this + 0x120;           // children-array struct base
+         if ( reuseFirstEmpty ) {
+           count = *(WORD*)(v6 + 18);
+           idx = 0;
+           if ( count ) {
+             v9 = *(QWORD*)(v6 + 8);  // children[]
+             while ( *(QWORD*)(v9 + 8*idx) != 0 ) {
+               if ( ++idx >= count ) goto APPEND;  // no null found
+             }
+             // found null slot at idx < count
+             InterlockedIncrement(&child->refcount);
+             *(QWORD*)(v9 + 8*idx) = child;
+             ++*(WORD*)(v6 + 20);         // *** bumps +0x134 NOT +0x132 ***
+           }
+           else {
+         APPEND:
+             // normal push via NiTObjectArray::push
+             if ( count >= capacity )  grow(v6, count + grow_by);
+             sub_1416BFEB0(v6, count, &child);  // pushes + increments count
+           }
+         }
+         else {
+           // reuseFirstEmpty=0 — pure append
+           if ( count >= capacity )  grow(v6, count + grow_by);
+           sub_1416BFEB0(v6, count, &child);
+         }
+         // net refcount: parent=+1 (we did +3 -2 below)
+         ...
+       }
+
+       >>> THE KEY LINE: `++*(WORD*)(v6 + 20)` which is `++*(WORD*)(this+0x134)`.
+       The +0x132 WORD (our NINODE_CHILDREN_CNT_OFF) is NEVER incremented
+       in the REUSE path. Only in the APPEND path (via sub_1416BFEB0).
+
+2.B  What is +0x134?
+
+       The dossier M1 §6 labels it as `grow_by (u16 or 2 bytes init with 0x10000)`.
+       The ctor initializes +0x134 DWORD = 0x00010000 — so WORD
+       at +0x134 starts at 0 and WORD at +0x136 starts at 1.
+       AttachChild bumps the WORD at +0x134 (the low half of that
+       DWORD) on each reuse.
+
+       My best guess: +0x134 is "number of objects currently
+       present in the array" — but +0x132 is "high-water-mark"
+       / "logical count" used to set up capacity growth. It's
+       possible that the engine uses +0x134 for some purposes
+       and +0x132 for others. Without further RE, treat +0x132
+       as "logical length of array" and +0x134 as "live count"
+       for the purpose of engine iteration.
+
+2.C  Which count does the render walker use?
+
+       sub_1416BFEB0 (the APPEND helper, size 0x11F):
+         if ( idx >= count )             // idx >= +0x132
+           *(WORD*)(a1 + 18) = idx + 1;  // set +0x132 = idx+1
+         // ...
+         *(QWORD*)(array + 8*idx) = child;
+
+       So the normal APPEND path always maintains `count = max(count, idx+1)`.
+
+       sub_1416BEAC0 (NiNode::UpdateControllers vt[48], size 0x1F1) —
+       we didn't fully decomp, but per standard Gamebryo/NetImmerse
+       convention, it iterates `children[0..count)` (up to +0x132).
+
+       >>> IF the render walker (wherever it is in
+       BSShaderAccumulator or similar) iterates `children[0..count)`
+       and uses +0x132 as count, then our cube at slot[idx=K] for
+       K < count IS visited. If the reuse path placed the cube
+       at slot[0] because slot[0] was null (legitimately — e.g. a
+       child was detached earlier creating a gap), THAT slot is
+       walked because idx=0 < count=10.
+
+       BUT: in our live log we see count=10 BEFORE attach, count=10
+       AFTER attach. This is consistent with the engine having
+       found a NULL slot within [0..10). Good — our cube SHOULD be
+       walked.
+
+2.D  POSSIBILITY — the walker iterates 0..capacity not 0..count
+
+       Looking at the decomp of sub_1416BEAC0 is a followup task
+       not done this pass. If it iterates up to `capacity` (+0x130),
+       null slots are skipped naturally (loop body checks if ptr
+       is non-null). If it iterates up to `count` (+0x132), our
+       cube at reused-empty-slot-within-count-range is still
+       reachable.
+
+       >>> PROBABILITY-WEIGHTED: AttachChild(reuseFirstEmpty=1) IS
+       a VALID operation the engine itself uses (see renderer init
+       sub_140C322C0 and many LODRoot child attachments). So the
+       render walker MUST handle reuse-written children correctly.
+       This means AttachChild itself is NOT our bug. The cube is
+       in the tree and walkable.
+
+       Remaining concern: the +0x134 bump suggests that if our
+       cube was placed at some slot that was ORIGINALLY null (not
+       freed-then-reattached), the array bookkeeping thinks that
+       slot is still not "counted" — meaning if engine reads
+       +0x134 as the "live count" for render enumeration, our
+       cube IS counted. If engine reads +0x132, depends on whether
+       the slot index is within that range.
+
+2.E  ACTIONABLE MITIGATION (low-cost):
+
+       In scene_inject.cpp, change:
+         g_r.attach_child_direct(parent, cube, /*reuseFirstEmpty=*/1);
+       to:
+         g_r.attach_child_direct(parent, cube, /*reuseFirstEmpty=*/0);
+
+       This forces the APPEND path via sub_1416BFEB0, which:
+         - Grows the children array if count >= capacity
+         - Increments count (+0x132) cleanly
+         - Guarantees our cube is at index `count_before` and
+           VISIBLE to any walker iterating [0..count).
+
+       This eliminates any ambiguity about the dual-counter
+       semantics. Cost: none. Risk: growing the array is a normal
+       operation the engine itself does. See scene_inject.cpp:534.
+
+
+================================================================
+  3. BSVERTEXDESC packing mismatch  (CRITICAL — likely #1 cause)
+================================================================
+
+3.A  Packer output decode — both values:
+
+       SOURCE shape vdesc = 0x0003_B000_0543_0206
+         byte[0] stride_info = 0x06 (=> stride/2 ? 8? depends)
+         byte[1] = 0x02    byte[2] = 0x43  byte[3] = 0x05
+         byte[4] = 0x00    byte[5] = 0xB0  byte[6] = 0x03  byte[7] = 0x00
+         Decoded as stream-offset nibbles + stream-present flags:
+           POS  nib (bits 0..3)   = 0x6    offset = 24
+           UV   nib (bits 6..9)   = 0x8    offset = 32
+           TAN  nib (bits 10..13) = 0x0    offset = 0
+           POS' nib (bits 14..17) = 0x0    offset = 0
+           NRM  nib (bits 18..21) = 0xC    offset = 48
+           COL  nib (bits 22..25) = 0x5    offset = 20
+           SKIN nib (bits 26..29) = 0x1    offset = 4
+           Top dword (bits 32+)   = 0x0003_B000 — flag bits 44,45,48,49,53 etc.
+
+       OUR CUBE vdesc = 0x0001_3000_0030_0204
+         byte[0] = 0x04    byte[1] = 0x02  byte[2] = 0x30  byte[3] = 0x00
+         byte[4] = 0x00    byte[5] = 0x30  byte[6] = 0x01  byte[7] = 0x00
+         Decoded:
+           POS  nib = 0x4   offset = 16       ← different from source's 24
+           UV   nib = 0x8   offset = 32       ← same as source
+           TAN  nib = 0x0   offset = 0
+           POS' nib = 0x0   offset = 0        ← source has 0 (same)
+           NRM  nib = 0xC   offset = 48       ← SAME as source
+           COL  nib = 0x0   offset = 0        ← source has 0x5 — SOURCE HAS COLORS
+           SKIN nib = 0x0   offset = 0        ← source has 0x1 — SOURCE HAS SKIN
+           Top dword (bits 32+) = 0x0001_3000 — flag bits 44, 45, 48 only.
+
+       Differences:
+       ===================================================================
+       FIELD            OUR CUBE    SOURCE     CONSEQUENCE
+       ===================================================================
+       stride byte      0x04        0x06       different total stride
+       POS offset       16          24         DIFFERENT
+       UV offset        32          32         same
+       NRM offset       48          48         same
+       COL offset       0 (absent)  20         SOURCE HAS COLORS
+       SKIN offset      0 (absent)  4          SOURCE IS SKINNED
+       flag bit 48      set (TAN?)  set (TAN?) both have
+       flag bit 49      UNSET       SET (TAN precision?)
+       flag bit 50      UNSET       UNSET      neither
+       flag bit 52,53   UNSET       SET (SKIN) source only
+       ===================================================================
+
+3.B  Interpretation:
+
+       The SOURCE is a skinned mesh with colors. Our cube is
+       unskinned without colors. When we clone the source's
+       BSShaderProperty onto our cube, the SHADER expects to read:
+         - POS at byte offset 24  (we have POS at offset 16)
+         - UV at offset 32 — matches
+         - NRM at offset 48 — matches
+         - COL at offset 20 — NOT IN OUR BUFFER (4 bytes of garbage)
+         - SKIN at offset 4 — NOT IN OUR BUFFER (garbage bytes)
+       And the input-assembler vertex layout (BSGraphics input
+       layout cache) is keyed on the SHADER's expected layout,
+       NOT our buffer's actual layout.
+
+       Even if IASetVertexBuffers binds our buffer correctly, the
+       vertex shader samples from input slot positions matching
+       the source's layout. The result:
+         - Vertex POS in HLSL is read from a[24]..a[36] in our
+           buffer — but our POS lives at [16..28]. So HLSL reads
+           bytes [24..36] which contain the TAIL of the packed
+           POS + the start of NORMAL. The semi-arbitrary 12 bytes
+           get interpreted as a float3 position — this produces
+           NaN/infinity half the time.
+         - Vertex NORMAL read from [48..60] — our buffer only has
+           16 bytes per vertex (stride 16), so the read goes past
+           the vertex boundary into the NEXT vertex's memory.
+         - Skin matrices are sampled from a null/garbage pointer
+           + skin indices garbage → transformed vertex often ends
+           up at (0,0,0) in clip space (classic "black square at
+           origin" symptom) or out of clip range → culled.
+
+3.C  THE FIX (three options ranked):
+
+       (a) DON'T clone source shader. Build or clone from a
+           simpler vertex-matching source.
+
+           Step 1: pass dummy tangents + colors to the factory
+           so the built cube vertex layout matches typical
+           lit-textured static geometry:
+             factory(tri=12, idx, vcnt=8,
+                     positions,       // our 8×f3
+                     uvs,             // our 8×f2
+                     TANGENTS_STUB,   // 8×f4 = {1,0,0,1} per vertex
+                     NULL,            // pos_alt
+                     normals,         // 8×f3
+                     COLORS_STUB,     // 8×f4 = {1,1,1,1} per vertex
+                     NULL, NULL,      // skin
+                     NULL, NULL, NULL, NULL, NULL,
+                     1);
+
+           Step 2: walker must find a source shape whose vdesc
+           bits 52-55 are UNSET (not skinned). Most world static
+           geometry is unskinned — rocks, walls, crates.
+
+       (b) Find an UNSKINNED, MINIMAL-VERTEX-DESC source shape
+           and clone shader from IT, not from an arbitrary
+           captured BSTriShape. The walker should skip shapes
+           with bit 52 set and prefer ones with just POS+UV+NRM.
+
+           One-line check in scene_walker: when capturing
+           `first_bstri_shape`, ALSO check `*(u64*)(shape + 0x150) & 0x0010_0000_0000_0000 == 0`
+           (i.e. bit 52 unset = unskinned). Skip if skinned.
+
+       (c) Use a known-debug shader. The engine has internal
+           "BSBatchSolidColorShader" or similar used for debug
+           wireframe/collision rendering. Finding its ctor and
+           allocating one would bypass the source-clone problem
+           entirely. Higher RE cost; defer.
+
+       >>> RECOMMENDED: (a) + (b) combined. Pass dummy streams
+           to factory to get a match with an unskinned source,
+           and also guarantee the walker picks an unskinned source.
+
+
+================================================================
+  4. FACTORY POST-CONDITIONS  (sub_14182FFD0)
+================================================================
+
+4.A  Full flow (size 0x3D0, RVA 0x182FFD0):
+
+       if (vcount && tri_count) {
+         ensure pool init;
+         sub_heap = sub_141656E30(pool);     // TLS sub-heap
+         v25 = 0;
+         sub_14182DFC0(...);                  // first-pass measure
+         packed_buf = sub_14165BE20(sub_heap, 2*stride, 8);
+         packed_desc_qword = sub_14182DFC0(...);  // second-pass pack
+         idx_helper = sub_141818550(byte_143A0F400, &stride,
+                                    packed_buf, packed_desc_qword,
+                                    indices, 3*tri_count);
+         ensure pool init;
+         bs = sub_1416579C0(pool, 0x170, 0x10, 1);
+         result = sub_1416DA0A0(bs, idx_helper, packed_desc_qword,
+                                vcount, tri_count);
+           // → calls sub_1416D5660(bs, idx_helper, packed_desc_qword):
+           //     sub_1416C8CD0(bs)   // NiAVObject::ctor — sets +0x108,
+           //                           local/world transforms
+           //     bs[0]         = &BSGeometry::vftable
+           //     bs[+0x120]    = qword_143437F50 (bound defaults)
+           //     bs[+0x128]    = unk_143437F58
+           //     bs[+0x12C]    = 0
+           //     bs[+0x130]    = 0   (alpha slot)
+           //     bs[+0x138]    = 0   (shader slot)
+           //     bs[+0x140]    = 0   (skin slot)
+           //     bs[+0x148]    = idx_helper  (NOT BSPositionData — see §4.C)
+           //     bs[+0x150]    = packed_desc_qword (u64 value, NOT ptr)
+           //     bs[+0x159]    = 0   (material extra byte)
+           // Then post-alloc writes:
+           //     bs[+0x164]    = vcount (word)
+           //     bs[0]         = &BSTriShape::vftable   (overrides BSGeometry)
+           //     bs[+0x160]    = tri_count (dword)
+           //     bs[+0x158]    = 3  (material type byte)
+         if (result && extra_flag) {
+           // extra_flag=1 → allocate BSPositionData wrapper
+           v21 = *(QWORD*)(bs+0x150);      // packed desc
+           v27_low  = (4*v21) & 0x3C;      // pos offset in vertex
+           v27_high = (v21>>2) & 0x3C;     // uv offset
+           v28      = (v21>>14) & 0x3C;    // normal offset
+           if (bs+0x140) { v29 = (v21>>26) & 0x3C; }  // skin offset — unused
+           v23 = sub_1416CE630(sub_heap, indices, vcount, 3*tri_count,
+                               &v27, has_skin);       // alloc BSPositionData
+           if (v23) sub_1416BCE00(bs, v23);      // SET_POS_DATA: writes v23 into bs+??
+         }
+         sub_14165C3F0(sub_heap, packed_buf);    // free intermediate
+         sub_1416D5E80(bs+0x120, vcount, positions);  // compute AABB bound
+         return bs;
+       }
+       // (empty variant: allocate + sub_1416DA0F0 → empty BSTriShape)
+
+4.B  CORRECTIONS to M2.4 geometry dossier:
+
+       - +0x148 is the IDX_HELPER from sub_141818550 (an 8-qword
+         struct: {type, packed_verts_ptr, ??, gpu_handle, ???})
+         NOT BSPositionData. The walker's label "posdata" is
+         misleading.
+       - +0x150 is the packed VD QWORD VALUE, not a pointer.
+       - BSPositionData (if allocated via sub_1416CE630) is
+         stored inside the IDX_HELPER struct at one of its
+         embedded slots, via sub_1416BCE00. Not directly in
+         BSGeometry.
+
+4.C  Does the returned BSTriShape need any FOLLOW-UP calls before
+     rendering?
+
+       From the 32 vanilla call sites and sub_140372CC0 (FogOfWarOverlay)
+       detailed trace:
+
+       After factory returns, vanilla path does:
+         1. sub_14167BDC0 + sub_1416BCD40 — set NiFixedString name
+         2. sub_14167BEF0 — release temp
+         3. sub_14165C3F0 × 3 — free user stream arrays
+         4. Allocate BSEffectShaderProperty:
+            v47 = sub_1416579C0(pool, 0x88, 0, 0);
+            v49 = sub_14216F9C0(v47);          // BSEffectShader ctor
+            sub_142161B10(v49, v49[11], 1);    // set up
+            *(QWORD*)(v49[11] + 72) = qword_1434391A0;  // tex handle
+            *(DWORD*)(v49[11] + 80) = dword_1434391A8;
+            *(v49->vt[42])(v49, bs);           // shader-side vt[42]:
+                                                 // install this shader
+                                                 // into bs (calls the
+                                                 // shader's "AttachGeometry")
+            // Then DIRECT write (refcount-safe):
+            v50 = bs[+0x138];                   // current shader
+            if (v50 != v49) {
+              InterlockedIncrement(&v49->refcount);
+              bs[+0x138] = v49;
+              // release v50
+            }
+         5. Allocate NiAlphaProperty:
+            v51 = sub_1416579C0(pool, 0x30, 0, 0);
+            sub_1416BD6F0(v51);
+            v51[0] = &NiAlphaProperty::vftable;
+            v51[20] = 236;    // alpha flags
+            v51[42] = 0;
+            v51[20] |= 1;
+            (*bs->vt[42])(bs, v51);             // SetAlphaProperty
+         6. SET FLAGS:
+            bs[+0x108] |= 0x800;                // kIsMovable
+         7. SET SCALE:
+            *((DWORD*)bs + 47) = 0x3F800000;    // scale 1.0 at +0xBC (world scale)
+            // Note: this is the WORLD scale, typically set by
+            // UpdateWorldData. Vanilla explicitly writes it.
+         8. SET LOCAL TRANSLATE (unconventional — usually done via
+            sub_1416C8B60 SetParent):
+            bs[+0x60] = x;   bs[+0x64] = y;   bs[+0x68] = 0;
+            (Note: vanilla fog-of-war uses (x, y, 0) — our cube
+             writes (x, y, z).)
+         9. ATTACH:
+            parent_vt = *(QWORD*)*parent;
+            (*(parent_vt + 464))(parent, bs, 1);   // vt[58] = AttachChild
+         10. Free extra temp buf.
+
+       So the RENDER-READY set of actions after factory return:
+         (1) Install shaderProperty via shader-side "AttachGeometry"
+             vt[42] THEN direct refcount-safe write to bs+0x138.
+         (2) Install alphaProperty via bs->vt[42] call.
+         (3) Set flag 0x800 (kIsMovable).
+         (4) Set world.scale = 1.0f.
+         (5) Set local translate.
+         (6) AttachChild(parent, this, 1).
+
+       Our current code does all of these EXCEPT step (1)'s
+       shader-side vt[42] call — we just direct-write the shader
+       pointer without calling its "AttachGeometry". This might
+       or might not be critical. The vt[42] shader-side call
+       initializes shader-to-geom backlinks / per-instance state.
+
+       >>> Check: is our cloned shader's internal "geometry
+       pointer" (somewhere inside the BSLightingShaderProperty
+       object) still pointing to the SOURCE shape? Yes, it would
+       be — the source installed it. If the shader's draw path
+       reads its internal geom ptr to get vertex buffers, it
+       reads the SOURCE buffers, drawing the source. If it reads
+       the geometry argument at draw time (the `this` parameter
+       of `BSGeometry::Render`), it reads our buffers.
+
+       Both cases would produce SOME draw — not invisible. So
+       missing vt[42] on the shader side is probably NOT our
+       bug. But adding it is cheap insurance.
+
+4.D  NO OTHER HIDDEN REQUIREMENTS.
+
+       The factory does NOT wrap the BSTriShape in a BSFadeNode.
+       BSFadeNode wrapping is done by NIF IMPORT (see
+       sub_142174DC0), NOT the runtime factory.
+       Vanilla runtime geometry (FogOfWarOverlay, sky effects,
+       etc.) is a RAW BSTriShape attached DIRECTLY to a scene
+       root. This matches what we do.
+
+       The factory does NOT need a `Commit` or `Upload`. The GPU
+       buffers are allocated / populated INSIDE sub_141818550
+       (via sub_14184EF10 which goes to a BSGraphics VB pool).
+       No post-factory upload needed.
+
+       There is no registration with
+       BSShaderRenderTargetManager or BSBatchRenderer at this
+       point — that happens per-frame when the scene walker
+       enqueues the shape. So the ONLY scene-graph wiring needed
+       is: shader + alpha + flags + xform + AttachChild. We have
+       all of those.
+
+
+================================================================
+  5. NIAVOBJECT FLAGS at +0x108 — REQUIREMENTS
+================================================================
+
+5.A  Flag initialization (NiAVObject::ctor sub_1416C8CD0):
+
+       After ctor returns, the flags qword at +0x108 contains
+       (from disasm):
+         and  rax, 0FFFFFFFFFFFFFFEFh     ; clear bit 4 (0x10)
+         or   rax, 0Eh                    ; set bits 1, 2, 3 (0x2, 0x4, 0x8)
+         mov  [rbx+108h], rax
+
+       So the initial flags = 0x0E = bits 1, 2, 3 set.
+
+       Plus, if the parent had flag 0x1 already set (this branch
+       of the ctor is taken only if flag 0x1 is set — an old
+       bit that was already set on `this` at alloc time — since
+       alloc zeros the memory, this branch is dead code for new
+       allocations), it sets bit 29 (0x20000000).
+
+       So a FRESH NiAVObject from the allocator has flags=0x0E.
+       A FRESH BSGeometry from the factory goes through this
+       ctor → flags=0x0E.
+
+5.B  What WE SET after factory returns:
+
+       *flags |= 0x800;        // kIsMovable
+
+       So after our inject_cube, flags = 0x80E.
+
+5.C  What flags does VANILLA code USE as renderable markers?
+
+       From the 80+ `test byte ptr [reg+108h], 1` sites (see
+       raw_report line 1963+), bit 0x1 (kAppCulled) is the
+       primary "hide from rendering" flag. Vanilla checks:
+         test byte ptr [rcx+108h], 1
+         jnz skip_render
+
+       Our cube has bit 0x1 UNSET (default) — so we pass this
+       gate.
+
+       Other flags observed:
+         - bit 0x2 = kSelectiveUpdate
+         - bit 0x4 = kSelectiveUpdatePropagated
+         - bit 0x8 = kSelectiveUpdateFlagsTransforms (all 3 set by ctor via `|0x0E`)
+         - bit 0x10 = kNormal (cleared by ctor)
+         - bit 0x200 = kIsInstanced
+         - bit 0x400 = kHasBound
+         - bit 0x800 = kIsMovable                   ← we set
+         - bit 0x2000 = kIsDynamic / "skip update"  ← vanilla DOES NOT set this for static geometry
+         - bit 0x20000 =  some selection flag
+         - bit 0x4000 / 0x8000 = related to rendering
+         - bit 0x10000000 = fast-forward marker
+         - bit 0x20000000 = "selective update in progress" (set during update)
+         - bit 0x10000000000 = "IN RENDER QUEUE" (set by sub_1421F2D60)
+
+       >>> Critical finding: The FogOfWar installer sub_140372CC0
+           sets ONLY bit 0x800 (kIsMovable) at line 1781:
+           `v45[33] = (volatile signed __int32 *)((unsigned __int64)v45[33] | 0x800);`
+           And nothing else. Our code mirrors this. So our flag
+           handling is CORRECT.
+
+5.D  Is there a FLAG we must set to get rendered?
+
+       From vanilla cross-check: NO specific flag other than
+       kIsMovable (0x800) is set on the runtime BSTriShape before
+       attach. The engine's render-enqueue code reads 0x108 for
+       the kAppCulled test (bit 0x1) — which we don't set. So we
+       pass the AppCulled filter.
+
+       HOWEVER: the `test qword ptr [rbx+108h], 0FFFFFFFFFFFFFFFEh`
+       at sub_141B536A0 line 1B53710 is interesting — it tests
+       ALL BITS EXCEPT bit 0x1. This implies the function checks
+       whether "any flag except AppCulled is set". If false, the
+       object is treated as "untouched since ctor" → maybe skipped.
+       Our flags = 0x80E, so many bits are set — we pass this
+       gate too.
+
+       >>> Conclusion: No flag fix needed. Our 0x80E is right.
+
+       Extra fairness check: the RENDER QUEUE enqueue
+       (sub_1421F2D60) sets bit 0x10000000000 (bit 40) AFTER
+       adding to the queue. If we NEVER get added, this bit stays
+       clear — meaning our cube has `flags & 0x10000000000 == 0`,
+       which subsequent render code might use as a "not in queue
+       → skip drawing" gate. This is a CHICKEN-AND-EGG problem:
+       we need to be enqueued to get the bit, and we need the
+       bit to be enqueued.
+
+       Solution: manually OR 0x10000000000 into flags BEFORE
+       AttachChild?  No — that would lie about our state and
+       likely break the queue management. Instead, make sure
+       the ENQUEUE path visits us (§6).
+
+
+================================================================
+  6. CONCRETE FIX RECOMMENDATIONS
+================================================================
+
+Ranked by likelihood of solving the problem on first attempt.
+
+  ============================================================
+  FIX #1  [confidence H, cost LOW — 3 line changes]
+
+  In fw_native/src/native/scene_inject.cpp:
+
+  LINE 534  (today:)
+    g_r.attach_child_direct(parent, cube, /*reuseFirstEmpty=*/1);
+
+  CHANGE TO:
+    g_r.attach_child_direct(parent, cube, /*reuseFirstEmpty=*/0);
+
+  Rationale: with reuseFirstEmpty=0 the engine APPENDS cleanly,
+  bumping +0x132 (count) to count+1. This eliminates any
+  ambiguity about which counter the render walker uses. Our
+  cube becomes children[count] and is walked by any iterator
+  that reads up to +0x132.
+
+  Expected behavior change: log line "SSN children: count=11"
+  (was count=10 before/after). If count goes to 11 AND the cube
+  still doesn't render, we've ruled out task #2 and move to fix
+  #2.
+  ============================================================
+
+  ============================================================
+  FIX #2  [confidence H, cost MEDIUM — add dummy streams]
+
+  In fw_native/src/native/scene_inject.cpp around line 438
+  (factory call), add dummy tangent + color arrays so our
+  cube's vertex layout matches what a typical lit shader expects:
+
+  Add above kCubePositions (line ~349):
+
+    // 8 tangents (float4 per vertex): tangent.x/y/z + bitangent sign
+    // All set to (1, 0, 0, 1) — an arbitrary but valid tangent basis.
+    // NOT a coding mistake — typical rigged mesh tangents are
+    // (±1, 0, 0, ±1) for a flat plane; for a cube hard-edged
+    // they'd be per-face but for a smooth cube this is fine.
+    constexpr float kCubeTangents[8 * 4] = {
+        1.0f, 0.0f, 0.0f, 1.0f,  1.0f, 0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f, 0.0f, 1.0f,  1.0f, 0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f, 0.0f, 1.0f,  1.0f, 0.0f, 0.0f, 1.0f,
+        1.0f, 0.0f, 0.0f, 1.0f,  1.0f, 0.0f, 0.0f, 1.0f,
+    };
+    // 8 vertex colors (float4 per vertex) — solid white + full alpha:
+    constexpr float kCubeColors[8 * 4] = {
+        1.0f, 1.0f, 1.0f, 1.0f,  1.0f, 1.0f, 1.0f, 1.0f,
+        1.0f, 1.0f, 1.0f, 1.0f,  1.0f, 1.0f, 1.0f, 1.0f,
+        1.0f, 1.0f, 1.0f, 1.0f,  1.0f, 1.0f, 1.0f, 1.0f,
+        1.0f, 1.0f, 1.0f, 1.0f,  1.0f, 1.0f, 1.0f, 1.0f,
+    };
+
+  In the factory call at line ~438:
+
+    void* cube = g_r.geo_builder(
+        /*tri_count*/    12,
+        /*indices*/      const_cast<std::uint16_t*>(kCubeIndices),
+        /*vert_count*/   8,
+        /*positions*/    const_cast<float*>(kCubePositions),
+        /*uvs*/          const_cast<float*>(kCubeUVs),
+        /*tangents*/     const_cast<float*>(kCubeTangents),   // NEW
+        /*pos_alt*/      nullptr,
+        /*normals*/      const_cast<float*>(kCubeNormals),
+        /*colors*/       const_cast<float*>(kCubeColors),     // NEW
+        /*skin_weights*/ nullptr,
+        /*skin_indices*/ nullptr,
+        /*tan_ex*/       nullptr,
+        /*eye_data*/     nullptr,
+        /*normals_alt*/  nullptr,
+        /*remap_u16*/    nullptr,
+        /*extra*/        1);
+
+  Rationale: our cube now packs 8 POS + 8 UV + 4+4 TAN + 4 NRM
+  + 4 COL = 32 bytes/vertex. The cloned shader's input layout
+  expects (per source vdesc) POS+UV+TAN+NRM+COL+skin — we match
+  everything except skin. If the source IS skinned, we'll still
+  have a mismatch on skin, so see FIX #3.
+
+  Expected: cube becomes visible if source is unskinned (most
+  world static geometry). If source was skinned, still invisible.
+  ============================================================
+
+  ============================================================
+  FIX #3  [confidence M, cost MEDIUM — walker filter]
+
+  In fw_native/src/native/scene_walker.cpp, change the capture
+  condition for `first_bstri_shape` to prefer unskinned shapes:
+
+    // When walker finds a shape with vtable == BSTriShape,
+    // ALSO check that flag bit 52 (skinned) is NOT set in the
+    // packed vdesc at +0x150.
+    if (vt_rva == 0x267E948) {
+        const auto vdesc = *(std::uint64_t*)((char*)node + 0x150);
+        // Bit 52 = skinned (SKIN_INSTANCE present).
+        constexpr std::uint64_t SKIN_BIT = 1ULL << 52;
+        if ((vdesc & SKIN_BIT) == 0) {
+            g_first_bstri_shape.store(node, ...);
+        }
+    }
+
+  Rationale: skinned shaders require bone matrices, a skin
+  instance object, and per-vertex skin weights. Our cube has
+  none of these. Cloning a skinned shader guarantees a
+  broken render even if buffer layout matches.
+
+  Recommended: use a simple geometry test object in-game (a
+  brick, crate, rock) captured via this filter. World static
+  geometry is overwhelmingly unskinned.
+  ============================================================
+
+  ============================================================
+  FIX #4  [confidence L, cost HIGH — manual shader install]
+
+  Instead of cloning source shader, call the shader-side
+  AttachGeometry vt[42] to properly register:
+
+    // After cloning source_shader to cube +0x138, call:
+    auto shader_vtable = *(void**)source_shader;
+    typedef void (__fastcall *ShaderAttachGeomFn)(void* shader, void* geom);
+    auto shader_attach = ((ShaderAttachGeomFn*)shader_vtable)[42];
+    shader_attach(source_shader, cube);
+
+  Rationale: shader-side vt[42] (BSShaderProperty::AttachGeom)
+  initializes shader-to-geometry backlinks. The FogOfWar
+  installer does this. It's possible (but unlikely) that the
+  shader tracks "which geom owns me" and won't draw cubes it
+  wasn't initialized for.
+  ============================================================
+
+
+================================================================
+  7. DIAGNOSTIC LOGGING ADDITIONS (before trying fixes)
+================================================================
+
+To confirm which fix is needed, add these logs:
+
+  (a) Log the vdesc of the cloned source shape's geom so we can
+      verify what "shader expects" before vs after factory:
+        FW_LOG("[native] inject_cube: source vdesc=0x%llX",
+               *(std::uint64_t*)((char*)src_shape + 0x150));
+
+  (b) Walk SSN's children after attach and confirm cube is
+      present AND at which slot index:
+        for (int i = 0; i < ssn_children_capacity; i++) {
+            void* slot = ((void**)ssn_children_ptr)[i];
+            if (slot == cube) {
+                FW_LOG("[native] CUBE PRESENT AT SSN SLOT[%d]", i);
+            }
+        }
+
+  (c) Log the shader object's BSShaderProperty internal geom
+      pointer (if the class has one) — would confirm the
+      shader-to-geom backlink issue.
+
+  (d) After the factory call, dump the actual packed vertex
+      buffer at +0x148 and verify it contains our 8 cube corners:
+        void* idx_helper = *(void**)((char*)cube + 0x148);
+        FW_LOG("[native] idx_helper[0] vtable=%p,  [1] packed_verts=%p,  [2] ???,  [3] gpu_handle=%p",
+               ((void**)idx_helper)[0], ((void**)idx_helper)[1],
+               ((void**)idx_helper)[2], ((void**)idx_helper)[3]);
+
+
+================================================================
+  8. RESIDUAL UNCERTAINTY / OPEN QUESTIONS
+================================================================
+
+  - We did not trace the full BSShaderAccumulator →
+    BSBatchRenderer → BSGeometry::Render chain. If fix #1 + #2
+    don't solve it, we need to decomp that path explicitly to
+    find where exactly our cube is being filtered out.
+
+  - The +0x134 vs +0x132 counter duality needs empirical
+    verification. Our fix #1 sidesteps it by forcing the append
+    path.
+
+  - We did not identify a "debug solid color" shader in the
+    binary. If fix #2 doesn't work because the source shader
+    still crashes on bad skin data, we'd want to use a simple
+    wireframe/unlit shader instead. Fallback: find source
+    shape with `*(u64*)(+0x150) == 0x????` that matches our
+    buffer exactly (e.g. a shape with only POS+UV+NRM, no
+    colors, no skin).
+
+
+================================================================
+  9. QUICK FIX CHECKLIST (copy-paste for implementation)
+================================================================
+
+  [ ]  scene_inject.cpp:534 — change `/*reuseFirstEmpty=*/1` to `/*reuseFirstEmpty=*/0`
+  [ ]  scene_inject.cpp:351 — add kCubeTangents[32] float array
+  [ ]  scene_inject.cpp:352 — add kCubeColors[32] float array
+  [ ]  scene_inject.cpp:438-454 — pass tangents/colors to factory
+  [ ]  scene_walker.cpp — filter `first_bstri_shape` by `vdesc & (1<<52) == 0`
+       (skip skinned shapes)
+  [ ]  scene_inject.cpp:483 — add diagnostic log for source vdesc
+  [ ]  Rebuild, reinject in-game, verify cube visible within 1s of save load
+
+
+================================================================
+  END — diagnosis complete. Apply fixes in order; stop at
+        first one that reveals the cube.
+================================================================
