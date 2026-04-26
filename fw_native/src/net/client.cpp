@@ -76,6 +76,34 @@ void Client::enqueue_pos_state(const PosStatePayload& p) {
     }
 }
 
+void Client::enqueue_pose_state(std::uint64_t header_ts_ms,
+                                const PoseBoneEntry* bones,
+                                std::size_t bone_count)
+{
+    if (!connected_.load() || stopping_.load()) return;
+    if (bone_count > MAX_POSE_BONES) bone_count = MAX_POSE_BONES;
+
+    QueuedSend q;
+    q.msg_type = MessageType::POSE_STATE;
+    q.reliable = false;
+    const std::size_t total = sizeof(PoseStateHeader)
+                            + bone_count * sizeof(PoseBoneEntry);
+    q.payload_bytes.resize(total);
+
+    PoseStateHeader hdr{};
+    hdr.timestamp_ms = header_ts_ms;
+    hdr.bone_count   = static_cast<std::uint16_t>(bone_count);
+    std::memcpy(q.payload_bytes.data(), &hdr, sizeof(hdr));
+    if (bone_count > 0 && bones != nullptr) {
+        std::memcpy(q.payload_bytes.data() + sizeof(hdr),
+                    bones, bone_count * sizeof(PoseBoneEntry));
+    }
+    {
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+}
+
 void Client::enqueue_actor_event(const ActorEventPayload& a) {
     if (!connected_.load() || stopping_.load()) return;
     QueuedSend q;
@@ -461,6 +489,21 @@ void Client::run_loop() {
 
 void Client::dispatch(const Delivered& d) {
     switch (d.header.msg_type) {
+    case static_cast<std::uint16_t>(MessageType::POSE_BROADCAST): {
+        if (d.payload.size() < sizeof(PoseBroadcastHeader)) break;
+        PoseBroadcastHeader hdr{};
+        std::memcpy(&hdr, d.payload.data(), sizeof(hdr));
+        if (hdr.bone_count > MAX_POSE_BONES) break;
+        const std::size_t need = sizeof(hdr)
+                                 + hdr.bone_count * sizeof(PoseBoneEntry);
+        if (d.payload.size() < need) break;
+        const PoseBoneEntry* bones = reinterpret_cast<const PoseBoneEntry*>(
+            d.payload.data() + sizeof(hdr));
+        // Hand off to main thread (stashes + posts WM_APP).
+        fw::native::store_remote_pose(hdr.timestamp_ms, bones, hdr.bone_count);
+        break;
+    }
+
     case static_cast<std::uint16_t>(MessageType::POS_BROADCAST): {
         stats_.pos_broadcast_received.fetch_add(1);
         if (d.payload.size() < sizeof(PosBroadcastPayload)) break;
@@ -503,11 +546,13 @@ void Client::dispatch(const Delivered& d) {
         // injected yet or WndProc not subclassed.
         fw::native::notify_remote_pos_changed();
 
-        // Z.2d (Path B) — DISABLED. Actor hijack abandoned after live
-        // test 2026-04-22 revealed PlaceAtMe SEH's even in stable
-        // gameplay (TLS / game-logic-thread mismatch with WndProc UI
-        // thread). The code in fw_native/src/ghost/* is kept for
-        // reference but not invoked.
+        // Z.2d (Path B) — DEAD. Re-tested 2026-04-26 in 1.11.191 next-gen:
+        // PlaceAtMe SEH reproduces identically to 2026-04-22. Heap state
+        // corrupts even with __try/__except (Side B crashes, Side A
+        // limps until later). Definitive verdict: hijack via PlaceAtMe
+        // from WndProc thread is impossible in this game version.
+        // Pivoting to Plan A: build 3D from scratch via M8P2 sub_140458390
+        // entry point. fw_native/src/ghost/* kept as archeology.
         //
         // fw::ghost::request_spawn();
         break;

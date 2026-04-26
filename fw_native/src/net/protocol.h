@@ -64,6 +64,8 @@ enum class MessageType : std::uint16_t {
 
     POS_STATE       = 0x0100,
     POS_BROADCAST   = 0x0101,
+    POSE_STATE      = 0x0110,   // M8P3.15: per-bone rotation (client -> server)
+    POSE_BROADCAST  = 0x0111,   // M8P3.15: per-bone rotation (server -> peers)
 
     ACTOR_EVENT     = 0x0200,
     CONTAINER_OP    = 0x0201,
@@ -209,6 +211,46 @@ struct PosBroadcastPayload {
     std::uint64_t timestamp_ms;
 };
 static_assert(sizeof(PosBroadcastPayload) == 48, "PosBroadcastPayload size");
+
+// ---- M8P3.15 POSE replication ---------------------------------------------
+// Wire layout:
+//   POSE_STATE     = PoseStateHeader + bone_count × PoseBoneEntry
+//   POSE_BROADCAST = PoseBroadcastHeader + bone_count × PoseBoneEntry
+//
+// Each bone = quaternion (qx, qy, qz, qw) representing the bone's
+// CURRENT m_kLocal rotation (animation-driven, parent-relative).
+// Receiver maps bone-by-NAME-INDEX (sorted alphabetically — both
+// sides walk identical NIF, so identical sort order).
+//
+// Quaternion is more compact (16B) than 3x3 (36B) → fits in
+// MAX_PAYLOAD_SIZE=1400 with bone_count up to 64.
+// At 16 bytes per quat (full-precision float), the wire-format math:
+//   POSE_BROADCAST max = 26 hdr + N*16 ≤ 1400 (MAX_PAYLOAD_SIZE)
+//   → N ≤ 85. Use 80 for headroom.
+constexpr std::uint16_t MAX_POSE_BONES = 80;
+
+struct PoseStateHeader {
+    std::uint64_t timestamp_ms;
+    std::uint16_t bone_count;
+    // followed by bone_count × float[4] = qx, qy, qz, qw
+};
+static_assert(sizeof(PoseStateHeader) == 10, "PoseStateHeader size");
+
+struct PoseBroadcastHeader {
+    FixedClientId peer_id;          // 16
+    std::uint64_t timestamp_ms;     // 8
+    std::uint16_t bone_count;       // 2
+    // followed by bone_count × float[4] = qx, qy, qz, qw
+};
+static_assert(sizeof(PoseBroadcastHeader) == 26, "PoseBroadcastHeader size");
+
+struct PoseBoneEntry {
+    float qx, qy, qz, qw;  // quaternion
+};
+static_assert(sizeof(PoseBoneEntry) == 16, "PoseBoneEntry size");
+// Max payload sizes:
+//   POSE_STATE     = 10 + 64*16 = 1034 bytes < 1400 ✓
+//   POSE_BROADCAST = 26 + 64*16 = 1050 bytes < 1400 ✓
 
 // ACTOR_EVENT. Python v2: I I I f f f I I = 32 bytes
 struct ActorEventPayload {

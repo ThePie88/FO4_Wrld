@@ -46,6 +46,7 @@ add_library(fw_native SHARED
     src/ghost/actor_hijack.cpp      # Path B ghost pipeline
     src/native/scene_inject.cpp     # Strada B M1: native scene graph injection
     src/native/scene_walker.cpp     # Strada B M2.1: diagnostic scene graph walker
+    src/native/skin_rebind.cpp      # M8P3 step 1: BSSkin::Instance diagnostic walker
 )
 
 target_link_libraries(fw_native PRIVATE minhook)

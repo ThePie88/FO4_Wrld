@@ -132,6 +132,12 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         fw::native::on_bone_tick_message();
         return 0;
     }
+    // M8P3.15: apply received remote pose (POSE_BROADCAST) to ghost.
+    // Posted by net thread after stashing quats into shared slot.
+    if (msg == fw::native::FW_MSG_STRADAB_POSE_APPLY) {
+        fw::native::on_pose_apply_message();
+        return 0;
+    }
     // Forward everything else to the original WndProc.
     if (g_orig_wndproc) {
         return CallWindowProcW(g_orig_wndproc, hwnd, msg, wp, lp);

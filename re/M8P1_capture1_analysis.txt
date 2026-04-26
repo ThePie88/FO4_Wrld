@@ -1,0 +1,252 @@
+================================================================================
+  M8 PHASE 1 STEP 1.4 — Vanilla Live-Trace Capture #1 — ANALYSIS
+  Source: frida/load3d_trace.log  (11183 lines)
+  Date: 2026-04-26
+  Capture window: ~1 minute, post-autoload, in QASmoke + Sanctuary + 3 settlers
+================================================================================
+
+================================================================================
+  TL;DR
+================================================================================
+
+  Capture #1 caught a CELL-CHANGE Load3D pattern, NOT a fresh actor 3D
+  creation. Auto-loadgame fired BEFORE Frida attached, so we missed the
+  initial PC + NPC body NIF loads. Frida attached at process start (0.0s
+  poll), but auto-load fires inside the dxgi.dll DLL_PROCESS_ATTACH path
+  before the JS hooks come online.
+
+  Despite that, capture #1 DOES confirm key M7 dossier hypotheses, and
+  reveals new actionable details about the cell-change re-attach pipeline.
+
+  CRITICAL FINDING #1:
+    `_skin` fallback hits = 0 across the entire capture (4724 walker calls,
+    464 nif loads, 1402 bgsm loads in scope of Load3D chain).
+    -> Vanilla never hits the bone resolver `_skin` fallback path.
+    -> Confirms M7 conclusion: ours hits it because we load the body NIF
+       in isolation. Vanilla pipeline always has skeleton context in scope
+       when bones are resolved.
+
+  CRITICAL FINDING #2:
+    PC::Load3D (#5175) fired ONCE in capture (cell change `coc Sanctuary`).
+    It loaded `actors\character\_1stPerson\characterassets\skeleton.nif`
+    via NIF loader (#5177). NOT a 3rd-person body. The 3P body comes from
+    REFR::Load3D's return value (0x1980c2b6fc0) — but inside REFR::Load3D
+    body, NO new NIF was loaded. The 3P body was already cached.
+
+  CRITICAL FINDING #3:
+    Attach `sub_140C9AAC0` is called THREE times per PC::Load3D, with
+    different loaded3D values. We were calling it ZERO times in our
+    standalone path. This is one mismatch we DO NOT replicate currently.
+
+================================================================================
+  1. CAPTURE OVERVIEW — Counts
+================================================================================
+
+  Hook tag       Count    Notes
+  --------------------------------------------------------------------------
+  [walker]       4724     apply_materials walker — fires constantly during
+                          gameplay. Gated to Load3D scope only.
+  [bgsm]         1402     bgsm loads inside Load3D chain
+  [nif]          464      NIF loads inside Load3D chain
+  [attach]       65       sub_140C9AAC0 calls (scene-graph attach helper)
+  [animdirty]    8        sub_141895000 (mark all anim vars dirty)
+  [pathfn]       2        sub_140D623D0 (NIF path builder) — 1 PC + 1 ?
+  [animvar]      2        sub_140D9AF10 (push 4 anim vars)
+  [bone]         0        _SKIN fallback NEVER FIRED ← key finding
+
+  Load3D entries by class:
+    PC::Load3D     :    1   (the one player cell-change)
+    Actor::Load3D  :   26   (NPCs in cells)
+    REFR::Load3D   : 2222   (every static/door/furniture/etc. in cells)
+
+================================================================================
+  2. THE PC::Load3D EVENT — full pipeline trace (lines 10368-10423)
+================================================================================
+
+  Line  Tag              Event
+  --------------------------------------------------------------------------
+  10368 [load3d] #5175   ENTER PC::Load3D actor=0x19859783ed0 PLAYER flag=0
+  10369 [load3d]         pre actor+0xB78 = 0x0   ← NULL before
+  10370 [pathfn] #5176   ENTER actor=PLAYER
+  10371 [pathfn]         LEAVE rc=1 path='actors\character\_1stPerson\
+                                          characterassets\skeleton.nif'
+  10372 [nif]    #5177   ENTER path=above flags=0x3d
+  10373 [nif]            LEAVE rc=0 out=0x1980d5c2a80 vt_rva=0x28fa3e8
+                                                       (BSFadeNode)
+  10374 [attach] #5178   ENTER actor=PLAYER loaded3D=0x1980d5c2a80 (1P)
+  10375 [attach]         LEAVE
+  10376 [load3d] #5179   ENTER Actor::Load3D depth=2
+  10377 [load3d] #5180   ENTER REFR::Load3D depth=3
+  10378-10410             — 35 lines of walker/bgsm/attach inside REFR —
+                          NO new [nif] calls!
+  10411 [walker] #5197   ENTER root=0x1980c2b6fc0 vt=0x28fa3e8 (3P body!)
+  10412 [load3d]         LEAVE REFR::Load3D retval=0x1980c2b6fc0
+  10413 [attach] #5198   ENTER actor=PLAYER loaded3D=0x1980c2b6fc0 (3P)
+  10414 [attach]         LEAVE
+  10415 [load3d]         LEAVE Actor::Load3D retval=0x1980c2b6fc0
+  10416-10419 [animdirty] #5199, #5200 ENTER+LEAVE on mgr=0x1986bde9a10 ×2
+  10420 [animvar] #5201  ENTER target=0x1980d5c2a80 arg2=0x1980c2b6fc0
+                          vec3=(-78906.10, 90913.88, 7828.33) ← world XYZ!
+  10421 [animvar]        LEAVE
+  10422 [load3d]         post actor+0xB78 = 0x1980d5c2a80 (1P stays)
+  10423 [load3d]         LEAVE PC::Load3D retval=0x1980c2b6fc0 (3P)
+
+  Key observations:
+  - `pathfn` returned the 1P skeleton path — PC is in 1st person view.
+  - `nif` loaded the 1P skeleton with flags=0x3d (= 0b00111101 = bits
+    0,2,3,4,5).  Our standalone load uses flags 0x18 (POSTPROC|FADE_WRAP).
+    Vanilla also uses bits 0,2,5 — TBD what they mean.
+  - REFR::Load3D's body did NOT load a 3D body NIF — it picked up an
+    already-cached BSFadeNode at 0x1980c2b6fc0 (probably from auto-load
+    pre-attach). The walker (#5197) just re-applied materials to it.
+  - PC::Load3D's return value (0x1980c2b6fc0) is the 3P body. The 1P
+    skeleton stays at actor+0xB78. Two trees, two roots.
+  - animvar pushes the player's WORLD COORDINATES as a vec3:
+      (-78906.10, 90913.88, 7828.33)
+    These are likely the 4 anim variables PC::Load3D sets — they're
+    POSITION-BASED (root delta translation params).
+
+================================================================================
+  3. WHY WE MISSED FRESH BODY LOADS — and how to capture them next
+================================================================================
+
+  Auto-loadgame timing:
+    t=0          dxgi.dll DLL_PROCESS_ATTACH (fw_native init)
+    t=0+ms       fw_native subclass WndProc, queues FW_MSG_LOAD_GAME
+    t=200ms-?    Frida attaches via `frida.attach(pid)`  ← FOUND pid=0.0s
+    t=?          script.load() pushes JS hooks into FO4 process
+    t=?          PC::Load3D fires FOR THE FIRST TIME (auto-load completes)
+
+  The 0.0s wall-clock between FO4 process appearing and Frida attaching
+  is misleading: the Frida-side `attach + create_script + script.load()`
+  takes another 200-1000ms (script JIT, hook installation). Auto-load
+  is done before script.load() returns.
+
+  Three remediation options for capture #2:
+
+  OPT A: Frida spawn mode
+    `frida -f Fallout4.exe -l 14_load3d_callees_trace.js`
+    Pros: Catches everything from process creation. No timing race.
+    Cons: Bypasses f4se_loader.exe wrapper. F4SE plugins won't be loaded.
+          Single-instance bypass still works (in dxgi.dll DLL_ATTACH).
+          But may break our own auto-load mechanism if it's F4SE-bound.
+
+  OPT B: Disable auto-load + manual loadgame after attach
+    Add a config flag fw_native.auto_load_disabled=1 to fw_native.
+    Skip the WndProc subclass auto-load when set. User attaches Frida,
+    then manually loads from main menu via UI.
+    Pros: Surgical, no spawn-mode complications. Reveals the FULL pipeline.
+    Cons: Requires adding a kill switch in fw_native.
+
+  OPT C: Force re-creation via console: `RecycleActor`, `Resurrect 1`,
+         `disable; enable`
+    On player or NPCs — these may force a fresh 3D rebuild.
+    Pros: No code changes.
+    Cons: May not actually re-load NIF (game may still cache).
+
+  RECOMMENDED: OPT B. We already have a WndProc subclass; one config
+               line + one if-guard. Catches the COMPLETE pipeline once.
+
+================================================================================
+  4. CONFIRMED M7/M8P1 HYPOTHESES
+================================================================================
+
+  Hypothesis                                     Confirmed?    Evidence
+  --------------------------------------------------------------------------
+  H1: bone resolver `_skin` fallback fires       NO HITS in    [bone] = 0
+      only when skeleton context is missing.     vanilla       captures
+                                                 (great!)
+  H2: PC has separate 1P + 3P scene trees.       YES           1P=0x...a80
+                                                               3P=0x...fc0
+                                                               (different vt
+                                                               same RVA but
+                                                               different objs)
+  H3: PC::Load3D builds NIF path from race+sex.  YES           pathfn output
+                                                               '_1stPerson\
+                                                                skeleton.nif'
+  H4: AnimGraphManager exists pre-Load3D.        YES (impl)    animdirty fires
+                                                               on pre-existing
+                                                               mgr ptrs
+  H5: PC::Load3D pushes vec3 of player position  YES           animvar
+      to 4 anim variables.                                     (-78906, 90913,
+                                                                7828)
+  H6: REFR::Load3D applies materials via         YES           5197 walker
+      apply_materials walker.                                  on retval just
+                                                               before LEAVE
+  H7: Vanilla never NIF-loads MaleBody.nif       PARTIAL       0 hits in
+      during cell change.                                      capture (but
+                                                               fresh load not
+                                                               captured)
+
+================================================================================
+  5. NEW ACTION ITEMS  (Phase 1.4 → 2.0)
+================================================================================
+
+  AI-1. CAPTURE #2 — fresh body load.
+        Method: OPT B above. Add fw_native config flag to disable auto-load.
+        Run: attach Frida → from main menu, click "Load" manually.
+        Expected: ALL the PC + NPC body NIF loads, skeleton.nif chain,
+                  bone resolver hits with timing, BSAnimationGraphManager
+                  ctor invocation chain.
+
+  AI-2. Decompile sub_140C9AAC0 (scene-graph attach).
+        It fires 3× per PC::Load3D — twice with non-null loaded3D, once
+        with null. Understanding the 3 call sites is critical for Phase 4
+        because we currently call ZERO scene attach helpers.
+
+  AI-3. Identify the 4 anim variable IDs that sub_140D9AF10 sets.
+        It's called once per PC::Load3D with vec3=world_xyz. The 4 IDs
+        come from sub_140828D70..D0 (4 BSFixedString getters, per dossier).
+        Decomp those 4 to learn the variable names.
+
+  AI-4. Identify the BSAnimationGraphManager pointer at PC actor+0x300 area.
+        animdirty fires on a manager pointer (0x1986bde9a10) that exists
+        BEFORE Load3D — this manager is the target of:
+          sub_141895000 (animdirty)
+          sub_140D9AF10 (animvar push)
+        We need to find:
+          - What PC offset holds this pointer
+          - When/how it's allocated and bound to the Actor
+          - What its struct layout is (likely big — Havok hkbCharacter
+            mailbox + variable bag)
+
+  AI-5. Verify NIF loader flags 0x3d vs our 0x18.
+        Vanilla: flags=0x3d = bits 0,2,3,4,5 set.
+        Ours:    flags=0x18 = bits 3,4 set (POSTPROC|FADE_WRAP).
+        Bits 0, 2, 5 are unknown. Decomp the NIF loader to see what they do.
+        Possibly: bit 0 = "use cache", bit 2 = "skinned mesh", bit 5 = ?
+
+  AI-6. The walker fires 4724× during 1 minute of gameplay. That's
+        ~80/sec. Inspect WHERE — capture #2 with finer breakdown of
+        NPC vs static walker calls. May reveal that we're missing
+        material refreshes that the engine does for cell-attached actors.
+
+================================================================================
+  6. VANILLA bgsm PATHS — body / clothing inventory for plan A reconstruction
+================================================================================
+
+  From PC::Load3D scope (#5181-#5197 inside REFR):
+    template/SkinTemplate_Wet.bgsm                                   (×4)
+    Materials\actors\character\BaseHumanMale\basehumanskin.bgsm
+    Materials\Clothes\TshirtSlacks\TShirtSlacksPrewar.BGSM      ← clothing!
+    template/OutfitTemplate_Wet.bgsm
+    Materials\actors\character\BaseHumanMale\basehumanmaleskinhands.bgsm
+
+  From a settler NPC Actor::Load3D (#5202):
+    template/SkinTemplate_Wet.bgsm                                   (×3)
+    Materials\actors\character\BaseHumanMale\basehumanskin.bgsm
+
+  Ghost (our standalone load) currently uses:
+    Materials\actors\character\BaseHumanMale\basehumanskin.bgsm     ✓
+    Materials\actors\character\BaseHumanMale\basehumanskinHead.bgsm ✓
+    Materials\actors\character\BaseHumanMale\basehumanmaleskinhands.bgsm ✓
+
+  Missing for parity: clothing layer + Wet overlays. Wet overlays are
+  applied as MATERIAL SWAPS not new bgsm — visual rain/sweat. Not critical.
+  Clothing IS — naked ghost is identifiable. For ghost, we can pick a
+  default outfit (Vault 111 jumpsuit?) and load it as additional NIF
+  attach.
+
+================================================================================
+  END OF M8P1 STEP 1.4 ANALYSIS
+================================================================================

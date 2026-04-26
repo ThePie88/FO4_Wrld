@@ -82,6 +82,14 @@ public:
     // Unreliable. Caller fills the struct; we take ownership.
     void enqueue_pos_state(const PosStatePayload& p);
 
+    // M8P3.15 — variable-length pose snapshot (per-bone quaternions).
+    // header_ts_ms = client wall clock; bones[] = 0..MAX_POSE_BONES quaternions
+    // in deterministic name-sorted order (matches receiver's walk).
+    // Unreliable. Drops if disconnected or queue saturated.
+    void enqueue_pose_state(std::uint64_t header_ts_ms,
+                            const PoseBoneEntry* bones,
+                            std::size_t bone_count);
+
     // Reliable.
     void enqueue_actor_event(const ActorEventPayload& a);
 

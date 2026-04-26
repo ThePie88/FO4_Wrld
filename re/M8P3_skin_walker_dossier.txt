@@ -1,0 +1,512 @@
+================================================================================
+  M8 PHASE 3 — Per-frame skin/bone walker hunt: dossier
+  Fallout4.exe 1.11.191 next-gen   |   ImageBase 0x140000000
+  Date: 2026-04-26
+  Status: Walker chain identified. NiAVObject::UpdateWorldData = sub_1416C85A0.
+          Recursive driver = sub_1416BEAC0 (NiNode::UpdateWorldData override at
+          slot 53) + sub_1416BF1C0 (NiAVObject::UpdateDownwardPass at slot 54).
+================================================================================
+
+Raw evidence (in re/):
+  _m8p3_skin_walker_raw.log    Initial scan (BSI vt refs, virtuals, mul callers)
+  _m8p3_skin_walker_raw2.log   Mul-callers + caller chains, BSGeometry virtuals
+  _m8p3_skin_walker_raw3.log   "+70h" write candidates, frame-tick callees
+  _m8p3_skin_walker_raw4.log   sub_1403F7320/FA980/FA7C0 single-bone path
+  _m8p3_skin_walker_raw5.log   sub_1416C85A0 = NiAVObject::UpdateWorldData
+                                confirmed via 36 vtable slot-53 positions.
+  _m8p3_skin_walker_raw6.log   Slot-53 enumeration across 371 unique fns
+  _m8p3_skin_walker_raw7.log   BSGeometry slot 53 = sub_1416C8A60
+  _m8p3_skin_walker_raw8.log   sub_1416BF1C0 detail + sub_1416BEAC0 detail
+
+================================================================================
+  TL;DR
+================================================================================
+
+  1) The engine does NOT directly write to bones_pri[i] entries. bones_pri at
+     skin+0x28 holds NiAVObject* pointers; each entry's GPU-effective matrix is
+     read indirectly: the shader (or shader CB upload code) walks bones_pri,
+     dereferences each entry, and reads (*entry)+0x70 = bone.worldMatrix.
+     The user's empirical "writes to bones_pri[i] deform the mesh" experiment
+     thus actually writes to the bone's NiAVObject world matrix slot via the
+     pointer.
+
+  2) The PER-FRAME WRITER that overwrites our writes is the NiAVObject scenegraph
+     update walker, NOT a skin-specific function. Two key functions:
+
+        sub_1416C85A0 (RVA 0x16C85A0, size 0x354)
+          NiAVObject::UpdateWorldData (BASE).
+          Reads parent (a1+40 = +0x28) world matrix at parent+112 (+0x70),
+          multiplies by local transform (a1+48 = +0x30), writes result at
+          a1+112..172 (+0x70..+0xAC). Also mirrors prev-world to a1+192..252
+          (+0xC0..+0xFC) for motion blur.
+          Found at slot 53 of 28 vtables (every NiAVObject derivative that
+          doesn't override).
+
+        sub_1416BEAC0 (RVA 0x16BEAC0, size 0x1F1)
+          NiNode::UpdateWorldData OVERRIDE at slot 53 of NiNode-derived vtables.
+          Calls vt[+0x1A0] (slot 52 = local-to-world), then iterates children
+          at +0x128 (296) with count at +0x132 (306), calling vt[+0x180]=slot 48
+          on each (probably PreUpdate / extra-data update), and recursing via
+          a child world-transform call inside sub_1416BF1C0.
+
+        sub_1416BF1C0 (RVA 0x16BF1C0, size 0x15B)
+          NiAVObject::UpdateDownwardPass at slot 54 of NiNode-derived vtables.
+          Calls vt[+0x1A0]=slot 52 on self, then iterates children at +0x128
+          (296)/+0x132 (306) calling vt[+0x1A8]=slot 53 (UpdateWorldData) on
+          EACH child. This is the recursive walker that updates the entire
+          bone tree per frame.
+
+  3) The recursive walker chain to per-frame:
+        sub_1416C85A0  (NiAVObject::UpdateWorldData)
+          ^ called by NiNode::UpdateWorldData = sub_1416BEAC0 (slot 53 override)
+          ^ also called by NiAVObject::UpdateDownwardPass = sub_1416BF1C0 (slot 54)
+          ^ called by sub_1416D0510 (NiCamera ctor — cosmetic, ignore)
+          ^ called by sub_1416D2500 (small wrapper)
+          ^ called by sub_1421B69D0 (size 0xFC1 — scenegraph render driver?)
+          ^ called by sub_1421B3110 + sub_1421B27D0 (render inner)
+          ^ called by sub_1404E87C0 (frame_tick child, size 0x7E2)
+          ^ called by sub_140C334B0 (FRAME TICK!)
+
+  4) The MATRIX written each frame is at NiAVObject+0x70..+0xAC (16 floats =
+     4x4 column-major). Our writes are overwritten each frame by sub_1416C85A0.
+
+================================================================================
+  SECTION 1 — The writer: NiAVObject::UpdateWorldData (sub_1416C85A0)
+================================================================================
+
+  Signature (decompile):
+    __int64 __fastcall sub_1416C85A0(NiAVObject* a1, UpdateContext* a2);
+
+  RVA: 0x16C85A0    Size: 0x354 (852 bytes)
+
+  Behavior (annotated):
+
+      // Optional shortcut: if context flag a2->+16 has bit 0x800 SET,
+      // delegate to a1->+256 (NiCollisionObject?) handler; this branch
+      // does NOT touch the world matrix.
+      if (a2 && (v3 = *(qword*)(a1 + 256)) != 0
+          && (a2->flags & 0x800) == 0) {
+          return v3->vt[41](v3);   // 328/8 = slot 41 = early-out
+      }
+
+      // Save current world to "previous world" (a1+0xC0..+0xFC for motion blur)
+      a1[+0xC0] = a1[+0x70]   // copy 16 floats
+      a1[+0xD0] = a1[+0x80]
+      a1[+0xE0] = a1[+0x90]
+      a1[+0xF0] = a1[+0xA0]
+
+      v14 = a1->parent;  // a1+0x28 = +40
+      if (parent) {
+          v15 = parent + 0x70;   // parent's world matrix start
+          if (a1->flags & 0x200000000000) {
+              // SHORTCUT: just copy parent.world to own world (no local transform)
+              memcpy(a1+0x70, v15, 64);
+          } else {
+              // NORMAL: world = parent.world * local
+              // local = a1+0x30 = a1+48
+              v25 = sub_1403444F0(parent.world, scratch, a1->local);
+              memcpy(a1+0x70, v25, 64);
+          }
+      } else {
+          // ROOT NODE (no parent): world = local
+          memcpy(a1+0x70, a1+0x30, 64);  // 16 floats
+      }
+      return result;
+
+  Key memory targets (writes):
+      a1+0x70..+0x7C  =  world matrix row 0   (16 floats total = 4x4 column-major)
+      a1+0x80..+0x8C  =  world matrix row 1
+      a1+0x90..+0x9C  =  world matrix row 2
+      a1+0xA0..+0xAC  =  world matrix row 3   (typically 0,0,0,1 for affine)
+
+      a1+0xC0..+0xCC  =  previous-world row 0 (motion blur cache)
+      a1+0xD0..+0xDC  =  previous-world row 1
+      a1+0xE0..+0xEC  =  previous-world row 2
+      a1+0xF0..+0xFC  =  previous-world row 3
+
+  Matrix multiply helper:
+      sub_1403444F0(out, scratch, in)  =  4x4 * 4x4 multiply.
+      Layout: 4 rows of 4 floats, column-major (per IDA disasm SSE shuffles).
+      The xmmwords are loaded/stored as full 16-byte rows.
+
+  Vtable slot:
+      Found at SLOT 53 of 28 vtables (NiAVObject hierarchy base implementation).
+      In NiNode-derived classes, slot 53 is OVERRIDDEN by sub_1416BEAC0 which
+      includes child-tree iteration.
+      In BSGeometry vtable (0x14267E0B8), slot 53 = sub_1416C8A60 (a different
+      pre-render hook; NOT the matrix writer).
+
+================================================================================
+  SECTION 2 — The recursive driver: NiNode::UpdateWorldData (sub_1416BEAC0)
+================================================================================
+
+  RVA: 0x16BEAC0   Size: 0x1F1 (497 bytes)
+
+  Annotated decomp:
+
+      sub_1416BEAC0(NiNode* a1, UpdateContext* a2, uint a3):
+          // Apply pre-update extra-data (NiTimeController etc.)
+          if ((a2->flags & 1) != 0) {
+              for (i = a1->controllers; i; i = i->next)
+                  i->vt[42](i, a2);    // 336/8 = slot 42 = TimeController::Update
+          }
+
+          // Update SELF world transform (calls sub_1416C85A0 indirectly)
+          a1->vt[52](a1, a2);          // 416/8 = slot 52 = NiAVObject::UpdateLocal? +
+                                        // composes self-world
+
+          v7 = a1->numChildren;        // +0x132 = +306 (uint16)
+          // Recursive descent: call each child's vt[48] (UpdateDownwardPass-like)
+          v9 = 0;
+          while (v9 < v7) {
+              child = a1->children[v9]; // a1+0x128 = +296
+              if (child) {
+                  child->vt[48](child, a2, flags);  // 384/8 = slot 48
+                  v9++;
+              }
+          }
+
+          // Bound-merge: combine child bounds into self
+          if (numChildren == 0) {
+              // leaf: copy own bound from local to world
+              a1->bound_world = a1->bound_local;
+          }
+
+  CRITICAL DETAIL: The recursive call uses slot 48 (vt+0x180), not slot 53.
+  Slot 48 is a DIFFERENT function (likely UpdateBound or another walker).
+  Slot 53 (UpdateWorldData) is called via slot 52 chain inside the override.
+
+  This implies:
+      - sub_1416BEAC0 itself is at slot 53 of NiNode-derived vts. It calls
+        slot 52 on self (which calls 1416C85A0 = base UpdateWorldData) AND
+        slot 48 on children (which is a different walker — UpdateBound or
+        UpdateDownwardPass).
+      - The actual FULL recursive UpdateWorldData driver is sub_1416BF1C0
+        below.
+
+================================================================================
+  SECTION 3 — The recursive descent walker: sub_1416BF1C0 (slot 54)
+================================================================================
+
+  RVA: 0x16BF1C0   Size: 0x15B (347 bytes)
+
+  Annotated decomp:
+
+      sub_1416BF1C0(NiAVObject* a1, UpdateContext* a2):
+          // Apply controllers if needed
+          if ((a1->flags & 4) != 0)
+              a1->vt[52](a1);          // 416/8 = slot 52 = TimeController-driven update
+
+          numChildren = a1->numChildren;     // +0x132 = +306
+          if ((a1->flags & 0x2000) == 0) {
+              // Reset bound
+              a1->bound_local[3] = 0.0f;     // +0xBC = +188
+
+              // RECURSIVE LOOP: call each child's slot 53 (UpdateWorldData)
+              for (i = 0; i < numChildren; ++i) {
+                  child = a1->children[i];   // +0x128 = +296
+                  if (child) {
+                      child->vt[53](child, a2);   // 424/8 = slot 53!
+                      // ^ For NiAVObject children: sub_1416C85A0
+                      // ^ For NiNode children: sub_1416BEAC0
+                      // ^ The recursion is via dispatch — child's own vt
+                      //   determines whether it further descends.
+
+                      // Merge child bound into self bound
+                      if (child->bound_local[3]) {
+                          a1->bound_world[0] = child->bound_local[0..2];
+                          ...
+                      }
+                  }
+              }
+          }
+          return ...;
+
+  PROOF this is THE walker:
+      - Reads children[] at +0x128, count at +0x132 (the canonical NiNode layout)
+      - Calls vt[53]=UpdateWorldData on every child
+      - Found at slot 54 of 25 vtables (NiNode hierarchy)
+
+  Confirmed slot positions:
+      vt 0x142470EC8 slot 54  → 0x1416BF1C0
+      vt 0x14247C7C0 slot 54  → 0x1416BF1C0
+      vt 0x1424FF278 slot 54  → 0x1416BF1C0
+      vt 0x14255E190 slot 54  → 0x1416BF1C0
+      vt 0x14267D5D8 slot 54  → 0x1416BF1C0
+      vt 0x142694E80 slot 54  → 0x1416BF1C0
+      vt 0x142695590 slot 54  → 0x1416BF1C0
+      ... 25 total
+
+================================================================================
+  SECTION 4 — Trace upward to per-frame entry
+================================================================================
+
+  Confirmed chain (from re/_m8p3_skin_walker_raw5.log section D):
+
+    sub_1416C85A0  (NiAVObject::UpdateWorldData)            [target writer]
+      ^ caller sub_1416D0510 (NiCamera ctor — one-shot)
+        ^ sub_1421B69D0 (sz 0xFC1 — render scenegraph driver)
+          ^ sub_1421B3110 (sz 0x237 — sub-driver)
+            ^ sub_1421B27D0 (sz 0x2E6 — render inner)
+              ^ sub_1404E87C0 (sz 0x7E2 — frame_tick child)
+                ^ sub_140C334B0 (FRAME TICK)
+              ^ sub_140C00590 (sz 0x8EA — alt scene render)
+
+  This is the SCENE-GRAPH UPDATE pass executed once per frame from the main
+  render loop. Each render frame, the engine walks the entire scene-graph tree
+  starting at the root NiNode (the "world root" or "shadow root") and calls
+  UpdateWorldData → recurses via slot 54 → on the player skeleton subtree,
+  this writes every bone's world matrix at NiAVObject+0x70.
+
+  Threading:
+      The walker runs on the GAME / RENDER thread (the same thread that
+      executes sub_140C334B0 frame_tick). The skin-binding in fw_native must
+      hook on this thread to be safe. MinHook is fine.
+
+  Frequency:
+      ~60 Hz under normal conditions. The user's 20Hz timer is competing
+      with this 60Hz writer.
+
+================================================================================
+  SECTION 5 — Hook strategy (recommendation)
+================================================================================
+
+  RECOMMENDED HOOK POINT:  sub_1416C85A0  (NiAVObject::UpdateWorldData)
+  RVA:                     0x16C85A0
+  Calling convention:      Win64 fastcall
+                              RCX = NiAVObject* (a1)
+                              RDX = UpdateContext* (a2) (may be NULL)
+                              returns RAX = some flag/result
+
+  HOOK MODE:  POST-CALL (last-write-wins)
+      Detour replaces the function. Hook implementation:
+
+          typedef __int64 (__fastcall *fn_uwd_t)(void* avobj, void* ctx);
+          static fn_uwd_t orig_uwd = NULL;
+
+          __int64 __fastcall hook_uwd(void* avobj, void* ctx) {
+              // Run engine update first → writes (*avobj)+0x70 with engine value
+              __int64 r = orig_uwd(avobj, ctx);
+
+              // Now check: is THIS bone one of our ghost-body bones?
+              if (is_ghost_bone(avobj)) {
+                  // Look up our intended matrix from the snapshot/queue
+                  // and overwrite (*avobj)+0x70..(*avobj)+0xAC
+                  apply_ghost_bone_pose(avobj);
+              }
+              return r;
+          }
+
+      The is_ghost_bone() check should be O(1) hash lookup keyed on the
+      NiAVObject* pointer (we collected a list of ghost bone pointers at
+      skeleton-load time).
+
+  WHY post-call:
+      Pre-call would require us to compute parent.world * local correctly,
+      which means doing the matrix multiply ourselves. Post-call we just
+      overwrite the result, eliminating math errors and keeping our code
+      tiny.
+
+  WHY this hook point (vs. higher-level):
+      - Hooking sub_1416BF1C0 (slot 54) would require us to detect when the
+        walker enters our ghost subtree, then suppress engine writes — more
+        complex.
+      - Hooking sub_1416C85A0 directly: every NiAVObject world-transform
+        update goes through it. We just filter by pointer identity.
+      - The function is small (0x354) so detour is cheap.
+      - It's at a stable RVA across patches (NiAVObject::UpdateWorldData is
+        a fundamental NetImmerse engine function unlikely to change).
+
+  POTENTIAL PERFORMANCE CONCERN:
+      Every NiAVObject in the scene calls this function each frame. For
+      Fallout 4 that's typically 10k-50k NiAVObjects per frame. Our hook
+      runs on every call; the is_ghost_bone() check must be fast.
+
+      Mitigation: use a small open-addressed hash set keyed on pointer
+      truncated low bits. ~50 entries (skeleton bones) → 256-bucket hash
+      lookup is < 5 ns per call.
+
+  FALLBACK HOOK POINTS (if 0x16C85A0 proves problematic):
+
+      1. sub_1416BEAC0 (RVA 0x16BEAC0, NiNode::UpdateWorldData override).
+         Hook this to detect "entering our ghost root subtree" and force
+         reapply after the recursion. ~25 vtable instances will route here.
+         Pre-call: skip engine entirely (set flags then return).
+         Post-call: walk our ghost subtree manually.
+
+      2. sub_1416BF1C0 (RVA 0x16BF1C0, NiAVObject::UpdateDownwardPass).
+         Slot 54 in NiNode-like vts. Hook to intercept the recursive walk.
+
+      3. sub_1404E87C0 (RVA 0x4E87C0, frame_tick scenegraph child).
+         Hook the frame-level entry; reapply ghost bones AFTER it returns.
+         Coarse but reliable; less per-call overhead.
+
+  RECOMMENDED HOOK API:
+      MinHook 1.3.3 (already in fw_native?). If not, easy to integrate.
+      Detour pattern:
+          MH_CreateHook((LPVOID)0x140000000 + 0x16C85A0, &hook_uwd, &orig_uwd);
+          MH_EnableHook(MH_ALL_HOOKS);
+
+================================================================================
+  SECTION 6 — Skin matrix layout (validation)
+================================================================================
+
+  CONFIRMED (per sub_1416C85A0 disasm, SSE shuffle/mov patterns):
+
+      Layout:           4x4, column-major, 16 contiguous floats (= 64 bytes)
+      Storage:          4 _OWORD (XMM)-aligned blocks, one per row
+      Per-row encoding: float[4] = (m00, m01, m02, m03) (row 0)
+                        float[4] = (m10, m11, m12, m13) (row 1)
+                        float[4] = (m20, m21, m22, m23) (row 2)
+                        float[4] = (m30, m31, m32, m33) (row 3)
+      Affine 4x4:       row 3 always (0, 0, 0, 1) for affine transforms
+                        (the engine sometimes writes (0,0,0,1) explicitly,
+                         sometimes leaves the row from the multiply).
+      Endianness:       little-endian IEEE 754 (Intel native)
+      Packing:          no padding — exactly 64 bytes per matrix.
+
+  Where it lives on a NiAVObject:
+      offset 0x70 = world matrix (the writable target)
+      offset 0xC0 = previous world matrix (motion blur cache)
+      offset 0x30 = local matrix (READ by UpdateWorldData; we should NOT touch
+                    this for ghost bones unless we want to drive the walker
+                    via local instead of overwriting world)
+
+  Note: NiTransform in CommonLibSSE has separate rotation (3x3), translation
+  (vec3), scale (float) — that's the NiAVObject local transform at +0x30 in
+  the post-FO4 layout. The WORLD transform at +0x70 is the BAKED 4x4 matrix
+  product; this is what GPU shaders read.
+
+================================================================================
+  SECTION 7 — Confidence + alternatives
+================================================================================
+
+  CONFIDENCE LEVELS:
+
+    sub_1416C85A0 = NiAVObject::UpdateWorldData         CONFIDENCE: HIGH
+        Evidence: pattern matches NetImmerse/Gamebryo engine convention
+                  exactly. SSE shuffles, parent-deref, matrix multiply,
+                  write to +0x70..+0xAC of self. 28 vtable slot-53
+                  positions confirm it's the base virtual.
+
+    sub_1416BEAC0 = NiNode::UpdateWorldData (override)  CONFIDENCE: HIGH
+        Evidence: at slot 53 of NiNode-derived vts, calls vt[52] on self
+                  (= local-update), iterates children at +0x128 / +0x132.
+                  Pattern: NiNode override calling base then recursing.
+
+    sub_1416BF1C0 = NiAVObject::UpdateDownwardPass      CONFIDENCE: HIGH
+        Evidence: at slot 54 of 25 NiNode-derived vts. Calls vt[+0x1A8]=
+                  slot 53 on every child. Reads children[] / count from
+                  canonical NiNode layout (+0x128 / +0x132). Self-recursive
+                  via dispatch.
+
+    Hook strategy on 1416C85A0                          CONFIDENCE: HIGH
+        Reasoning: post-call hook with pointer-identity check is the
+                   simplest, most reliable approach; engine pattern is
+                   stable across FO4 patches.
+
+  ALTERNATIVE TARGETS (in priority order, if 1416C85A0 is suboptimal):
+
+    Alt 1: sub_1416BF1C0 (UpdateDownwardPass at slot 54)
+           Hook the recursive walker; track when we're inside ghost subtree;
+           re-apply at recursion exit.
+
+    Alt 2: sub_1404E87C0 (frame_tick child, RVA 0x4E87C0)
+           Hook frame-level. Apply ghost bone overrides AFTER engine update
+           pass completes. Coarse but robust.
+
+    Alt 3: Hijack the local transform (NiAVObject+0x30) instead of world.
+           Set local = desired_world * inv(parent.world) so that the
+           engine's UpdateWorldData computes our desired result. Avoids
+           hook entirely! But requires inverting parent.world each frame
+           (cheap matrix inverse).
+
+  RISKS:
+
+    R1. is_ghost_bone() bottleneck.
+        ~60Hz × 30k NiAVObjects = 1.8M lookups/sec. A naive linear search
+        over 50 ghost bones = 90M comparisons/sec. Use hash table.
+
+    R2. Multi-threaded scene update.
+        FO4 may parallelize scene graph updates across worker threads. Our
+        hook must be thread-safe. The orig_uwd call already is (it's
+        single-NiAVObject per call). Our pointer-set lookup must use
+        atomic/lock-free reads (or be read-only after init).
+
+    R3. Compile-time scenegraph optimizations.
+        Some NiAVObjects skip UpdateWorldData based on a "world dirty" flag
+        at +0x110 or similar. If our writes don't dirty the bone, the engine
+        may not re-read on next frame (no overwrite). This is GOOD for us
+        — but means if engine SKIPS our bones (e.g. animation pause), our
+        20Hz writes survive without conflict.
+
+    R4. NiAVObject::UpdateWorldData early-out (line 4161 of decomp).
+        If a2->flags & 0x800 is set, function delegates to a1+256->vt[41]
+        and skips the matrix write. We need to confirm whether this flag
+        ever fires for our bones. If yes, our hook STILL runs on entry, but
+        the orig_uwd may not actually update the matrix — we'd be writing
+        on top of stale data. Mitigation: log occurrences in the hook.
+
+  TBD ITEMS (need further RE):
+
+    TBD-1: which exact UpdateContext flag values map to which behaviors?
+           a2->+16 fields: bit 0x800 = "skip world update" branch trigger.
+           bit 0x80000 = something set by sub_1416C8A60 (BSGeometry slot 53).
+           Bit meanings TBD.
+
+    TBD-2: where does the engine UPLOAD bones to GPU cbuffer? After
+           UpdateWorldData runs for all bones, some D3D11 cbuffer is
+           updated with the final skin matrices. Locating this would let
+           us hook AT THE UPLOAD instead — guaranteed last-write.
+
+    TBD-3: confirm the BoneData inverse-bind multiplication site. The
+           shader likely does `bone.world * inv_bind` per vertex itself
+           (read inv_bind from a separate cbuffer + bone.world from another).
+           Verify by examining the skinning vertex shader bytecode.
+
+================================================================================
+  SECTION 8 — Anchor index (for fw_native integration)
+================================================================================
+
+  RVAs added by this dossier:
+
+      sub_1416C85A0   NiAVObject::UpdateWorldData (base)         RVA 0x16C85A0
+      sub_1416BEAC0   NiNode::UpdateWorldData (override)         RVA 0x16BEAC0
+      sub_1416BF1C0   NiAVObject::UpdateDownwardPass             RVA 0x16BF1C0
+      sub_1416C8A60   BSGeometry vt slot 53 (pre-render hook)    RVA 0x16C8A60
+      sub_1416D2500   small wrapper around UpdateWorldData       RVA 0x16D2500
+      sub_1416D54E0   small wrapper around UpdateWorldData       RVA 0x16D54E0
+      sub_1416E40E0   small wrapper around UpdateWorldData       RVA 0x16E40E0
+      sub_1416F1900   pre-render hook (calls UpdateWorldData)    RVA 0x16F1900
+      sub_1416F5D50   another small wrapper                      RVA 0x16F5D50
+      sub_1417C5770   per-class wrapper                          RVA 0x17C5770
+      sub_1421D4650   per-class wrapper                          RVA 0x21D4650
+      sub_1421B27D0   render-thread inner                        RVA 0x21B27D0
+      sub_1421B3110   render-thread mid                          RVA 0x21B3110
+      sub_1421B69D0   render-thread outer (sz 0xFC1)             RVA 0x21B69D0
+      sub_1404E87C0   frame_tick child (sz 0x7E2)                RVA 0x4E87C0
+      sub_140C334B0   FRAME TICK (already known)                 RVA 0xC334B0
+      sub_1403444F0   4x4 mat mul helper (already known)         RVA 0x3444F0
+
+  Key offsets on NiAVObject:
+      +0x28 (40)     parent NiAVObject*
+      +0x30 (48)     local transform matrix start (4 rows of 16 bytes)
+      +0x70 (112)    WORLD transform matrix start (the writable target)
+      +0xC0 (192)    previous-world matrix start (motion blur)
+      +0x108         (264) flags qword (bit 0x4 = update controllers,
+                            bit 0x2000 = skip world update, bit 0x200000000000
+                            = skip-multiply-just-copy-parent)
+      +0x110 (272)   children-related qword?
+      +0x128 (296)   children[] head (NiAVObject** array)
+      +0x132 (306)   numChildren (uint16)
+      +0x100 (256)   collision/extension object
+      +0xBC          (188) bound radius cache
+
+  Key offsets on UpdateContext (a2):
+      +0  qword     vtable-or-something
+      +8  pointer   ?
+      +16 dword     flags (bit 0x800 = skip world update branch)
+
+================================================================================
+  END OF M8P3 SKIN WALKER DOSSIER
+================================================================================

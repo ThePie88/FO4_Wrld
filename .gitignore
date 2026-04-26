@@ -121,6 +121,22 @@ secrets/
 frida/*.frida
 frida/*.cache
 
+# -- TTD (Time Travel Debugging) artifacts -----------------------------------
+# Local WinDbg TTD CLI binaries (extracted from Microsoft Store package —
+# Microsoft EULA restricts redistribution; user must install WinDbg locally).
+ttd_local/
+# 1-10GB TTD recording files. Regenerable on demand.
+ttd_traces/
+
+# -- Game asset cache (Bethesda IP — extracted .nif/.bgsm/.dds, never push) --
+fw_native/assets/raw/Meshes/
+fw_native/assets/raw/Materials/
+fw_native/assets/raw/Sound/
+fw_native/assets/raw/Textures/
+
+# -- Server runtime state snapshots (regenerable, contains in-game state) ----
+net/state_snapshot.json*
+
 # -- Tools binaries (we don't ship these in repo) ---------------------------
 tools/*.exe
 

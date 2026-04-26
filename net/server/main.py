@@ -27,6 +27,7 @@ from protocol import (  # noqa: E402
     MessageType, ProtocolError,
     HelloPayload, WelcomePayload, PeerJoinPayload, PeerLeavePayload,
     HeartbeatPayload, DisconnectPayload, PosStatePayload, PosBroadcastPayload,
+    PoseStatePayload, PoseBroadcastPayload,
     ActorEventPayload, ChatPayload, RawMessage,
     WorldStatePayload, WorldActorEntry,
     ContainerOpPayload, ContainerBroadcastPayload,
@@ -152,6 +153,9 @@ class ServerProtocol(asyncio.DatagramProtocol):
             return
         if mtype == MessageType.POS_STATE:
             self._handle_pos_state(session, payload, now_ms)
+            return
+        if mtype == MessageType.POSE_STATE:
+            self._handle_pose_state(session, payload, now_ms)
             return
         if mtype == MessageType.ACTOR_EVENT:
             self._handle_actor_event(session, payload, now_ms)
@@ -323,6 +327,20 @@ class ServerProtocol(asyncio.DatagramProtocol):
         )
         for other in self.state.other_sessions(session.addr):
             raw = other.channel.send_unreliable(MessageType.POS_BROADCAST, broadcast)
+            self._send(other.addr, raw)
+
+    def _handle_pose_state(self, session: PeerSession, payload, now_ms: float) -> None:
+        """M8P3.15 — relay per-bone rotation snapshot to other peers.
+        No validation (trusted clients in this stage); pure fan-out."""
+        if not isinstance(payload, PoseStatePayload):
+            return
+        broadcast = PoseBroadcastPayload(
+            peer_id=session.peer_id,
+            timestamp_ms=payload.timestamp_ms,
+            quats=payload.quats,
+        )
+        for other in self.state.other_sessions(session.addr):
+            raw = other.channel.send_unreliable(MessageType.POSE_BROADCAST, broadcast)
             self._send(other.addr, raw)
 
     def _handle_actor_event(self, session: PeerSession, payload, now_ms: float) -> None:

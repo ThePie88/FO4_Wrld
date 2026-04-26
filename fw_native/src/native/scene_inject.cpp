@@ -20,6 +20,7 @@
 #include "scene_inject.h"
 #include "ni_offsets.h"
 #include "scene_walker.h"
+#include "skin_rebind.h"
 
 #include <windows.h>
 #include <atomic>
@@ -27,6 +28,7 @@
 #include <cmath>
 #include <cstring>
 #include <intrin.h>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -37,6 +39,119 @@
 #include "../net/client.h"
 
 namespace fw::native {
+
+// Forward declaration: bone_copy ns is defined later in this TU but
+// populate_canonical_from_skel_native (below) needs to call its walker.
+namespace bone_copy {
+    static void walk_player_nested(void* node, int depth,
+                                   std::unordered_map<std::string, void*>& out);
+}
+
+// M8P3.15 — canonical JOINT list cached at ghost-body inject. Both
+// sender (on_bone_tick_message) and receiver (on_pose_apply_message)
+// reference this list. Populated from the GHOST skel.nif tree, with
+// "_skin"-suffixed nodes (skin anchors) excluded — only true joints
+// are replicated. Engine UpdateWorldData propagates joint rotations
+// down to skin anchors via parent-chain hierarchy.
+//
+// Defined at fw::native:: scope (NOT anon ns) so inject_body_nif
+// (first anon ns) and the pose handlers (later anon ns) can both
+// reference the same symbols.
+static std::mutex                g_canonical_mutex;
+static std::vector<std::string>  g_canonical_names;   // size == joint count
+static std::vector<void*>        g_ghost_bone_ptrs;   // parallel: skel joint[i]
+
+// SEH-safe helpers (no C++ objects → no C2712 conflict). Each
+// function isolates the __try block so callers can mix C++ objects
+// freely.
+static bool seh_read_bones_fb_meta(void* skin, void**& head, std::uint32_t& count) {
+    head = nullptr; count = 0;
+    if (!skin) return false;
+    __try {
+        char* sb = reinterpret_cast<char*>(skin);
+        head  = *reinterpret_cast<void***>(sb + 0x10);
+        count = *reinterpret_cast<std::uint32_t*>(sb + 0x20);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+static void* seh_read_bones_fb_entry(void** head, std::uint32_t i) {
+    if (!head) return nullptr;
+    __try { return head[i]; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+
+static const char* seh_read_bone_name(void* node) {
+    if (!node) return "";
+    __try {
+        const char* pool_entry = *reinterpret_cast<const char* const*>(
+            reinterpret_cast<const char*>(node) + 0x10);
+        if (!pool_entry) return "";
+        return pool_entry + 0x18;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return ""; }
+}
+
+// Helper: name ends with "_skin" suffix?
+static bool ends_with_skin(const char* s) {
+    if (!s) return false;
+    const std::size_t n = std::strlen(s);
+    return n >= 5 && std::strcmp(s + n - 5, "_skin") == 0;
+}
+static bool ends_with_skin_str(const std::string& s) {
+    return s.size() >= 5
+        && s.compare(s.size() - 5, 5, "_skin") == 0;
+}
+
+// Cache canonical JOINT list from the GHOST skel.nif tree (NOT the
+// body's bones_fb, which contains both joints AND skin anchors but is
+// missing many intermediate joints). The skel.nif has every joint
+// in its hierarchy (LArm_ForeArm1, LLeg_Thigh, etc.) so walking it
+// gives the COMPLETE set of joints to animate.
+//
+// Architecture:
+//   - We replicate JOINT m_kLocal rotations only.
+//   - Engine UpdateWorldData propagates joint rotations to descendants
+//     (including the body's _skin anchors which inherit via parent
+//     chain in skel.nif).
+//   - This avoids the "twisted mesh" bug where writing a joint's
+//     parent-relative rotation directly to a skin anchor mismatches
+//     the anchor's bind orientation.
+static void populate_canonical_from_skel_native(void* skel_root) {
+    if (!skel_root) {
+        FW_WRN("[pose] populate_canonical: skel_root is null — skipped");
+        return;
+    }
+    std::unordered_map<std::string, void*> all_nodes;
+    bone_copy::walk_player_nested(skel_root, 0, all_nodes);
+
+    // Filter: keep joints only (names not ending in "_skin"); skip empty.
+    std::vector<std::pair<std::string, void*>> joints;
+    joints.reserve(all_nodes.size());
+    for (auto& kv : all_nodes) {
+        const std::string& nm = kv.first;
+        if (nm.empty()) continue;
+        if (ends_with_skin_str(nm)) continue;
+        joints.emplace_back(nm, kv.second);
+    }
+    std::sort(joints.begin(), joints.end(),
+              [](const auto& a, const auto& b){ return a.first < b.first; });
+
+    std::vector<std::string> nms; nms.reserve(joints.size());
+    std::vector<void*>       ptrs; ptrs.reserve(joints.size());
+    for (auto& jp : joints) {
+        nms.push_back(jp.first);
+        ptrs.push_back(jp.second);
+    }
+    const std::size_t kept = nms.size();
+    {
+        std::lock_guard<std::mutex> lk(g_canonical_mutex);
+        g_canonical_names.swap(nms);
+        g_ghost_bone_ptrs.swap(ptrs);
+    }
+    FW_LOG("[pose] canonical JOINT list cached from skel: %zu joints "
+           "(skel total nodes=%zu, _skin anchors excluded)",
+           kept, all_nodes.size());
+}
 
 namespace {
 
@@ -1778,6 +1893,146 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
             FW_ERR("[native] inject_body_nif: apply_materials body SEH");
         }
 
+        // M8P3 Step 1 — DIAGNOSTIC ONLY. SEH-wrapped at call site so a
+        // walker bug doesn't abort the whole body injection (the diag is
+        // best-effort; v18.2 baseline must continue regardless).
+        FW_LOG("[native] inject_body_nif: M8P3 Step 1 skin diagnostic START");
+        int stub_count = -2;
+        __try {
+            stub_count = fw::native::skin_rebind::diagnose_skin_stubs(body);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            FW_ERR("[native] inject_body_nif: SEH escaped from skin diag — "
+                   "continuing body injection (diag aborted)");
+        }
+        FW_LOG("[native] inject_body_nif: M8P3 Step 1 skin diagnostic END "
+               "(returned %d total _skin stubs)", stub_count);
+
+        // M8P3 Step 2+3 — load skeleton.nif (singleton cache) + swap
+        // body skin instance bones with skeleton's named NiNodes.
+        // After swap, skin->bones_fb[i] points at REAL skeleton bones
+        // (not "_skin" stubs), and skin->skel_root = skeleton root.
+        // Driving skel bone transforms now drives the body mesh.
+        FW_LOG("[native] inject_body_nif: M8P3 Step 2+3 skel cache + swap START");
+        {
+            void* skel = fw::native::skin_rebind::get_cached_skeleton();
+            if (!skel) {
+                constexpr const char* kSkelPath =
+                    "Actors\\Character\\CharacterAssets\\skeleton.nif";
+                NifLoadOpts skel_opts{};
+                skel_opts.flags = NIF_OPT_FADE_WRAP;
+                void* fresh_skel = nullptr;
+                std::uint32_t skel_rc = 0xDEADBEEF;
+                __try {
+                    const std::uint8_t saved_ks_skel = *killswitch;
+                    *killswitch = 1;
+                    skel_rc = g_r.nif_load_by_path(
+                        kSkelPath, &fresh_skel, &skel_opts);
+                    *killswitch = saved_ks_skel;
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    FW_ERR("[native] inject_body_nif: SEH loading skeleton.nif");
+                }
+                FW_LOG("[native] inject_body_nif: skel load rc=%u fresh=%p",
+                       skel_rc, fresh_skel);
+                if (skel_rc == 0 && fresh_skel) {
+                    __try {
+                        fw::native::skin_rebind::dump_skeleton_bones(fresh_skel);
+                    } __except (EXCEPTION_EXECUTE_HANDLER) {
+                        FW_ERR("[native] inject_body_nif: SEH in skel dump");
+                    }
+                    fw::native::skin_rebind::cache_or_release_skeleton(fresh_skel);
+                    skel = fw::native::skin_rebind::get_cached_skeleton();
+                }
+            } else {
+                FW_LOG("[native] inject_body_nif: skel cache hit %p", skel);
+            }
+
+            if (skel) {
+                int swapped = -2;
+                __try {
+                    swapped = fw::native::skin_rebind::swap_skin_bones_to_skeleton(
+                        body, skel);
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    FW_ERR("[native] inject_body_nif: SEH in skin swap");
+                }
+                FW_LOG("[native] inject_body_nif: skin swap returned %d",
+                       swapped);
+
+                // M8P3.7 — install UpdateWorldData hook + register the
+                // test bone.
+                //
+                // Pipeline (post-M8P3.11 TTD-verified fix):
+                //   1. swap_for_geometry replaces bones_fb[i] entries
+                //      from body's stubs to matching skel bones.
+                //   2. swap_for_geometry ALSO re-caches bones_pri[i]
+                //      to point at skel_bone[i]+0x70 (the matrix slot
+                //      GPU reads via SRV). [TTD verified working]
+                //   3. We register the skel bone so when engine calls
+                //      UpdateWorldData(skel_bone) the hook overrides
+                //      skel_bone+0x70 = the exact memory bones_pri[i]
+                //      points at = what GPU reads.
+                //
+                // CRITICAL: skel bones in post-swap bones_fb are still
+                // named WITH "_skin" suffix (verified via TTD trace —
+                // both body NIF and skeleton.nif use _skin suffix on
+                // skinning anchor bones). Lookup name = stub name.
+                fw::native::skin_rebind::install_world_update_hook(g_r.base);
+                void* body_skin = fw::native::skin_rebind::find_body_skin_instance(body);
+                void* test_bone = nullptr;
+                if (body_skin) {
+                    test_bone = fw::native::skin_rebind::find_bone_in_bones_pri(
+                        body_skin, "LArm_ForeArm1_skin");
+                }
+                if (test_bone) {
+                    fw::native::skin_rebind::register_ghost_bone(test_bone);
+                    FW_LOG("[native] inject_body_nif: registered ghost bone "
+                           "LArm_ForeArm1_skin=%p (post-swap skel bone in "
+                           "bones_fb[] of skin=%p; bones_pri[i] points at "
+                           "this+0x70 = GPU read site verified by TTD)",
+                           test_bone, body_skin);
+                } else {
+                    FW_ERR("[native] inject_body_nif: test_bone LOOKUP FAILED — "
+                           "'LArm_ForeArm1_skin' not in body's bones_fb[] "
+                           "(skin=%p). Registry empty, hook is no-op.", body_skin);
+                }
+
+                // M8P3.15 — populate canonical JOINT list from skel.nif.
+                // We use skel (not bones_fb) because skel has the FULL
+                // joint hierarchy (LArm_ForeArm1, LLeg_Thigh, etc.) that
+                // bones_fb is missing. Engine propagates to skin anchors.
+                // This MUST happen post-swap and post-attach so skel
+                // hierarchy is stable.
+                populate_canonical_from_skel_native(skel);
+
+                // CRITICAL: attach skel as child of body. Without this,
+                // skel is a free-floating tree — its bones' world
+                // transforms never get updated, so when the engine's
+                // skin shader reads bone.world for vertex deform, it
+                // gets garbage/origin and the mesh renders far from
+                // body (effectively invisible).
+                //
+                // Attaching skel as body's child means update_downward
+                // on body propagates to skel root → skel bones get
+                // their world.transform = body.world * skel.local *
+                // bone.local. Now skin draws at body position with
+                // skel pose driving deformation.
+                __try {
+                    _InterlockedIncrement(reinterpret_cast<long*>(
+                        reinterpret_cast<char*>(skel) + NIAV_REFCOUNT_OFF));
+                    g_r.attach_child_direct(body, skel, /*reuseFirstEmpty=*/0);
+                    FW_LOG("[native] inject_body_nif: attached skel=%p as "
+                           "child of body=%p (propagates world updates)",
+                           skel, body);
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    FW_ERR("[native] inject_body_nif: SEH attaching skel "
+                           "to body");
+                }
+            } else {
+                FW_WRN("[native] inject_body_nif: no skeleton - "
+                       "swap skipped, body stays in T-pose");
+            }
+        }
+        FW_LOG("[native] inject_body_nif: M8P3 Step 2+3 END");
+
         // 4c. M6.3 — Load MaleHead.nif and attach it to the body as a
         //     child NiNode. The body NIF does NOT include a head mesh
         //     (only torso + arms + legs); the head is a separate NIF
@@ -3206,19 +3461,384 @@ void notify_remote_pos_changed() {
 // M7.b bone-tick handler. Called from WndProc when a FW_MSG_STRADAB_BONE_TICK
 // arrives. Mirrors bone_copy::copy_bones_once onto the ghost body.
 //
-// v18 DISABLED: ghost is loaded standalone (sub_1417B3E90) so its
-// BSDismemberSkinInstance bone array points at internal "_skin" bind-pose
-// stubs, NOT at the named bones we'd want to drive. Writing player bone
-// transforms to our ghost's named NiNodes does NOT propagate to the mesh
-// because the skin instance ignores them — instead we corrupt the
-// _skin stubs' transforms (which happen to be siblings of named bones)
-// causing visible stretching/distortion. Disable until M8 implements
-// proper player-creation-pipeline replication that gives ghost a real
-// skin instance bound to skel bones.
-void on_bone_tick_message() {
-    // Disabled in v18. Ghost stays in NIF-baked T-pose.
-    return;
+// M8P3.15 — runs at 20Hz on main thread:
+//   1. Reads local PC body bones m_kLocal 3x3, converts each to
+//      quaternion, broadcasts via fw::net::Client::enqueue_pose_state.
+//      Receiving peers apply this pose to their ghost-of-us body.
+//   2. (legacy) test cycle drives one ghost bone via sin() override —
+//      kept as visual fallback to confirm the hook still works.
+
+// ---- M8P3.15 quaternion math (anonymous, file-local) -----------------
+namespace {
+
+// Read a 3x3 rotation from NiAVObject.m_kLocal (offset 0x30) into mat3.
+// Layout in memory: 3 rows × NiPoint4 (16 bytes each, last 4 bytes pad).
+//   row 0 @ +0x30..+0x3C, row 1 @ +0x40..+0x4C, row 2 @ +0x50..+0x5C
+// Pad bytes (last 4 of each row) are ignored.
+// mat3[0..2]=row0, [3..5]=row1, [6..8]=row2 (row-major).
+bool read_local_3x3(void* bone, float mat3[9]) {
+    if (!bone) return false;
+    __try {
+        const float* p = reinterpret_cast<const float*>(
+            reinterpret_cast<char*>(bone) + 0x30);
+        mat3[0] = p[0];  mat3[1] = p[1];  mat3[2] = p[2];   // row 0
+        mat3[3] = p[4];  mat3[4] = p[5];  mat3[5] = p[6];   // row 1
+        mat3[6] = p[8];  mat3[7] = p[9];  mat3[8] = p[10];  // row 2
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
 }
+
+// Write a 3x3 rotation to NiAVObject.m_kLocal (offset 0x30).
+// Same SIMD-padded layout as read above.
+bool write_local_3x3(void* bone, const float mat3[9]) {
+    if (!bone) return false;
+    __try {
+        float* p = reinterpret_cast<float*>(
+            reinterpret_cast<char*>(bone) + 0x30);
+        p[0]  = mat3[0]; p[1]  = mat3[1]; p[2]  = mat3[2]; p[3]  = 0;
+        p[4]  = mat3[3]; p[5]  = mat3[4]; p[6]  = mat3[5]; p[7]  = 0;
+        p[8]  = mat3[6]; p[9]  = mat3[7]; p[10] = mat3[8]; p[11] = 0;
+        // Mark dirty so engine's UpdateDownwardPass recomputes m_kWorld.
+        std::uint64_t* flags = reinterpret_cast<std::uint64_t*>(
+            reinterpret_cast<char*>(bone) + NIAV_FLAGS_OFF);
+        *flags |= 0x2;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Shepperd's method: row-major 3x3 → quaternion (qx, qy, qz, qw).
+void mat3_to_quat(const float m[9], float q[4]) {
+    const float trace = m[0] + m[4] + m[8];
+    float qw, qx, qy, qz;
+    if (trace > 0) {
+        const float s = 0.5f / std::sqrt(trace + 1.0f);
+        qw = 0.25f / s;
+        qx = (m[7] - m[5]) * s;
+        qy = (m[2] - m[6]) * s;
+        qz = (m[3] - m[1]) * s;
+    } else if (m[0] > m[4] && m[0] > m[8]) {
+        const float s = 2.0f * std::sqrt(1.0f + m[0] - m[4] - m[8]);
+        qw = (m[7] - m[5]) / s;
+        qx = 0.25f * s;
+        qy = (m[1] + m[3]) / s;
+        qz = (m[2] + m[6]) / s;
+    } else if (m[4] > m[8]) {
+        const float s = 2.0f * std::sqrt(1.0f + m[4] - m[0] - m[8]);
+        qw = (m[2] - m[6]) / s;
+        qx = (m[1] + m[3]) / s;
+        qy = 0.25f * s;
+        qz = (m[5] + m[7]) / s;
+    } else {
+        const float s = 2.0f * std::sqrt(1.0f + m[8] - m[0] - m[4]);
+        qw = (m[3] - m[1]) / s;
+        qx = (m[2] + m[6]) / s;
+        qy = (m[5] + m[7]) / s;
+        qz = 0.25f * s;
+    }
+    q[0] = qx; q[1] = qy; q[2] = qz; q[3] = qw;
+}
+
+// Quaternion (qx, qy, qz, qw) → row-major 3x3 rotation.
+void quat_to_mat3(const float q[4], float m[9]) {
+    const float qx = q[0], qy = q[1], qz = q[2], qw = q[3];
+    const float xx = qx*qx, yy = qy*qy, zz = qz*qz;
+    const float xy = qx*qy, xz = qx*qz, yz = qy*qz;
+    const float wx = qw*qx, wy = qw*qy, wz = qw*qz;
+    m[0] = 1.0f - 2.0f*(yy + zz);
+    m[1] = 2.0f*(xy - wz);
+    m[2] = 2.0f*(xz + wy);
+    m[3] = 2.0f*(xy + wz);
+    m[4] = 1.0f - 2.0f*(xx + zz);
+    m[5] = 2.0f*(yz - wx);
+    m[6] = 2.0f*(xz - wy);
+    m[7] = 2.0f*(yz + wx);
+    m[8] = 1.0f - 2.0f*(xx + yy);
+}
+
+// ---- M8P3.15 net thread → main thread pose handoff -----------------
+struct RemotePoseSlot {
+    bool                         has_data = false;
+    std::uint64_t                ts_ms = 0;
+    std::uint16_t                bone_count = 0;
+    fw::net::PoseBoneEntry       quats[fw::net::MAX_POSE_BONES] = {};
+};
+std::mutex      g_remote_pose_mutex;
+RemotePoseSlot  g_remote_pose;
+
+// Canonical bone list globals are defined at file scope (above) so
+// inject_body_nif (different anon ns) can populate them.
+
+// Strip "_skin" suffix in-place (returns reference into orig storage).
+// Returns true if a suffix was stripped, false if no change.
+bool strip_skin_suffix(std::string& s) {
+    static const std::string SFX = "_skin";
+    if (s.size() >= SFX.size()
+        && s.compare(s.size() - SFX.size(), SFX.size(), SFX) == 0) {
+        s.resize(s.size() - SFX.size());
+        return true;
+    }
+    return false;
+}
+
+// SEH-safe helper for engine call. C++ objects forbidden by C2712.
+void update_downward_safe(void* root) {
+    std::uint8_t param[0x40] = {};
+    *reinterpret_cast<std::uint32_t*>(param + 0x10) = 1;
+    __try { g_r.update_downward(root, param); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+// (Note: populate_canonical_from_ghost_skin_native lives at fw::native:: scope
+//  — see top of file. inject_body_nif calls it post-swap.)
+
+// Find the local player's 3D body (rendered character we control).
+// Same path as bone_copy::copy_bones_once: PlayerSingleton +0xF0 +0x08.
+void* find_local_player_3d(std::uintptr_t base) {
+    void* player = nullptr;
+    __try {
+        player = *reinterpret_cast<void**>(base + PLAYER_SINGLETON_RVA);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+    if (!player) return nullptr;
+    void* p_3d = nullptr;
+    __try {
+        char* pb = reinterpret_cast<char*>(player);
+        void* f0 = *reinterpret_cast<void**>(pb + 0xF0);
+        if (f0) {
+            p_3d = *reinterpret_cast<void**>(
+                reinterpret_cast<char*>(f0) + 8);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+    return p_3d;
+}
+
+}  // anonymous namespace
+// ----- end M8P3.15 helpers --------------------------------------------
+
+void on_bone_tick_message() {
+    // Force-disable the legacy diag log path. Without this, walk_player_nested
+    // dumps ~500 lines per call × 20Hz = 10k lines/sec on FILE I/O. That
+    // starves the FO4 main thread and freezes both clients.
+    bone_copy::g_verbose_player_walk = false;
+
+    static int s_decim = 0;
+    const bool log_now = (++s_decim >= 60);  // ~3-second log decimation
+    if (log_now) s_decim = 0;
+
+    // M8P3.15: only broadcast every Nth tick (5Hz instead of 20Hz)
+    // to keep CPU + bandwidth modest. 10 Hz is plenty for animation
+    // replication; clients interpolate.
+    static int s_broadcast_decim = 0;
+    const bool broadcast_now = (++s_broadcast_decim >= 4);
+    if (broadcast_now) s_broadcast_decim = 0;
+
+    void* body = g_injected_cube.load(std::memory_order_acquire);
+    if (!body) {
+        if (log_now) FW_LOG("[bone-test] no ghost body");
+        return;
+    }
+
+    // === LEGACY test cycle (DISABLED in M8P3.15 — replaced by net pose) ==
+    // The sin oscillation on LArm_ForeArm1_skin used the world-override
+    // hook. With M8P3.15 we drive ALL bones from the remote peer's
+    // m_kLocal via direct write (engine recomputes m_kWorld). The two
+    // mechanisms would fight on this single bone. Re-enable only if
+    // diagnosing the world-override hook in isolation.
+    //
+    // {
+    //     void* body_skin_for_test = fw::native::skin_rebind::find_body_skin_instance(body);
+    //     void* test_bone = body_skin_for_test
+    //         ? fw::native::skin_rebind::find_bone_in_bones_pri(body_skin_for_test,
+    //                                                           "LArm_ForeArm1_skin")
+    //         : nullptr;
+    //     if (test_bone) {
+    //         static const ULONGLONG t0 = GetTickCount64();
+    //         const float t = static_cast<float>(GetTickCount64() - t0) * 0.001f;
+    //         const float ay = std::sin(t * 2.0f) * 0.5f;
+    //         const float cy = std::cos(ay), sy = std::sin(ay);
+    //         float mat[16] = {
+    //             cy, 0, sy, 0,  0, 1, 0, 0,  -sy, 0, cy, 0,  0, 0, 0, 1
+    //         };
+    //         fw::native::skin_rebind::set_bone_world(test_bone, mat);
+    //     }
+    // }
+
+    // === M8P3.15 broadcast LOCAL PC bones to peers =======================
+    if (!broadcast_now) return;  // skip 3 of every 4 ticks → ~5Hz
+
+    // Snapshot canonical bone list (populated at body inject).
+    std::vector<std::string> canonical;
+    {
+        std::lock_guard<std::mutex> lk(g_canonical_mutex);
+        canonical = g_canonical_names;
+    }
+    if (canonical.empty()) {
+        if (log_now) FW_DBG("[pose-tx] canonical list not yet populated");
+        return;
+    }
+
+    const HMODULE game = GetModuleHandleW(L"Fallout4.exe");
+    if (!game) return;
+    const auto base = reinterpret_cast<std::uintptr_t>(game);
+
+    void* player_3d = find_local_player_3d(base);
+    if (!player_3d) {
+        if (log_now) FW_DBG("[pose-tx] local player_3d not yet ready");
+        return;
+    }
+
+    // Walk local PC tree once → name → bone map.
+    using BoneMap = std::unordered_map<std::string, void*>;
+    BoneMap player_map;
+    bone_copy::walk_player_nested(player_3d, 0, player_map);
+    if (player_map.empty()) {
+        if (log_now) FW_DBG("[pose-tx] player tree empty");
+        return;
+    }
+
+    // For each canonical JOINT name, look up exactly in local PC tree.
+    // Joint names match identically (skel.nif schema is the same on
+    // both clients). No _skin suffix-stripping needed: canonical only
+    // has joint names (those entries were filtered out at populate).
+    const std::size_t n = std::min<std::size_t>(
+        canonical.size(),
+        static_cast<std::size_t>(fw::net::MAX_POSE_BONES));
+
+    fw::net::PoseBoneEntry quats[fw::net::MAX_POSE_BONES] = {};
+    int hits = 0, missing = 0;
+    static bool s_diag_dumped = false;
+    std::string miss_sample;  // first few names that don't match (diag once)
+    for (std::size_t i = 0; i < n; ++i) {
+        auto it = player_map.find(canonical[i]);
+        if (it == player_map.end()) {
+            quats[i].qx = 0; quats[i].qy = 0; quats[i].qz = 0; quats[i].qw = 1;
+            ++missing;
+            if (!s_diag_dumped && miss_sample.size() < 800) {
+                if (!miss_sample.empty()) miss_sample += ", ";
+                miss_sample += canonical[i];
+            }
+            continue;
+        }
+        float m3[9];
+        if (!read_local_3x3(it->second, m3)) {
+            quats[i].qx = 0; quats[i].qy = 0; quats[i].qz = 0; quats[i].qw = 1;
+            continue;
+        }
+        float q[4];
+        mat3_to_quat(m3, q);
+        quats[i].qx = q[0]; quats[i].qy = q[1];
+        quats[i].qz = q[2]; quats[i].qw = q[3];
+        ++hits;
+    }
+    if (!s_diag_dumped && missing > 0) {
+        s_diag_dumped = true;
+        FW_LOG("[pose-tx-diag] FIRST RUN: %zu canonical, matched=%d, "
+               "missing names: %s",
+               n, hits, miss_sample.c_str());
+        // Also dump first 30 player_map keys so we see what's actually there.
+        std::string pm_sample;
+        int dumped = 0;
+        for (auto& kv : player_map) {
+            if (dumped >= 30) break;
+            if (!pm_sample.empty()) pm_sample += ", ";
+            pm_sample += kv.first;
+            ++dumped;
+        }
+        FW_LOG("[pose-tx-diag] player_map first 30 (of %zu): %s",
+               player_map.size(), pm_sample.c_str());
+    }
+
+    using namespace std::chrono;
+    const std::uint64_t now_ms = duration_cast<milliseconds>(
+        system_clock::now().time_since_epoch()).count();
+    fw::net::client().enqueue_pose_state(now_ms, quats, n);
+
+    if (log_now) {
+        FW_LOG("[pose-tx] sent %zu joints (matched=%d missing=%d)",
+               n, hits, missing);
+    }
+}
+
+// ---- M8P3.15 net→main pose handoff impl ------------------------------
+
+void store_remote_pose(std::uint64_t ts_ms,
+                       const void* quats_buf,
+                       std::size_t bone_count)
+{
+    if (!quats_buf) bone_count = 0;
+    if (bone_count > fw::net::MAX_POSE_BONES) bone_count = fw::net::MAX_POSE_BONES;
+    {
+        std::lock_guard<std::mutex> lk(g_remote_pose_mutex);
+        g_remote_pose.has_data   = true;
+        g_remote_pose.ts_ms      = ts_ms;
+        g_remote_pose.bone_count = static_cast<std::uint16_t>(bone_count);
+        if (bone_count > 0) {
+            std::memcpy(g_remote_pose.quats, quats_buf,
+                        bone_count * sizeof(fw::net::PoseBoneEntry));
+        }
+    }
+    // Wake main thread.
+    const HWND h = fw::dispatch::get_target_hwnd();
+    if (h) PostMessageW(h, FW_MSG_STRADAB_POSE_APPLY, 0, 0);
+}
+
+void on_pose_apply_message() {
+    void* ghost = g_injected_cube.load(std::memory_order_acquire);
+    if (!ghost) return;
+
+    // Snapshot pose under lock.
+    fw::net::PoseBoneEntry quats[fw::net::MAX_POSE_BONES];
+    std::uint16_t n = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_remote_pose_mutex);
+        if (!g_remote_pose.has_data || g_remote_pose.bone_count == 0) return;
+        n = g_remote_pose.bone_count;
+        std::memcpy(quats, g_remote_pose.quats,
+                    n * sizeof(fw::net::PoseBoneEntry));
+    }
+
+    // Snapshot ghost bone pointers (cached from skin instance at inject).
+    // These are the SAME 58 entries the GPU reads via bones_pri after
+    // our re-cache. Index i in received quats[] aligns directly with
+    // index i in g_ghost_bone_ptrs[] because both sides built the
+    // canonical list from a body-NIF skin instance with identical layout.
+    std::vector<void*> ptrs;
+    {
+        std::lock_guard<std::mutex> lk(g_canonical_mutex);
+        ptrs = g_ghost_bone_ptrs;
+    }
+    if (ptrs.empty()) return;
+
+    const std::size_t apply_n = std::min<std::size_t>(n, ptrs.size());
+    int wrote = 0;
+    for (std::size_t i = 0; i < apply_n; ++i) {
+        void* bone = ptrs[i];
+        if (!bone) continue;
+        const float qx = quats[i].qx, qy = quats[i].qy,
+                    qz = quats[i].qz, qw = quats[i].qw;
+        // Defensive: skip degenerate quaternions (near zero-length).
+        const float ml = qx*qx + qy*qy + qz*qz + qw*qw;
+        if (ml < 0.5f) continue;
+        float q[4] = { qx, qy, qz, qw };
+        float m3[9];
+        quat_to_mat3(q, m3);
+        if (write_local_3x3(bone, m3)) wrote++;
+    }
+
+    // Trigger world recompute on the ghost subtree (SEH-isolated).
+    update_downward_safe(ghost);
+
+    static int s_decim = 0;
+    if (++s_decim >= 30) {
+        s_decim = 0;
+        FW_LOG("[pose-rx] applied %d/%zu bones to ghost=%p",
+               wrote, apply_n, ghost);
+    }
+}
+
 
 // Timer-thread worker: 20Hz posts of FW_MSG_STRADAB_BONE_TICK to the main
 // window once the ghost body is injected. Joins on shutdown.
@@ -3231,7 +3851,7 @@ void bone_tick_worker() {
     FW_LOG("[bonecopy] tick worker started (20Hz)");
     while (!g_bone_tick_stop.load(std::memory_order_acquire)) {
         // Sleep first, so we don't race with injection. 50ms = 20Hz.
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));  // 20Hz idle
         if (g_bone_tick_stop.load(std::memory_order_acquire)) break;
 
         if (!g_injected_cube.load(std::memory_order_acquire)) continue;

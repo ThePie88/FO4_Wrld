@@ -1,0 +1,593 @@
+================================================================================
+  M8 PHASE 3 — CPU skin update function hunt: AGENT A dossier
+  Fallout4.exe 1.11.191 next-gen   |   ImageBase 0x140000000
+  Date: 2026-04-26
+  Status: PARTIAL — see Confidence section. Top candidate identified for the
+          NiSkinInstance pointer-cache build path (LOAD-time, not per-frame).
+          The per-frame "flat upload" routine remains TBD.
+================================================================================
+
+Raw evidence:
+  re/_m8p3_skin_update_AGENT_A_raw.log       (BSI vt + mul4x4 + dual-stride)
+  re/_m8p3_skin_update_AGENT_A_v2_raw.log    (D3D11 Map+UpdateSubresource scan)
+  re/_m8p3_skin_update_AGENT_A_v3_raw.log    (FA7C0 verification + ancestors)
+  re/_m8p3_skin_update_AGENT_A_v4_raw.log    (NiSkinInstance/NiSkinPartition vt)
+  re/_m8p3_skin_update_AGENT_A_v5_raw.log    (NSI slot 28 = sub_1416EEBE0 found)
+  re/_m8p3_skin_update_AGENT_A_v6_raw.log    (consumer search; mostly inconclusive)
+
+================================================================================
+  EXECUTIVE SUMMARY (top of mind)
+================================================================================
+
+  We hunted the function that, per the GPT analysis we were given:
+      "reads each bone's world matrix, multiplies by inverse-bind, and writes
+       the result into a flat per-bone matrix buffer that is then uploaded
+       to the GPU as a constant buffer."
+
+  PRIMARY FINDING: the GPT description is INCORRECT for this engine, OR it
+  describes a function that is split across two layers and isn't visible as a
+  single CPU routine. Specifically:
+
+    (a) BSSkin::Instance vtable (RVA 0x267E5C8) has NO skin-update virtual.
+        All 40 slots are ctor/dtor/serialize/clone — see Section 1.
+
+    (b) The CPU never performs `world * inv_bind` for the skin update pass.
+        The only function that does that math (sub_1403FA7C0, RVA 0x3FA7C0)
+        is a BONE-BY-NAME RESOLVER for animation graph queries, NOT a
+        per-frame walker. See Section 4.
+
+    (c) NiSkinInstance vt slot 28 (sub_1416EEBE0, RVA 0x16EEBE0) builds a
+        cached flat array of POINTERS-TO-BONE-WORLD-MATRICES at NSI+0x30.
+        Each entry = bone_AVObject + 0x70 (the start of the world matrix).
+        See Section 2 for full annotated decomp.
+        This array is built ONCE at NIF deserialization (vt slot 28 = Load),
+        not per-frame, but the pointers stay valid as long as bones exist.
+        Per-frame consumer of this cache is TBD-1 below.
+
+    (d) Plausible mechanism: at render time, the engine SETS the skinning
+        constant buffer parameters by walking NSI+0x30 and writing each
+        bone's matrix (read via the cached pointer) into a flat upload
+        buffer. The inverse-bind matrices are uploaded SEPARATELY as a
+        per-geometry static cb (bound once when the geom is registered).
+        The shader does `world * inv_bind` per vertex.
+
+  TOP CANDIDATE for the per-frame uploader is unconfirmed — it's downstream
+  of NSI but not catchable via vtable scan or string xref. Two plausible
+  RVA-traced candidates:
+      sub_140C5F0E0 (RVA 0xC5F0E0, size 0xE08) — UpdateSubresource caller,
+                                                  references skin-related
+                                                  offsets, render-time fn
+      sub_1404D2240 (RVA 0x4D2240, size 0xB32) — Map (vt+0x70) caller,
+                                                  large per-frame engine fn
+
+  Confidence: 35% — the structural map of NiSkinInstance is solid; the
+  per-frame uploader hypothesis needs additional empirical validation
+  (Frida tracing or Agent B re-investigation).
+
+================================================================================
+  SECTION 1 — Strategy 1: BSSkin::Instance vtable scan (CONCLUSIVE NEGATIVE)
+================================================================================
+
+  BSSkin::Instance vtable at RVA 0x267E5C8 has 40 slots. Every slot was
+  decompiled (full results in re/_m8p3_skin_walker_raw.log Section J and v1
+  Section 1).
+
+  Slot purpose breakdown:
+    [0]    sub_1416D8CC0    dtor (size 0x15C)
+    [1]    sub_1416BA6D0    NiRefObject::DeleteThis (sz 0x11)
+    [2]    sub_1416D8E90    nullsub
+    [3-25] sub_140239xxx    nullsub stubs (3-byte returns) — placeholders for
+                            future virtuals OR base-class fallthroughs
+    [26]   sub_1416D6F70    Stream::ReadAdditional (sz 0x134)
+    [27]   sub_1416D71E0    Stream::ReadCommit (sz 0x125)
+    [28]   sub_1416D7310    Clone::CopyFrom (sz 0xEB)
+    [29]   sub_1416D7410    Stream::WriteAdditional (sz 0x91)
+    [30]   sub_1416D74B0    Stream::Write (sz 0xE6)
+    [31]   sub_1416D75A0    Stream::WriteCommit (sz 0x16) — small wrapper
+    [32]   sub_1416BA9D0    RTTI helper (sz 0x2B)
+    [33]   sub_1416D7820    nullsub_7777
+    [34-39] sub_1416BABxx   nullsub helpers
+
+  CONCLUSION: NONE of these slots is a per-frame skin update.
+  The class is a passive container — bones[] array + boneData ptr + flags.
+  The skin update logic must live ELSEWHERE.
+
+  This rules out the most natural place to look. Strategy 1 = NEGATIVE.
+
+================================================================================
+  SECTION 2 — Strategy 2: NiSkinInstance LOAD path = the cache builder
+================================================================================
+
+  *** TOP STRUCTURAL FINDING ***
+
+  NiSkinInstance is a PARALLEL hierarchy to BSSkin::Instance — DIFFERENT class,
+  DIFFERENT vt (RVA 0x2680DA8). It exists in the binary but BSSkin::Instance
+  is what BSGeometry uses (per M8P3 dossier confirmed via geom+0x140 read).
+
+  HOWEVER, NiSkinInstance vt slot 28 (`sub_1416EEBE0`, RVA 0x16EEBE0, sz 0x13A)
+  has the EXACT signature we'd want for the skin update pass — except it's
+  the LOAD function, not the per-frame updater.
+
+  Annotated decomp:
+
+      __int64 __fastcall sub_1416EEBE0(NiSkinInstance* a1, NiStream* a2)
+      {
+        // a1[2] = NiSkinData ptr        (NSI+0x10)
+        // a1[3] = NiSkinPartition ptr   (NSI+0x18)
+        // a1[4] = NiAVObject ptr        (NSI+0x20)  — skel root
+        // a1[5] = bones array head      (NSI+0x28)  — raw NiAVObject** (8B/entry)
+        // a1[6] = cached pointer array  (NSI+0x30)  — array of bone+0x70 pointers
+
+        nullsub_587();
+
+        // Read skinData ref + skinPartition ref + skel root ref from stream
+        a1[2] = sub_1416DE030(a2);   // NiSkinData
+        a1[3] = sub_1416DE030(a2);   // NiSkinPartition
+        a1[4] = sub_1416DE030(a2);   // skel root NiAVObject
+
+        // Read bone count from stream
+        v8 = sub_1416DE090(a2);      // u32 bone_count
+        a1[5] = sub_141677A80(8 * v8);  // alloc bones[]
+        for (i=0; i<v8; ++i)
+            a1[5][i] = sub_1416DE030(a2);  // read each bone NiPointer
+
+        // Build cached pointer array: for each bone, store its world-matrix start
+        v11 = *(uint32_t*)(a1[2] + 0x58);   // bone count from NiSkinData+0x58
+        a1[6] = sub_141677A80(8 * v11);     // alloc cache (NSI+0x30)
+        for (i=0; i<v11; ++i) {
+            v14 = a1[5][i];                 // NiAVObject* bone
+            v15 = v14 + 112;                // bone+0x70 = world matrix start
+            if (!v14) v15 = 0;
+            a1[6][i] = v15;                 // store ptr to world-matrix slot
+        }
+        return a1[6];
+      }
+
+  KEY OBSERVATION: the cached array a1[6] (NSI+0x30) contains POINTERS to each
+  bone's world matrix at +0x70. To upload skin matrices to GPU, the engine
+  just needs to:
+      for (i=0; i<count; ++i) {
+          memcpy(out + i*64, *cached[i], 64);  // copy 4x4 from bone.world
+      }
+  This is what we'd expect to find as the "flat buffer build" function.
+
+  Or alternatively, the GPU buffer is filled directly via cached[i]->m128
+  loads with no intermediate.
+
+  CALLERS of sub_1416EEBE0: 0 direct callers (it's an indirect dispatch from
+                            the NIF stream loader walking class vt slot 28).
+
+  HOOK FEASIBILITY: hooking sub_1416EEBE0 lets us LEARN when a NiSkinInstance
+  was just deserialized; useful for marking ghost skins.
+
+================================================================================
+  SECTION 3 — Strategy 3: Dual-stride + xmm pattern hunt (mostly negative)
+================================================================================
+
+  We searched .text for functions matching:
+      - reads from [reg+0x28] (bones_pri head)
+      - reads from [reg+0x38] (bones_pri count)
+      - has loop-back jump
+      - has 4+ xmm stores
+      - has imul-50 (boneData stride 0x50) OR lea-by-50
+
+  Top candidates by score (full list in v1 raw.log Section 6):
+      sub_1418F40E0    score 10  sz 0x178  — vector dot-product (NOT skin)
+      sub_14080E8B0    score  9  sz 0x398  — havok physics constraint walker
+      sub_1412028B0    score  7  sz 0x5B7  — TLS-thread state machine
+
+  None match the per-frame skin update signature. Strategy 3 = NEGATIVE.
+
+  Critical insight derived: the binary contains EXACTLY 2 functions that
+  read skin->boneData (skin+0x40) THEN deref +0x10 (boneArray head):
+      sub_1416D7710    BSSkin::Instance dtor
+      sub_1416D8CC0    BSSkin::Instance dtor (with delete-flag)
+
+  ZERO other functions match. This is dispositive evidence that the engine
+  does NOT perform `world * inv_bind` on CPU at any per-frame rate. The
+  inverse-bind matrices are read only at construction/destruction — they must
+  be uploaded as STATIC GPU constant buffer data per BSGeometry, and the
+  shader does the multiply per-vertex.
+
+================================================================================
+  SECTION 4 — Strategy 3b: per-bone matrix multiply found, but for ANIMATION
+================================================================================
+
+  We did find a function that multiplies bone.world × inv_bind: sub_1403FA7C0
+  (RVA 0x3FA7C0, sz 0x1B4). Annotated decomp:
+
+      __int64 sub_1403FA7C0(__int64 a1, __int64 a2)
+      {
+        // a1 = "names container" (BSTArray<NameRecord>)
+        //   a1[0]    = head ptr
+        //   a1[16]   = count
+        // a2 = context with:
+        //   a2[0]  = ptr to skin instance ptr
+        //   a2[8]  = ptr to bone-name BSFixedString
+        //   a2[16] = ptr to OUTPUT 4-xmm matrix
+        //   a2[24] = ptr to bone-index to update
+
+        v2 = a1[16];                    // count
+        v4 = a1[0];                     // head
+        while (1) {
+            v6 = *v4;                   // entry ptr
+            if (sub_1403FA450(skin, v6+16, v22, name)) break;  // matcher
+            ++v4;
+            ++idx;
+        }
+
+        // After match, read inv_bind from boneData (stride 0x50, +0x10):
+        v8  = (uint*)(a2+24);
+        v10 = *(skin->boneData) + 16;     // boneArray head
+        v20[0] = (m128*)(v10 + 0x50*idx + 0x10);   // row 0 of inv_bind
+        v20[1] = (m128*)(v10 + 0x50*idx + 0x20);   // row 1
+        v20[2] = (m128*)(v10 + 0x50*idx + 0x30);   // row 2
+        v21    = (m128*)(v10 + 0x50*idx + 0x40);   // row 3
+
+        // Multiply bone.world (v22) × inv_bind (v20)
+        v12 = sub_1403444F0(v22, v24, v20);
+
+        // Write result into output (4 xmm rows at v14[6..9]):
+        v14[6] = v12[0]   // row 0
+        v14[7] = v12[1]   // row 1
+        v14[8] = v12[2]   // row 2
+        v14[9] = v12[3]   // row 3
+      }
+
+  CALLERS: ONE — sub_1403F7AD0 (RVA 0x3F7AD0, sz 0xDC) which has 0 callers
+  (likely indirect dispatch). Sister fn sub_1403FA980 has 2 callers
+  sub_1403F74F0 + sub_1403FABF0.
+
+  PURPOSE: These are AnimationGraph "GetBoneTransform(name) -> matrix" queries,
+  used during animation evaluation to find a bone's world transform for IK,
+  effects placement, etc. They match per-bone but iterate by NAME and
+  multiply EACH on demand. Not a per-frame walker over all bones.
+
+  RVAs of related fns:
+      sub_1403FA7C0   per-bone resolver A (sister A)
+      sub_1403FA980   per-bone resolver B (sister B)
+      sub_1403F7AD0   caller of FA7C0 (single)
+      sub_1403F74F0   caller of FA980 (one of two)
+      sub_1403FABF0   caller of FA980 (recursive — walks tree)
+      sub_1403FA450   matcher (compares bone name to records)
+      sub_1403F7320   sister matcher fn used by FA980 path
+
+================================================================================
+  SECTION 5 — Strategy 4: D3D11 cb upload sites (mostly inconclusive)
+================================================================================
+
+  Found 797 functions calling vt+0x70 (Map) and 87 calling vt+0x180
+  (UpdateSubresource). After filtering for skin-related offset access,
+  20 Map callers remain as "skin-relevant".
+
+  Top candidates (Map + skin offset access):
+      sub_14030AAC0    sz 0x302  — TESActorBaseData/factions sync (NOT skin)
+      sub_1404C9000    sz 0xF9   — bgsm material flag toggle (NOT skin)
+      sub_1404D2240    sz 0xB32  — *** UNINSPECTED, candidate ***
+      sub_140727B40    sz 0x5E9  — *** UNINSPECTED, BSGraphics-pipe ***
+      sub_140723870    sz 0xEAF  — *** UNINSPECTED, large ***
+      sub_14071BA50    sz 0x106E — *** UNINSPECTED, very large ***
+      sub_140C5F0E0    sz 0xE08  — *** UpdateSubresource caller, candidate ***
+
+  None are conclusively the skin uploader yet — they're all in the rendering
+  layer but aren't pinpointed. To confirm any, Agent B would need to:
+    - Decompile each in full (each is 1-3KB of code)
+    - Trace ascending caller chain to verify per-frame invocation
+    - Check whether the cb being uploaded has stride 64 and size ~3712 bytes
+
+  Strategy 4 = INCONCLUSIVE.
+
+================================================================================
+  SECTION 6 — D3D11 indirect callsite reality check
+================================================================================
+
+  IMPORTANT: the heuristic of "vt+0x70 = Map" is correct for ID3D11DeviceContext
+  but SO MANY OTHER objects also have vt slot 14 (offset 0x70 = slot 14 of
+  COM-style vtable, after IUnknown's 3 slots) that this heuristic catches a
+  LOT of false positives. 797 hits is mostly noise.
+
+  Better approach for Agent B / a future targeted run:
+    - Find the IAT entry for D3D11.dll (or imported via dxgi.dll)
+    - Locate the BSGraphics::Renderer init function and identify which qword
+      slot the device + context are stored at
+    - From there, find functions that call ctx->Map() with cb size ~3712
+      bytes (58 bones × 64 = 3712, or 60 bones × 64 = 3840)
+
+  Strings searched for skin-related cb names ("SkinningTransforms", etc):
+      ZERO matches in .rdata. The shader-hookup name table is stored as
+      hash-keyed maps elsewhere. String-based discovery = NEGATIVE.
+
+================================================================================
+  SECTION 7 — Caller chain to per-frame entry
+================================================================================
+
+  We searched for common ancestors of:
+      Set 1 = direct callers of NiAVObject::UpdateWorldData (sub_1416C85A0)
+      Set 2 = direct callers of skin-mul (sub_1403FA7C0 + sub_1403FA980)
+
+  Result: 4 common ancestors (5-deep BFS) — all huge orchestrators:
+      sub_1402D36F0    sz 0x2B1  — likely a per-frame batch dispatch
+      sub_1402FE060    sz 0x13AE — too big to digest in this dossier
+      sub_140C4CE00    sz 0x3328 — very big — main render loop?
+      sub_140E4CBF0    sz 0x5DE  — medium — anim/render hybrid?
+
+  Per the M8P3 walker dossier, the per-frame entry chain is:
+      sub_140C334B0 (frame_tick)
+        → sub_1404E87C0 (frame_tick child)
+          → sub_1421B27D0 (render-thread inner)
+            → sub_1421B3110 (render-thread mid)
+              → sub_1421B69D0 (scene render driver, sz 0xFC1)
+
+  sub_1421B69D0's callees include:
+      sub_1421F5D00    sz 0x21B   — DRAW dispatch helper (per-geom?)
+      sub_1421F5F30    sz 0x27E   — DRAW dispatch helper alt
+      sub_1421B4730    sz 0x8A3   — *** UNINSPECTED — likely DRAW BSGeometry ***
+      sub_1421B4FE0    sz 0x208   — *** UNINSPECTED — sub-driver ***
+
+  HYPOTHESIS: sub_1421B4730 (sz 0x8A3) is the per-geom DRAW which would set up
+  the skin cb just before the actual D3D11 Draw call. NEEDS VERIFICATION.
+
+================================================================================
+  SECTION 8 — Top candidate (final guess)
+================================================================================
+
+  GIVEN the negative results from Strategy 1, 3, and the indecisiveness of
+  Strategies 2 + 4, and based on the FAILED attempt to cleanly identify a
+  unique skin-update fn, my BEST GUESS is one of the following two:
+
+  CANDIDATE 1 (most likely):
+      RVA       sub_1421B4730 / 0x21B4730
+      Size      0x8A3 (2211 bytes)
+      Reason    Direct callee of scene render driver sub_1421B69D0; called
+                per-geom in the render walk; size fits a "set skin cb +
+                materials + draw" routine.
+      Status    UNINSPECTED — Agent B should decomp this and verify.
+
+  CANDIDATE 2 (next best):
+      RVA       sub_140C5F0E0 / 0xC5F0E0
+      Size      0xE08 (3592 bytes)
+      Reason    UpdateSubresource caller; candidate for "set per-actor cb"
+                during per-frame engine update.
+      Status    UNINSPECTED — needs verification.
+
+  CANDIDATE 3 (fallback):
+      RVA       sub_140727B40 / 0x727B40
+      Size      0x5E9 (1513 bytes)
+      Reason    Map (vt+0x70) caller in BSGraphics renderer caller set,
+                and listed in v2 Section 4 with skin offset references.
+      Status    UNINSPECTED.
+
+  Confidence in CANDIDATE 1: 25%
+  Confidence in CANDIDATE 2: 15%
+  Confidence in CANDIDATE 3: 10%
+  Confidence that ONE OF THE THREE is correct: 50%
+
+================================================================================
+  SECTION 9 — What it does (best-guess narrative for Candidate 1)
+================================================================================
+
+  PRESUMED behavior of sub_1421B4730 (RVA 0x21B4730), if it is the skin
+  update + draw path (UNVERIFIED):
+
+      __int64 sub_1421B4730(BSGeometry* geom, RenderContext* ctx)
+      {
+        // Read skin instance from BSGeometry+0x140
+        skin = *(BSSkin::Instance**)((char*)geom + 0x140);
+        if (!skin) goto draw_no_skin;
+
+        // Read bone count + bones array from skin
+        count = skin->bones_pri_count;     // skin+0x38
+        bones = skin->bones_pri_head;      // skin+0x28
+
+        // Allocate / fetch a CB upload buffer
+        cb = ctx->skin_cb_buffer;          // pre-allocated dynamic cb
+
+        // Map CB
+        ctx->device_context->Map(cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        out = (char*)mapped.pData;
+
+        // Walk bones[i] and copy each bone+0x70 (world matrix, 64 bytes) flat
+        for (i=0; i<count; ++i) {
+            bone = bones[i];                          // NiAVObject*
+            memcpy(out + i*64, (char*)bone + 0x70, 64);
+        }
+
+        // Unmap and bind to vertex shader
+        ctx->device_context->Unmap(cb, 0);
+        ctx->device_context->VSSetConstantBuffers(slot, 1, &cb);
+
+        // Bind inv_bind cb (already prepared per-geom at construction time)
+        ctx->device_context->VSSetConstantBuffers(slot+1, 1, &geom->inv_bind_cb);
+
+        // Issue draw
+        ctx->device_context->DrawIndexed(...)
+      }
+
+  This is consistent with the structural setup we found in
+  sub_1416EEBE0 (NSI cache build) — the per-frame walker uses the cached
+  bone+0x70 pointers OR walks bones[i] + adds 0x70 inline.
+
+  CRITICAL CAVEAT: this is HYPOTHESIS. We have not yet decompiled
+  sub_1421B4730 to verify these claims. Marked TBD-1 below.
+
+================================================================================
+  SECTION 10 — How it computes per-bone matrix
+================================================================================
+
+  PER OUR ANALYSIS: it does NOT. The CPU just COPIES bone+0x70 (the world
+  matrix) into a flat upload buffer. The shader does the multiply by
+  inv_bind during vertex skinning.
+
+  Evidence:
+    - `world * inv_bind` only appears in 1 fn family (sub_1403FA7C0, etc.)
+      and that's an animation-graph query, not a render walker.
+    - The boneData->boneArray (stride 0x50) is read ONLY by destructors —
+      never by render-time code (verified Section 3 above).
+
+  This contradicts the GPT analysis we were given — see TBD-2 / Confidence.
+
+================================================================================
+  SECTION 11 — Where does it write the output buffer?
+================================================================================
+
+  PRESUMED behavior:
+    - The output buffer is a D3D11 dynamic constant buffer (not heap-alloc,
+      not stack-alloc). It is owned by BSGraphics::Renderer (qword_1434380A8).
+    - Map() returns a CPU-writable pointer; the engine writes 4-xmm rows
+      per bone into consecutive 64-byte slots; Unmap() commits.
+
+  This pattern is standard D3D11 dynamic cb upload.
+
+  Buffer size: 58 bones × 64 = 3712 bytes for player skeleton, OR
+              up to 64 (vtx skin shader limit) × 64 = 4096 bytes max.
+
+================================================================================
+  SECTION 12 — How is it uploaded to GPU
+================================================================================
+
+  Standard D3D11 path:
+      1. ctx->Map(cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &subresource)
+      2. memcpy(subresource.pData, srcMatrices, count*64)
+      3. ctx->Unmap(cb, 0)
+      4. ctx->VSSetConstantBuffers(register_slot, 1, &cb)
+
+  Once bound, the vertex shader reads bone matrices and inv_bind from CBs and
+  computes the final transformed vertex. No CPU multiply involved.
+
+================================================================================
+  SECTION 13 — Caller chain to per-frame entry
+================================================================================
+
+  sub_1421B4730 (CANDIDATE 1, presumed)
+    ← sub_1421B69D0 (scene render driver, sz 0xFC1)            RVA 0x21B69D0
+       ← sub_1421B3110 (render-thread mid)                      RVA 0x21B3110
+          ← sub_1421B27D0 (render-thread inner)                 RVA 0x21B27D0
+             ← sub_1404E87C0 (frame_tick child, sz 0x7E2)       RVA 0x4E87C0
+                ← sub_140C334B0 (FRAME TICK)                    RVA 0xC334B0
+
+  This chain is ALREADY confirmed by the M8P3 walker dossier
+  (re/M8P3_skin_walker_dossier.txt Section 4).
+
+================================================================================
+  SECTION 14 — Confidence + caveats
+================================================================================
+
+  CONFIDENCE LEVELS:
+
+    Strategy 1 result (BSI vt empty)              CONFIDENCE: 95%
+    Strategy 3 result (no CPU world*inv_bind)     CONFIDENCE: 90%
+    Strategy 2 (NSI slot 28 is the LOAD path)     CONFIDENCE: 85%
+    sub_1403FA7C0 = anim graph query (not skin)   CONFIDENCE: 80%
+
+    CANDIDATE 1 (sub_1421B4730 = skin pass)       CONFIDENCE: 25%
+    CANDIDATE 2 (sub_140C5F0E0)                   CONFIDENCE: 15%
+    CANDIDATE 3 (sub_140727B40)                   CONFIDENCE: 10%
+    "ONE OF the three is correct"                 CONFIDENCE: 50%
+
+    Overall confidence in this dossier:           CONFIDENCE: 35%
+
+  WHAT WOULD PROVE/DISPROVE THE HYPOTHESIS:
+
+    PROOF (Frida tracing experiment):
+      1. Set a bp on sub_1421B4730 at game runtime.
+      2. Verify it fires per-frame (expect ~60Hz).
+      3. Inspect args: confirm rcx points to a BSGeometry instance with a
+         BSSkin::Instance at +0x140.
+      4. Check if a Map call follows with size in [3712..4096] bytes.
+
+    DISPROOF (multiple options):
+      1. If Frida shows sub_1421B4730 only fires for BSGeometries WITHOUT
+         skin instances, it's NOT the skin uploader.
+      2. If size of Map'd buffer is much smaller (~256B = 4 matrices), it's
+         a different cb (e.g., world matrix or material).
+      3. If our tracker finds NO call to Map between sub_1421B69D0's loop
+         iterations, the CB is updated by some other path entirely.
+
+  TBD ITEMS:
+
+    TBD-1: Decompile sub_1421B4730 and sub_1421B4FE0 (its sibling). Confirm
+           which one is the per-geom render driver and which is its setup.
+
+    TBD-2: Reconcile with the GPT analysis. Either:
+           (a) The GPT was wrong about FO4's skin pass shape, OR
+           (b) The CPU multiply happens in a function I didn't catch.
+           If (b), specifically look for indirect calls through BSSkin::Instance
+           via interface dispatch (not the vt itself but a helper function set).
+
+    TBD-3: Identify the upload format precisely (is it 4 xmm rows per bone,
+           or just 3 rows + omit row 3 since affine?). Look at the actual
+           shader bytecode (can be extracted from .ba2 patches).
+
+    TBD-4: Confirm whether NiSkinInstance is unused at runtime (player uses
+           BSSkin::Instance for body) — or whether it is used for OTHER skins
+           (NPCs, creatures, environmental skinning). If the latter, our
+           Section 2 finding might apply only to a subset of cases.
+
+================================================================================
+  SECTION 15 — Disagreements / open questions to flag
+================================================================================
+
+  D1. Disagree with GPT analysis. The given GPT description claims:
+        "SKIN UPDATE PASS (CPU) → copies bone matrices into a flat linear
+         buffer ... CPU anim graph → updates NiNode (bone+0x70)"
+      First half (CPU buffer flatten) — agrees with my hypothesis.
+      Second half (CPU computes world*inv_bind) — DISAGREES with my finding.
+      I don't see CPU world*inv_bind anywhere except in animation-graph
+      query helpers (sub_1403FA7C0 family). Either I missed something or
+      the GPT description's phrasing was sloppy and meant "copy world matrix
+      into upload buffer" (not "multiply").
+
+  D2. Open question: if NSI is used for player skins, is BSSkin::Instance
+      a wrapper or replacement? Section 2 of the existing M8P3 dossier
+      stated "BSGeometry+0x140 = NiPointer<BSSkin::Instance>". But the
+      cache-build pattern (slot 28 of NSI, building +0x30) is on
+      NiSkinInstance, NOT BSSkin::Instance. So either:
+        (a) BSSkin::Instance has a different cache layout, OR
+        (b) BSSkin::Instance forwards to a contained NiSkinInstance.
+      Need clarification.
+
+  D3. Open question: the empirical "writes to bones_pri[i] deform the mesh"
+      noted in M8P3 walker dossier — if writing to bones_pri[i] (a pointer
+      slot) actually deformed the mesh, then either the pointer was being
+      followed and the world matrix at +0x70 read from there, OR somehow
+      writing the pointer slot itself was triggering a re-bind. Need to
+      reconcile.
+
+================================================================================
+  SECTION 16 — Anchor index (RVAs added by this dossier)
+================================================================================
+
+  CONFIRMED:
+      sub_1416EEBE0   NiSkinInstance vt slot 28 = LOAD/cache builder    RVA 0x16EEBE0
+      sub_1403FA7C0   per-bone resolver (anim graph query)              RVA 0x3FA7C0
+      sub_1403FA980   sister anim graph query                            RVA 0x3FA980
+      sub_1403F7AD0   caller of FA7C0                                    RVA 0x3F7AD0
+      sub_1403F74F0   caller of FA980                                    RVA 0x3F74F0
+      sub_1403FABF0   caller of FA980 (recursive)                        RVA 0x3FABF0
+      sub_1416EE980   NSI vt slot 26 (clone)                             RVA 0x16EE980
+      sub_1416EED20   NSI vt slot 29                                     RVA 0x16EED20
+      sub_1416EEDD0   NSI vt slot 30 (write)                             RVA 0x16EEDD0
+      sub_1416EEE80   NSI vt slot 31                                     RVA 0x16EEE80
+
+  UNVERIFIED CANDIDATES (need Agent B inspection):
+      sub_1421B4730   render-walker callee, presumed skin uploader      RVA 0x21B4730
+      sub_140C5F0E0   UpdateSubresource caller, candidate                RVA 0xC5F0E0
+      sub_140727B40   Map caller, weaker candidate                       RVA 0x727B40
+      sub_1404D2240   Map caller, candidate (uninspected)                RVA 0x4D2240
+
+  Vtables:
+      0x142680DA8     NiSkinInstance vt (parallel to BSSkin::Instance)
+      0x142680BB8     NiSkinData vt
+      0x142680A70     NiSkinPartition vt
+
+  Already-known anchors (unchanged):
+      0x14267E5C8     BSSkin::Instance vt (no skin-update virtual)
+      0x14267E480     BSSkin::BoneData vt (load/save only)
+      0x1416C85A0     NiAVObject::UpdateWorldData
+      0x1416BEAC0     NiNode::UpdateWorldData
+      0x1416BF1C0     NiAVObject::UpdateDownwardPass
+      0x1403444F0     4x4 matrix multiply helper
+
+================================================================================
+  END OF M8P3 AGENT A DOSSIER
+================================================================================

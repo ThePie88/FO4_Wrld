@@ -24,6 +24,8 @@
 #pragma once
 
 #include <windows.h>
+#include <cstddef>
+#include <cstdint>
 
 namespace fw::native {
 
@@ -34,9 +36,11 @@ namespace fw::native {
 //   0x45 = FW_MSG_STRADAB_INJECT     (this module)
 //   0x46 = FW_MSG_STRADAB_POS_UPDATE (this module — M3)
 //   0x47 = FW_MSG_STRADAB_BONE_TICK  (this module — M7.b, 20Hz timer)
+//   0x48 = FW_MSG_STRADAB_POSE_APPLY (this module — M8P3.15 net pose)
 constexpr UINT FW_MSG_STRADAB_INJECT     = WM_APP + 0x45;
 constexpr UINT FW_MSG_STRADAB_POS_UPDATE = WM_APP + 0x46;
 constexpr UINT FW_MSG_STRADAB_BONE_TICK  = WM_APP + 0x47;
+constexpr UINT FW_MSG_STRADAB_POSE_APPLY = WM_APP + 0x48;
 
 // Arm a worker thread that, after delay_ms milliseconds, PostMessages
 // FW_MSG_STRADAB_INJECT to the main FO4 window. The WndProc subclass
@@ -71,6 +75,25 @@ void notify_remote_pos_changed();
 // bones. Must run on main thread (touches scene graph transforms +
 // calls UpdateDownwardPass). No-op if ghost not injected yet.
 void on_bone_tick_message();
+
+// M8P3.15: net thread → main thread handoff for received pose data.
+// store_remote_pose() is called from the net thread on POSE_BROADCAST
+// receive: stashes quats in a mutex-protected slot and posts
+// FW_MSG_STRADAB_POSE_APPLY to the FO4 main window.
+//
+// on_pose_apply_message() is called from WndProc when that message
+// arrives — it reads the slot, walks the ghost body's bones, and
+// writes received quaternions into each bone's m_kLocal rotation.
+// Engine's UpdateDownwardPass propagates to m_kWorld, hook overrides
+// already apply on top (no conflict).
+//
+// quats[i] order matches walk_player_nested traversal of the body
+// (sorted by bone name) — both sender and receiver walk identical
+// NIFs so the index correspondence is deterministic.
+void store_remote_pose(std::uint64_t ts_ms,
+                       const void* quats_buf,
+                       std::size_t bone_count);
+void on_pose_apply_message();
 
 // Called from DLL_PROCESS_DETACH. Stops the arm worker thread (if still
 // sleeping), then calls detach_debug_node(). Idempotent.

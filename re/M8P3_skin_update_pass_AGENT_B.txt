@@ -1,0 +1,570 @@
+================================================================================
+  M8P3 — CPU SKIN UPDATE PASS — AGENT B (INDEPENDENT VALIDATOR)
+  Fallout4.exe 1.11.191 next-gen   |   ImageBase 0x140000000
+  Date: 2026-04-26
+  Status: INCONCLUSIVE — see Section 1. The traditional "CPU skin matrix
+          builder" we looked for DOES NOT exist as a discrete function in
+          this engine. Skinning is GPU-only with per-bone world matrices
+          that are computed by the scenegraph and read individually by the
+          vertex shader. No bone palette is built by the CPU per frame.
+================================================================================
+
+Raw evidence:
+  re/_m8p3_AGENT_B_raw.log   (pass 1 — vtables, matmul callers, signature scan)
+  re/_m8p3_AGENT_B4_raw.log  (pass 4 — targeted decomp of every candidate)
+  re/_m8p3_AGENT_B5_raw.log  (pass 5 — render-side and BSGeometry slot decomps)
+
+Key inputs from prior passes (referenced but not re-derived):
+  re/M8P3_skin_instance_dossier.txt   (BSSkin::Instance layout +0x10/+0x28/+0x40)
+  re/M8P3_skin_walker_dossier.txt     (NiAVObject::UpdateWorldData chain)
+  re/render_pipeline_report.txt       (BSBatchRenderer / FlushBatch)
+  re/shader_cb_report.txt             (CB-Map_A/B + CB layouts)
+
+================================================================================
+  EXECUTIVE SUMMARY
+================================================================================
+
+  Top candidate RVA: NONE — INCONCLUSIVE.
+
+  The hypothesis "there is a CPU function that produces a flat per-bone matrix
+  buffer of `bone.world * inv_bind` and uploads it as a constant buffer" is
+  REFUTED by my independent investigation. Three lines of evidence converge:
+
+  (1) BSSkin::Instance vtable @ 0x14267E5C8 has only 3 code references in the
+      entire binary (ctor + 2 dtors). NO virtual dispatch happens on a skin
+      instance. There is no "skin->vt[N](skin)" call site that could be the
+      per-frame update entry.
+
+  (2) Wide pattern search across all functions that BOTH (a) read offsets
+      0x28/0x38/0x40 of a putative skin instance AND (b) call sub_1403444F0
+      (the 4x4 matmul helper) AND (c) contain a backwards branch (loop)
+      yielded ~21 functions. Decompiling each: ALL of them turn out to be
+      either (i) per-vertex CPU CLOTH/PHYSICS deformers (sub_141799080,
+      sub_141799700, sub_141790E20, sub_141787330, sub_1417876E0 etc. —
+      they iterate `*(WORD*)(a3+20)` vertex count and apply forces in 12-byte
+      vertex stride, NOT bones), (ii) per-bone NAME-LOOKUP utilities
+      (sub_1403FA7C0, sub_1403FA980, sub_141779DA0 — used by IK/animation to
+      query A SINGLE bone's skin matrix by name, not produce a palette),
+      (iii) projector-volume / effect-shader transforms (sub_1416DB760
+      switch with 6 projection types), or (iv) one-shot scenegraph helpers.
+
+  (3) The "PreviousBones" CB string at 0x142912438 only resolves to the
+      BSDFPrePassShaderVertexConstants::GetString jump table. The function
+      that ACTUALLY WRITES bone matrices into a CB slot is not a standalone
+      "compute palette" routine — it appears to be inlined inside the
+      BSBatchRenderer FlushBatch path or the per-shape shader binding code.
+      Evidence: I traced the CB-Map_A/B helpers (0x21A0680/0x21A05E0) — both
+      take a CB descriptor table arg and call ID3D11DeviceContext::Map
+      indirectly; they do NOT receive a BSSkin::Instance argument and do NOT
+      iterate bones. The bone matrix writes happen in CALLER code that has
+      already loaded the skin's bones into registers — but no such caller
+      that does a clean for-loop over skin->bones[] survives our rigorous
+      decomp inspection.
+
+  Strongest evidence: BSSkin::Instance vtable has no per-frame entry point.
+  All bone world matrices are written to (NiAVObject*)+0x70 by
+  sub_1416C85A0 (NiAVObject::UpdateWorldData) during scenegraph recursion.
+  The shader path reads each bone via the bones_pri[] array of NiPointer<NiAVObject>
+  pointers in skin+0x28; the bone matrices are read INDIVIDUALLY at draw time.
+
+  Where I have most uncertainty: the GPU CB write site. I located the CB-Map
+  helpers (0x21A0680 / 0x21A05E0, 35 + 32 callers) and the CB pointer globals
+  (0x3E5AE58, 0x3E5AE70, 0x3A0F400) but did NOT identify a single caller of
+  CB_Map_A/B that iterates bones. Three plausible explanations:
+    (a) bones are uploaded individually by vt[8]/SetupGeometry chain (refuted
+        — SetupGeometry @ 0x22342C0 is JUST a TLS-flag setter, no data
+        movement);
+    (b) the bone palette is computed JIT in shader bytecode by reading bone
+        world matrices via SRV (StructuredBuffer<float4x4>) rather than CB —
+        in which case a flat CB upload doesn't exist and the engine just
+        sets up a SRV pointing to the skin instance's bones array (most
+        likely given the architecture); or
+    (c) the bone palette writer IS a function I scanned but Hex-Rays
+        decompiled it as something else due to register-pressure heuristics.
+        Possible candidates: sub_140C87EA0 (size 1330, reads all 5 skin
+        offsets) and sub_1421FDA30 (size 10040, the BSBatchRenderer giant
+        dispatch). I could not fully rule these out.
+
+  Dossier path: re/M8P3_skin_update_pass_AGENT_B.txt
+
+================================================================================
+  SECTION 1 — Why this is INCONCLUSIVE (architectural argument)
+================================================================================
+
+  The strongest single piece of evidence: BSSkin::Instance vtable @ 0x14267E5C8
+  has only 3 references anywhere in .text:
+
+      ref @ 0x1416D7652 in sub_1416D7640  (default ctor)
+      ref @ 0x1416D7723 in sub_1416D7710  (dtor variant 1)
+      ref @ 0x1416D8CD8 in sub_1416D8CC0  (dtor variant 2)
+
+  Source: re/_m8p3_AGENT_B4_raw.log lines 3786-3791.
+
+  In a NetImmerse/Gamebryo-derived engine, a "per-frame skin update" virtual
+  would manifest as a vt slot 27/28/29-style override (the "Update" or
+  "OnUpdate" virtuals are usually in those positions). Since BSSkin::Instance
+  has NO vtable usages other than ctor/dtor, there is NO virtual dispatch
+  on a skin instance per frame. This rules out the "BSSkin::Instance::Update"
+  hypothesis.
+
+  The per-frame work on bones is done entirely by sub_1416C85A0
+  (NiAVObject::UpdateWorldData) which writes (NiAVObject*)+0x70 for every
+  scenegraph node. The skin instance just HOLDS A POINTER to each bone in
+  its bones_pri[] array (skin+0x28) — when the shader needs a bone matrix,
+  it dereferences the pointer to get the live bone NiAVObject and reads
+  its +0x70 world matrix.
+
+  THIS IS THE ARCHITECTURE: skinning is "pull-based" from the shader side,
+  not "push-based" from a CPU palette builder.
+
+  CONFIRMING SIGNAL: in the existing dossier M8P3_skin_walker (line 28-32):
+      "The engine does NOT directly write to bones_pri[i] entries. ...
+       The user's empirical 'writes to bones_pri[i] deform the mesh'
+       experiment thus actually writes to the bone's NiAVObject world
+       matrix slot via the pointer."
+
+  This was the design decision: don't materialize a palette, just rely on
+  pointer indirection through the bones_pri[] array.
+
+================================================================================
+  SECTION 2 — Candidates I tried and rejected (with disasm evidence)
+================================================================================
+
+  CANDIDATE A: sub_1403FA7C0 (RVA 0x3FA7C0, size 0x1B4 = 436 bytes)
+  ---------------------------------------------------------------
+  Signature: __int64 __fastcall sub_1403FA7C0(__int64 a1, __int64 a2)
+
+  This is the strongest "single-bone matrix builder" — a clean function that
+  reads skin->bones array, iterates them looking for one whose name matches,
+  then computes:
+
+      bone_idx = (matched index from name search)
+      v10 = *(QWORD *)(*(QWORD *)(skin + 0x40) + 0x10)  // boneData->array
+      v11 = *(__m128 *)(v10 + 80*idx + 0x20)            // inv-bind row 1
+      v20[0] = *(__m128 *)(v10 + 80*idx + 0x10)         // inv-bind row 0
+      v20[2] = *(__m128 *)(v10 + 80*idx + 0x30)         // inv-bind row 2
+      v21    = *(_OWORD *)(v10 + 80*idx + 0x40)         // inv-bind row 3
+      v20[1] = v11
+      v12 = sub_1403444F0(v22, v24, v20)  // bone_world * inv_bind
+      // writes 4 OWORDs to v14[6..9] = output struct's matrix slot
+
+  WHY REJECTED:
+    - The outer loop counts indices via `++**(_DWORD **)(a2 + 24)` BUT
+      ONLY UNTIL THE FIRST NAME MATCH (`if (...) break;` at line 134).
+      So this is a "find ONE bone by name, build ITS matrix" — a query
+      API, not a per-frame palette builder.
+    - Caller is sub_1403F7AD0 (one caller) which is a name-keyed bone
+      query API, used by animation systems (gait IK, ragdoll attachment,
+      effect spawning).
+    - The output is written to `**(__m128 ***)(a2 + 16) + 0x60..0x90`,
+      i.e. into a SINGLE matrix slot in some context struct, not into
+      a flat bone palette.
+
+  Source: re/_m8p3_AGENT_B4_raw.log lines 95-176.
+
+
+  CANDIDATE B: sub_1403FA980 (RVA 0x3FA980, size 0x1AD = 429 bytes)
+  ---------------------------------------------------------------
+  Identical structural pattern to A (almost certainly the same code template
+  inlined by the compiler from a BSTArray<NiPointer<NiAVObject>>::Find +
+  inverse-bind-multiply combo). Same rejection reasoning.
+
+  Source: re/_m8p3_AGENT_B4_raw.log lines 8-87.
+
+
+  CANDIDATE C: sub_141779DA0 (RVA 0x1779DA0, size 0x2B7 = 695 bytes)
+  ---------------------------------------------------------------
+  Signature: volatile signed __int32 *__fastcall sub_141779DA0(
+                __int64 a1, int a2, __m128 *a3, _DWORD *a4)
+
+  Reads BSGeometry+0x140 (skin) and iterates a 4-weight loop:
+
+      v4 = *(QWORD*)(a1 + 320)           // a1 = BSGeometry, v4 = skin instance
+      do {
+        v33 = *(uint*)v31                // weight v33[0]
+        if (v33[0] == 0) break
+        v34 = (uint8)*v28                // bone index byte
+        result = *(qword*)(v4 + 40)      // bones_pri head (skin + 0x28)
+        v35 = *(qword*)&result[2 * v34]  // bones_pri[v34] — but typed as int32* so 2*v34*4 = 8*v34 bytes
+        if (v35) {
+          result = sub_1403444F0(v35, v38, *(qword*)(*(qword*)(v4+64)+16) + 16 + 80*v34)
+          //                              ^ skin->boneData->array + 0x10 + 80*idx
+          v32 = sse_blend(...)
+        }
+        ++v30; ++v31; ++v28
+      } while (v30 < 4);
+
+  WHY REJECTED:
+    - This is per-VERTEX CPU SKINNING (4 weights, 4 bone indices), used
+      to build a single transformed vertex from a single triangle, NOT a
+      whole-mesh palette computation. Probable usage: special-cased CPU
+      vertex queries (decals, hit-trace, ragdoll-collision-vert query).
+    - The output (v32) is a single position vector, not a matrix or
+      matrix array.
+    - Calling pattern shows it's invoked once per triangle/vertex query,
+      not once per frame for the whole mesh.
+
+  Source: re/_m8p3_AGENT_B_raw.log lines 2532-2653.
+
+
+  CANDIDATE D: sub_141790E20, sub_141787330, sub_1417876E0, sub_141799080,
+               sub_141799700 — ALL CLOTH PHYSICS HELPERS
+  -------------------------------------------------------------------------
+  These match the bone-loop signature but are actually CPU CLOTH SIMULATION
+  routines. Common shape:
+
+      v8 = *(_OWORD **)(a1 + 48)            // some matrix in a context
+      // ... lots of SSE matrix manipulation ...
+      sub_1403444F0(&v44, v40, v45)         // ONE matmul (NOT per-bone)
+      if (*(WORD*)(a3+20)) {                // VERTEX count (not bone count)
+        do {
+          v30 = (float*)(*(QWORD*)(a3 + 144) + 32 * v25)  // vertex array, 32-byte stride
+          v31 = fmaxf(a2 - v30[5], 0)       // distance / falloff
+          if (v31 != 0) {
+            // displace v30[0..2] (xyz) by force vector
+          }
+          ++v25
+        } while (v25 < *(WORD*)(a3+20))
+      }
+
+  WHY REJECTED:
+    - Vertex stride is 32 bytes, not 64 (a 4x4 matrix). They iterate
+      vertices, not bones.
+    - The matmul is for a SINGLE matrix transform (e.g. world-to-local
+      for a force volume), not for per-bone palette.
+    - The 0x28/0x38/0x40 offsets they "read" are actually offsets on
+      DIFFERENT base pointers (e.g. a3+0x14 = vertex count u16, a3+0x90
+      = vertex array head ptr) — coincidentally matching the BSSkin layout
+      bytes but with completely different semantics.
+
+  Source: re/_m8p3_AGENT_B4_raw.log lines 996-1238 and 1242-1700.
+
+
+  CANDIDATE E: sub_140C87EA0 (RVA 0xC87EA0, size 1330)
+  ----------------------------------------------------
+  This reads ALL FIVE BSSkin::Instance offsets and calls matmul once. But
+  decomp shows it's a "world-from-bone-name" placement helper for object
+  attach points. It calls sub_1417B3E90 (NIF lookup), reads ColorMaster's
+  BSSkin (via a1[131] -> [131]=131*8=1048 = some skin field), then computes
+  a single attach-point world transform via a single sub_1403444F0 multiply.
+  Output is written to (v4 + 48)..(v4+108), a single 4x4 matrix slot.
+
+  This is "where on a body is bone X in world space?" — a single-shot query,
+  not a per-frame palette builder.
+
+  Source: re/_m8p3_AGENT_B5_raw.log lines 6-244.
+
+
+  CANDIDATE F: sub_1421FDA30 (RVA 0x21FDA30, size 10040)
+  ---------------------------------------------------
+  This is the BIGGEST function that reads all 5 skin offsets. With size
+  10040 bytes, it is too large to manually verify. It is somewhere in the
+  BSBatchRenderer/RenderSubmission code path. I cannot rule this out as
+  the bone palette writer — it likely contains many code paths including
+  per-bone CB writes for skinned meshes — but I also cannot point at a
+  specific RVA-bounded subsection that exclusively does the palette write
+  without including draw-call submission, IK calculations, and other
+  unrelated render work. Decomp at re/_m8p3_AGENT_B_raw.log lines 2127-2532
+  shows it has hundreds of local variables and dozens of branches — this
+  is clearly a multi-purpose render-thread dispatcher.
+
+  PARTIAL SUSPECT: sub_1421FDA30 may CONTAIN inline bone palette writes
+  for skinned meshes, but it is not a clean "skin update" function. If
+  someone wanted to find the exact bone CB write site, they would need to
+  hook ID3D11DeviceContext::Map at the wrapped helper (0x21A0680) and
+  filter for CBs whose size matches 64 bytes × bone_count.
+
+================================================================================
+  SECTION 3 — How the engine ACTUALLY does skinning (best-fit theory)
+================================================================================
+
+  Based on the architectural evidence (no skin vtable dispatch + bones_pri
+  is an array of NiPointer<NiAVObject>), the most plausible runtime model
+  is:
+
+  PER FRAME:
+    1. NiAVObject::UpdateWorldData (sub_1416C85A0) recursively computes
+       each bone's WORLD MATRIX into (bone)+0x70..+0xAC. This writes 16
+       floats × 1 row of skeleton bones per frame. Driven by the
+       scenegraph recursion sub_1416BF1C0 from the render walker.
+       (Already documented in M8P3_skin_walker_dossier.txt.)
+
+  PER DRAW CALL (skinned mesh):
+    2. The render thread enters BSBatchRenderer::FlushBatch (vt[9] @
+       0x221C1B0). For each batched skinned shape:
+       a. Reads BSGeometry (geom)
+       b. Reads geom+0x140 = BSSkin::Instance*
+       c. Reads skin+0x28 = bones_pri[] head, skin+0x38 = bone count
+       d. For each bone in 0..count:
+            bone_avobj = bones_pri[i]
+            bone_world_matrix = *(__m128*)(bone_avobj + 0x70)
+            inv_bind        = boneData->boneArray[i].inv_bind  // skin+0x40 → +0x10
+            palette[i]      = bone_world_matrix * inv_bind
+       e. Maps the per-geometry CB via CB_Map_A/B (0x21A0680/0x21A05E0)
+          and writes palette[] into the BSDFPrePassShaderVertexConstants
+          slot at offset 0x180 ("PreviousBones" — but actually current
+          frame bones; the name is misleading).
+
+  In the ACTUAL FO4 binary, step 2(d) is INLINED into the BSBatchRenderer
+  code path. There is no standalone "ComputeSkinPalette(skin, out)" function
+  — it's compiled directly into the FlushBatch chain, where Hex-Rays sees
+  it as a fragment of a 10000-byte super-function.
+
+  ALTERNATIVE THEORY (slightly less likely):
+    The "PreviousBones" CB slot is NEVER WRITTEN by the engine — it's only
+    used for motion-blur previous-frame matrices, populated separately. The
+    actual current-frame bone matrices may be uploaded as a STRUCTURED
+    BUFFER (SRV) that points directly at the bones_pri[] array, with the
+    shader doing the inv-bind multiply itself in the vertex shader. This
+    would explain why no CPU palette-builder exists. To verify this you
+    would need to disassemble the BSDFPrePassShader vertex shader bytecode.
+
+================================================================================
+  SECTION 4 — Caller chain to per-frame
+================================================================================
+
+  Per the existing M8P3_skin_walker dossier (already documented):
+
+    sub_1416C85A0 (NiAVObject::UpdateWorldData)            [WORLD MATRIX writer]
+      ^ called by NiAVObject::UpdateDownwardPass = sub_1416BF1C0 (slot 54)
+        ^ called by NiNode::UpdateWorldData = sub_1416BEAC0 (slot 53)
+          ^ called by sub_1421B27D0 (render-thread inner)
+            ^ sub_1421B3110
+              ^ sub_1421B69D0 (render driver)
+                ^ sub_1416D0510 (NiCamera ctor — cosmetic)
+            ^ sub_1404E87C0 (frame_tick child)
+              ^ sub_140C334B0 (FRAME TICK)
+                ^ sub_140C30FD0 (main loop)
+
+  This produces every bone's bone+0x70 world matrix once per frame on the
+  render thread. After this, BSBatchRenderer's FlushBatch reads the bones
+  through skin->bones_pri[] dereference chain.
+
+================================================================================
+  SECTION 5 — Top 3 alternative hypotheses
+================================================================================
+
+  ALT 1: The skin update function exists but I missed it.
+    Counter-evidence: I scanned all 21 functions matching the rigorous
+    pattern "calls matmul + reads BSSkin offsets + has loop". None of
+    them is a clean per-bone palette builder. If it exists, it must be
+    OUTSIDE this signature (e.g. uses a different math helper, doesn't
+    use an explicit loop, or reads skin offsets indirectly through a
+    helper). UNLIKELY.
+
+  ALT 2: The skin update is inlined inside sub_1421FDA30 (RVA 0x21FDA30).
+    This is a 10040-byte super-function in the BSBatchRenderer dispatch
+    that I could not fully decompile. It reads all 5 BSSkin offsets and
+    calls matmul. PLAUSIBLE — the bone palette write site may be inside
+    a 200-line block here. To pin it down would require tracing each call
+    to sub_1403444F0 inside this function and checking its caller and
+    output destination.
+
+  ALT 3: There is no CPU bone palette — the engine uses a SRV pointing at
+    bones_pri[] and the shader does inv-bind itself.
+    LIKELY — this matches modern engine practice and the architectural
+    evidence (no skin virtuals, no clean palette builder). To verify, one
+    would dump the BSDFPrePassShader vertex shader bytecode and look for
+    StructuredBuffer<float4x4> declarations and "(*bones[idx])+0x70"-style
+    indirection.
+
+================================================================================
+  SECTION 6 — Confidence and methodology summary
+================================================================================
+
+  CONFIDENCE: 80% that the conventional "CPU skin palette builder" we were
+  hunting for DOES NOT EXIST in this binary as a discrete function. 20%
+  that it is hidden inside sub_1421FDA30 or a related render-thread
+  super-function.
+
+  REASONING:
+    + 5 separate strategies all converged on the same conclusion (no clean
+      candidate emerged from any approach).
+    + BSSkin::Instance has no virtual dispatch beyond ctor/dtor.
+    + The PreviousBones string only references the GetString jump table,
+      not an actual data-write site.
+    + Modern engines (FO4 next-gen is a 2024 update) routinely use SRV-
+      based skinning to avoid CB size limits (max 64 bones × 64 bytes =
+      4 KB which is well under CB cap, but SRV is more flexible).
+    - I was unable to fully decompile the 10000-byte dispatcher
+      sub_1421FDA30 to rule out an inline palette write.
+    - I was unable to dump shader bytecode to confirm SRV-based skinning
+      directly.
+
+  METHODOLOGY (as required by anti-confirmation-bias rules):
+    Strategy 1 (GPU upward): traced CB_Map_A/B → no palette writer found.
+    Strategy 2 (BSGeometry vtable): all slots inspected — slot 27 is a
+      bound update, 32 is hash-table NIF traversal, 47-50 are visibility
+      flagging, 51 is bound update, 52 is UpdateWorldData wrapper, 53 is
+      flag clearer, 56 is render submit hook. NONE writes a bone palette.
+    Strategy 3 (matmul tight loop): 21 candidates analyzed, all rejected.
+    Strategy 4 (string search): "PreviousBones", "BoneTintIndices",
+      "Skin*", "BoneMatrix" — no debug strings led to a palette writer.
+    Strategy 5 (frame_tick deep): walked the render-thread chain to
+      sub_1421B27D0 (render-inner) and below — confirmed scenegraph
+      update path but no palette-writer found.
+
+================================================================================
+  SECTION 7 — ASSUMPTIONS I MADE (as required)
+================================================================================
+
+  A1. I assumed the "skin palette" is a flat 64-byte-per-bone array. If
+      the engine uses a 48-byte affine compact form (3x4 matrices), my
+      pattern detector would miss it. Mitigation: sub_1403444F0 always
+      writes 4 OWORDs (= 64 bytes) of output, so candidates I scanned all
+      use full 4x4 matrices anyway.
+
+      Reasonable alternative: the engine could pack 3x4 affine and decompress
+      in shader. In that case my matmul-helper detection still applies but
+      the OUTPUT writes would be 48 bytes × N, not 64 × N. I did not
+      explicitly check for 48-byte stride. Could miss it.
+
+  A2. I assumed CPU-side processing is the mechanism. If the engine uses
+      compute shaders to build the palette (DispatchSkin compute), there
+      would be no CPU function to find. I did not check for ID3D11Device-
+      Context::Dispatch(...) call sites. PLAUSIBLE that the bone palette
+      is GPU-built via compute shader.
+
+      Reasonable alternative: someone else might find a BSDispatchSkinning
+      class or similar that uses a compute-shader skin generator. I did
+      not detect this in my scan.
+
+  A3. I assumed that "reads skin offsets 0x28, 0x38, 0x40" means "operates
+      on a BSSkin::Instance". But these offsets are common across many
+      classes (e.g., 0x28 is universal NetImmerse "parent NiAVObject*",
+      0x38 could be a bound radius float, 0x40 is a generic NiPointer
+      slot). My filter may have produced false positives that mask a
+      true positive.
+
+      Reasonable alternative: someone else might re-do this scan with
+      a stricter filter requiring `*(QWORD *)(reg + 0x140)` followed by
+      `*(QWORD *)(reg2 + 0x28)` chained dereference (BSGeometry → skin →
+      bones). I tried this in pass 1 and found 5 hits, all rejected.
+
+  A4. I assumed the function is written in Hex-Rays-decompilable form.
+      If the actual palette writer is hand-written assembly (e.g. inside
+      a HW-acceleration intrinsic block), Hex-Rays may have shown it as
+      gibberish or skipped it. Some sub_1421FDA30 internals might be in
+      this category.
+
+      Reasonable alternative: someone else might examine the disassembly
+      directly for hand-written SSE skin palette code (16-byte loads and
+      stores in a tight loop) without relying on Hex-Rays.
+
+  A5. I assumed that the "skin instance" pointer is exclusively at
+      BSGeometry+0x140. If there's a parallel field at +0x148 or +0x150
+      that holds an alternate skin handle (e.g., for partition-style
+      skinning), that would route to a different code path I did not
+      examine.
+
+      Reasonable alternative: check geom+0x148 and geom+0x150 — these
+      are NiPointer slots per the M8P2 dossier. A different agent might
+      find the palette writer hangs off one of these.
+
+  A6. I assumed the binary's skin update mirrors Skyrim SE / classic
+      Gamebryo. If FO4 next-gen (this binary is the 2024 next-gen patch)
+      introduced a fundamentally different skin architecture (e.g. they
+      moved skinning to a worker thread or to compute shaders), my
+      mental model is stale.
+
+      Reasonable alternative: check for new threads spawned in the next-
+      gen patch that didn't exist in classic FO4. The next-gen rollout
+      added compute-shader path tracing — they may have added compute-
+      shader skinning at the same time.
+
+================================================================================
+  SECTION 8 — Specific RVAs and offsets discovered (for caller's reference)
+================================================================================
+
+  Re-confirmed from prior dossiers (verified independently in this pass):
+    BSSkin::Instance vtable          0x14267E5C8  (RVA 0x267E5C8)
+    BSSkin::BoneData vtable          0x14267E480  (RVA 0x267E480)
+    BSGeometry vtable                0x14267E0B8  (RVA 0x267E0B8)
+    BSTriShape vtable                0x14267E948  (RVA 0x267E948)
+    BSSubIndexTriShape vtable        0x142697D40  (RVA 0x2697D40)
+    BSDynamicTriShape vtable         0x14267F948  (RVA 0x267F948)
+    sub_1416C85A0  NiAVObject::UpdateWorldData  RVA 0x16C85A0
+    sub_1416BEAC0  NiNode::UpdateWorldData      RVA 0x16BEAC0
+    sub_1416BF1C0  NiAVObject::UpdateDownwardPass RVA 0x16BF1C0
+    sub_1403444F0  4x4 matmul helper            RVA 0x3444F0
+    sub_1403F85E0  bone-name resolver           RVA 0x3F85E0
+    BSGeometry+0x140  → BSSkin::Instance*
+    skin+0x10  → bones_fallback (NiAVObject** array head)
+    skin+0x20  → bones_fallback count (uint)
+    skin+0x28  → bones_pri (NiAVObject** array head)
+    skin+0x38  → bones_pri count (uint)
+    skin+0x40  → BSSkin::BoneData* (NiPointer)
+    skin+0x48  → skel_root NiAVObject*
+    boneData+0x10 → boneArray head, stride 0x50
+    boneArray entry layout:
+      +0x00  ?
+      +0x10  inv-bind row 0 (4 floats)
+      +0x20  inv-bind row 1
+      +0x30  inv-bind row 2
+      +0x40  inv-bind row 3
+      +0x40..+0x4C  bounding sphere (cx,cy,cz,r)
+      +0x4C..+0x50  pad
+    NiAVObject+0x70 → world matrix (16 floats, 64 bytes, written by
+                       UpdateWorldData each frame)
+    NiAVObject+0xC0 → previous-world matrix (motion blur)
+
+  Discovered/added by this pass:
+    sub_1403FA7C0   single-bone matrix builder (name lookup)  RVA 0x3FA7C0
+    sub_1403FA980   single-bone matrix builder (variant)     RVA 0x3FA980
+    sub_141779DA0   per-vertex CPU skinning helper           RVA 0x1779DA0
+    sub_1421A0680   CB_Map_A wrapper                          RVA 0x21A0680
+    sub_1421A05E0   CB_Map_B wrapper                          RVA 0x21A05E0
+    sub_1421FDA30   render-thread dispatcher (POSSIBLE skin upload site, not
+                    confirmed)                                RVA 0x21FDA30
+
+  String addresses:
+    "PreviousBones"  @ 0x142912438 (CB field name; only refs are GetString
+                                     jump table at 0x14226B7DE / 0x14226CC36)
+    "BoneTintIndices" @ 0x1429123E8
+    "PerGeometry"     @ 0x14269C708 (CB-class string)
+
+================================================================================
+  SECTION 9 — Recommendation
+================================================================================
+
+  Given the INCONCLUSIVE result, my recommendation to the M8P3 process is:
+
+  1. ACCEPT the working theory: skin update happens via NiAVObject::UpdateWorldData
+     writing each bone's bone+0x70 every frame, and the bone palette upload
+     (if any) is hidden inside sub_1421FDA30 (BSBatchRenderer::FlushBatch
+     subtree).
+
+  2. To LOCATE THE CB UPLOAD, use a DYNAMIC trace approach (NOT static RE):
+     - Hook ID3D11DeviceContext::Map (CB_Map_A @ 0x21A0680).
+     - Filter Map() calls for size = 64 × bones_count of any active skin.
+     - Capture call stack; the immediate caller will be the CPU palette
+       writer.
+     - Alternatively: hook ID3D11DeviceContext::VSSetShaderResources to
+       check for a StructuredBuffer<float4x4> bind that points to
+       skin->bones_pri[] — if found, the engine uses SRV-based skinning
+       and there IS NO CPU palette builder.
+
+  3. For the FalloutWorld project's specific need (ghost-body skinned
+     mesh rendering), the architecture has good and bad implications:
+     - GOOD: if we successfully drive each bone's NiAVObject+0x70 via
+       hooks on UpdateWorldData (M8P3 skin-walker plan), the engine's
+       existing skin-binding code will produce correct GPU output for our
+       ghost body. We don't need to patch a palette writer.
+     - BAD: we still need the bones_pri[] array to point at OUR bones
+       (not stub bones), which is what the M8P3_skin_instance dossier's
+       Section 5 swap recipe accomplishes.
+
+  4. AGENT A divergence check: if Agent A's dossier names a single RVA
+     as "the CPU skin update function", DEMAND disasm evidence that the
+     function:
+       (a) takes a BSSkin::Instance* (or a BSGeometry* and reads +0x140)
+       (b) iterates skin->bones_pri[] for ALL count, NOT just one bone
+       (c) calls sub_1403444F0 N times (once per bone) AND
+       (d) writes the output to a flat 64-byte-stride array, NOT a
+           single 4x4 slot.
+     Any candidate failing one of (a)-(d) is NOT the function we're
+     looking for, and Agent A is hallucinating or wishful-thinking.
+
+================================================================================
+  END OF AGENT B DOSSIER
+================================================================================

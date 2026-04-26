@@ -89,6 +89,8 @@ class MessageType(IntEnum):
     # State replication (0x01XX) — unreliable, best-effort
     POS_STATE     = 0x0100   # client -> server: my pos+rot
     POS_BROADCAST = 0x0101   # server -> client: other peer's pos+rot
+    POSE_STATE    = 0x0110   # M8P3.15: client -> server: my per-bone rotations
+    POSE_BROADCAST = 0x0111  # M8P3.15: server -> client: other peer's per-bone rotations
 
     # Game events (0x02XX) — reliable, ack required
     ACTOR_EVENT      = 0x0200   # spawn/kill/disable actor
@@ -361,6 +363,86 @@ class PosBroadcastPayload:
         pid = _decode_fixed_string(data, MAX_CLIENT_ID_LEN)
         x, y, z, rx, ry, rz, ts = cls._STRUCT.unpack_from(data, off)
         return cls(pid, x, y, z, rx, ry, rz, ts)
+
+
+# ---- M8P3.15 POSE replication ----------------------------------------------
+# Header: <Q H = 10 bytes (timestamp_ms, bone_count)
+# Tail:   bone_count × <ffff = 16 bytes (qx, qy, qz, qw)
+# Max payload at 64 bones: 10 + 64*16 = 1034 bytes < MAX_PAYLOAD_SIZE 1400 ✓
+
+MAX_POSE_BONES = 80   # M8P3.17: bumped from 64 (skel.nif has ~70 joints)
+
+
+@dataclass(frozen=True, slots=True)
+class PoseStatePayload:
+    """Per-bone rotation snapshot (quaternions) of local player. Unreliable."""
+    timestamp_ms: int          # u64
+    quats: tuple[tuple[float, float, float, float], ...]
+    # quats[i] = (qx, qy, qz, qw) for bone i in deterministic sort order
+
+    _HEADER: ClassVar[struct.Struct] = struct.Struct("<QH")
+    _ENTRY:  ClassVar[struct.Struct] = struct.Struct("<ffff")
+
+    def encode(self) -> bytes:
+        if len(self.quats) > MAX_POSE_BONES:
+            raise ProtocolError(f"too many bones: {len(self.quats)}")
+        head = self._HEADER.pack(self.timestamp_ms, len(self.quats))
+        body = b''.join(self._ENTRY.pack(*q) for q in self.quats)
+        return head + body
+
+    @classmethod
+    def decode(cls, data: bytes) -> "PoseStatePayload":
+        if len(data) < cls._HEADER.size:
+            raise ProtocolError("POSE_STATE truncated header")
+        ts, n = cls._HEADER.unpack_from(data, 0)
+        if n > MAX_POSE_BONES:
+            raise ProtocolError(f"POSE_STATE bone_count too high: {n}")
+        need = cls._HEADER.size + n * cls._ENTRY.size
+        if len(data) < need:
+            raise ProtocolError("POSE_STATE truncated body")
+        quats = tuple(
+            cls._ENTRY.unpack_from(data, cls._HEADER.size + i * cls._ENTRY.size)
+            for i in range(n)
+        )
+        return cls(ts, quats)
+
+
+@dataclass(frozen=True, slots=True)
+class PoseBroadcastPayload:
+    """Per-bone rotation of a remote peer, relayed by server."""
+    peer_id: str
+    timestamp_ms: int
+    quats: tuple[tuple[float, float, float, float], ...]
+
+    _HEADER: ClassVar[struct.Struct] = struct.Struct("<QH")
+    _ENTRY:  ClassVar[struct.Struct] = struct.Struct("<ffff")
+
+    def encode(self) -> bytes:
+        if len(self.quats) > MAX_POSE_BONES:
+            raise ProtocolError(f"too many bones: {len(self.quats)}")
+        return (
+            _encode_fixed_string(self.peer_id, MAX_CLIENT_ID_LEN)
+            + self._HEADER.pack(self.timestamp_ms, len(self.quats))
+            + b''.join(self._ENTRY.pack(*q) for q in self.quats)
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "PoseBroadcastPayload":
+        off = MAX_CLIENT_ID_LEN + 1
+        if len(data) < off + cls._HEADER.size:
+            raise ProtocolError("POSE_BROADCAST truncated header")
+        pid = _decode_fixed_string(data, MAX_CLIENT_ID_LEN)
+        ts, n = cls._HEADER.unpack_from(data, off)
+        if n > MAX_POSE_BONES:
+            raise ProtocolError(f"POSE_BROADCAST bone_count too high: {n}")
+        need = off + cls._HEADER.size + n * cls._ENTRY.size
+        if len(data) < need:
+            raise ProtocolError("POSE_BROADCAST truncated body")
+        quats = tuple(
+            cls._ENTRY.unpack_from(data, off + cls._HEADER.size + i * cls._ENTRY.size)
+            for i in range(n)
+        )
+        return cls(pid, ts, quats)
 
 
 class ActorEventKind(IntEnum):
@@ -1100,6 +1182,8 @@ _TYPE_TO_PAYLOAD_CLS: dict[int, type] = {
     MessageType.ACK:              AckPayload,
     MessageType.POS_STATE:        PosStatePayload,
     MessageType.POS_BROADCAST:    PosBroadcastPayload,
+    MessageType.POSE_STATE:       PoseStatePayload,
+    MessageType.POSE_BROADCAST:   PoseBroadcastPayload,
     MessageType.ACTOR_EVENT:      ActorEventPayload,
     MessageType.CHAT:             ChatPayload,
     MessageType.WORLD_STATE:      WorldStatePayload,

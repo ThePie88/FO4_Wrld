@@ -1,0 +1,705 @@
+================================================================================
+  M8 PHASE 1 STEP 1.1+1.2 — Actor::Load3D / PlayerCharacter::Load3D DOSSIER
+  Fallout4.exe 1.11.191 next-gen   |   ImageBase 0x140000000
+  Date: 2026-04-25
+  Status: PHASE 1 COMPLETE — both Load3D RVAs pinned, decomp captured, callees mapped
+================================================================================
+
+Raw evidence:
+  re/_m8p1_load3d_raw.log    (982 lines — vtable dump, identification, decomps)
+  re/_m8p1_callees_raw.log   (2240 lines — direct callees decompiled)
+
+================================================================================
+  TL;DR  (executive answer for M8P1 first deliverable)
+================================================================================
+
+  PlayerCharacter::Load3D = sub_140D5B250  (RVA 0xD5B250, abs 0x140D5B250)
+  Actor::Load3D           = sub_140C584F0  (RVA 0xC584F0, abs 0x140C584F0)
+  TESObjectREFR::Load3D   = sub_14050AC10  (RVA 0x50AC10, abs 0x14050AC10)
+  Vtable slot index       = 134            (vt[134] in PC, Actor, REFR vtables)
+
+  PC overrides Actor overrides REFR. PC::Load3D's chain:
+     PC::Load3D --calls--> Actor::Load3D --calls--> REFR::Load3D
+                                                    (4 KB body, the real worker)
+                                                    --calls--> NIF loader
+                                                    --calls--> apply_materials
+                                                               walker
+                                                               (sub_140255BA0)
+
+  PC::Load3D body size:    0x77A bytes (1914 bytes / ~210 IL ops in pseudo)
+  Actor::Load3D body size: 0x332 bytes (818 bytes)
+  REFR::Load3D body size:  0x1009 bytes (4105 bytes — biggest slice)
+
+  PC::Load3D contains 50 direct callee RVAs. Of the 6 SCARY targets we asked to
+  flag, ONLY ONE (the NIF loader sub_1417B3E90) appears as a direct call from
+  PC::Load3D. The apply_materials walker (sub_140255BA0) lives inside
+  REFR::Load3D, called transitively. The bone resolver (sub_1403F85E0) is NOT
+  called anywhere in the Load3D chain — it almost certainly fires later, during
+  BShkbAnimationGraph ctor or first AnimGraph::Update tick. No literal
+  "skeleton.nif" / "MaleBody.nif" string ever appears in the Load3D chain — those
+  paths are stored in TESModel.modelPath / BGSBodyPart.partFile and resolved at
+  runtime via a BSFixedString lookup wrapper (sub_140D623D0 + sub_14167C070).
+
+================================================================================
+  1. VTABLE DUMP — PlayerCharacter @ RVA 0x2564838 (abs 0x142564838)
+================================================================================
+
+Segment: .rdata [0x142439950 .. 0x142ECD000]
+Total non-null slots before NULL: 311
+Vtable termination: slot 311 -> 0x1429CCD80 (lives in .rdata, not .text — end of vt)
+
+Full slot dump — see re/_m8p1_load3d_raw.log lines 10-321. Highlights:
+
+  vt[  0] -> sub_140D89150  (dtor, 0x77 bytes)        prologue 48895c2408574883
+  vt[  1] -> sub_14024EE50  (likely ::~ or stub)
+  vt[ 17] -> sub_140D63490  (HUGE 0x2206 bytes — likely save/load serialize)
+  vt[ 18] -> sub_140D656A0  (0x25A6 bytes — same family)
+  vt[105] -> sub_140C82EA0  (TESForm::GetType-ish, 0x12)
+  vt[106] -> sub_140C82EC0  (companion getter)
+  vt[107] -> sub_1404FF7A0  (0x117 — possibly GetScale)
+  vt[110] -> sub_140CAE440  (0x251)
+
+  >>> vt[134] -> sub_140D5B250 (PlayerCharacter::Load3D)  size 0x77A   <<<
+
+  vt[135] -> sub_14050C0B0  (0x4EA — likely Reset3D or DetachFrom3D)
+  vt[136] -> sub_140D5BBD0  (0x3DA — possibly Get3D)
+  vt[137] -> sub_14050D6F0  (0x16 — small accessor, likely Has3DLoaded)
+  vt[298] -> sub_140D7BF00  (HUGE 0xDC6 — likely PC::Update or ProcessEvent)
+  vt[301] -> sub_140CAF8F0  (HUGE 0xCB6 — likely PC::SetActorValue or similar)
+
+The slot identification is SOLID: only one slot in the vtable directly calls the
+NIF loader sub_1417B3E90, and that slot is vt[134]. Heuristic score = 5
+(NIF loader call). No false positives.
+
+================================================================================
+  2. RVAs — PlayerCharacter::Load3D + Actor::Load3D + parent slot
+================================================================================
+
+  PlayerCharacter::Load3D  RVA 0xD5B250  (abs 0x140D5B250)
+  Actor::Load3D            RVA 0xC584F0  (abs 0x140C584F0)
+  TESObjectREFR::Load3D    RVA 0x50AC10  (abs 0x14050AC10)
+  REFR vtable @ 0x14249CBC8 (len 198 slots)
+  Actor vtable @ 0x1425602B0 (len 307 slots)
+  PC vtable    @ 0x142564838 (len 311 slots)
+
+  Confirmed via Actor RTTI walk:
+    .?AVActor@@ TypeDescriptor @ 0x142F913E8
+    Actor::Load3D = Actor_vt[134] = 0x140C584F0
+    PC::Load3D    = PC_vt[134]    = 0x140D5B250
+    These differ -> PC overrides.
+
+================================================================================
+  3. PlayerCharacter::Load3D — DECOMPILED BODY  (sub_140D5B250, 0x77A bytes)
+================================================================================
+
+Signature (Hex-Rays inferred):
+    __int64 __fastcall sub_140D5B250(__int64 *a1, unsigned __int8 a2)
+
+Where:
+    a1 = PlayerCharacter*  (this)
+    a2 = bool              (resetInventory? backupChildren? — 1 in normal load)
+
+Field offsets used (all relative to PlayerCharacter*):
+    a1+0x000  = vtable
+    a1+0x008  = TESForm header / refID etc. (a1[1] alias for offset 0x08)
+    a1+0x048  = a1[9]   - Magic effect / extra system pointer
+    a1+0x0D0  = a1[26]  - position (x,y,z) — referenced via "a1 + 26" later
+    a1+0x0E0  = a1+0xE0 - referenced as 'a1 + 28' at vt[28] anim graph mgr embed
+    a1+0x300  = a1[96]  - alt scene-tree pointer / 3D parent (matches our M7
+                          "alt scene tree" anchor at +0xF0->+0x08; 96*8=768=0x300)
+    a1+0xB78  = a1[367] - Loaded3D BSFadeNode pointer (matches LOADED_3D anchor)
+    a1+0xB80  = a1[368] - associated 3D child #1 (light/scene attachment?)
+    a1+0xB88  = a1[369] - associated 3D child #2 (camera node?)
+    a1+0xB90  = (a1+740)*4  - cached refraction/scale value (DWORD)
+    a1+0xDFE  = bit 0x10 = "loading from save" flag, bit 0x08 = ?
+    a1+0xDFE  = "v25"  -- byte at offset 0xDFE (3582 dec) — flags
+    a1[441]   = something fade/queue related (offset 0xDC8 = 441*8)
+
+The function structure (high-level):
+
+  // ---- HEAD: Lock TLS + clear cached state ----
+  v4 = TLS_DATA;                              // get per-thread game data block
+  v5 = TLS->lifecyclePhase;                   //  back up phase
+  TLS->lifecyclePhase = 102;                  //  set 'Loading 3D' phase
+  sub_14167BCF0(&v65);                        // BSFixedString::ctor() — empty
+
+  // ---- PATH A: build NIF path + load NIF root ---------------------------
+  if ( sub_140D623D0(this, &nifPath) )        // build path string (race+sex)
+  {                                             // sub_140D623D0 internally:
+                                                //   reads NPC->race, NPC->sex,
+                                                //   composes "Meshes\\..\\X.nif"
+                                                //   stores in &v65 (BSFixedString)
+
+    nifPath.len = 3;                          //  truncate?
+    nifPath.flag |= 0x3D;                     //  flags init
+    v6 = a1 + 367;                            //  ptr to a1[367] (loaded3D slot)
+
+    v7 = sub_14167C070(&nifPath);             // BSFixedString::c_str()
+    sub_1417B3E90(v7);                        // ***** NIF LOADER CALL *****
+                                                //   loads root NIF; after this
+                                                //   a1[367] = NiNode root
+
+    a1[367]+108 = fabs(GetScale(this));       //  set BSFadeNode.fadeScale
+
+    // ---- HEAD->ATTACH: parent the new 3D into scene ----
+    sub_140C9AAC0(this, a1[367], &v76);       // ***** PARENT TO SCENE GRAPH ****
+                                                //   sub_140C9AAC0 = scene attach
+                                                //   resolves cell-3D parent and
+                                                //   inserts a1[367] as child.
+                                                //   (cell shadow-scene-node
+                                                //    parent set happens here)
+
+    *(loaded3D+264) |= 0x100000000000;         //  set flag bit 44
+    *(loaded3D+264) |= 0x8000;                 //  set flag bit 15 ("loaded")
+
+    // call NiAVObject::SetAppCulled-like vfn (slot 360/8=45)
+    (*(loaded3D->vt+360))(loaded3D, hasFlag10);
+
+    if ( loaded3D->flags & 0x4000 )            // if loaded3D has GeomData
+    {
+        v9 = vt[48](loaded3D);                 // get parent? GetWorldData?
+        if (v9) {
+           v9+416 = 1.0f;                      //  reset scale field
+           v9+272 = this;                      //  back-pointer to PC
+        }
+    }
+
+    // ---- find/cache 3 child nodes by tag (looks like attachment points) ---
+    v82 = 18;                                   // tag id 18 — likely "Hand_R" or
+                                                // a known hardcoded enum
+    v11 = sub_140BB1B80(this, loaded3D, &v82, 0);
+    if (v11 && v11 != loaded3D)
+        sub_1416C5710(v11);                    // 0x16C5710 = NIF helper —
+                                                //   probably set parent->this
+
+    sub_1416C8050(loaded3D, &v72);             // 0x16C8050 = ??? (small init)
+
+    // overwrite BSFadeNode local matrices with constants from .rdata
+    loaded3D[3] = xmmword_142F41450;            // identity row 0
+    loaded3D[4] = xmmword_142F41460;            // identity row 1
+    loaded3D[5] = xmmword_142F41470;            // identity row 2
+
+    // tag 0   -> likely Bip01 / root bone find
+    v83 = 0;
+    v16 = sub_140BB1B80(this, loaded3D, &v83, 1);
+    a1[368] = v16;                              // a1[368] = found bone #1
+
+    // tag 21  -> another known attachment point
+    v63 = 21;
+    v19 = sub_140BB1B80(this, loaded3D, &v63, 1);
+    a1[369] = v19;                              // a1[369] = found bone #2
+    if (v19) cachedScale_dword = v19[26];
+
+    sub_141026640(qword_1430DBD58, loaded3D, v19); // ***** SCENE REGISTER *****
+                                                    // qword_1430DBD58 = some
+                                                    //  scene-graph singleton
+                                                    //  (likely ShadowSceneNode
+                                                    //   or BSPortalGraph)
+
+    sub_14045FCA0(&v77);                        // cleanup of v77 BSPath/array
+  }
+
+  // ---- THREAD-LOCAL CAMERA / GOBO / etc. ----
+  if (dword_143E5F2D0 != 2)
+      sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);  // init singleton
+  v21 = sub_1416579C0(&unk_143E5E0F0, 0x1E58, 0, 0);    // alloc a 7768-byte obj
+  if (v21)
+      v23 = sub_1403582A0(v21, this, 1);                 // ctor it (PC-bound)
+  else
+      v23 = nullptr;
+
+  // ---- swap a1[366] (BSPlayerCharacter::cameraExtra?) ----
+  v24 = a1[366];
+  if (v23 != v24) {
+      a1[366] = v23;
+      // refcounting...
+      if (v24 && DecRef(v24)==1) { sub_140358460(v24); sub_1422B6BC8(v24,7768); }
+  }
+
+  // ---- save load-flag, call Actor::Load3D for the rest of the work ----
+  v25 = a1+3582;                                // DFE flags byte
+  a1+3582 |= 0x10;                              // mark "in inherited Load3D"
+  v26 = sub_140C584F0(this, a2);                // ***** Actor::Load3D *****
+  a1+3582 &= ~0x10;
+  v28 = v26;                                     // v28 = whatever Actor returned
+                                                 //   (this looks like the new
+                                                 //    Load3D 3D pointer or
+                                                 //    secondary wrapper handle)
+  a1+3582 |= (v25 & 0x10);                       // restore flag
+
+  // ---- post Actor::Load3D housekeeping ----
+  v29 = vt[124](this, 3);                        // 124 = ProcessSomething(3)
+                                                 //   8*124=992, slot index 124
+  v29->vt[16](v29);                              // virt slot 16 (0x80)
+
+  v30 = a1[9];                                   // sub-system pointer
+  v64 = 0;
+  if ( v30->vt[4](&v64)
+       && v64.field_80 == 2
+       && (a1+3582 & 0x10)==0 != v64.field_216 )
+  {
+      sub_140D79000(this);                       // ***** SUBSYSTEM TRIGGER ****
+                                                 //   when actor==player and
+                                                 //   3D state mismatches the
+                                                 //   ExtraData. This walks
+                                                 //   ExtraData/Camera control,
+                                                 //   re-attaches scene nodes,
+                                                 //   triggers SnapToLookAtTarget
+  }
+
+  // ---- BIP* ('Bip01') sibling cleanup (only if NOT loading from save) ----
+  if ( (v25 & 0x10)==0 )
+  {
+      v32 = a1[96];                              // alt scene tree
+      v33 = sub_140D3D180(v32);                  // get attach lock
+      if (v33) sub_14022D3A0(v33);               // acquire
+      v35 = sub_140D3D1A0(v32);                  // get attach root
+      if (v35) {
+          // walk children of attachment array (size *5 stride):
+          while (v37 != v38) {
+              if (childForm[26] == 43)           // 0x2B = ART_OBJECT? type
+                  *(v37[4]+48) = 0;              // clear back-pointer
+              v37 += 5;
+          }
+      }
+      // release lock
+      if (v34) {
+          if (v34->refcount==1) { *v34=0; mfence; cas(v34+4,0,1); }
+          else                  _InterlockedDecrement(v34+4);
+      }
+  }
+
+  // ---- broadcast new 3D to render queue ----
+  if ( v28 ) {
+      if ((a1+3582 & 0x10)==0)
+          (*(v28->vt+360))(v28, 1);              // SetVisible/cull-update
+      sub_141026980(qword_1430DBD58, v28);       // ***** SCENE BROADCAST *****
+                                                 // walks 6 slots in 1430DBD58+
+                                                 // 0x118..0x140 calling
+                                                 // sub_14102D4C0 each (looks
+                                                 // like ShadowSceneNode add)
+  }
+
+  // ---- post-3D init pipeline ----
+  sub_140CE0040(this);                           // re-resolve some 'spell items'
+                                                 // by RTTI cast — likely
+                                                 // re-parents persistent FX
+  sub_140D35EE0(a1[96]);                         // clear a flag at +1174 in
+                                                 //  alt scene tree
+  sub_140C595F0(this, a1[367]);                  // ***** BIP01 BONE SEARCH *****
+                                                 // walks loaded3D children;
+                                                 // skips children whose name
+                                                 // starts with "BIP" (bones);
+                                                 // calls sub_142171FB0 +
+                                                 // sub_140D383B0 — looks like
+                                                 // it caches the FIRST visible
+                                                 // mesh root (skin instance?)
+                                                 //  for fast bound culling.
+
+  vt[133](this);                                 // 1064/8=133 — likely
+                                                 // PC::OnUpdateFastTravelStart
+                                                 // or similar trigger
+
+  v39 = sub_140C5C830(this);                     // get a1+768 -> alt scene tree
+                                                 // attachment
+  if (v39) {
+      v42 = sub_14187FF20(v39);                  // get embedded anim graph mgr
+      if ( TLS->bSomeFlag5433 )                  // checked in flow-init
+          v42 = 0;
+      else if (v42)
+          sub_141872A40(v42);                    // anim graph: SETUP HOLD?
+                                                 //  (likely Lock or Activate)
+
+      v40+900 = 2;                               // attach state = 2
+      vt[200](this, 1);                          // 1600/8=200 — likely
+                                                 // OnSpawnFinished or similar
+      sub_141895000(v40);                        // ***** ANIM GRAPH BIT-MASK ***
+                                                 // sub_141895000 walks an
+                                                 // anim graph variable list at
+                                                 // result[16] of size [24],
+                                                 // ORs in v5 = (a2<<16) into
+                                                 // bits 0..15 of [+24+24*i].
+                                                 // This is fast 'mark all
+                                                 // anim variables dirty'
+
+      if ( sub_140D3ADF0(a1[96]) ) {              // sub-graph lookup
+          v43 = sub_140D3ADF0(a1[96]);
+          v43->vt[48](v43, 524296);                // 384/8=48 -- some signal
+      }
+
+      v44 = sub_14050D990(this);                  // get .. (small accessor)
+      sub_14188C290(v44, 0, 8);                   // anim graph SetVarFlag?
+      if (v42) sub_141872A60(v42);                // unlock counterpart
+  }
+
+  // -- if there is loaded3D and it has GeomData (bit 0x4000), set scale ---
+  v45 = sub_14050D990(this);
+  if ( v45 && (v45[66] & 0x4000) ) {
+      v46 = vt[1...](v45);                        // GetParent? GetData?
+      if (v46) {
+          *(v46+264) |= 0x8000;
+          *(v46+416) = 1.0f;
+          *(v46+264) |= 0x2000000000;
+      }
+  }
+
+  // ----- 'AnimGraph init' pair: builds 4 stick parameters and pushes -----
+  v47 = a1[367];
+  v48 = sub_14050D990(this);
+  sub_140D9AF10(v47, v48, a1+26);                  // ***** ANIM GRAPH UPDATE
+                                                   // 4 ANIM VARIABLES *****
+                                                   // sub_140D9AF10 reads 4
+                                                   // BSFixedString IDs from
+                                                   // sub_140828D70..DD0 and
+                                                   // pushes 'a1+26' as a vec3
+                                                   // through sub_141630570/910
+                                                   // — i.e. SETS POSITION-BASED
+                                                   // anim variables (root delta
+                                                   // params) on both parts of
+                                                   // the loaded mesh.
+
+  // ----- 'parent ref' lookup pass -----
+  v49 = vt[139](this, 0);                          // 1112/8=139 — likely
+                                                   // GetSceneRoot or
+                                                   // GetCurrentLocation
+  if (!v49) goto FALLBACK;
+
+  v68 = 0;
+  v71[0] = &v68;
+  v67 = 0;
+  v71[1] = &v67;
+  sub_140D86320(v49, v71);                         // ***** ATTACHED-OBJECT
+                                                   //         SEARCH *****
+                                                   // sub_140D86320 walks the
+                                                   // BSExtraDataList of v49
+                                                   // looking for an extra of
+                                                   // a specific class
+                                                   // (&unk_14382DC98 = some
+                                                   // RTTI vtable ptr); if
+                                                   // found, returns its
+                                                   // associated form ID.
+  v51 = v67;
+  if (v68) {
+      if (v67) v50 = v68;
+      v62 = v50;
+  }
+  // refcount drop ...
+
+  if (!v50) {
+FALLBACK:
+      v52 = sub_140374520();                       // get sky/world ref
+      if (sub_140507610(this, v52))
+          v50 = sub_140374760();                   // get adjusted ref
+      else {
+          v53 = sub_140307DD0(374);                 // GetForm(0x176)
+          v50 = v53;
+          if (!v53 || v53[26] != 34) goto LABEL_74;  // 0x22 = TESQuest? type
+      }
+      v62 = v50;
+      if (!v50) goto LABEL_74;
+  }
+
+  // if v50 has a model name field, force-load the model with flags
+  if ( sub_14167C200(v50+408) )
+  {
+      v54 = sub_14167C070(v50+408);                  // BSFixedString::c_str()
+      sub_1417A3210(v54, 255, 0, 0, 0, 1);            // ***** NIF prefetch *****
+                                                      // sub_1417A3210 = looks
+                                                      // like async model load
+                                                      // request to BSResource
+  }
+
+LABEL_74:
+  // ---- final 3D linkage tail ----
+  v55 = sub_1416C6BF0(a1[367], 1);                  // get child by index? -1?
+  v61 = 1;
+  v56 = sub_1416C6BF0(v28, 1);                       // same on Actor::Load3D ret
+  v57 = sub_140BB1B10(this, &v61, 0, 0);             // BSGeometry sibling lookup
+  v58 = (a1[441]==0);
+
+  if (a1[441]) {
+      sub_1416599D0(a1+441);                          // BSCS3 array clear
+      a1[886*4] = 0;                                  // 3544 = some count
+      v57 = v69;
+  }
+
+  if (v55 && v56 && v57)
+      sub_140D5BA10(this, v28, v55, v56, v57);        // ***** 3D-INDEX
+                                                      //         CROSS-LINK *****
+                                                      // sub_140D5BA10 (recursive)
+                                                      // walks geometry trees of
+                                                      // v28 (Actor::Load3D ret)
+                                                      // and v55/v56 (PC::Load3D
+                                                      // children); for each
+                                                      // matching child geometry
+                                                      // index, writes a (v9,v11)
+                                                      // pair into a1[3528..]
+                                                      // array — this is
+                                                      // PC->Actor 3D INDEX MAP
+                                                      // (likely used to copy
+                                                      // FP <-> 3P pose data).
+
+  // ---- cleanup ----
+  if (v64) DecRef(v64);
+  sub_14167BEF0(&v65);                              // BSFixedString::dtor
+  TLS->lifecyclePhase = v5;                         // restore phase
+  return v28;                                        // return Actor::Load3D ret
+}
+
+================================================================================
+  4. PlayerCharacter::Load3D — DIRECT CALLEE LIST  (50 unique targets)
+================================================================================
+
+Format: target_RVA | name | size | (one-line role)
+
+  0x22D3A0    sub_14022D3A0   0x7B    BSCS3 lock acquire (atomic helper)
+  0x307DD0    sub_140307DD0   0x7F    TESForm::GetByID (form-table getter)
+  0x3582A0    sub_1403582A0   0x1B4   ctor for the 7768-byte camera/extra obj
+  0x358460    sub_140358460   0x77    dtor for the 7768-byte camera/extra obj
+  0x374520    sub_140374520   0x15    Sky/World form fetcher
+  0x374760    sub_140374760   0x15    Sky/World form alt fetcher
+  0x45FCA0    sub_14045FCA0   0xAA    BSPath / temp-array dtor (cleanup helper)
+  0x4FF520    sub_1404FF520   0x68    GetScale (TESObjectREFR::GetScale-like)
+  0x507610    sub_140507610   0x3D    test if form is a sky-cell ref
+  0x50D990    sub_14050D990   0x3A    Get 'cached extra' / Get loaded3D ptr
+  0xBB1B10    sub_140BB1B10   0x62    sibling lookup (similar to BB1B80 but
+                                       different walker — geometry by tag)
+  0xBB1B80    sub_140BB1B80   0x3F    Find child node by tag (calls C58C70 +
+                                       3776E0 — wraps a tag-aware DFS)
+  0xC584F0    sub_140C584F0   0x332   *** Actor::Load3D ***
+  0xC595F0    sub_140C595F0   0x144   "BIP*" sibling skip + first-mesh cache
+  0xC5C830    sub_140C5C830   0x13    a1+768 -> sub_140D342A0 (alt scene tree
+                                       attachment lookup)
+  0xC9AAC0    sub_140C9AAC0   0x1B9   *** Scene-graph attach/parent set ***
+  0xCE0040    sub_140CE0040   0x159   Walk 'spells/abilities' table, RTTI cast
+                                       to SpellItem, call sub_14026B920 on each
+                                       — re-applies persistent FX after Load3D
+  0xD35EE0    sub_140D35EE0   0x13    *(a1[96]+1174) = 0 (clear a small flag)
+  0xD3ADF0    sub_140D3ADF0   0x9C    Get sub-graph manager from a1[96]
+  0xD3D180    sub_140D3D180   0x15    Get attachment lock
+  0xD3D1A0    sub_140D3D1A0   0x15    Get attachment root
+  0xD5BA10    sub_140D5BA10   0x11A   *** PC<->Actor 3D index cross-link ***
+                                       (recursive geometry tree walker)
+  0xD623D0    sub_140D623D0   0x2DA   *** Build NIF path string from race+sex
+                                          (race[name] + sex[name]).nif ***
+  0xD79000    sub_140D79000   0x45F   Subsystem trigger when actor==player &
+                                       3D state mismatches stored ExtraData
+                                       (re-attaches camera shake, re-runs
+                                        SnapToLookAtTarget event)
+  0xD86320    sub_140D86320   0x131   ExtraData walker: find associated obj
+                                       by RTTI ptr &unk_14382DC98
+  0xD9AF10    sub_140D9AF10   0x1DB   *** ANIM-VAR PUSH: 4 BSFixedStrings →
+                                          sub_141630570 / 910 with vec3 v27 ***
+  0x1026640   sub_141026640   0x37    Scene-graph register (qword_1430DBD58
+                                       singleton call)
+  0x1026980   sub_141026980   0x68    Scene-graph broadcast (6+1 sub_14102D4C0
+                                       calls — likely visibility cone update)
+  0x16579C0   sub_1416579C0   0x24B   Allocator-bound new (size 0x1E58)
+  0x1657F90   sub_141657F90   0x19F   Init-once helper (atomic-init pattern)
+  0x16599D0   sub_1416599D0   0x51    BSCS3 array clear
+  0x167BCF0   sub_14167BCF0   0xBF    BSFixedString::ctor (default empty)
+  0x167BEF0   sub_14167BEF0   0x5     BSFixedString::dtor
+  0x167C070   sub_14167C070   0x23    BSFixedString::c_str
+  0x167C200   sub_14167C200   0x22    BSFixedString::IsEmpty / IsValid
+  0x16C5710   sub_1416C5710   0x857   NiNode::AttachChild (HUGE — 2.1 KB)
+  0x16C6BF0   sub_1416C6BF0   0xB7    NiNode::GetChildAt
+  0x16C8050   sub_1416C8050   0x4F    NiAVObject helper (small init/copy)
+  0x17A3210   sub_1417A3210   0x198   *** BSResource async-load request ***
+                                       (path + 6-arg form: priority, hint, etc.)
+  0x17B3E90   sub_1417B3E90   0x252   *** NIF LOADER (we already use this) ***
+                                       [SCARY: NIF loader entry]
+  0x1872A40   sub_141872A40   0xC     anim graph manager LOCK (likely
+                                        EnterCriticalSection on graph)
+  0x1872A60   sub_141872A60   0xC     anim graph manager UNLOCK
+  0x187FF20   sub_14187FF20   0x10    Get embedded anim graph manager from
+                                       a1+0x300 area (a1+32 internal)
+  0x188C290   sub_14188C290   0x25    Set anim graph variable flag
+  0x1895000   sub_141895000   0x96    Walk anim graph variable array, OR-mark
+                                       all variables with high-half (a2<<16)
+  0x22B6BC8   sub_1422B6BC8   0x5     scalanga / freelist deallocate (size 7768)
+
+Notes on argument types:
+  - All function pointers shown above use IDA's inferred __fastcall RCX/RDX
+  - Hex-Rays types (__int64*, __int64) are placeholders — real types are
+    PlayerCharacter*, NiNode*, BSFadeNode*, etc. (we did not import full types)
+
+================================================================================
+  5. SCARY CALLS FLAGGED
+================================================================================
+
+Searched for:
+  (A) skeleton.nif / Meshes\\Actors\\…skeleton paths
+  (B) MaleBody / FemaleBody mesh load
+  (C) BSAnimationGraphManager creation/init
+  (D) ShadowSceneNode attach (or BSFadeNode parent set)
+  (E) Bone resolver sub_1403F85E0 (RVA 0x3F85E0)
+  (F) apply_materials walker sub_140255BA0 (RVA 0x255BA0)
+
+Findings INSIDE PlayerCharacter::Load3D body:
+
+  (A) skeleton.nif      — NOT a literal in this function.
+                          Path is built dynamically by sub_140D623D0
+                          (composes "X.Y" from race + sex BSFixedStrings via
+                          sub_14167E860 string-cat).  Confirmed: zero string
+                          literal data refs from inside sub_140D5B250.
+                          TBD - need: live Frida hook on sub_140D623D0 to
+                                       capture the actual race/sex string and
+                                       resolve which path is loaded for an
+                                       NPC vs. PlayerCharacter.
+
+  (B) MaleBody/FemaleBody — same as (A): path is in BGSBodyPart records, not
+                            a literal in Load3D. TBD - same as A.
+
+  (C) BSAnimationGraphManager ctor — NOT directly called from PC::Load3D.
+                                     The closest hits are:
+                                       sub_141872A40 (lock graph)
+                                       sub_141872A60 (unlock graph)
+                                       sub_14187FF20 (get graph mgr ptr)
+                                       sub_141895000 (set graph var flag)
+                                       sub_14188C290 (set graph var flag)
+                                     -> Implication: the AnimGraphManager is
+                                        constructed BEFORE Load3D fires
+                                        (during Actor ctor / TESNPC bind), and
+                                        Load3D only writes to its variables.
+                                        Bone resolution must happen on the
+                                        first Update tick of that pre-built
+                                        graph, not inside Load3D. Confirms M7
+                                        finding that AnimGraph is Actor-bound.
+
+  (D) ShadowSceneNode/BSFadeNode parent set —
+                          [HIT] sub_140C9AAC0 IS the scene attach (called
+                                twice in PC::Load3D, once in Actor::Load3D).
+                                It looks up the cell's 3D parent (a1[28] is
+                                'currentCell' alias) and attaches the new
+                                BSFadeNode under it via sub_140651AE0.
+                          [HIT] sub_141026640 + sub_141026980 broadcast to
+                                qword_1430DBD58 (scene singleton — likely
+                                the BSPortalGraph or ShadowSceneNode).
+
+  (E) Bone resolver (sub_1403F85E0, RVA 0x3F85E0) —
+                          [NOT CALLED] in PC::Load3D, Actor::Load3D, or
+                          REFR::Load3D direct callees.  Confirmed via brute
+                          disasm scan of all 50 callee bodies.
+                          -> Bone resolution MUST happen elsewhere. Most likely
+                             candidates (TBD): BShkbAnimationGraph::Activate(),
+                             BSAnimationGraphManager::FirstUpdate(),
+                             or a deferred BSResource callback after the NIF
+                             loader finishes.
+                          TBD - need: xref scan of sub_1403F85E0 to locate
+                                       its only/few callers.
+
+  (F) apply_materials walker (sub_140255BA0, RVA 0x255BA0) —
+                          [HIT] CALLED INSIDE TESObjectREFR::Load3D
+                          (sub_14050AC10), at one site:
+                              sub_140255BA0(v98, v97, v99, v6, 0)
+                              where v98 = the loaded3D BSFadeNode,
+                                    v97 = result of vt[?](this) — a BGSMaterialSwap
+                                          look-alike (vt[?]-72 = swap chain ptr),
+                                    v99 = sub_140291650(a1[16]) — material idx.
+                          So material application happens INSIDE the REFR
+                          slice, not the PC slice. PC adds NO material logic.
+
+  Additional non-asked findings:
+    - sub_1417A3210 IS a hardcoded BSResource async-load request with
+      args: (path_cstr, priority=255, 0, 0, 0, 1).  Looks like a 'preload'
+      (resource hint) rather than a synchronous load.
+
+================================================================================
+  6. FUNCTION BYTE SIZES
+================================================================================
+
+  PlayerCharacter::Load3D (sub_140D5B250) :
+      start  0x140D5B250
+      end    0x140D5B9CA
+      size   0x77A bytes (1914 bytes)
+
+  Actor::Load3D (sub_140C584F0) :
+      start  0x140C584F0
+      end    0x140C58822
+      size   0x332 bytes (818 bytes)
+
+  TESObjectREFR::Load3D (sub_14050AC10) :
+      start  0x14050AC10
+      end    0x14050BC19
+      size   0x1009 bytes (4105 bytes)  <— biggest, this is where the
+                                            heavy lifting happens
+
+  Total in the chain: 6837 bytes of pure Load3D code.
+
+================================================================================
+  7. PIPELINE SUMMARY (high-level call graph)
+================================================================================
+
+  PlayerCharacter::Load3D(this, a2)
+   ├── (PC-only)  build NIF path → sub_140D623D0 → BSFixedString
+   ├── sub_1417B3E90(path)        ─── NIF LOADER ─── produces a1[367]
+   ├── sub_140C9AAC0(this, loaded3D)  ─── attach to cell scene graph ───
+   ├── sub_140BB1B80 × 3              find child by tag (18, 0, 21)
+   ├── sub_141026640                  register with scene singleton
+   │
+   ├── Actor::Load3D(this, a2) [sub_140C584F0]
+   │   │
+   │   ├── TESObjectREFR::Load3D(this, a2) [sub_14050AC10]    ← 4 KB body
+   │   │   ├── sub_140519F90 (refresh some Actor state)
+   │   │   ├── sub_14027ED70 (bind extra data)
+   │   │   ├── sub_14050D2A0 (per-cell parent set)
+   │   │   ├── sub_140255BA0  ─── APPLY MATERIALS WALKER ───
+   │   │   ├── sub_141876500 (geom enable/disable)
+   │   │   ├── sub_140566310 (ctor refraction state)
+   │   │   ├── sub_1417EE000 (something with cell parent)
+   │   │   ├── sub_142161D40 (broadcast ProcessEvent type 28)
+   │   │   ├── sub_14217A910 (texture extra ctor 'GOBO')
+   │   │   └── ~85 other helpers (~95 unique callees total)
+   │   │
+   │   ├── sub_1417A0A30 (cache 3 named NiAVObject children:
+   │   │                    "Camera", "Camera Control", "CamTargetParent")
+   │   ├── sub_1416BD0B0 (lookup 1438C8C48 — BSFixedString)
+   │   ├── sub_1417EDDF0 (assign ref counted)
+   │   ├── sub_1416C60D0 (NiNode::SetChild)
+   │   ├── sub_140C9AAC0 (scene-attach AGAIN, with the cached child)
+   │   ├── sub_140CDFA40 (process collision/havok char-ctrl init)
+   │   └── sub_142161D40 (broadcast ProcessEvent type 28 again)
+   │
+   ├── (PC-only) cache anim variable 'a1+26' (vec3) → sub_140D9AF10
+   ├── (PC-only) ExtraData walker → sub_140D86320 → BSResource prefetch
+   ├── (PC-only) PC<->Actor 3D index cross-link → sub_140D5BA10 (recursive)
+   └── return loaded3D-ish v28 (Actor::Load3D return value)
+
+================================================================================
+  8. RECONNAISSANCE GAPS / NEXT STEPS  (Phase 1.3+)
+================================================================================
+
+  G1.  Bone resolver sub_1403F85E0 — locate its callers.
+       Scan all xrefs to 0x1403F85E0; expect 1-3 callers, all inside
+       BShkbAnimationGraph or hkbCharacter init paths. Decide if we can
+       call it manually after our NIF load.
+
+  G2.  Confirm sub_140D623D0 path output by Frida-tracing it on
+       (a) PlayerCharacter and (b) a regular human NPC. The path it composes
+       is the master skeleton path that we need to also load into our ghost
+       puppets.
+
+  G3.  Decompile sub_140C9AAC0 fully (already partially done — it calls
+       sub_140651AE0 which is the actual NiNode::AttachChild + matrix-set
+       hybrid). This is the PRIMARY scene-attach RVA we need for plano B
+       custom renderer + for our manual ghost attach.
+
+  G4.  Decompile sub_140D9AF10 helpers — sub_140828D70..DD0 are 4 BSFixedString
+       getters; their string content tells us which 4 anim variables PC::Load3D
+       initializes (likely camera-related: HeadPitch, HeadYaw, Body Pitch,
+       Body Yaw or similar).
+
+  G5.  Decompile sub_141895000's helper sub_141880CD0 — which produces the
+       16-bit field that PC::Load3D OR-marks all anim variables with.
+       Suspected: this is a "frame number" or "version stamp" that the anim
+       graph uses to invalidate cached variable evaluations after a 3D reload.
+
+  G6.  Decompile sub_140D5BA10 (the cross-link recursive walker) more carefully
+       — it builds an array at a1[3528..3544] of (Actor3DIndex, PC3DIndex)
+       PAIRS. This is the FP<->3P bone-index map that drives first-person
+       camera arm overlay onto the third-person skeleton. Critical for
+       multiplayer if we ever switch the local PC to TP cam.
+
+================================================================================
+  END OF M8P1 STEP 1.1+1.2 DOSSIER
+================================================================================

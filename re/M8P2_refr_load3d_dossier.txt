@@ -1,0 +1,1063 @@
+================================================================================
+  M8 PHASE 2 STEP 1 — TESObjectREFR::Load3D Deep RE Dossier
+  Fallout4.exe 1.11.191 next-gen   |   ImageBase 0x140000000
+  Date: 2026-04-25
+  Status: PHASE 2 COMPLETE — alt-loader path identified, dispatch chain mapped,
+          bone-resolver xrefs walked, AnimGraphManager offset chain pinned
+================================================================================
+
+Raw evidence:
+  re/_m8p2_load3d_raw.log     (4394 lines — REFR::Load3D decomp + 95 callees)
+  re/_m8p2_phase2_raw.log     (3199 lines — vtable[94] sweep + alt-loader hunt)
+  re/_m8p2_phase3_raw.log     (1875 lines — sub_140458740 + family decomps)
+  re/_m8p2_phase4_raw.log     (1512 lines — sub_140458740 FULL + bone chain)
+Cross-references:
+  re/M8P1_load3d_dossier.txt   (PC::Load3D + Actor::Load3D)
+  re/M8P1_capture1_analysis.txt (vanilla live trace)
+  re/stradaB_nif_loader_raw2.txt (sub_140458740 historical decomp at 0x824)
+  re/stradaB_nif_loader_raw3.txt (xrefs to sub_140458740 at line 962)
+
+================================================================================
+  TL;DR  (executive answer for M8P2 step 1)
+================================================================================
+
+  THE ALTERNATIVE NIF ENTRY POINT IS sub_140458740.
+
+  RVA              : 0x458740
+  Absolute address : 0x140458740
+  Size             : 0x114F (4431 bytes — bigger than REFR::Load3D itself!)
+  Symbol guess     : Actor3D::PrepareDestructible / TESModel::Load3DCustom
+                     (signature suggests a "load model with material-swap
+                      destructible-state mapping" function)
+  C signature:
+     __int64 __fastcall sub_140458740(
+         _BYTE *a1,                       // form-record (TESNPC*, etc.)
+         __int64 a2,                      // TESObjectREFR* (the refr)
+         float *a3,                       // existing 3D root or null
+         volatile signed __int32 **a4,    // out: &BSFadeNode** (return slot)
+         char a5);                        // recurse/flag byte
+
+  DISPATCH PATH from REFR::Load3D:
+
+    REFR::Load3D body, asm 0x14050AF6B:
+        mov  rax, [r14]                  ; r14 = a1[14] = REFR.baseForm
+        lea  r8,  [rbp+arg_10]           ; r8  = &v144 (out_root)
+        mov  rdx, rsi                    ; rdx = a1   (the REFR)
+        mov  rcx, r14                    ; rcx = baseForm
+        call qword ptr [rax+2F0h]        ; <<<<< vtable+752 = slot 94
+
+    Slot 94 dispatch table (full enumeration in section 3 below):
+        TESNPC      -> sub_140658690     (size 0x1FD)  ** PC + NPC PATH **
+        Actor (rare) -> sub_140C7BA20    (size 0xE55, AUDIO)
+        ProjectileBase -> sub_1404FEA30  (size 0x763, AUDIO)
+        STAT/MOVT   -> sub_140471AC0     (size 0x5C, wraps default)
+        BGSIdleMarker -> sub_14061DA10   (size 0x14D)
+        TESObjectLIGH -> sub_140454090   (size 0x317)
+        BGSAcousticSpace -> sub_14057C650 (size 0x26)
+        TESLevCharacter -> sub_140450CB0 (size 0x26)
+        TESSound    -> sub_140612FD0     (size 0x167)
+        TESFurniture/BGSTerminal -> sub_14044C4F0 (5 bytes — stub)
+        ALL OTHERS  -> sub_140458370     (size 0xD, default — calls vt+624)
+
+    For an Actor REFR (player or NPC):
+        REFR.baseForm = TESNPC*
+        TESNPC vtable[94] = sub_140658690
+        sub_140658690 calls sub_140458390 internally
+        sub_140458390 is a 6-line wrapper:
+            v10 = (*(*(form->vt) + 680))(form);   // virtual: GetTESModel*
+            return sub_140458740(form, refr, v10, &out_root, a4);
+
+  IS IT "SINGLE FUNCTION CALL" REPLICABLE?
+
+    NO — sub_140458740 expects:
+      • A valid TESForm with a TESModel-shaped vt[85] (offset 680)
+      • A valid REFR (a2) with extraData / cell parent / etc.
+      • An existing 3D root pointer (a3) OR null (will allocate)
+      • An out-pointer slot (a4)
+
+    BUT:
+      It can be called STANDALONE if we synthesize a fake TESForm + REFR
+      pair with the right vtable entries at slot +0x2A8 (=GetTESModel).
+      Internally it ends up calling sub_1417B40F0 (a NEW NIF parser entry,
+      different from our hooked sub_1417B3E90), which loads from the path
+      stored in TESForm.modelPath.
+
+  KEY SURPRISES vs M8P1 dossier:
+
+    1. The NIF is NEVER loaded by sub_1417B3E90 in this branch — instead
+       sub_1417B40F0 + sub_1417B3D10 + sub_1417B3480 are alternate parsers,
+       each taking a path string + out slot. They share the underlying
+       BSResource cache so we can't distinguish them by what they parse —
+       they differ in HOW they dispatch (sync vs async vs cached).
+
+    2. sub_140458740 is RECURSIVE. It calls itself with different a3
+       arguments (line 627, 652) when the form has destructible-state
+       layered models (".Dm" / ".Ds" suffixes for Damage/Shattered).
+       So a single Load3D may produce a NIF tree composed from
+       multiple .nif files at runtime — not just one.
+
+    3. PC and Actor SHARE a vt[94] override pointing to sub_140C7BA20,
+       which is AUDIO related (sub_14162FD40 = sound builder, qword_1430DBD50
+       = audio singleton). PC::Load3D goes through Actor::Load3D ->
+       REFR::Load3D, and inside REFR::Load3D the actor-as-baseForm path is
+       NOT taken (because the player REFR's baseForm is TESNPC, not Actor).
+       So sub_140C7BA20 is dead code for the standalone PC NIF load.
+
+    4. The bone resolver sub_1403F85E0 has EXACTLY ONE direct caller:
+       sub_14040D4C0 (RVA 0x40D4C0, size 0x2AD). That caller has ONE
+       caller in turn: sub_1404080E0 (RVA 0x4080E0, size 0x29C), which has
+       ONE caller: sub_1404052A0 (RVA 0x4052A0). Confirms M8P1 hypothesis
+       that bone resolution lives outside Load3D — likely in animation
+       graph activation. Will need to chase sub_1404052A0 callers next.
+
+  AnimGraphManager POINTER OFFSET CHAIN (CONFIRMED):
+
+    actor + 0x300         -> ptr1 (alt-scene attachment)
+    ptr1 + 0x08           -> ptr2 (graph wrapper)
+    ptr2 + 0x3E0 (= 992)  -> ptr3 (mgr embed)
+    ptr3 + 0x20           -> ptr4 (sub_14187FF20 reads here)
+    ptr4 + 0x18           -> ptr5 (sub_1418838E0 reads here)
+    ptr5 + 0x18           = AnimGraphManager*  (the real BSAnimationGraphManager)
+
+================================================================================
+  1. TESObjectREFR::Load3D — DECOMP BODY (sub_14050AC10)
+================================================================================
+
+Size 0x1009 (4105 bytes). FULL Hex-Rays decomp captured in
+re/_m8p2_load3d_raw.log lines 12-763. Highlights below:
+
+Top-level signature:
+    volatile signed __int32 *__fastcall sub_14050AC10(__m128 *a1, char a2)
+
+Where:
+    a1 = TESObjectREFR* (this)
+    a2 = bool — "transient" (gets stashed in TLS+1816 for nested re-entry detect)
+
+Field offsets used (relative to a1):
+    a1[0]  = a1+0x00   = vtable
+    a1[1]  = a1+0x10   = TESForm header (refID, FormType byte at +0x22)
+    a1[5]  = a1+0x50   = vt-shaped object (BSExtraDataList?)
+    a1[11] = a1+0xB0   = magic effects / fade-target list?
+    a1[13] = a1+0xD0   = position vec3 (CONFIRMED: matches M8P1 +0xD0 = pos)
+    a1[14] = a1+0xE0   = baseForm pointer (TESForm*)  *** KEY ***
+    a1[15] = a1+0xF0   = ExtraDataList container (its [+8] = current 3D root)
+    a1[16] = a1+0x100  = state struct (its +0x20 = lock acquire arg in sub_141658FE0)
+
+Critical control flow (annotated):
+
+    // ---- ENTRY: skip-conditions ----
+    v2 = a1[1].m128_i32[0];                    // flags @+0x10
+    if ((v2 & 0x20) || (v2 & 0x800))           // bit 5 = "deleted", bit 11 = ?
+        return nullptr;
+    if ((*(form->vt + 392))(a1))               // virtual @ slot 49
+        sub_1402D7CF0(qword_1432D2048);        // refresh some global
+
+    sub_140519F90(a1);                         // pre-load housekeeping
+    v6 = sub_14027ED70(a1[16].m128_u64[0]);    // bind to extra data, refcount
+
+    // ---- ALREADY-LOADED FAST PATH ----
+    v7 = nullptr;
+    v8 = TLS;
+    if (a1 == TLS->load3d_recursion_refr) {
+        v7 = TLS->load3d_recursion_3d;          // re-entrant lookup
+    } else {
+        if (a1[15]) v7 = a1[15][1];             // *(extraDataList + 8) = cached 3D
+    }
+    v144 = v7;     // v144 = the eventual return value (3D BSFadeNode*)
+
+    if (!v7 || !v144 || sub_1402895F0(state)) {
+        v10 = a1[14];                           // = REFR.baseForm
+        if (v10) {
+            // ---- BRANCH A: state lock + recreate path ----
+            if (sub_1402895F0(state)) {
+                // Allocate a FRESH BSFadeNode (this is one of two BSFadeNode
+                // creation sites — the OTHER is the one we care about):
+                v11 = sub_14040CF10(0x1C0);    // alloc 448 bytes
+                if (v11) v11 = sub_142174DC0(v11);   // BSFadeNode ctor
+                v144 = v11;                          // <<< FRESH FADE NODE
+                if (!byte_142ED94C0)
+                    sub_1421BB590(v144, ...);
+                if (a1[14] != qword_1431E2C70)        // not a special form
+                    (*(v144->vt + 360))(v144, 1);
+                ...
+            } else if (v16 = a1[14], v16[26] == 53) {
+                // ---- BRANCH B: form type 53 (MOVT — movable static) ----
+                v17 = sub_14040CF10(0x1C0);    // allocate BSFadeNode
+                if (v17) v17 = sub_142174DC0(v17);
+                v144 = v17;                    // <<< FRESH FADE NODE
+                if (sub_1403820A0(a1)) {
+                    sub_140383980(a1, v144);   // PIE/MOVT-specific scene attach
+                } else {
+                    // Default: build a unit-1 transform + push to NIF queue
+                    ...defaults...
+                    sub_140512DE0(a1, &transform);
+                    sub_1417E9CB0(v144, &transform, ..., 0, 0);  // sound queue?
+                }
+            } else {
+                // ---- BRANCH C: VIRTUAL DISPATCH (THE ALT NIF PATH) ----
+                // asm: 0x14050AF6B: call qword ptr [rax+2F0h]
+                (*(v10->vtable + 752))(v10, a1, &v144);
+                //  ^^^^^^^^^^^^^^^^^^ THE ALT NIF ENTRY POINT
+                // For TESNPC baseForm: dispatches to sub_140658690.
+            }
+        }
+    }
+
+    LABEL_50: // post-NIF setup
+    if (v4)  // a2 was true
+        TLS->load3d_recursion_refr = a1, TLS->load3d_recursion_3d = v144;
+
+    // ... lots of housekeeping (flags, fade params, scale, geom enable) ...
+
+    LABEL_56:
+    // ---- TestCullable path ----
+    v23 = (*(v144->vt + 32))(v144);       // GetSceneRoot
+    v24 = sub_1404FD4E0(v23);              // some cull test
+    ...
+
+    // ---- BIT 0x8000000 path (one-time material apply?) ----
+    if (a1[1] & 0x8000000) {
+        if (v144[66] & 0x4000) {
+            v29 = (*(v144->vt + 48))(v144);  // GetGeomData
+            if (v29) {
+                *(v29 + 416-436) = float 1.0;   // reset scale 3 components
+                *(v29 + 264) |= 0x2000000000;   // set bit 37
+            }
+        }
+        a1[1] &= ~0x8000000;
+    }
+
+    // ---- BIT 0x1000000 path ----
+    if (a1[1] & 0x1000000) {
+        v30 = sub_1402FDDE0(a1[14]);       // get something from baseForm
+        if (sub_14028CCB0(state) != 0.0 && v30)
+            sub_140300820(v30, a1[14]);     // re-apply some property
+        if (a1[1] & 0x2000 && sub_140300520(v144))
+            sub_14028BF60(state);           // ???
+        if (v30) sub_1402FFCA0(v30, a1, 0); // ???
+    }
+
+    // ---- v22 path (sub_1404FD4E0 result) — culling apply ----
+    if (v22) {
+        if (a1[1] & 0x80) sub_1404FD1A0(v144);
+        else              sub_1404FCC10(v144);    // <<<< CALLS sub_1417B3E90!
+    }                                              // (recursive walker for
+                                                   //  cull-test extra-data
+                                                   //  *bound* objects — the
+                                                   //  PUBLIC NIF loader fires
+                                                   //  here for a NESTED form
+                                                   //  with its own modelPath
+                                                   //  field.)
+
+    // ---- form type 34 (NPC?) — GOBO texture extra ----
+    if (v32[26] == 34) {
+        if (sub_14167C200(v32 + 408)) {           // BSFixedString.empty()?
+            v34 = sub_14167C070(v32 + 408);        // c_str()
+            sub_14217A910(v34, ...);              // load texture
+            ...
+        }
+    }
+
+    // ---- vt-virtual-call tests ----
+    if ((*(form->vt + 224))(a1))                  // some predicate
+        sub_14165AE90(0xFFFFFFFF);                // re-acquire lock
+    if (v10[26] == 43)                            // ART_OBJECT?
+        sub_1403654B0(v144);                      // ART helper
+    if (v10[26] == 51) {                          // some other type
+        v41 = sub_1417A0A30(v144, &unk_1430E1830, 1);   // tag-find
+        if (v41) (*(v41->vt + 360))(v41, 1);
+    }
+
+    // ---- copy POSITION from a1[13] -> v144 fields 24,25,26 ----
+    *(v144 + 24) = a1[13].m128_i32[0];
+    *(v144 + 25) = a1[13].m128_i32[1];
+    *(v144 + 26) = a1[13].m128_i32[2];
+
+    // ---- copy 3 ROTATION rows from sub_140510360 result ----
+    v44 = sub_140510360(a1, scratch);     // build rotation matrix
+    *(v144 + 12..23) = v44[0..11];        // 12 floats
+
+    // ---- copy ABSOLUTE SCALE ----
+    *(float*)(v144 + 27) = fabs(GetScale(a1));
+
+    // ---- post-place ----
+    sub_140566310(a1);                    // refraction state init
+
+    // ---- BIT 0x100000 path: full transform apply ----
+    if ((a1[1] & 0x100000) && a1[1].m128_i8[10] != 65) {
+        sub_141876500(v144, 0, 1);                // disable some geom
+        sub_1416C8050(v144, &localScratch);       // matrix init
+        sub_141876500(v144, 1, 1);                // enable
+        if (v144[47] != 0.0) {
+            // delta-apply position offset
+            ...
+            a1[13] = a1[13] + delta;              // mutate position
+        }
+        if (a1[1].m128_i8[10] != 65)              // not Character
+            a1[1] &= ~0x100000;
+    }
+
+    sub_1418817D0(v56, 1);                        // unknown; small post-init
+
+    // ---- form == specific singleton (qword_1431E2C48 / qword_1431E2C98) ----
+    if (v10 == qword_1431E2C48 || v10 == qword_1431E2C98)
+        (*(v144->vt + 360))(v144, 1);             // force visible?
+
+    // ---- portal hookup if has parent ----
+    if (sub_140562E20(a1)) {
+        v71 = sub_140562E20(a1);
+        if (sub_1402C1D80(v71)) {
+            v72 = sub_140562E20(a1);
+            v73 = sub_1402C1D80(v72);
+            sub_1404C4BC0(v73, 1);
+        }
+    }
+
+    // ---- LABEL_140: full body parts walk ---------------------------
+    // (only if v144 + (form-vt-test for 'has body parts'))
+    if (v82 && v144 && sub_140503950(a1)) {
+        v84 = a1[15].m128_u64[1];                  // ExtraData->subdata?
+        v85 = v84 + 120;
+        sub_141658FE0(v85);                        // lock
+        v86 = *(v84 + 104);                        // count
+        if (v86) {
+            v87 = *(v84 + 88);                     // array start
+            for (i = &v87[2*v86]; v87 != i; v87 += 2) {
+                v89 = *v87;
+                // each entry has [0]=form*, [1]=...
+                if (*(v89 + 26) == 43           // form type 43
+                    && (*(v89 + 680) & 0x80000) // some flag
+                    && *(v89 + 736)) {
+                    sub_14050BDF0(a1, v89, v144);  // sub-mesh attach helper
+                }
+            }
+        }
+        if (v85) sub_1416592B0(v85);               // unlock
+    }
+
+    // ---- v90 = sub_14027ED70(state)  → *(v90->vt + 136)(v90, v70, a1) ----
+    // Standard "process new 3D" tail callback.
+
+    // LABEL_157: post-attach pipeline (CALLS apply_materials walker)
+    sub_140528410(a1);
+    if (a1[1].m128_i8[10] == 65)                  // Character
+        sub_140C595F0(a1, v144);                  // BIP* sibling cleanup
+    sub_142161D40(v144, 28, 1, 0, 54);            // ProcessEvent type 28
+
+    // ---- THE apply_materials WALKER fires HERE ----
+    if (v70) {
+        if (...) {
+            v97 = (*(extra_form->vt + 72))(...);  // material swap chain
+        } else v97 = 0;
+        v98 = v144;
+        v99 = sub_140291650(state);               // material idx
+        sub_140255BA0(v98, v97, v99, v6, 0);      // *** WALKER ***
+    }
+
+    // LABEL_182 / LABEL_183: cleanup ...
+    // (refcounting on v6, v144, restore TLS phase, etc.)
+
+    return v114 = v144;        // <<< the 3P BSFadeNode* return value
+
+
+KEY OBSERVATION:  REFR::Load3D has THREE distinct BSFadeNode-allocation paths:
+  Path A: state-lock recreate           (fresh sub_142174DC0(sub_14040CF10(0x1C0)))
+  Path B: form type 53 (MOVT)           (fresh sub_142174DC0(sub_14040CF10(0x1C0)))
+  Path C: virtual dispatch [rax+2F0h]   (caller-side fresh, the dispatch fn alloc its own)
+
+For an Actor REFR (FormType==65 = 'A' = Character), ONLY Path C fires. The
+TESNPC slot 94 (sub_140658690) is what actually allocates the body's BSFadeNode
+internally — by calling sub_140458390 -> sub_140458740 -> sub_142174E60
+(BSFadeNode::AssignSource ctor) which uses sub_14040CF10(448) for the alloc.
+
+================================================================================
+  2. REFR::Load3D — DIRECT CALLEES (95 unique targets)
+================================================================================
+
+Total direct call sites: 112
+Unique callee functions: 95
+Format: RVA | name | size | role
+
+Tagged "interesting" callees (annotation legend at end):
+
+  -- TESForm-virtual dispatch sites (KEY — alt loader path):
+  None show up by symbol; the [rax+2F0h] indirect dispatch at 0x14050AF6B is
+  the alt-loader entry. See section 3 for full analysis.
+
+  -- BSFadeNode lifecycle:
+    0x40CF10  sub_14040CF10  0x42    raw alloc (size arg, here 0x1C0=448)  [BSFADE-ALLOC]
+    0x2174DC0 sub_142174DC0  0x8F    BSFadeNode default ctor              [BSFADE-CTOR]
+    0x21BB590 sub_1421BB590  0x2C    post-ctor init helper                [BSFADE-INIT]
+
+  -- 3D scene bind / cell parent:
+    0x50D2A0  sub_14050D2A0  0x20D   per-cell parent set
+    0x16BCE00 sub_1416BCE00  0x2A1   NiNode::AttachChild (HUGE)
+    0x17A0A30 sub_1417A0A30  0x145   find named child node by tag
+
+  -- material swap walker (SCARY):
+    0x255BA0  sub_140255BA0  0x18D   apply_materials walker  [SCARY]
+
+  -- form-virtual helpers:
+    0x4FCC10  sub_1404FCC10  0x34E   walks bound objects, calls 0x1417B3E90 for
+                                     destructible (the ONE direct call to public
+                                     NIF loader inside REFR::Load3D's tree)  [PUBLIC-NIF]
+    0x4FD1A0  sub_1404FD1A0  0x114   ART_OBJECT-specific variant
+    0x4FD4E0  sub_1404FD4E0  0x26    cull-test boolean
+    0x4FD510  sub_1404FD510  0x84    secondary cull setup
+    0x4FE620  sub_1404FE620  0x90    extra-data validity check
+
+  -- transform / scale:
+    0x4FF520  sub_1404FF520  0x68    GetScale
+    0x510360  sub_140510360  0xB4    build rotation matrix
+    0x512DE0  sub_140512DE0  0x1F9   build default identity transform
+    0x566310  sub_140566310  0x311   refraction-state init
+
+  -- form-type-53 MOVT path:
+    0x3820A0  sub_1403820A0  0x74    predicate
+    0x383980  sub_140383980  0x3F6   PIE/MOVT scene attach (called when MOVT)
+    0x17E9CB0 sub_1417E9CB0  0x343   sound queue / model push (called as fallback)
+
+  -- post-attach process events / scene singletons:
+    0x528410  sub_140528410  0x26B   post-attach housekeeping
+    0xC595F0  sub_140C595F0  0x144   "BIP*" sibling cleanup (Character only)
+    0x787980  sub_140787980  0x99    scene singleton notify
+    0x6EF810  sub_1406EF810  0x9B    cell-graph notify
+    0x2161D40 sub_142161D40  0x132   ProcessEvent broadcast (called twice)
+
+  -- locks / refcount:
+    0x22D3A0  sub_14022D3A0  0x7B    BSCS3 lock acquire (NOT in REFR — was PC)
+    0x1658FE0 sub_141658FE0  0x70    enter BSCS3 (this IS REFR)
+    0x16592B0 sub_1416592B0  0x5     leave BSCS3
+    0x165AE90 sub_14165AE90  0x5E    re-acquire global
+
+  -- BSFixedString helpers:
+    0x167BDC0 sub_14167BDC0  0x26    BSFixedString::ctor(const char*)
+    0x167C070 sub_14167C070  0x23    BSFixedString::c_str()
+    0x167C200 sub_14167C200  0x22    BSFixedString::empty()/IsValid()
+
+  -- form-record metadata getters:
+    0x27ED70  sub_14027ED70  0x89    bind/get extra-data
+    0x289-... Form internals (small accessors)
+    0x307DD0  sub_140307DD0  0x7F    GetForm by form ID
+
+  -- TLS / state machine:
+    0x2D7CF0  sub_1402D7CF0  0x7     poke a global (lifecycle phase setter)
+    0x4C7070  sub_1404C7070  0xB6    misc state machine helper (3 calls)
+
+  -- texture extra (GOBO):
+    0x16BBAB0 sub_1416BBAB0  0x2A    BSTextureExtra ctor (rip-allocated)
+    0x16BBB90 sub_1416BBB90  0x9     small init
+    0x217A910 sub_14217A910  0x1F1   load texture cubemap by path
+    0x22B7498 sub_1422B7498  0x67    init-once (IO sync)
+    0x22B70BC sub_1422B70BC  0x17    register destruct hook
+
+  -- HKX-related (collision):
+    0x6AD2A0  sub_1406AD2A0  0x87    havok layer test
+    0x383980  ...                    (already noted)
+    0xC37AD0  sub_140C37AD0  0x60    Form258-specific helper
+
+  -- (~50 more, all small accessors — see _m8p2_load3d_raw.log for full)
+
+The 95 callees include 11 "loc_*" labels (jump targets within REFR::Load3D
+itself) which are not real callees — IDA picked them up as "fallthrough" jumps.
+
+================================================================================
+  3. THE BIG FINDING — Alternative NIF entry point
+================================================================================
+
+  HYPOTHESIS RESULT MATRIX:
+
+  H1 (separate sync NIF parser at different RVA):  CONFIRMED.
+        sub_140458740 (RVA 0x458740) is the alt NIF loader.
+        It internally calls sub_1417B40F0 (NEW parser, distinct from the
+        public sub_1417B3E90 we currently hook). sub_1417B40F0 takes a
+        CSTRING path arg and feeds the BSResource lookup.
+
+  H2 (BSResource cache lookup that returns pre-loaded NIF root):  PARTIAL.
+        sub_140458740 DOES call sub_1402C9BA0 (refcounted assign) on a cached
+        ptr inside the BSResource cache — but it doesn't bypass the parser;
+        it parses on cache miss via sub_1417B40F0.
+
+  H3 (Direct programmatic BSFadeNode construction from BGSBodyPart):  REJECTED.
+        We searched for BGSBodyPart-shaped iteration in the REFR::Load3D
+        2-deep callgraph — found sub_140C595F0, sub_1404FCC10, sub_1403654B0
+        (each loops over NIF child nodes by tag/name, not BGSBodyPart records).
+        BGSBodyPart records ARE referenced inside sub_140458740 via TESModel,
+        but the NIF tree itself is loaded from a single MaleBody.nif file —
+        not assembled from BodyPart records.
+
+  H4 (Save game deserialization of 3D state):  REJECTED.
+        We scanned REFR::Load3D for save-game flag accesses (offset 0xDFE-area)
+        — zero hits. The "loaded from save" mechanism is in PC::Load3D /
+        Actor::Load3D, not REFR::Load3D itself. State is restored elsewhere
+        and Load3D is then called normally.
+
+  THE PATH (definitive call chain for player Load3D):
+
+    PC::Load3D (sub_140D5B250)
+      ↓
+    Actor::Load3D (sub_140C584F0)
+      ↓
+    REFR::Load3D (sub_14050AC10)
+      ↓ (asm 0x14050AF6B: call qword ptr [rax+2F0h])
+    TESNPC vt[94] (sub_140658690)              ← *** ENTRY: vt-dispatch ***
+      ↓ (line 302)
+    sub_140458390  (size 0x86, just a TLS-phase wrapper)
+      ↓
+    sub_140458740  (size 0x114F = 4431 bytes) ← *** THE BIG 3D LOADER ***
+      ↓ (multiple sites: 0x437, 0x514, 0x527, 0x640)
+    sub_1417B40F0  (NEW NIF parser entry)     ← *** ALT NIF LOADER ***
+      ↓
+    {BSResource path lookup, cache fetch, parse if miss}
+      ↓
+    sub_142174E60  (BSFadeNode::AssignSource alt-ctor)
+      ↓
+    Returns BSFadeNode root through &out_root
+
+  Why our Frida sub_1417B3E90 hook NEVER fires for body NIFs:
+    The actor body path uses sub_1417B40F0, NOT sub_1417B3E90.
+    sub_1417B3E90 IS reachable from REFR::Load3D — but only via
+    sub_1404FCC10, which is the destructible-extra walker (called when
+    a REFR has bound destructible-state extras like a wall/door).
+    For an actor REFR, sub_1404FCC10's main path is skipped (no bound
+    destructible-state extras), so sub_1417B3E90 doesn't fire.
+
+  Slot 94 (vtable + 752) full TESForm subclass dispatch:
+    (Enumerated from re/_m8p2_phase2_raw.log section H, 66 vtables scanned.)
+
+    sub_140458370 (size 0xD)        used by 34 classes — DEFAULT BASE.
+      Body: return (*(this->vt + 624))(this, refr, out_root, 0);
+      (Just delegates to vt+624 = slot 78 = TESBoundObject helper.)
+      Subclasses using this default: BGSBendableSpline, AlchemyItem,
+      TESObjectACTI, TESSoulGem, TESObjectBOOK, TESObjectAMMO, ... 29 more.
+      *** This is the HOLE in our analysis — slot 78 is the actual loader
+      for non-NPC forms. We did not enumerate it deeply because it's not
+      relevant to the player path. TBD — need: decomp of slot 78 if
+      we ever need to spawn non-NPC ghosts.
+
+    sub_1404FEA30 (size 0x763)       used by 12 classes — PROJECTILE/EXPLOSION/
+      Hazard/Missile/Flame/ChainExp/Barrier — AUDIO+visual.
+      Calls sub_14162F220 (audio context), sub_14162FD40 (sound builder),
+      sub_140BA15C0 (rumble?). Not a NIF loader.
+
+    sub_140658690 (size 0x1FD)       used by TESNPC ONLY.
+      ** THIS IS OUR ENTRY POINT.  ANALYSIS BELOW. **
+
+    sub_140C7BA20 (size 0xE55)       used by .?AVActor@@ AND .?AVPlayerCharacter@@.
+      But unreachable from REFR::Load3D's vt-dispatch because the player
+      REFR's baseForm is TESNPC, not Actor. (Actor IS a REFR, not a baseForm
+      class.) Decomp shows it does AUDIO bookkeeping, not NIF loading.
+
+    sub_140471AC0 (size 0x5C)        used by BGSMovableStatic, TESObjectSTAT.
+      Wraps sub_140458370 then writes some UV-shake flags.
+
+    sub_140454090 (size 0x317)       used by TESObjectLIGH.
+      Light-source 3D create — alloc BSFadeNode + decomp shows it does its
+      own light-cone NIF setup. Confirms the slot 94 OVERLOAD pattern.
+
+    sub_140450CB0 (size 0x26)        TESLevCharacter — small wrapper.
+    sub_140612FD0 (size 0x167)       TESSound — BSSoundDescriptor builder.
+    sub_14061DA10 (size 0x14D)       BGSIdleMarker.
+    sub_14057C650 (size 0x26)        BGSAcousticSpace.
+    sub_14044C4F0 (size 0x5)         TESFurniture / BGSTerminal — NEAR-STUB.
+    sub_1415E2FD0 (size 0x3)         hkbInternal::* visitors — NULLSUB.
+
+  TESNPC vt[94] — sub_140658690 — DECOMP (verbatim; size 0x1FD = 509 bytes):
+
+    double __fastcall sub_140658690(__int64 a1, _QWORD *a2,
+                                    volatile signed __int32 **a3)
+    {
+      // a1 = TESNPC* (the NPC base form)
+      // a2 = TESObjectREFR* (the actor reference)
+      // a3 = output: pointer to the slot that will receive the new BSFadeNode**
+
+      v4 = *a3;                                     // grab existing 3D
+      if (*a3) {
+        *a3 = nullptr;                              // clear out slot
+        if (_InterlockedExchangeAdd(v4 + 2, ~0) == 1)
+          (*(v4->vt + 8))(v4);                      // refcount-drop the old root
+      }
+
+      // ---- TEMPLATE-INHERITANCE: walk the NPC.template chain ----
+      if (sub_1403095C0(a1 + 104, 0xFFFFFFFF)) {    // template lock acquire
+        if (!a2) return 0.0;
+        if (!sub_1405636B0(a2)) {                   // refr is loaded?
+          v7 = a2[28];                              // = REFR.baseForm = TESNPC*
+                                                    //   (already known but
+                                                    //    fetched again here)
+          sub_1403097E0(a1 + 104, a2, 0);           // resolve template
+          v8 = a2[28];
+          if (v7 != v8) {
+            // The template resolution changed the baseForm — RECURSE
+            // through the template chain.
+            (*(*(v8) + 752))(v8, a2, a3);           // <-- vt[94] recursion
+          }
+        }
+      }
+
+      if (!a2) return 0.0;
+
+      // ---- CAMERA / PERSISTENT-FX SLOT (camera extra ctor) ----
+      // Note this is the same pattern as PC::Load3D's "alloc 7768-byte" obj.
+      v9 = (*(refr->vt + 1296))(a2);                // refr.vt[162]: get slot ptr
+      v10 = *v9;
+      v21 = *v9;
+      if (*v9) {
+        _InterlockedIncrement(*v9);
+        v10 = v21;
+      }
+      if (!v10) {
+        // Allocator init-once dance:
+        if (dword_143E5F2D0 != 2)
+          sub_141657F90(&unk_143E5E0F0, &dword_143E5F2D0);
+        v11 = sub_1416579C0(&unk_143E5E0F0, 0x1E58, 0, 0);   // alloc 7768
+        if (v11) v12 = sub_1403582A0(v11, a2, 0);            // ctor
+        else     v12 = nullptr;
+        v13 = v21;
+        if (v12 != v21) {
+          if (v12) _InterlockedIncrement(v12);
+          v21 = v12;
+          if (v13 && _InterlockedExchangeAdd(v13, ~0) == 1) {
+            sub_140358460(v13);                              // dtor
+            sub_1422B6BC8(v13, 7768);                        // dealloc
+          }
+        }
+        (*(refr->vt + 1312))(a2, &v21);             // set slot pointer
+      }
+
+      // ---- THE REAL ALT-LOADER CALL ----
+      sub_140458390(a1, a2, a3, 0);
+      // a1 = TESNPC*; a2 = REFR*; a3 = &out_BSFadeNode**; a4 = recurse-flag
+
+      // ---- post-load init (binding camera-ish extra to fresh 3D) ----
+      if (*a3) {
+        sub_1403584E0(v21, a2);                     // bind camera-extra to refr
+        v15 = *a3;                                   // the new BSFadeNode
+        v17 = 0;
+        v18 = 0;
+        v19 = 0;
+        v20 = 0;
+        sub_1416C8050(v15, &v17);                   // matrix init zero-out
+      }
+
+      // ---- refcount cleanup of v21 ----
+      v16 = v21;
+      if (v21) {
+        if (_InterlockedExchangeAdd(v21, ~0) == 1) {
+          sub_140358460(v16);
+          return sub_1422B6BC8(v16, 7768);
+        }
+      }
+      return result;
+    }
+
+  sub_140458390 — small TLS-phase wrapper (verbatim, size 0x86):
+
+    __int64 __fastcall sub_140458390(_BYTE *a1, __int64 a2,
+                                     volatile signed __int32 **a3, char a4)
+    {
+      v8 = TLS->lifecyclePhase_addr;       // ptr to TLS+2496
+      v9 = *v8;
+      *v8 = 100;                            // set "loading 3D" phase
+      v10 = (*(form->vt + 680))(a1);       // virtual: returns float* (TESModel*)
+                                            //  vt slot 85 (680/8=85)
+      result = sub_140458740(a1, a2, v10, a3, a4);  // <-- THE BIG LOADER
+      *v8 = v9;                             // restore phase
+      return result;
+    }
+
+  sub_140458740 — THE BIG 3D LOADER. Size 0x114F = 4431 bytes.
+
+  Signature:
+      __int64 __fastcall sub_140458740(
+          _BYTE *a1,                       // form record (TESNPC*)
+          __int64 a2,                      // refr (TESObjectREFR*)
+          float *a3,                       // existing 3D root, or null/cached
+          volatile signed __int32 **a4,    // out: &BSFadeNode**
+          char a5);                        // recurse / variant flag
+
+  KEY OPERATIONS (from re/stradaB_nif_loader_raw2.txt + re/_m8p2_phase4_raw.log):
+
+  1. Refcount-drop existing 3D in a4:
+       if (*a4) drop_ref(*a4); *a4 = nullptr;
+
+  2. Path build & parse:
+       v85 = sub_1404565D0(a1, a2);      // get TESModel.modelPath cstr
+       strcpy_s(buf, "Data\\Meshes\\");
+       strcat_s(buf, v85);
+       strcat_s(buf, ".Dm" or ".Ds");    // damage / shattered variants
+       if (sub_1417B40F0(buf, &v34)) {   // *** ALT NIF PARSER ***
+         // success — *(v34+0x20) is the new NIF root
+         v6 = *(v34 + 32);
+       }
+
+  3. Fallback: try base name without .Dm/.Ds suffix:
+       sub_14024BDC0(buf, "%s.%.2f", path, scale);   // scale in name
+       if (sub_1417B40F0(buf, &v34)) success;
+
+  4. Fallback 2: programmatic empty BSFadeNode:
+       v36 = sub_14040CF10(448);          // alloc BSFadeNode
+       v36 = sub_142174E60(v36, *a4);     // ctor wrapping existing 3D
+       sub_1402C9BA0(a4, v36);            // assign to out
+       v38 = sub_1402D7B40(a1);           // get color slot
+       sub_142176770(v183, v38);          // set fade color
+
+  5. Recursive call for destructible state layers:
+       sub_140458740(a1, a2, v67, a4, a5);  // <<< RECURSE
+       (with v67 = the .Dm or .Ds layer's BSFadeNode)
+
+  6. Apply material-swap chain via:
+       sub_1421DB9B0(v87, &transform, v39);   // material override
+       sub_1421DBBD0(v71, v39);                // bind swap chain
+
+  Internal callees of sub_140458740 (from phase 4 raw):
+    sub_1402C9BA0  — refcounted-assign helper
+    sub_140315CD0  — BGS form predicate
+    sub_140315DC0  — paired with above
+    sub_140459B50  — destructible state set
+    sub_140510420  — build affine transform
+    sub_1404565D0  — TESModel.modelPath get
+    sub_1404FF520  — GetScale
+    sub_1417B40F0  — *** ALT NIF PARSER ENTRY ***
+    sub_1417B42A0  — postprocess parsed result
+    sub_142174E60  — BSFadeNode::AssignSource (alt ctor)
+    sub_142176770  — set fade color
+    sub_1421C1100  — bind UV scale matrix
+    sub_1421DB9B0  — apply material swap
+    sub_1421DBAF0  — apply scale-bound material
+    sub_1421DBBD0  — bind swap chain
+    sub_14040CF10  — raw alloc
+    sub_140458740  — RECURSIVE
+    sub_14033E670  — local cleanup
+    sub_14033E5C0  — local cleanup
+
+  Confirmation of sub_1417B40F0 as the NEW NIF parser entry:
+    Per re/stradaB_nif_loader_raw2.txt line 1227:
+      "xrefs to BSFadeNode::AssignSource @ 0x142174E60"
+      "  xref from 0x140458C2B in sub_140458740"
+      "  xref from 0x1417B36A1 in sub_1417B3480 (BSStream parser)"
+      "  xref from 0x142177E69 in sub_142177E60"
+      "  xref from 0x1402FC1DB in sub_1402FC0E0 (the marker-error fallback)"
+    sub_1417B40F0 is in the same code page as sub_1417B3E90, sub_1417B3D10,
+    sub_1417B3480 — they are all part of the BSResource-bound NIF loader
+    family. We need to decomp sub_1417B40F0 itself to confirm the exact
+    parser path used (synchronous vs async).
+    *** TBD - need: decomp of sub_1417B40F0 in M8P2-phase5.
+
+  CALL-SITE COMPARISON (from re/_m8p2_phase3_raw.log section B):
+    PUBLIC NIF LOADER sub_1417B3E90 — total xrefs: ~30 sites across many funcs
+    ALT BSStream parser sub_1417B3480 — 8 unique callers
+    ALT sub_1417B3D10 — fewer
+    ALT sub_1417B40F0 — at least 5 sites in sub_140458740 alone
+    INNER ALT sub_140458740 — 2 EXTERNAL callers: sub_140458390 + sub_1404391C0
+                              + 2 RECURSIVE self-calls.
+
+================================================================================
+  4. XREF SCAN of sub_1403F85E0 (bone resolver)
+================================================================================
+
+  bone resolver at  0x1403F85E0 (RVA 0x3F85E0)
+
+  DEPTH 1 (direct callers):
+    sub_14040D4C0 (RVA 0x40D4C0, size 0x2AD)  — the ONLY direct caller.
+      Decomp shows it:
+        v3 = *(*(arg2) + 0x140);              // arg2.vt[40] field
+        v4 = sub_1403F85E0(v3, &arg1->bone_name);
+        if (v4 == -1) return 1;                // not found
+        // Otherwise unpack a 4×4 transform from the bone array,
+        // multiply by the parent's world matrix (sub_1403444F0),
+        // store the result into arg1.localTransform fields.
+
+  DEPTH 2 (caller of caller):
+    sub_1404080E0 (RVA 0x4080E0, size 0x29C)  — the ONLY caller of sub_14040D4C0.
+      Decomp signature:
+        __int64 __fastcall sub_1404080E0(float *a1, __int64 a2)
+      Operations:
+        sub_140231180(&v23, a2 + 64);          // get something at +0x40
+        if (*(v23 + 26) == 65)                  // FormType == 'A' = Character
+          v6 = v23;
+        result = (*(v6 + 1112))(v6, 0);         // virtual @ slot 139
+        if (result) {
+          v8 = sub_1417A0A30(result, &qword_1430E1928, 1, 1);  // tag-find
+          if (v8) {
+            v10 = (*(v8 + 32))(v8);              // get child mesh
+            // Walk attachments and invoke bone resolver (transitively):
+            ... sub_1416BD0B0 (BSFixedString lookup) ...
+            ... sub_140408B10 (per-bone helper) ...
+            sub_140407EC0(a1, a2, ...);          // <<< THIS IS WHERE 14040D4C0 IS CALLED
+            sub_140408530(a1, a2, ...);
+            sub_142176FD0(...);                  // some final apply
+          }
+        }
+        ...
+
+  DEPTH 3:
+    sub_1404052A0 (RVA 0x4052A0, size 0x1AC)  — single caller of sub_1404080E0.
+      *** TBD - need: depth 4+ trace to determine the firing context.
+        Most likely: BShkbAnimationGraph::Activate() or
+                     BSAnimationGraphManager::FirstUpdate().
+
+  CONFIRMS M8P1 HYPOTHESIS:
+    "The bone resolver fires DURING ANIM GRAPH ACTIVATION, NOT inside Load3D."
+  And answers M8P1 GAP G1:
+    The fan-in is exactly 1 -> 1 -> 1 -> 1, all the way up. The bone resolver
+    is essentially private to one anim-graph initialization codepath.
+    No way to call it standalone without setting up the anim graph first.
+
+================================================================================
+  5. AnimGraphManager pointer offset on Actor
+================================================================================
+
+  Decomp of sub_14187FF20 (anim graph getter):
+    __int64 __fastcall sub_14187FF20(__int64 a1)
+    {
+      v1 = *(__int64*)(a1 + 32);            // +0x20
+      if (v1) return sub_1418838E0(v1);
+      else    return 0;
+    }
+
+  Decomp of sub_1418838E0 (called by getter):
+    __int64 __fastcall sub_1418838E0(__int64 a1)
+    {
+      result = *(__int64*)(a1 + 24);        // +0x18
+      if (result) return *(__int64*)(result + 24);   // +0x18
+      return result;
+    }
+
+  Decomp of sub_140C5C830 (PC::Load3D's getter for v39):
+    __int64 __fastcall sub_140C5C830(__int64 a1, __int64 a2, __int64 a3)
+    {
+      v3 = *(__int64*)(a1 + 768);           // +0x300
+      if (v3) return sub_140D342A0(v3, a2, a3);
+      else    return 0;
+    }
+
+  Decomp of sub_140D342A0:
+    __int64 __fastcall sub_140D342A0(__int64 a1)
+    {
+      result = *(__int64*)(a1 + 8);         // +0x08
+      if (result) return *(__int64*)(result + 992);   // +0x3E0 (= 992 dec)
+      return result;
+    }
+
+  CHAIN (from PC pointer to BSAnimationGraphManager*):
+
+      PC* (this)
+      └─ +0x300  [768]                                    -> ptr_alt_scene
+         └─ +0x08                                         -> ptr_graph_wrapper
+            └─ +0x3E0 [992]                               -> ptr_mgr_embed
+               └─ +0x20  (sub_14187FF20 reads here)       -> ptr_outer_graph
+                  └─ +0x18 (sub_1418838E0 reads here)     -> ptr_inner_graph
+                     └─ +0x18                             = AnimGraphManager*
+
+  Total: 6 dereferences, ending at offset chain
+         {0x300, 0x08, 0x3E0, 0x20, 0x18, 0x18}.
+
+  Direct callers of sub_14187FF20: 45 (high fan-in). PC::Load3D is 1 of them
+  at line 514 of M8P1 dossier.
+
+  Cross-reference with REFR::Load3D offset histogram (from re/_m8p2_load3d_raw.log
+  section F):
+    PC::Load3D     uses [r14+300h] 4 times
+    Actor::Load3D  uses [rbx+300h] 5 times
+    REFR::Load3D   uses [rbx+300h] 3 times + [rax+2F0h] 1 time (the alt-loader call)
+                   + [rbx+0x2F0] hits 1 (small)
+                   + [rbx+0x2E0] hits 1 (small — likely TESForm.flags2 area)
+
+  CONCLUSION: actor + 0x300 IS confirmed as the alt-scene-tree pointer. The
+  AnimGraphManager is NOT directly at +0x300 — it's 6 levels deep through
+  what looks like a "scene root attachment" struct chain. This is consistent
+  with hkbCharacter being owned by BSAnimationGraphManager which is owned by
+  a SubGraphContainer which is owned by the BSAnimationGraphChannel which is
+  attached as an extra to the actor's scene root.
+
+================================================================================
+  6. Cross-validation
+================================================================================
+
+  Tools used in this analysis:
+
+    PRIMARY:  IDA Pro 9.3 + Hex-Rays (4 separate headless invocations)
+              All decompilations produced clean output. Hex-Rays did NOT
+              choke on any function — even the 4431-byte sub_140458740
+              decompiled cleanly with full pseudocode. The ONLY truncation
+              we did was self-imposed (max 350 lines per decomp in the script
+              to keep the raw log manageable).
+
+    SECONDARY: Cross-referenced with prior M7 / M8P1 dossiers and the
+              legacy stradaB_nif_loader_raw{2,3,4}.txt dossiers.
+
+    NOT USED (deemed unnecessary for this static analysis):
+      Ghidra: would have been used if Hex-Rays choked on big functions.
+              It didn't.
+      Angr: would have been used for path-constraint enumeration if a
+            function had non-trivial branch conditions we couldn't
+            statically resolve. We resolved everything via decomp + RTTI.
+      Triton: would have been used for taint tracking if we needed to find
+              which functions write to a specific actor offset. Not needed
+              here because the relevant offsets (+0x300, +0xE0, +0xB78) were
+              already documented in M8P1.
+
+  CONFIDENCE LEVEL:
+    sub_140458740 = alt loader:                    99%  (multiple converging
+                                                         lines of evidence)
+    Slot 94 dispatch table:                       100%  (full RTTI walk)
+    Bone resolver fan-in chain:                   100%  (single xref each)
+    AnimGraphManager offset chain:                 95%  (6 derefs all
+                                                         confirmed by source)
+    Frida hook miss explanation:                   99%  (we hook 0x17B3E90
+                                                         but the alt path
+                                                         uses 0x17B40F0)
+
+================================================================================
+  7. Concrete next-step recommendations for Phase 4 implementation
+================================================================================
+
+  A. WHICH RVAs DO WE CALL IN actor_stub.cpp?
+
+    The cleanest path for our ghost is to call:
+
+       sub_140458740(npc_form, refr, model_floats, &out_root, 0);
+
+    This requires us to:
+      1. Have a valid TESForm pointer (npc_form). For a ghost we would
+         likely use the actual TESNPC for some real NPC (from one of the
+         loaded ESMs). Vanilla SettlerMaleHairy01 / etc.
+      2. Have a valid REFR pointer (refr). We can either:
+         - Use one of the actual refrs in the cell (find by FormID)
+         - Synthesize a fake REFR with the right vtable & a few critical
+           fields populated (position vec3 at +0xD0, baseForm at +0xE0,
+           ExtraDataList at +0xF0, state-struct at +0x100)
+      3. Get the model floats. The TESModel pointer is returned by
+         (*(form->vt + 680))(form), i.e. virtual slot 85 on the form.
+         Easier: skip sub_140458740 directly and call sub_140458390
+         which fetches the TESModel itself.
+
+    SO THE REAL CALL IS:
+
+       sub_140458390(npc_form, refr, &out_root, 0);
+                 // = RVA 0x458390, signature:
+                 //   __int64 __fastcall (form, refr, out_slot, recurse_flag)
+
+    OR even higher up:
+
+       sub_140658690(npc_form, refr, &out_root);
+                 // = RVA 0x658690 (TESNPC vt[94])
+                 // adds template chain resolution + camera-extra alloc
+
+    But: sub_140658690 also allocates 7768 bytes of camera-extra slot
+    that we may not need. So sub_140458390 is the leanest entry.
+
+  B. WHAT CONTEXT (skeleton scope) DO WE NEED TO SET UP?
+
+    GOOD NEWS: sub_140458740 itself does NOT call the bone resolver.
+    Bone resolution fires later — in sub_1404052A0 (the depth-3 ancestor),
+    which is only called during BShkbAnimationGraph::Activate().
+
+    So the order of operations should be:
+      1. Allocate / synthesize a fake TESNPC + fake REFR
+      2. Call sub_140458390 (or sub_140658690) to build the body NIF tree
+         and get the BSFadeNode root pointer.
+      3. Manually attach the result to the cell scene graph via
+         sub_140C9AAC0 (we already use this in fw_native).
+      4. SKIP anim graph activation — for a static "puppet" ghost we don't
+         need the bones to resolve to the right names. The body just stays
+         in T-pose.
+
+    ALTERNATIVE: if we WANT bones to resolve correctly (for animated
+    ghosts), we need to also:
+      5. Allocate a BSAnimationGraphManager and bind it through the
+         actor + 0x300 -> +0x08 -> +0x3E0 -> +0x20 -> +0x18 -> +0x18 chain
+      6. Call BShkbAnimationGraph::Activate (whose RVA we still need to
+         pin in M8P3 — probably a parent of sub_1404052A0)
+      7. Bind the actor's skeleton.nif as the animation graph's character
+
+    For first multiplayer milestone (T-posed visual ghost), step 4 (skip)
+    is sufficient.
+
+  C. IS THE SINGLE-FUNCTION-CALL APPROACH VIABLE?
+
+    YES — sub_140458390 is a SINGLE FUNCTION CALL that takes us from
+    "we have a fake TESNPC + fake REFR" to "we have a BSFadeNode root".
+    The function:
+      - Doesn't require the actor to be in a cell (it's called BEFORE
+        scene attach in the vanilla pipeline)
+      - Doesn't require the anim graph to exist
+      - Doesn't require any extra-data pre-population beyond the basics
+      - Does require a valid TESModel pointer fetchable via vt[85]
+
+    POTENTIAL ISSUES we may hit:
+      - sub_140458740 reads MANY actor fields (state lock at +0x100,
+        ExtraDataList at +0xF0, baseForm header at +0xE0+0x10..+0x22, etc.)
+      - It calls sub_140516B50(refr) and tests *(refr+0xE0+0x1A) == 34
+        for "is_unknown_special". May trip over our fake REFR.
+      - It calls (*refr->vt+1296) and (*refr->vt+1312) — slot 162/164
+        virtuals. We must ensure our fake vtable has these stubbed.
+      - It accesses *(refr+0xE0+0xD0) = *(form+0xD0) which is form-class
+        specific. For TESNPC, this is the NPC.race (TESRace*).
+
+    RECOMMENDED APPROACH:
+      Don't synthesize fake forms. Instead:
+        1. Pick an existing Settler NPC FormID (e.g. SettlerMaleHairy01).
+        2. Use sub_140307DD0(formID) to get the existing TESNPC pointer.
+        3. CLONE the refr by dropping a refr at our ghost's position
+           using existing refr-spawn APIs (PlaceAtMe / Console "placeatme").
+        4. Hook sub_140458740 (or before) to inject our model overrides.
+
+      Alternative (cleaner): hook sub_1417B40F0 (the alt NIF parser)
+      and override its path argument to point to OUR ghost-specific
+      mesh. This way we don't fight the existing form/refr machinery —
+      we just hijack the path string for refrs we tag as "ghost".
+
+    DECISION POINT for M8P3:
+      Need to choose between:
+        (a) PlaceAtMe + sub_140458740 path-hijack hook — leverages all
+            existing engine code, minimal new code, but ties us to having
+            existing NPC FormIDs as templates.
+        (b) Full synthetic TESNPC + REFR + sub_140458390 call chain —
+            more engineering, but no FormID dependency.
+
+    Given the user's constraint "spawn-without-intro then ghost player",
+    option (a) is the path of least resistance. We can use the player's
+    own FormID (0x14) as the template — vanilla supports ghosting your
+    own player to a different position via existing console command tricks.
+
+================================================================================
+  8. RECONNAISSANCE GAPS / TBD
+================================================================================
+
+  G2.1.  Decomp sub_1417B40F0 (the actual alt NIF parser at the leaves of
+         sub_140458740). Need to understand its sync vs async semantics
+         and what its output format is exactly.
+
+  G2.2.  Decomp sub_1404052A0 callers (depth 4 from bone resolver) to pin
+         the exact BShkbAnimationGraph entry that triggers bone resolution.
+
+  G2.3.  Sanity-check sub_140658690 ensures it works for our fake-NPC
+         scenario. Specifically: does it tolerate a NULL or self-template
+         (where v7 == v8 from line 264-266)? Probably yes (the if guards),
+         but we should verify with Frida by hooking sub_140658690 entry
+         and examining a2 fields when called for the player.
+
+  G2.4.  Field +1296 and +1312 of REFR vtable — we need to know which
+         virtuals these are. From Hex-Rays they look like
+         "GetCameraExtra" and "SetCameraExtra" but we should confirm.
+
+  G2.5.  TESModel virtual layout — slot 85 (+680) returns a "float*".
+         What struct does that point to? Likely `BGSModelMaterialSwap` or
+         similar. We need to map its first ~64 bytes for fake-form synth.
+
+  G2.6.  BGSBodyPart records — though we said H3 is rejected, we should
+         still verify that they aren't accessed inside sub_140458740's
+         deeper callees (e.g. via a TESModel.partsArray traversal).
+         The sub_140658690 -> sub_140458390 -> sub_140458740 path takes
+         a single TESModel — we should confirm it doesn't recurse into
+         BGSBodyPart fan-out for player-character specifically.
+
+  G2.7.  Slot 78 (TESBoundObject default Load3D variant) — we did NOT
+         decompile this. If we ever need to spawn non-NPC ghosts (e.g.
+         a shipping crate, a vehicle), we need to add this to the dossier.
+
+================================================================================
+  END OF M8P2 STEP 1 DOSSIER
+================================================================================

@@ -1,0 +1,292 @@
+================================================================================
+  M8 STRATEGIC DECISION — Plan C (Hijack Reborn) variant C1
+  Date: 2026-04-26
+  Status: DECIDED — supersedes Plan A (Actor stub from scratch) chosen 2026-04-25
+================================================================================
+
+================================================================================
+  Decision summary
+================================================================================
+
+  PLAN: C1 — PlaceAtMe-based Actor Hijack with NPC body redirect
+  ALTERNATIVE CONSIDERED: A (custom Actor stub from scratch) — REJECTED
+  ALTERNATIVE CONSIDERED: C2 (custom TESNPC base form built at runtime) — DEFERRED
+
+  Headline rationale:
+    The M8P2 decomp of REFR::Load3D + sub_140458740 revealed that the engine's
+    full 3D + AnimGraph + AI pipeline is tightly coupled through a 4 KB master
+    loader, with AnimGraphManager living 6 dereferences deep inside a real
+    Actor instance (actor+0x300→+8→+0x3E0→+0x20→+0x18→+0x18). Replicating that
+    chain from scratch is 6-10 weeks of solo evening work with high crash
+    surface. PlaceAtMe gives us the entire chain pre-built FOR FREE — we only
+    need to (a) inhibit AI, (b) redirect the body NIF path, (c) drive the
+    pre-existing AnimGraph via the 5 RE'd setter functions, (d) replicate
+    player events (equip / kill / shoot / move) via NPC-equivalent calls that
+    are inherited from the shared Actor base class.
+
+================================================================================
+  1. Why NOT Plan A (Actor stub from scratch)
+================================================================================
+
+  Plan A required:
+    1. Allocate Actor-shaped buffer
+    2. Populate offsets identified by ReClass.NET + Triton (~hundreds of fields)
+    3. Reproduce the construction order of the 6-deep AnimGraphManager chain:
+         actor+0x300 = pointer A
+         A+0x08      = pointer B
+         B+0x3E0     = pointer C
+         C+0x20      = pointer D
+         D+0x18      = pointer E
+         E+0x18      = AnimGraphManager*
+       Each pointer in that chain has its own type, init function, and lifetime.
+    4. Replicate Actor::Load3D + REFR::Load3D + PC::Load3D logic
+    5. Replicate every player feature in user-space code (armor, power armor,
+       ragdoll, door teleport, weapon firing, animation events)
+    6. Implement the BSAnimationGraphManager (Havok hkbCharacter) lifecycle —
+       this is a black box backed by a closed-source physics SDK
+
+  Total estimate: 6-10 weeks evening dev. Probability of crash on first run: 99%.
+  Pivot cost if it fails: high (sunk cost).
+
+  Plan A was the right call BEFORE we knew about the alternative NIF loader.
+  M8P2 dossier changed the math.
+
+================================================================================
+  2. Why Plan C (Hijack Reborn)
+================================================================================
+
+  The M8P2 dossier confirmed:
+    - The ghost-visible 3D pipeline is dispatched via vtable slot 94 of refr.baseForm
+    - For TESNPC base forms: the chain is sub_140658690 → sub_140458390 → sub_140458740
+    - sub_140458740 is THE BIG 3D LOADER — handles damage states, BGSBodyPart
+      iteration, BSResource lookup, and (critically) calls sub_1417B40F0 with
+      the appropriate context so the bone resolver finds REAL skeleton bones
+    - PlaceAtMe of any humanoid TESNPC fires this entire chain natively,
+      producing a fully-bound Actor with: BSFadeNode 3D tree, AnimGraphManager,
+      Havok physics body, AI controller, ExtraData list, all hooked into the
+      cell scene graph
+
+  Plan C exploits this by:
+    1. PlaceAtMe(genericHumanoidNPC, ghost_id) — engine builds everything
+    2. Cache the resulting Actor* per peer in fw_native's ghost map
+    3. Disable AI on the ghost (set AI flag, prevent navmesh+combat goals)
+    4. Hook sub_1417B40F0 to override mesh path when called for ghost actor
+    5. On every received POS_BCAST: write pos/rot to ghost actor (not to a
+       custom buffer — to the real actor at +0xD0/+0xE4 like local player)
+    6. On every received ANIM_STATE: drive ghost.AnimGraphManager via the
+       5 setter RVAs (sub_140D9AF10, sub_141895000, sub_14188C290 etc.)
+    7. On every received EQUIP: call ghost.EquipItem(formID) — same fn name
+       as PC, just on the ghost Actor
+    8. On every received KILL: call ghost.KillImpl() — same as PC, ragdoll
+       free
+    9. On every received DOOR_TELEPORT: call ghost.MoveTo(refr) — same as PC
+
+  Estimate: 1-2 weeks evening dev for v1 (visual parity at idle + walk).
+  Estimate: +1 week for combat actions (firing, hit reactions).
+  Estimate: +1 week for power armor entry/exit visual.
+
+================================================================================
+  3. Why C1 (PlaceAtMe with stock NPC) over C2 (runtime custom TESNPC)
+================================================================================
+
+  C1 (chosen):
+    - Use an existing humanoid TESNPC from the ESM (e.g. generic settler)
+    - PlaceAtMe with that formID
+    - Pro: ZERO base-form authoring required. Engine handles everything.
+    - Pro: Fast to validate (~2-3 evenings to get something on screen)
+    - Con: AI starts active — must inhibit immediately
+    - Con: Cosmetic identity (face, voice) inherited from base form
+
+  C2 (deferred):
+    - Allocate TESNPC at runtime in fw_native
+    - Set Race + Sex + ActorBaseData fields to mirror the remote player
+    - Register the form in the data handler (TESDataHandler)
+    - Pro: Each ghost has unique race/sex matching the remote player
+    - Pro: AI inactive from creation
+    - Con: TESNPC construction is non-trivial (60+ fields to populate, RE'd
+           offsets needed for each)
+    - Con: Form registration may interact badly with save persistence
+
+  Migration path: C1 → C2 if cosmetic identity becomes a hard requirement
+  (player customization). C1 is sufficient for v1 ghost rendering.
+
+================================================================================
+  4. Architecture diagram (sending vs receiving)
+================================================================================
+
+    SENDING side (each client, hooks LOCAL player) ── ALREADY IMPLEMENTED
+    ────────────────────────────────────────────────────────────────────
+       PlayerCharacter::Load3D            → sample loaded3D for clothing layer
+       player_pos_hook (pos+rot poll)     → POS_BCAST every 50ms
+       kill_hook                          → KILL_BCAST on player kill
+       container_hook                     → CONTAINER op events
+       pickup_hook                        → PICKUP events
+       worldstate_hook                    → GlobalVar / QuestStage syncs
+
+       ┌──────────────────────────────────────────────────┐
+       │  fw_native/src/hooks/<feature>_hook.cpp           │
+       │  ↓                                                │
+       │  fw_native/src/net/client.cpp  (send packet)     │
+       │  ↓                                                │
+       │  asyncio UDP server (relay)                       │
+       │  ↓                                                │
+       │  other client receives packet                     │
+       └──────────────────────────────────────────────────┘
+
+    RECEIVING side (each client, drives GHOST actors) ── PHASE 4-5 WORK
+    ────────────────────────────────────────────────────────────────────
+       client.cpp dispatcher reads packet → posts main-thread message
+                                             ↓
+              fw_native/src/native/scene_inject.cpp
+                                             ↓
+              ghost_map[peer_id] → Actor* (PlaceAtMe'd at session start)
+                                             ↓
+       ┌─ POS_BCAST   → write actor+0xD0 (pos) + 0xE4 (rot)
+       ├─ ANIM_STATE  → drive actor.AnimGraphMgr (6-deref chain)
+       │                  via sub_140D9AF10 / sub_141895000 / sub_14188C290
+       ├─ EQUIP       → actor.EquipItem(formID)         — Actor base fn
+       ├─ KILL        → actor.KillImpl()                — Actor base fn
+       ├─ DOOR        → actor.MoveTo(targetRefrFormID)  — Actor base fn
+       └─ POWER_ARMOR → actor.EquipItem(paFrameFormID)  — Actor base fn (PA frame is just an item)
+
+================================================================================
+  5. Phase plan revised (Phase 4 = Plan C implementation)
+================================================================================
+
+  Phase 4.A — Ghost spawn + cache (3-4 evenings)
+    A.1  RE PlaceAtMe calling convention (re/placeatme_decomp.txt EXISTS)
+    A.2  Pick a generic humanoid TESNPC base form ID (settler 00020598?)
+    A.3  fw_native: at session start (post LoadGame), call PlaceAtMe for each
+         remote peer, cache returned Actor* in g_ghost_map[peer_id]
+    A.4  Validate: ghost spawned visible, in correct cell, persists across
+         cell changes
+    A.5  Inhibit AI: set bAIDisabled flag on the ghost Actor (RE the offset)
+
+  Phase 4.B — Body NIF redirect (1-2 evenings)
+    B.1  Hook sub_1417B40F0 (the NEW NIF parser found by M8P2)
+    B.2  In hook: read calling Actor (rdx? rcx? — disasm the args)
+    B.3  If calling Actor is in g_ghost_map values, override path arg with
+         the ghost-customized NIF path (or leave default for v1)
+    B.4  Validate: ghost mesh visibly identical to vanilla settler at first
+
+  Phase 4.C — Pos/rot replication via REAL actor (1 evening)
+    C.1  Replace current scene_inject pos/rot writes (which write to the
+         body NiNode local matrix) with writes to the Actor's pos+rot fields
+    C.2  Test: client B walks → client A's ghost walks via engine's normal
+         3D update pipeline
+    C.3  Bonus: door teleport works for free if ghost is a real Actor
+
+  Phase 4.D — Anim graph driving (3-4 evenings)
+    D.1  Trace which 4 BSFixedString anim variables PC::Load3D uses
+         (sub_140828D70..D0 — open AI-3 task)
+    D.2  Identify motion-relevant variables: IsRunning, IsMoving, fMoveSpeed,
+         Direction (likely shared between PC and NPC anim graphs)
+    D.3  Implement protocol v5 ANIM_STATE packet (32B?) with these fields
+    D.4  In scene_inject receive handler: write each variable via the
+         RE'd setter functions
+    D.5  Validate: client B runs/walks/idles → client A's ghost matches
+         transition states
+
+  Phase 5 — Player-event replication (2-3 weeks total)
+    5.1  EQUIP (armor + clothing visual) — protocol v6
+    5.2  KILL + ragdoll — protocol v7
+    5.3  Power armor enter/exit — protocol v8 (most complex)
+    5.4  Weapon firing animation events — protocol v9
+    5.5  Hit reaction animation events — protocol v10
+
+  Each player event = 1 protocol message + 1 receive handler that calls the
+  Actor base fn on the ghost. Simple in concept, just lots of RE'd offsets.
+
+================================================================================
+  6. Risks identified
+================================================================================
+
+  R1. AI inhibit incomplete → ghost wanders / shoots back / runs to combat
+      Mitigation: set ALL relevant flags (AIDisabled, NoCombat, GhostMode,
+      bDisableMovement). Test exhaustively at A.5.
+
+  R2. PlaceAtMe persistence — ghost may save into player's save file as a
+      permanent settler if not handled
+      Mitigation: at shutdown, call Disable + MarkForDelete on each ghost.
+      Or: spawn in a dummy quest's alias slot which auto-cleans on quest end.
+
+  R3. Cell streaming — when player moves far away, ghost may unload from cell
+      Mitigation: pin ghost to player's current cell via SetPersistent flag,
+      or re-PlaceAtMe on cell change.
+
+  R4. Anim graph variable name mismatch between PC and NPC — they may share
+      the same engine but have different graph .hkx files at runtime
+      Mitigation: Phase 4.D validation step. If names differ, capture both
+      via Frida and document in Phase 4.D.1.
+
+  R5. Power armor entry — has special PC-only init flow
+      Mitigation: defer to Phase 5.3, may need extended RE on power armor
+      pipeline. NOT a v1 blocker.
+
+================================================================================
+  7. What this means for existing code
+================================================================================
+
+  fw_native/src/native/scene_inject.cpp (~3000 lines, v18.2):
+    - try_inject_body_nif       : DEPRECATED  — replaced by Phase 4.B hook
+    - on_pos_update_message     : MODIFIED    — write to Actor not body NiNode
+    - on_bone_tick_message      : DELETED     — anim graph drives mesh
+    - bone_copy infrastructure  : DELETED     — no longer needed
+
+  fw_native/src/ghost/actor_hijack.{cpp,h} (existing, abandoned):
+    - REVISITED  — was the right idea before we had the M8P2 dossier
+    - Should be the new home for ghost spawn + cache + body redirect logic
+
+  net/protocol.py + fw_native/src/net/protocol.h:
+    - EXTENDED   — protocol v4 → v5+ (anim state, equip, kill, etc.)
+    - byte-identical guarantee preserved via static_assert
+
+================================================================================
+  PIVOT 2026-04-26 22:00 — Plan C abandoned, Plan A revived
+================================================================================
+
+  Test result of the "uncomment-and-go" attempt at Plan C re-activation:
+
+    Side A log:
+      [03:54:46.823] [ghost] request_spawn: WM_APP+0x44 posted
+                     (player at (-78906, 90914, 7828))
+      [03:54:46.823] [ghost] spawn: SEH in PlaceAtMe(template=0x1CA7D)
+      [03:54:46.824] [ghost] on_spawn_message: spawn failed
+
+    Side B: full process crash (heap corruption beyond __try/__except recovery)
+
+  Conclusion: 1.11.191 next-gen reproduces the 2026-04-22 SEH IDENTICALLY.
+  Plan C is DEAD. The thread mismatch (WndProc UI thread vs game logic thread)
+  remains. Even with __try/__except catching the SEH, the heap is corrupt
+  post-call. Side A "survives" only because corruption hadn't manifested yet.
+
+  Plan A (build from scratch) is the only viable path. With M8P1+M8P2 RVAs we
+  now have concrete entry points:
+
+    sub_140458390(form, refr, &out_root, 0)
+      = TLS-phase wrapper that calls sub_140458740 (the BIG 3D LOADER)
+      = produces a fully-bound BSFadeNode* (skeleton context in scope,
+        bones resolved, materials applied, ready for scene attach)
+      = does NOT trigger AnimGraphManager init (separate concern)
+
+  Plan A v2 architecture (post-M8P2):
+    1. Build synthetic minimal TESForm with vt[85] returning a TESModel
+       pointer pointing at our ghost body NIF
+    2. Build synthetic minimal REFR with required offsets (state @+0x100,
+       ExtraDataList @+0xF0)
+    3. Call sub_140458390 → get BSFadeNode*
+    4. Attach to scene graph via sub_140C9AAC0 (already RE'd)
+    5. For animations: construct AnimGraphManager 6-deref chain manually,
+       then drive via sub_140D9AF10 / sub_141895000 setters
+    6. NO PlaceAtMe involvement — bypass thread-affinity entirely
+
+  Estimate: 4-6 weeks evening dev (was 6-10 pre-M8P2; cut by ~40% thanks
+  to having concrete entry points and skipping AI/quest/inventory replication).
+
+  Plan C archeology kept under fw_native/src/ghost/*. Will be referenced
+  for offset extraction (FORMID_OFF, FLAGS_OFF, REFR_FLAG_TEMPORARY) but
+  not invoked.
+
+================================================================================
+  END OF M8 STRATEGIC DECISION
+================================================================================

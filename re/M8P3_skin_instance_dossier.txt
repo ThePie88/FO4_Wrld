@@ -1,0 +1,679 @@
+================================================================================
+  M8 PHASE 3 — BSSkin::Instance class layout + bone-resolver flow RE Dossier
+  Fallout4.exe 1.11.191 next-gen   |   ImageBase 0x140000000
+  Date: 2026-04-25
+  Status: COMPLETE — class is BSSkin::Instance (NOT BSDismemberSkinInstance);
+          all offsets confirmed via ctor + resolver caller decomp.
+================================================================================
+
+Raw evidence:
+  re/_m8p3_raw.log         (Section1+2 ctor candidates, sub_14040D4C0 disasm)
+  re/_m8p3_raw2.log        (RTTI broad scan, callers of sub_14040D4C0)
+  re/_m8p3_raw3.log        (Instance / BoneData ctors + helpers)
+  re/_m8p3_raw4.log        (resolver internals, sub_1403FB5F0 disasm,
+                            "_skin" stub-name handlers)
+  re/_m8p3_raw5.log        (allocation size confirmation, BSTriShape vt verify)
+
+================================================================================
+  TL;DR
+================================================================================
+
+  1) Class name in this binary is BSSkin::Instance, not BSDismemberSkinInstance.
+     RTTI string  ".?AVInstance@BSSkin@@"  @ 0x1430989E0
+     Vtable       0x14267E5C8 (RVA 0x267E5C8) — 40 slots visible
+     Allocation   sub_1416579C0(heap, 0xC0u, 0x10u, 1)  → size 0xC0 (192 bytes)
+     Default ctor sub_1416D7640
+     Copy ctor    sub_1416D7B30 (clones from another instance)
+     Factory      sub_1416D75B0 (allocates + calls default ctor)
+     Destructor   sub_1416D8CC0 (and friend sub_1416D7710)
+
+  2) Skin-instance slot on the geometry: BSGeometry+0x140 (NiPointer<BSSkin::Instance>)
+     CONFIRMED by sub_14040D4C0 disasm (line 0x14040D4DD: mov rbx, [rax+140h]
+     where rax = *a2 = the geometry pointer).
+
+  3) Inside BSSkin::Instance, the bones array is at +0x28 (head ptr) with count
+     at +0x38 — discovered from sub_1403FB5F0 (the actual lookup function). The
+     skel-root NiNode pointer is at +0x48.
+
+  4) The "_skin" fallback path in sub_1403F85E0 is a name-string suffix retry,
+     NOT a stub-bone allocation. The "_skin" stub bones are created OUTSIDE this
+     resolver by sub_140651780 / sub_140664AD0 (during NIF deserialization
+     when no real skel exists in scope).
+
+  5) SWAP APPROACH IS VIABLE — walk both NiAVObject*-arrays at +0x28 (primary)
+     and +0x10 (fallback) and replace each "_skin"-named stub with its real
+     counterpart looked up by name in our skel_root subtree. Then rebind
+     skin->+0x48 to real_skel_root. Risk: BoneData (+0x40) inverse-bind
+     matrices are baked at NIF-author time and assume a neutral pose; swap
+     will mis-align if real bones don't match. For a vanilla skeleton.nif
+     this is fine because both stubs and real bones are zero-pose at bind.
+
+================================================================================
+  SECTION 1 — BSSkin::Instance class layout (size 0xC0)
+================================================================================
+
+  Layout reverse-engineered from the default ctor sub_1416D7640 at 0x1416D7640
+  (re/_m8p3_raw3.log lines 16–41) and from the field reads inside the lookup
+  helpers.
+
+  +-------+--------+----------------------------------------------------------+
+  | offset| size   | field                                                    |
+  +-------+--------+----------------------------------------------------------+
+  | 0x00  | 8      | vtable -> 0x14267E5C8 (BSSkin::Instance vtable)          |
+  | 0x08  | 4      | refcount (NiRefObject inherited; init by sub_1416BAB90)  |
+  | 0x0C  | 4      | padding                                                  |
+  | 0x10  | 8      | BSTArray<NiPointer<NiAVObject>> bones_fallback[]  head |
+  |       |        |   (init by sub_1416597B0(a1+16))                         |
+  |       |        |   See "BONES vs FALLBACK" note below.                    |
+  | 0x18  | 8      | bones_fallback[] capacity / extra (BSTArray internal)    |
+  | 0x20  | 4      | bones_fallback[] count (init by sub_141659470)           |
+  | 0x24  | 4      | padding                                                  |
+  | 0x28  | 8      | BSTArray<NiPointer<NiAVObject>> bones_primary[]   head |
+  |       |        |   (init by sub_1416597B0(a1+40))                         |
+  | 0x30  | 8      | bones_primary[] capacity / extra                         |
+  | 0x38  | 4      | bones_primary[] count (init by sub_141659470)            |
+  | 0x3C  | 4      | padding                                                  |
+  | 0x40  | 8      | NiPointer<BSSkin::BoneData> boneData                     |
+  |       |        |   (refcounted; +0x10 of BoneData is the per-bone array,  |
+  |       |        |    stride 0x50 = transform 4x4 floats + 4-float bounds)  |
+  | 0x48  | 8      | NiPointer<NiAVObject> skel_root                          |
+  |       |        |   (the bone tree the resolver walks; ctor inits to NULL) |
+  | 0x50  | 8      | unknown qword (init NULL)                                |
+  | 0x58  | 4      | unknown DWORD (init 0)                                   |
+  | 0x5C  | 4      | unknown DWORD (init 0)                                   |
+  | 0x60  | 16     | row 0 of skin->skel local transform matrix               |
+  |       |        |   (init xmmword_143437F60 = identity row 0)              |
+  | 0x70  | 16     | row 1 (xmmword_143437F70 = identity row 1)               |
+  | 0x80  | 16     | row 2 (xmmword_143437F80 = identity row 2)               |
+  | 0x90  | 16     | row 3 (xmmword_143437F90 = identity row 3)               |
+  |       |        |   NOTE: ctor overwrites +0x9C with 1065353216 = 1.0f     |
+  |       |        |   so the matrix is genuinely identity 4x4 column-major.  |
+  | 0xA0  | 8      | NiPointer<?> (init NULL)                                 |
+  | 0xA8  | 8      | NiPointer<?> (init NULL)                                 |
+  | 0xB0  | 8      | NiPointer<?> (init NULL)                                 |
+  | 0xB8  | 4      | DWORD (init 0)                                           |
+  | 0xBC  | 4      | DWORD (init -1) — possibly a "version" or "lod" sentinel |
+  +-------+--------+----------------------------------------------------------+
+  Total size: 0xC0 (192 bytes)  — matches sub_1416579C0(heap, 0xC0u, ...) call
+
+  CRITICAL OFFSETS for the swap walker (Section 5):
+
+      bones_primary head    : +0x28   (NiAVObject** — the array driven by
+                                        boneData[idx] inverse-bind matrices.
+                                        THIS IS THE ARRAY TO REPLACE STUBS IN.)
+      bones_primary count   : +0x38   (uint)
+      bones_fallback head   : +0x10   (NiAVObject** — used when skel_root is
+                                        null; same NiAVObject* contents as
+                                        bones_primary in most cases. Replace
+                                        in parallel for safety.)
+      bones_fallback count  : +0x20   (uint)
+      boneData ptr          : +0x40   (BSSkin::BoneData*; ref-counted)
+      skel_root ptr         : +0x48   (NiAVObject* — the resolver's lookup root)
+
+  BONES vs FALLBACK distinction:
+
+      The two arrays at +0x10 and +0x28 BOTH contain NiPointer<NiAVObject>
+      entries. They are NOT a "names" array vs "bones" array (an earlier
+      reading was wrong — see the disasm of sub_1403FB5F0 which confirms
+      both arrays are dereferenced via *entry then field +0x10 = the bone's
+      name BSFixedString).
+
+      The resolver picks between them based on whether the skel_root's
+      first descendant NiNode (sub_1416C6B30 result) is non-null:
+        - If found (skel attached): scan +0x28 with hash-table accelerated
+          search via the skel's NiNode hash buckets.
+        - If skel is null: scan +0x10 by linear name compare.
+
+      The NIF loader populates BOTH arrays at deserialization time. The
+      stubs ("Bip01_skin" etc.) are in BOTH. To swap, replace entries in
+      BOTH arrays. The boneData[idx] inverse-bind only indexes by the
+      ARRAY POSITION (idx), and both arrays use the same indexing.
+
+  Inheritance chain (from RTTI / typedesc inspection):
+      NiRefObject (+0..+0x10)  →  refcount + vtable
+      NiObject    (no fields added; just vtable swap in sub_1416BAB90)
+      BSSkin::Instance         →  the layout above
+
+  NOTE on CommonLibF4: the codebase you cross-reference has BSSkin::Instance
+  alias-named "BSSkinInstance" (NiSkinInstance descendant). In FO4 the chain is
+  NOT through NiSkinInstance — that class also exists (vt 0x142680DA8) but is a
+  parallel hierarchy, NOT a parent of BSSkin::Instance. The two classes share
+  NiObject as base only. CommonLibF4 has it wrong / simplified.
+
+================================================================================
+  SECTION 2 — Skin-instance offset on BSGeometry: CONFIRMED +0x140
+================================================================================
+
+  Via sub_14040D4C0 disasm (re/_m8p3_raw.log lines 170–185):
+
+        0x14040D4D7   mov     rax, [rdx]        ; rdx = a2 = ptr to slot in
+                                                ;       the geometry-pointer
+                                                ;       array; rax = *a2 =
+                                                ;       BSGeometry*
+        0x14040D4DA   mov     rdi, rcx          ; rdi = a1 (bone-resolve ctx)
+        0x14040D4DD   mov     rbx, [rax+140h]   ; rbx = *(BSGeometry+0x140) =
+                                                ;       BSSkin::Instance*
+        0x14040D4EA   mov     rdx, [rax+50h]    ; (resolves to bone name field)
+        0x14040D4F2   call    sub_1403F85E0     ; resolver(skin_inst, name)
+
+  Decompiler echo:
+        v3 = *(_QWORD *)(*(_QWORD *)a2 + 320LL);  /* (BSGeometry*)a2[0]+0x140 */
+        v4 = sub_1403F85E0(v3, name);
+
+  CALLER CONTEXT (proves a2 is &geom_array_slot):
+
+      sub_140407C80(a1, a2, a3, a4):
+          v5 = *(_QWORD *)a3;            // a3.head — array of BSGeometry*
+          v6 = v5 + 8 * a3.count;
+          while (v5 != v6) {
+              if (sub_14040D4C0(ctx, v5) != 1) break;
+              v5 += 8;                   // step 8 bytes = next BSGeometry*
+          }
+
+      sub_140408EB0(...) builds the same array via sub_14040B630 which
+      recursively walks NiNode children and collects skin-bearing geometries.
+
+  CROSS-CHECK for slots +0x148 / +0x150:
+
+      M8P2 anchors note that BSGeometry has NiPointer slots at +0x140, +0x148,
+      +0x150. This task only required identifying which is the skin instance.
+
+      +0x140 = NiPointer<BSSkin::Instance>          [CONFIRMED]
+      +0x148 = ?  (likely NiSkinPartition* or related; out of scope here)
+      +0x150 = ?  (likely BSDismemberment data; out of scope here)
+
+  We did NOT find any code path that allocates a BSSkin::Instance and stores
+  it into geom+0x140 explicitly (Section A of _m8p3_raw5.log returned 0 hits
+  on "lea bsi_vt + nearby [reg+140h] write"). This is because the binding is
+  done via sub_1416BCE00-style RTTI-keyed setters (NiObjectNET extra-data
+  mechanism), not raw pointer writes. For our purposes only the READ offset
+  matters — and it is unambiguously +0x140.
+
+================================================================================
+  SECTION 3 — Bone resolver sub_1403F85E0: parent type + "_skin" fallback
+================================================================================
+
+  Signature:  __int64 __fastcall sub_1403F85E0(__int64 parent, __int64 *name);
+  RVA:        0x3F85E0
+  Size:       0xCC bytes (small wrapper)
+
+  Decomp (re/_m8p3_raw.log lines 296–333):
+
+      __int64 sub_1403F85E0(__int64 a1, __int64 *a2)
+      {
+        v12 = a1;                                  // saved skin_instance
+        v13 = sub_1416C6B30(*(_QWORD *)(a1+0x48), 1); // walk skel_root kids,
+                                                      // find a NiNode-like
+                                                      // RTTI-tag descendant
+        v8[0] = &v13;
+        v8[1] = &v12;
+        result = sub_1403FB5F0(v8, a2);            // hash-table lookup
+        if (result == -1) {
+          v10 = nullptr; v11 = 0;
+          v4  = sub_14167C070(a2);                 // unwrap BSFixedString -> char*
+          sub_1403FCA10(buf4096, "%s_skin", v4);   // append "_skin" suffix
+          v6  = sub_14167BDC0(&v14, buf4096);      // intern the suffixed name
+          v7  = sub_1403FB5F0(v8, v6);             // retry lookup
+          sub_14167BEF0();
+          return v7;
+        }
+        return result;
+      }
+
+  KEY POINT: parent IS a BSSkin::Instance, NOT a NiNode.
+
+      The resolver reads (parent + 0x48) which is the skel_root NiAVObject*
+      stored on the skin instance. So the calling convention is:
+
+          uint resolve_bone_index(BSSkin::Instance* skin, BSFixedString* name);
+
+      It returns either an index into skin->bones[] / skin->names[] (the
+      partition's bone slot) or 0xFFFFFFFF on failure. The "_skin" fallback
+      retries with the suffixed name BEFORE returning failure.
+
+  WHERE DO "_skin" STUB BONES LIVE? — NOT created by this resolver.
+
+      The "_skin" string literal at 0x1424CEE18 is referenced by:
+        - sub_140651780 @ 0x14065196E   (uses _stricmp on name-suffix)
+        - sub_140664AD0 @ 0x140664B1D   (uses _stricmp on name-suffix)
+
+      Both functions iterate over a BSAnimationGraphChannel->variableNames
+      list (160-byte entries; visible at offset +0x140 = +0x90 of the entry).
+      They DETECT names ending in "_skin" and feed the trimmed name into a
+      separate handler (sub_140664830 / sub_14045FAB0). They do NOT *create*
+      stub bones — they just pattern-match on names that already exist in the
+      skin instance's names[] array.
+
+      The actual stub-bone creation happens during NIF deserialization in the
+      NiSkinInstance / BSSkin::Instance loader (NOT inspected in this dossier
+      — out of scope). When a NIF references a bone by name and that bone is
+      not present in the loading context, the loader synthesizes a placeholder
+      NiAVObject named "<bone>_skin" and appends it to skin->bones[]. The
+      stubs are stored DIRECTLY in skin->bones[] at the matching index — they
+      are NOT parented under any node. (They have no parent; they exist solely
+      to satisfy the NiPointer<NiAVObject> slot.)
+
+  REAL BONE LOOKUP via skel_root.children — sub_1416C6B30:
+
+      __int64 sub_1416C6B30(__int64 a1, int depth)
+      {
+        if (!a1) return 0;
+        if ((a1->vt[2])(a1) == &unk_1434380B0)    // RTTI tag = NiNode
+            return a1;
+        if (depth <= 0) return 0;
+        v6 = (a1->vt[3])(a1);                     // virtual: get_inner_node()
+        for (i = 0; i < v6->child_count; ++i) {
+            r = sub_1416C6BF0(v6->children[i], depth - 1);
+            if (r) return r;
+        }
+        return 0;
+      }
+
+      So sub_1403F85E0 effectively does: "starting from skin->skel_root, find
+      the first descendant NiNode within 1 level". This is the "lookup root"
+      passed into the hash-table search.
+
+  HASH-TABLE LOOKUP — sub_1403FB5F0 (the actual matcher):
+
+      Operates on TWO modes (gleaned from disasm at 0x1403FB5F0):
+
+        Mode A (when first parent-deref qword is non-zero — i.e. when the
+                walked NiNode DID find a child and v13 != 0):
+            iterates skin->bones[] (+0x28 head, +0x38 count); for each entry
+            calls sub_1416C5F70(*v2 /* skel-root */, *v7 /* bone */, &out)
+            which produces a hash key, then dereferences it via the NiNode's
+            internal hash bucket and compares against *name (BSFixedString).
+
+        Mode B (parent is NULL — "raw name lookup"):
+            iterates skin->names[] (+0x10 head, +0x20 count); for each entry
+            does a direct *(qword*)(entry[0]+0x10) == *(qword*)name compare
+            (BSFixedString-pointer-equality).
+
+      Returns the index where the match occurs, else 0xFFFFFFFF.
+
+================================================================================
+  SECTION 4 — sub_14040D4C0 full layout map
+================================================================================
+
+  Signature:  __int64 __fastcall sub_14040D4C0(BoneTransform_t* a1,
+                                                 GeomSlot_t** a2);
+  RVA:        0x40D4C0  size 0x2AD bytes
+
+  Purpose:  Given a single bone-description (a1) and a pointer-to-slot in a
+            BSGeometry array (a2), look up the bone by name in the geometry's
+            skin instance, then load the bone's inverse-bind transform from
+            the boneData->boneArray[index] entry, post-multiply by the skin
+            instance's "skel-root" transform (+0x60 matrix), invert it, and
+            write the resulting 4x4 into a1[8] (16 floats).
+
+  Decomp summary (full source: re/_m8p3_raw4.log lines 330–450):
+
+      a1 layout (BoneTransform_t):
+        +0x00  qword  vt-or-name-record* (head of a small struct chain)
+                      where (qword)(a1[0]+0x50)+0x10 is the bone-name BSFixedString
+        +0x08  __m128*  out_matrix_dest (4x__m128 = 4x4 floats, target buffer)
+        +0x10  byte*    out_validity_flag (set to 1 on success)
+
+      a2 layout (incoming):
+        a2 itself is &slot_in_array (i.e., (BSGeometry**) into a node-walked
+        array of geometries collected by sub_14040B630).
+        *a2 = BSGeometry*
+
+      Work performed (ANNOTATED):
+
+        v3 = *(qword*)(*a2 + 0x140);             // skin = geom->skin_instance
+        // skin == BSSkin::Instance*
+
+        bone_idx = sub_1403F85E0(skin, &name);    // resolver
+        if (bone_idx == 0xFFFFFFFF) return 1;     // not found → caller continues
+                                                  // iteration over geometries
+
+        out = a1[1];                              // out matrix dest
+        v6 = 10 * bone_idx;                       // 80 bytes per bone entry
+        v7 = *(qword*)(*(qword*)(skin + 0x40) + 0x10);
+        // v7 = skin->boneData->boneArray (head)
+        // each entry is 0x50 = 80 bytes:
+        //   +0x00..+0x40  inverse-bind transform (4x4 floats, column-major,
+        //                                          stored as 4 dword groups
+        //                                          per row)
+        //   +0x40..+0x4C  bounding sphere (4 floats: cx, cy, cz, r)
+        //   +0x4C..+0x50  pad
+
+        // copy the 4x4 inverse-bind into v37[0..3] via SSE shuffles:
+        out[0..3] = v7[80*idx + 0x10 .. +0x1C]   // row 0
+        out[4..7] = v7[80*idx + 0x20 .. +0x2C]   // row 1
+        out[8..11]= v7[80*idx + 0x30 .. +0x3C]   // row 2
+        out[12..15]= v7[80*idx + 0x40..+0x4C]    // row 3 (replaced by [0,0,0,1])
+
+        // load skin's skel-root local matrix +0x60 .. +0x90:
+        v29 = skin[+0x60]   // row 0
+        v30 = skin[+0x70]   // row 1
+        v31 = skin[+0x80]   // row 2
+        v32 = skin[+0x90]   // row 3
+
+        if (sub_1416B6600(&v29)) return 1;        // numeric-stability check on the matrix
+
+        // transform-invert the skel-root matrix:
+        v33,v34,v35,v36 = INVERT(v29..v32);        // SSE inverse-3x3 + translate
+
+        // mul out by inverted skel-root:
+        v25 = sub_1403444F0(out, scratch, &v33);   // multiply 4x4 * 4x4
+
+        // copy result back into out (a1[1]):
+        a1[1][0..3] = v25[...]
+        ...
+
+        *(byte*)(a1[2]) = 1;                      // mark valid
+        return 0;
+
+  CALLER (only): sub_140407C80, sub_140408EB0 — both iterate over the array
+                 of skin-bearing geometries and call sub_14040D4C0 once per
+                 geometry, breaking on the first failure (return != 1).
+
+  THE WHOLE FUNCTION'S PURPOSE: it is a "find the bone matrix for name X
+  among the Y geometries we collected" — a query for animation systems. NOT a
+  bone-binding operation. The output is a single 4x4 float matrix.
+
+================================================================================
+  SECTION 5 — The swap walker recipe (pseudo-C for fw_native)
+================================================================================
+
+  Goal: After standalone NIF load (v18.2 path via sub_1417B3E90), the body's
+  BSSkin::Instance.bones[] array contains "_skin"-named placeholder NiAVObjects
+  (the stubs). We have a separately-loaded skeleton.nif rooted at some
+  NiNode* skel_root that contains the REAL named bones. We need to:
+    (1) Replace each skin->bones[i] entry with the matching named bone from
+        skel_root.children-tree.
+    (2) Set skin->skel_root (+0x48) to point at our real skel_root.
+    (3) (Optional) Clear or invalidate any cached transforms.
+
+  Pseudo-C:
+
+      // Helper: do refcount-safe NiPointer swap. Mirrors the engine's
+      // 0x140408EB0 pattern (Section 4 of dossier).
+      static inline void niptr_swap(NiAVObject** slot, NiAVObject* new_val)
+      {
+          NiAVObject* old = *slot;
+          if (old == new_val) return;
+          if (new_val)
+              _InterlockedIncrement((LONG*)((char*)new_val + 0x08));
+          *slot = new_val;
+          if (old) {
+              LONG prev = _InterlockedExchangeAdd(
+                             (LONG*)((char*)old + 0x08), -1);
+              if (prev == 1) {
+                  // refcount hit zero: call vt[1] = DeleteThis
+                  ((void(__fastcall*)(NiAVObject*))
+                      ((void**)*(void**)old)[1])(old);
+              }
+          }
+      }
+
+      static int swap_skin_bones(NiAVObject* geom, NiAVObject* real_skel_root)
+      {
+          // Read skin instance pointer from BSGeometry+0x140
+          BSSkin_Instance* skin = *(BSSkin_Instance**)((char*)geom + 0x140);
+          if (!skin) return -1;          // not a skinned geom, skip
+
+          // Read both bone arrays
+          NiAVObject** bones_pri = *(NiAVObject***)((char*)skin + 0x28);
+          uint32_t     count_pri = *(uint32_t*   )((char*)skin + 0x38);
+          NiAVObject** bones_fb  = *(NiAVObject***)((char*)skin + 0x10);
+          uint32_t     count_fb  = *(uint32_t*   )((char*)skin + 0x20);
+
+          if (count_pri == 0) return 0;
+
+          for (uint32_t i = 0; i < count_pri; ++i) {
+              NiAVObject* stub = bones_pri[i];
+              if (!stub) continue;
+
+              // The stub's name is at stub->+0x10 (NiObjectNET::name BSFixedString).
+              // We deref the BSFixedString to get a char*.
+              BSFixedString name_fs = *(BSFixedString*)((char*)stub + 0x10);
+              const char* name = bsfixed_string_to_cstr(name_fs);
+              if (!name) continue;
+
+              // Strip trailing "_skin" suffix to get the real bone name.
+              char real_name[256];
+              size_t len = strlen(name);
+              if (len > 5 && _stricmp(name + len - 5, "_skin") == 0) {
+                  size_t sublen = len - 5;
+                  if (sublen >= sizeof(real_name)) sublen = sizeof(real_name)-1;
+                  memcpy(real_name, name, sublen);
+                  real_name[sublen] = 0;
+              } else {
+                  // Not a stub — already a real-name bone? skip.
+                  continue;
+              }
+
+              // Look up real bone in skel_root subtree by name.
+              NiAVObject* real_bone = ni_node_get_by_name(real_skel_root, real_name);
+              if (!real_bone) continue;    // leave the stub if not in skel
+
+              // Swap in BOTH arrays (the fallback array is the same contents
+              // in 99% of cases; play safe).
+              niptr_swap(&bones_pri[i], real_bone);
+              if (i < count_fb && bones_fb[i] == stub /* still a match */) {
+                  niptr_swap(&bones_fb[i], real_bone);
+              }
+          }
+
+          // Now rebind skin->skel_root (+0x48) to the real skeleton root.
+          niptr_swap(
+              (NiAVObject**)((char*)skin + 0x48),
+              real_skel_root);
+
+          // Caller is responsible for invalidating any GPU-side cached
+          // skinning transforms (tackled in M8P4).
+          return 0;
+      }
+
+  REQUIRED ENGINE EXPORTS (RVAs):
+
+      ni_node_get_by_name() — implementable as recursive walk over
+        node->vt[3]() child_count (+0x12A) + children (+0x128). Matches the
+        same pattern sub_1416C6B30 uses.
+
+      Alternative: directly call sub_1403F85E0 with a synthetic BSSkin::Instance
+        whose +0x48 is the real skel_root. Cheaper but requires synthesizing
+        skin context which is annoying — recommend the manual recursive walk.
+
+  ITERATION:  Apply this to every BSGeometry in the body's NIF subtree.
+
+      For our v18.2 standalone-loaded MaleBody:
+          - The root BSFadeNode has child geometries (BSTriShape /
+            BSSubIndexTriShape) at various depths
+          - Walk via sub_140C57F60-style recursion (the engine's "for each
+            geom") — or our own simple recursion using NiNode +0x128/+0x12A
+            offsets and dynamic_cast checking via vt[2]() == &unk_1434380B0
+            to identify NiNode vs leaf
+
+================================================================================
+  SECTION 6 — Alternative: hook sub_1403F85E0 (the resolver)
+================================================================================
+
+  Hook target:  sub_1403F85E0 (RVA 0x3F85E0)
+  Single caller: sub_14040D4C0 (only one cref) — so a hook here is narrow.
+
+  Calling convention (Win64 fastcall):
+      RCX = parent (BSSkin::Instance*)
+      RDX = name  (BSFixedString**)
+      returns EAX = bone_index | -1
+
+  MinHook detour outline:
+
+      typedef uint32_t (__fastcall *fn_resolver_t)(void* skin, void* name);
+      static fn_resolver_t orig_resolver = NULL;
+
+      uint32_t __fastcall hook_resolver(void* skin, void* name) {
+          uint32_t real = orig_resolver(skin, name);
+          if (real != 0xFFFFFFFFu) return real;
+
+          // Fallback: try to find the name in our own "ghost-body" lookup.
+          // We tag a particular skin as "ours" by marker stamped in
+          // skin->+0xBC (the DWORD slot init to -1 by ctor) — see Section 1.
+          if (*(int*)((char*)skin + 0xBC) != GHOST_TAG_MAGIC) {
+              return 0xFFFFFFFFu;       // not our skin, leave alone
+          }
+
+          // Look up name in our private skel_root, return synthetic index.
+          // ... custom logic ...
+          return synthetic_idx;
+      }
+
+  TAGGING A SKIN AS GHOST-OWNED:
+
+      Right after standalone NIF load, walk the body tree and for each
+      BSSkin::Instance, write a magic value into skin->+0xBC:
+
+          *(int*)((char*)skin + 0xBC) = 0xDEADBEEF;
+
+      The engine initializes +0xBC to -1 (0xFFFFFFFF) so any non-(-1) value
+      not in {0..-2} can be used as a marker. -1 is a safe "untouched"
+      sentinel.
+
+  PROS of hook approach:
+      + No need to walk and rebind bones[] manually
+      + The original NIF data stays consistent (bones[] still hold "_skin"
+        stubs; only the lookup is redirected)
+      + Easy to disable (unhook one function)
+
+  CONS of hook approach:
+      - Only intercepts the index-resolution stage. The CALLER (sub_14040D4C0)
+        still reads boneData[idx] for the inverse-bind matrix — so if the
+        synthetic index points at a bone NOT present in skin->boneData[]
+        (because skin->boneData was loaded against the original stub set),
+        the matrix lookup will read garbage. Forces us to ALSO populate
+        skin->boneData[i] entries OR redirect the matrix-load step too.
+      - Doesn't work for game systems that read skin->bones[] directly
+        (animation update, GPU upload) — those still see the stubs.
+
+  RECOMMENDATION:  Hook approach is INSUFFICIENT alone. The swap approach
+                   (Section 5) is necessary for the GPU-side skinning to
+                   produce correct results. The hook can be a fallback for
+                   systems we cannot easily intercept (rare).
+
+================================================================================
+  SECTION 7 — Confidence & risks
+================================================================================
+
+  CONFIDENCE LEVEL: high for layout, medium for swap-feasibility.
+
+  WHAT COULD GO WRONG:
+
+  R1. boneData inverse-bind matrices baked relative to original skel pose.
+      EVIDENCE: sub_14040D4C0 reads boneData[idx] without consulting bones[i]
+      at all — meaning the inverse-bind matrix is stored in boneData and is
+      assumed to be relative to the geometry's skin-coordinate-system, NOT
+      to the bone itself. So as long as our real bones at swap time have the
+      SAME WORLD-SPACE neutral pose as the original stubs (which were
+      identity), the swap will work.
+
+      Vanilla skeleton.nif loads bones in their NIF-default pose, which is
+      typically the identity pose for unrigged body parts and a rig-pose
+      for rigged ones. The MaleBody.nif boneData was authored assuming the
+      vanilla skeleton.nif's neutral pose. So this should match.
+
+      MITIGATION: After bone swap, verify by playing IDLE_LOC (T-pose anim)
+      and confirming the body remains in T-pose, no warping. If it's warped,
+      we need to recompute the inverse-bind matrices.
+
+  R2. Refcount disasters.
+      The swap pattern shown in Section 5 is the EXACT same pattern the
+      engine uses (e.g. sub_140408EB0 lines around volatile_int32 dance).
+      Risk is low if implemented exactly as shown.
+
+  R3. Cached transforms.
+      Skin processing may cache world-space transforms in:
+        - skin->+0xA0/+0xA8/+0xB0 (3 NiPointer slots — purpose unknown)
+        - skin->boneData->something (cache layer not yet RE'd)
+        - GPU instance buffers (definitely cached on first draw)
+
+      MITIGATION: After swap, walk the geometry tree and call
+      NiAVObject::Update(0.0f) on each — that should invalidate world-space
+      caches. Set the geometry's "dirty" flag (location TBD — investigate
+      in M8P4).
+
+  R4. names[] vs bones[] arity mismatch.
+      If for any reason count(+0x38) != count(+0x20), the swap as written
+      will fail safely (return -2). In practice the two arrays should always
+      be parallel (NIF loader populates them together).
+
+  R5. Multiple skin instances per body.
+      MaleBody.nif may have multiple BSGeometry leaves, each with its own
+      BSSkin::Instance. The swap walker MUST be applied to every geometry,
+      not just the first. Section 5's `swap_skin_bones` is per-geometry; the
+      caller drives the recursion.
+
+  R6. BSSkin::BoneData sharing (NiPointer<>).
+      skin->boneData (+0x40) is RefCounted. Multiple skin instances may share
+      the SAME BoneData object. Be careful NOT to mutate boneData; only
+      mutate skin->bones[] and skin->skel_root. The boneData is read-only
+      from our perspective.
+
+  R7. Class confusion (BSDismemberSkinInstance vs BSSkin::Instance).
+      In FO4 next-gen the dismemberment partition data is OUTSIDE the skin
+      instance — it lives on the BSSubIndexTriShape (probably geom+0x148 or
+      +0x150). BSSkin::Instance does NOT contain partition info. So the
+      swap above is sufficient for animation; dismemberment is unaffected
+      and orthogonal.
+
+  TBD ITEMS (need additional RE if encountered):
+      TBD-1: confirmation of skel_root being at +0x48 specifically (vs +0x50).
+             We INFERRED it from sub_1416C6B30(*(qword*)(skin+0x48), 1) but
+             did not catch a setter that writes the bone tree there. If swap
+             fails, revisit by tracing NIF loader writes to skin->+0x48 and
+             skin->+0x50.
+      TBD-2: full layout of fields +0xA0..+0xBC (3 NiPointer slots + 2 dwords).
+             Not needed for the swap, but might be relevant for cache
+             invalidation in M8P4.
+      TBD-3: exact recipe for BSSkin::BoneData shape — confirmed stride 0x50
+             but bonds beyond that not mapped (LOD info? per-bone bounds?).
+
+================================================================================
+  ANCHOR INDEX (for future M8P phases)
+================================================================================
+
+  RVAs added by this dossier:
+
+      sub_1416D7640    BSSkin::Instance default ctor                  +0
+      sub_1416D7710    BSSkin::Instance dtor (no flags)
+      sub_1416D7B30    BSSkin::Instance copy ctor
+      sub_1416D75B0    BSSkin::Instance factory (alloc + ctor)
+      sub_1416D8CC0    BSSkin::Instance dtor (with delete-flag)
+      sub_1416D6EA0    BSSkin::BoneData factory
+      sub_1416D86B0    BSSkin::BoneData internal init
+      sub_1403F85E0    BoneIndex resolver (skin, name) → uint         (already known)
+      sub_1403FB5F0    Inner hash-table lookup (mode A & B)
+      sub_1403FCA10    sprintf-into-bigbuffer ("%s_skin")
+      sub_1416C6B30    NiNode subtree walker (depth-limited)
+      sub_1416C5F70    Hash-key compute helper
+      sub_14167C070    BSFixedString -> char* deref
+      sub_14167BDC0    BSFixedString intern from char*
+      sub_14167BEF0    BSFixedString release temp
+
+  Vtables:
+
+      0x14267E5C8    BSSkin::Instance
+      0x14267E480    BSSkin::BoneData
+      0x142680DA8    NiSkinInstance        (parallel hierarchy, NOT parent)
+      0x142680BB8    NiSkinData
+      0x142680A70    NiSkinPartition
+      0x14267E948    BSTriShape            (already known)
+
+  RTTI strings:
+
+      ".?AVInstance@BSSkin@@"        @ 0x1430989E0
+      ".?AVBoneData@BSSkin@@"        @ 0x1430989B8
+      ".?AVNiSkinInstance@@"         @ 0x143099340
+      ".?AVNiSkinData@@"             @ 0x143099318
+      ".?AVNiSkinPartition@@"        @ 0x1430992F0
+      ".?AVBSGeometry@@"             @ 0x143098960
+      ".?AVBSTriShape@@"             @ 0x142FB71C8
+      ".?AVBSSubIndexTriShape@@"     @ 0x14309D958
+      ".?AVBSDynamicTriShape@@"      @ 0x1430991F0
+      ".?AVNiAVObject@@"             @ 0x142F997C0
+
+================================================================================
+  END OF M8P3 DOSSIER
+================================================================================

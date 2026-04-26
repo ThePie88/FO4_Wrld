@@ -1,0 +1,364 @@
+================================================================================
+  M8 PHASE 3 — SCENE REGISTER candidate analysis DOSSIER
+  Fallout4.exe 1.11.191 next-gen   |   ImageBase 0x140000000
+  Date: 2026-04-26
+  Status: ANALYSIS COMPLETE — original 6-candidate set DEBUNKED.
+          Real per-frame skin update lives further upstream
+          (BShkbAnimationGraph::Update, NOT a one-shot Load3D registration).
+================================================================================
+
+Raw evidence:
+  re/_m8p3_scene_register_raw.log    (phase 1 — 567 lines, candidate decomps)
+  re/_m8p3_scene_register2_raw.log   (phase 2 — drill-down, call sites)
+  re/_m8p3_scene_register3_raw.log   (phase 3 — singleton ctor + walker hunt)
+  re/_m8p3_scene_register4_raw.log   (phase 4 — REFR vtable + alt singletons)
+
+================================================================================
+  TL;DR — what we actually found
+================================================================================
+
+  The user's hypothesis "post-Load3D scene-register call enables skin
+  walker" turns out to be PARTIALLY WRONG. Here is why, with hard evidence:
+
+  1) qword_1430DBD58 is NOT a "scene singleton". It is the PlayerControls /
+     PlayerInputManager singleton. Proof: its ctor at sub_141024C50 +0x40..0x80
+     installs vtables for BSTEventSink<OtherEventEnabledEvent>,
+     BSTEventSink<UserEventEnabledEvent>, BSTEventSink<IdleInputEvent>
+     immediately before the "mov cs:qword_1430DBD58, rdi" store.
+
+  2) sub_141026640 / sub_141026980 / sub_14102D4C0 register the loaded3D
+     into PlayerControls' input-event subsystems, not into any render walker.
+     The "6 slots at +0x118..+0x140" are PlayerControls subsystems
+     (move / look / aim / sprint / sneak / activate), not scene processors.
+
+  3) Every per-frame walker we found that reads >=4 of the 6 slots
+     (sub_141024A50, sub_140580720, sub_140B15E80, sub_140B182B0,
+     sub_140B18EE0, sub_141028CC0) is a PlayerControls Update tick, not a
+     render or skin-update tick. We checked: none of them touch
+     BSGeometry+0x140 (skin instance), BSFadeNode flags, or animation graph.
+
+  4) sub_140787980 / sub_1406EF810 / sub_140528410 (the "REFR-side" ones)
+     are real and do post-attach work, BUT they operate via
+     qword_1430DD9F0 (a different singleton — see Section 2 below) and
+     produce input/AI side-effects (path-finding, navmesh, processList
+     enrolment), still not skin-update.
+
+  5) Ground truth: in Bethesda Creation Engine, per-frame skin matrix
+     refresh is driven by **BShkbAnimationGraph::Update -> NiNode::Update
+     -> NiAVObject::UpdateWorldData**. There is NO separate "skin update
+     walker" registry. A skinned BSGeometry deforms iff its AnimGraph
+     Manager fires per frame on its skel-root.
+
+  Translation: our ghost is failing to deform NOT because it's missing a
+  scene-register call, but because it has NO BShkbAnimationGraph attached
+  (we never instantiate one — we just load the NIF and reparent bones).
+  The engine *is* writing bone.local + bone.world per frame for the real
+  player BECAUSE PC has an AnimGraph driving them; the body's skin is
+  just a passive consumer of those bones via the BoneData inverse-binds.
+
+  >>> The real fix is at the ANIM GRAPH level, not the scene-register level.
+
+================================================================================
+  SECTION 1 — Decompile each candidate + globals/array writes
+================================================================================
+
+  1.1) sub_141026640  (RVA 0x1026640, size 0x37)
+  ----------------------------------------------------------------
+       char __fastcall sub_141026640(__int64 a1, __int64 a2, __int64 *a3)
+       {
+         __int64 v5;
+         LOBYTE(v5) = sub_141020D60(*(_QWORD *)(a1 + 224), a2, a3);
+         if ( a3 )
+         {
+           v5 = *(_QWORD *)(a1 + 256);
+           *(_QWORD *)(v5 + 40) = a3;
+         }
+         return v5;
+       }
+       Effect: writes a3 (loaded3D) into a struct at *(a1+256) + 0x28.
+       Globals: none. NOT a list/array push.
+       Annotation "SCENE REGISTER" was wrong.
+
+  1.2) sub_141026980  (RVA 0x1026980, size 0x68)
+  ----------------------------------------------------------------
+       __int64 __fastcall sub_141026980(__int64 a1, __int64 a2)
+       {
+         _QWORD *v3 = (_QWORD *)(a1 + 288);   // = a1 + 0x120
+         __int64 v5 = 5;
+         do { sub_14102D4C0(*v3++, a2); --v5; } while (v5);
+         return sub_14102D4C0(*(_QWORD *)(a1 + 280), a2);  // = a1 + 0x118
+       }
+       Effect: dispatches a2 (loaded3D) to 6 subsystems at +0x118..+0x140.
+       Globals: none direct.
+       Annotation "SCENE BROADCAST" matches function shape, but the 6
+       subsystems are PlayerControls input subsystems (proven below).
+
+  1.3) sub_14102D4C0  (RVA 0x102D4C0, size 0x7F)
+  ----------------------------------------------------------------
+       __int64 __fastcall sub_14102D4C0(__int64 a1, __int64 a2)
+       {
+         int v5 = 21;
+         *(_QWORD *)(a1 + 0xD0) = sub_140BB1B80(qword_1432D2260, a2, &v5, 0);
+         result = sub_1417A0A30(a2, &unk_1430E1910, 1);
+         if ( result )
+         {
+           result = (*(__int64 (__fastcall **)(__int64))(*(_QWORD *)result + 32LL))(result);
+           *(_QWORD *)(a1 + 0xD8) = result;
+         }
+         return result;
+       }
+       Effect: each subsystem at +0x118..+0x140 caches two pointers it
+       extracts from loaded3D:
+         - subsystem+0xD0 = sub_140BB1B80(qword_1432D2260=PCsingleton, loaded3D, type=21)
+         - subsystem+0xD8 = first child of (NiAVObject::GetObjectByName(loaded3D, &fixedstr))
+       Globals: qword_1432D2260 (PlayerCharacter singleton) — read-only.
+       NOT a list-push, just per-subsystem caching of weak pointers.
+
+  1.4) sub_140787980  (RVA 0x787980, size 0x99)
+  ----------------------------------------------------------------
+       Calls sub_1403A4290(a1+56, &v6) — a generic notify wrapper.
+       a1 in callsite = qword_1430DD9F0 (the OTHER singleton). a2 = loaded3D.
+       Inside: increments TLS+2496 (a thread-call-depth marker) to 75 and
+       calls sub_1403A4290 which is a BSTEventSource::SendEvent-style.
+       Globals: TLS frame counter. NO array push.
+       Effect: emits a "3D loaded" event to subscribers. Subscribers include
+       AI process-lists, occlusion query, etc.
+
+  1.5) sub_1406EF810  (RVA 0x6EF810, size 0x9B)
+  ----------------------------------------------------------------
+       Pulls a refr's cell pointer from qword_1432D2260 (PC singleton),
+       computes a 3D position, and calls sub_1406F2170 — a navmesh /
+       cell-graph "register-presence" call. Operates via qword_1431E6140
+       (cell graph head) and qword_1431E6178 (alt cell graph).
+       Globals: navmesh / cell graph. NOT skin-related.
+
+  1.6) sub_140528410  (RVA 0x528410, size 0x26B)
+  ----------------------------------------------------------------
+       Post-attach housekeeping for the actor:
+         - sets actor flag bits via vt-call (this+1144, this+1224, this+1296)
+         - allocates a 0x118-byte BSScrap struct (BSTArray<...>)
+         - dispatches REFR::vt[143] = sub_140527CE0(a1, v4, &v14) — this
+           is the only candidate that ACTUALLY does "BSTArray push" of the
+           loaded3D's name into a per-actor scrap array
+         - calls sub_140311540(a1, 0x10000000) -> sub_140BEC450 — sets
+           a flag on the ProcessList registration (still not skin update).
+       Globals: ProcessList list head qword_14329D498 (the AI process list).
+
+  Summary: NONE of the 6 candidates push a BSGeometry/BSSkin::Instance
+  pointer into a scene-graph render/skin walker. They register the loaded3D
+  for input-events, AI-events, navmesh, cell-graph. Confirms TL;DR (5).
+
+================================================================================
+  SECTION 2 — qword_1430DBD58 layout (the 6-slot dispatcher)
+================================================================================
+
+  TYPE: PlayerControls (or PlayerInputManager — same singleton). Proven by
+  the ctor at sub_141024C50 lines 0x141024EF7..0x141024F1B installing:
+
+      [rsi+0x58] = vftable BSTEventSink<OtherEventEnabledEvent>
+      [rsi+0x50] = vftable BSTEventSink<UserEventEnabledEvent>
+      [rsi+0x48] = vftable BSTEventSink<IdleInputEvent>
+      mov cs:qword_1430DBD58, rdi   (rdi = rsi = freshly built PlayerControls)
+
+  Layout — 6 input-subsystem slots (each holds a per-subsystem struct):
+
+      offset    contents (subsystem pointer)            evidence
+      +0x118    move-controls subsystem                 via 6th iter of broadcast
+      +0x120    look-controls subsystem
+      +0x128    aim-controls subsystem
+      +0x130    sneak/sprint subsystem (per slot+0x130 readers)
+      +0x138    activate-controls subsystem
+      +0x140    weapon/cover subsystem (per slot+0x140 readers)
+
+  Each subsystem struct is approximately 0xE0 bytes. After registration:
+      subsystem +0xD0 = cached pointer queried with type-id 21 from PC
+                         (likely BipedRoot or a BipedHand)
+      subsystem +0xD8 = NiAVObject* extracted by name from loaded3D
+                         (first child satisfying unk_1430E1910)
+
+  Per-frame walker reading ALL 6 slots:
+      sub_141024A50 — PlayerControls singleton ctor
+      sub_140580720 — PlayerControls main update tick (size 0x1288 = ~4.6KB)
+      sub_140B18EE0 — input-context update (size 0xE3C)
+      sub_141028CC0 — input dispatch to 3D
+      None of these touches BSGeometry+0x140 (skin instance), BSFadeNode
+      flag bits, animation graph, or any rendering walker. Confirmed by
+      grep across all 6 functions for "+140h", "BSSkin", "+150h"
+      (BSFadeNode flag), "BSAnimation".
+
+  RTTI / vtable matching against expected scene classes — NEGATIVE:
+      .?AVBSPortalGraph@@        @ 0x14309D500   — not bound here
+      .?AVShadowSceneNode@@      @ 0x1430D3520   — not bound here
+      .?AVBSAnimationGraphManager@@ @ 0x14308B1E8 — not bound here
+      .?AVBSCullingProcess@@     @ 0x14309D930   — not bound here
+
+  These classes exist in the binary but qword_1430DBD58 doesn't reference
+  them. The ShadowSceneNode singleton is qword_143E47A10 (confirmed via
+  ctor at sub_140C322C0 line 0x140C32456).
+
+================================================================================
+  SECTION 3 — SKIN UPDATE registration evidence
+================================================================================
+
+  Cross-reference between the 6 slots and "skin update":
+
+      slot +0x118 .. +0x140 walker read sites: 16 candidate functions.
+      Of those, ZERO read BSGeometry+0x140 (skin slot) or BSGeometry+0x150
+      (BSFadeNode flag) — the only direct bridge to skin-update would be
+      passing geometries.
+
+      slot dispatcher sub_14102D4C0: reads vt+0x20 of the cached pointer
+      at +0xD8 (which IS a NiAVObject*), but only to call "Get parent"
+      style virtual, then stores result at subsystem+0xD8. No write to
+      any global skin/array.
+
+      Backwards search: which functions in .text DO touch BSGeometry+0x140
+      AND insert into an array? Result: none in the candidate set, none
+      in the surrounding 0x141026xxx neighbourhood.
+
+  The function we'd EXPECT to be the skin-update register would have:
+      - arg type BSGeometry* / BSSkin::Instance* / BSFadeNode*
+      - body containing BSTArray::Insert / std::vector::push_back
+      - the array would be re-read every frame by an "Update" tick
+
+  We could not find any such function in the post-Load3D path. We CAN find
+  per-actor anim graph creation (AutoRegisterFactory<BShkbAnimationGraph...>
+  string at 0x14308B780) but it fires from a separate code path (Actor's
+  Move/UpdateAnimation tick, NOT from Load3D).
+
+  CONCLUSION (Section 3): there is no separate "skin update walker" with a
+  per-geometry registration list. Skinning rides on top of the bone-tree
+  Update which is fired by BSAnimationGraphManager. Our ghost lacks an
+  AnimGraph, so no Update is fired, so bones are never refreshed.
+
+================================================================================
+  SECTION 4 — Concrete recipe (REVISED — different deliverable)
+================================================================================
+
+  Since no scene-register call enables per-frame skin update, here is what
+  actually IS called and what each does (so we know what NOT to spend
+  effort on):
+
+  4.1) Confirmed call signatures
+  ----------------------------------------------------------------
+       sub_141026640  RVA 0x1026640  __int64(qword_1430DBD58, NiAVObject* loaded3D, NiAVObject* hand)
+                     -> registers loaded3D into PlayerControls.move_subsystem
+       sub_141026980  RVA 0x1026980  __int64(qword_1430DBD58, NiAVObject* loaded3D)
+                     -> dispatches loaded3D to 6 input subsystems
+       sub_14102D4C0  RVA 0x102D4C0  per-subsystem worker
+       sub_140787980  RVA 0x787980   void(qword_1430DD9F0, REFR* refr)
+                     -> emits "3D loaded" BSEvent on the AI/AINotify singleton
+       sub_1406EF810  RVA 0x6EF810   __int64(REFR* refr)
+                     -> registers refr in cell-graph (navmesh / pathing)
+       sub_140528410  RVA 0x528410   __int64(REFR* refr)
+                     -> calls REFR::vt[143] = sub_140527CE0 (push name to
+                        BSScrap-allocated array — for AI subscription)
+                     -> calls sub_140311540(refr, 0x10000000) -> ProcessList
+
+  4.2) What our ghost ACTUALLY needs (the real recipe)
+  ----------------------------------------------------------------
+       To get per-frame skin deformation we need, in order:
+
+         A) Create a BShkbAnimationGraph instance bound to our skel root.
+            Symbol: AutoRegisterFactory<BShkbAnimationGraphLoadScrapper>
+                    at .data 0x14308B780
+            Factory entrypoint: search "BShkbAnimationGraph" string xrefs.
+
+         B) Drive that AnimGraph each frame. The engine's per-frame ticker
+            for AnimGraphs lives in BSAnimationGraphManager::Update. We
+            can either:
+              - Register our AnimGraph with BSAnimationGraphManager (the
+                global manager — its singleton must exist; we haven't yet
+                found its address — TBD) so Update fires automatically;
+              - OR call our AnimGraph's Update ourselves each frame from
+                our DLL's frame hook (we already hook D3D11 Present).
+
+         C) Bone updates from AnimGraph then propagate via NiNode::Update
+            -> NiAVObject::UpdateWorldData -> skin matrix re-evaluation
+            on next render. No separate registration needed.
+
+       Alternative: poor-man's approach — write bone.local + bone.world
+       ourselves each frame from net-state, then call NiAVObject::Update
+       on the skel-root manually. We tried writing bone+0x30..+0x5F but
+       did NOT also call Update. The deform pipeline is:
+            bone.local -> NiAVObject::Update propagates to bone.world ->
+            skin ::Update reads bone.world to compute final palette.
+       If we never call Update, the world matrices stay identity even if
+       local rotations are set. This is likely the actual root cause.
+
+  4.3) Threading
+  ----------------------------------------------------------------
+       sub_140787980 / sub_140528410 / sub_141026980 / sub_141026640 all
+       set TLS+2496 (the engine's "frame phase" marker) to specific values
+       (75, 102, 115). This is a debug/sentinel for assertion checks; it
+       must equal a "valid phase" before downstream calls run. Calling
+       these from WndProc thread WILL TRIP these asserts in debug builds
+       (the binary is release so asserts are stripped, but the TLS write
+       will still happen and may corrupt the engine's actual frame-phase
+       counter). Do NOT call from WndProc.
+
+       Safe call thread: same thread as Present hook (= the render
+       thread = the engine's main loop thread), and ONLY between frames
+       — never from inside the render queue.
+
+================================================================================
+  SECTION 5 — Confidence + alternatives
+================================================================================
+
+  Confidence on the "no scene-register fixes skin update" finding: HIGH (90%).
+  Evidence is layered:
+    - All 6 candidates decompiled cleanly; none touch BSGeometry/BSSkin.
+    - The singleton at qword_1430DBD58 has been positively identified as
+      PlayerControls (BSTEventSink installs in the ctor).
+    - The 6 "subsystem" slots have all-readers analyzed and zero of them
+      touch any skin/render data.
+    - The only post-Load3D function that DOES BSTArray-push is
+      sub_140527CE0 (REFR::vt[143] called from sub_140528410), and that
+      pushes a BSFixedString name into a BSScrap array — for AI subs, not
+      skin.
+
+  Alternatives if we still want to try a "register and see if mesh
+  deforms" experiment:
+
+    Top-3 SCENE REGISTER candidates we have NOT debunked (TBD):
+      [B1] sub_140527CE0   RVA 0x527CE0  REFR::vt[143]  (BSTArray push)
+           Signature: char(REFR* this, NiAVObject* loaded3D, ScrapStruct* a3)
+           Wires loaded3D's name into a per-actor scrap struct.
+           If skin update consumes this struct it might wake the deform.
+           Risk: a3 is a 0x118-byte allocated struct; we'd need to
+           construct one. Low probability of success — this is AI-side.
+
+      [B2] qword_143E47A10 = ShadowSceneNode singleton's (presumed) "register
+           geometry" entry. There are 13 xrefs total. The READ sites at
+           sub_141806CA0, sub_14223F110, sub_14226F3D0 touch this from
+           render-thread code (RVAs in the 0x141.. and 0x142.. range,
+           which is the render/D3D layer). There MAY be a register-call
+           we missed. Recommend: dump SSN class layout + look for an
+           "Attach" / "AddGeometry" virtual on its vtable.
+           Confidence: medium. Risk: ShadowSceneNode is a draw-list node,
+           NOT a skin-update node. Unlikely to fix deform either.
+
+      [B3] BSAnimationGraphManager singleton creation (TBD).
+           Vtable found at 0x142626320 (vt[0]=sub_1413121A0 ctor,
+           vt[1]=sub_14130F8D0 dtor). We have NOT yet found the global
+           pointer that holds the singleton instance. If we can find it
+           and create + register a BShkbAnimationGraph there, the full
+           anim pipeline kicks in. Confidence: HIGHEST for actually
+           making the mesh deform. Effort: 2-3 days of additional RE.
+
+  RECOMMENDATION (brutal-honest):
+    1) Do NOT pursue any of the 6 original candidates — confirmed dead end.
+    2) Try option [B2] first as a 30-min experiment: hook into our
+       existing BSFadeNode attach and see if calling something on
+       qword_143E47A10 makes a difference. Expectation: no.
+    3) Pivot to option [B3] — chase BSAnimationGraphManager. This is the
+       real fix for "ghost mesh deforms when we update bone rotations
+       via net".
+    4) Stopgap: call NiAVObject::Update on skel-root after writing bones
+       (skel+vt[0x80]-ish). This is the cheapest experiment, ~1 hour,
+       with reasonable chance of partial success (bones move but maybe
+       no skin re-bind).
+
+================================================================================
+  END OF DOSSIER
+================================================================================
