@@ -27,7 +27,8 @@ reflects the new entries in real time):
 https://github.com/ThePie88/FO4_Wrld/blob/master/assets/demo.mp4
 
 If your GitHub view doesn't auto-embed the player above, the file is
-in [`assets/demo.mp4`](assets/demo.mp4) (31 MB, h264 1080p30 CRF 20).
+in [`assets/demo.mp4`](assets/demo.mp4) (19 MB, h264 1080p30 CRF 23
+preset veryslow).
 
 ---
 
