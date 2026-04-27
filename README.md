@@ -13,6 +13,15 @@ Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 > all skin-swapped to shared skel hierarchy. Fingers stay at natural
 > rest pose (no joints in render-scene tree → sentinel-skip avoids
 > T-pose contagion). 1P sender → V/T-pose stub on ghost (deferred).
+>
+> **B6 wedge 1 shipped** — **door open/close sync** across peers:
+> peer A presses E on a door, peer B sees the same door swing open in real
+> time (and vice versa). First true world-state replication beyond the
+> player avatar + inventory. Sender hooks engine `Activate worker`
+> (`sub_140514180`); receiver re-invokes the same function on its local
+> REFR via main-thread queue + `ApplyingRemoteGuard` feedback-loop guard.
+> Toggle semantics — both clients converge from the same `world_base`
+> save without server-side state tracking.
 
 ---
 
@@ -38,7 +47,7 @@ in real time).
 │  authoritative state · identity-keyed (base, cell) · validator         │
 │  reliable channel (SACK + retransmit) · JSON snapshot persistence      │
 └─────────────────────────┬──────────────────────────────────────────────┘
-                          │ binary protocol v4 (44B POS_BCAST)
+                          │ binary protocol v5 (44B POS_BCAST · 36B DOOR_BCAST)
             ┌─────────────┼─────────────┐
             │             │             │
        ┌────▼─────┐  ┌────▼─────┐  ┌────▼─────┐
@@ -82,7 +91,11 @@ in real time).
 | **M8P2** RE BSGeometry skin instance offsets | ✅ done — `+0x140` confirmed |
 | **M8P3** Skin pipeline RE + per-bone pose replication | ✅ M8P3.23 — body+head+hands animated, see [CHANGELOG.md](CHANGELOG.md) |
 | **B5** D3D11 custom render | 🗿 not needed — Strada B native injection replaced |
-| **B6** Sync expansion (cell cleared, workshop, faction rep) | ⏳ |
+| **B6** World-state sync expansion *(composite — split into wedges below)* | 🟡 wedge 1 done, 2-4 pending |
+| ↳ **B6.1** Door open/close sync | ✅ done — `sub_140514180` Activate worker hook + `DOOR_OP`/`DOOR_BCAST` protocol, dual-agent RE convergence (see `re/B6_doors_AGENT_{A,B}_dossier.txt`) |
+| ↳ **B6.2** NPC actor pos + pose sync | ⏳ — extend POSE_BROADCAST to remote actors with authority-per-NPC model |
+| ↳ **B6.3** NPC combat target sync | ⏳ — RE `CombatController::SetTarget`, broadcast NPC→target so observers see "raider shoots peer A" not "raider shoots air" |
+| ↳ **B6.4** Cell-cleared / workshop / faction rep | ⏳ |
 | **B7** Rust server port | ⏳ |
 
 ## Major RE achievements
