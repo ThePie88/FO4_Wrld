@@ -16,6 +16,21 @@ Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 
 ---
 
+## Demo
+
+90s clip — 2 clients side-by-side. Movement + full-body animation sync,
+ground-pickup replication (peer A picks up an item → peer B sees it
+disappear from the world), and live container UI update across peers
+(peer A deposits items into a nightstand → peer B's open ContainerMenu
+reflects the new entries in real time):
+
+https://github.com/ThePie88/FO4_Wrld/raw/master/assets/demo.mp4
+
+If your GitHub view doesn't auto-embed the player above, the file is
+in [`assets/demo.mp4`](assets/demo.mp4) (31 MB, h264 1080p30 CRF 20).
+
+---
+
 ## Architecture
 
 ```
