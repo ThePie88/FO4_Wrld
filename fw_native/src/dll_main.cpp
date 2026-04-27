@@ -140,12 +140,12 @@ DWORD WINAPI init_thread(LPVOID) {
     //   - Network remote pos/rot sync → body follows Client B
     //   - Pitch tracking via player rot[0]
     //
-    // Cosa NON funzionava e ci ha fatto pivot:
-    //   - Depth occlusion (DSV capture prende shadow/post-proc, non scene)
-    //   - Shake camminando (VP mismatch con gioco)
-    //   - Entrambi richiedono architetturalmente di sapere quale DSV sia
-    //     il main scene e quale sia la vera VP game — battaglie lunghe
-    //     contro il parallelismo del nostro pipeline D3D11 custom.
+    // What did NOT work and triggered the pivot:
+    //   - Depth occlusion (DSV capture catches shadow/post-proc, not scene)
+    //   - Shake while walking (VP mismatch with the game's true VP)
+    //   - Both require architecturally knowing which DSV is the main
+    //     scene and which is the real game VP — long battles against
+    //     the parallelism of our custom D3D11 pipeline.
     //
     // -----------------------------------------------------------------
     // === Strada A init — COMMENTED OUT (D3D11 custom renderer path) ===

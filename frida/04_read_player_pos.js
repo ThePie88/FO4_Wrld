@@ -17,9 +17,9 @@ const playerPtr = singletonAddr.readPointer();
 console.log('[+] Player Actor* = ' + playerPtr);
 
 if (playerPtr.isNull()) {
-    console.log('[-] Player pointer is NULL. Non sei in-game o non ancora spawnato.');
+    console.log('[-] Player pointer is NULL. Not in-game or not yet spawned.');
 } else {
-    // Sanity: leggi i primi 8 byte del player — dovrebbe essere un vtable pointer
+    // Sanity: read the first 8 bytes of the player — should be a vtable pointer
     const vtable = playerPtr.readPointer();
     console.log('[+] Player vtable @ ' + vtable);
 

@@ -35,7 +35,7 @@ struct Settings {
     //
     // The save name is the bare filename as it appears in %USERPROFILE%\
     // Documents\My Games\Fallout4\Saves\ without the .fos extension.
-    // Example: "Save9_99999999_Filippo_Sanctuary_000C34"
+    // Example: "Save9_99999999_PlayerName_Sanctuary_000C34"
     std::string   auto_load_save;
 
     // Legacy keys from the keystroke-based B3.b v1/v2 approach. `auto_continue`
