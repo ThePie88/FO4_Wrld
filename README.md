@@ -74,7 +74,9 @@ Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 ## Major RE achievements
 
 - **Single-instance bypass** (1-byte binary patch @ RVA `0xC2FB62`) — runs 2 FO4
-  instances simultaneously on same machine. Killer of Fallout Together + F4MP.
+  instances simultaneously on the same machine. Required for local
+  multi-client testing without spinning up a second physical PC. The
+  patch flips a NOP-equivalent on the singleton-check branch.
 - **`apply_materials` walker discovery** (`sub_140255BA0`) — the missing step
   for `.bgsm` material resolution after standalone NIF load. Documented in
   `re/stradaB_pink_body_solution.txt`.
@@ -162,6 +164,6 @@ no decomp dumps — only our own analysis dossiers).
 
 ## Notes
 
-- Brainstorm + design doc: `fallout_multiplayer_project_brainstorm.md`
 - Solution dossiers: `re/stradaB_*.txt` (production-grade RE writeups)
 - Tools list: `fw_native/docs/tools-da-usare.md`
+- Full version history: [CHANGELOG.md](CHANGELOG.md)

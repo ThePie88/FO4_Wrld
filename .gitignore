@@ -152,3 +152,6 @@ setup_fo4_b*.py
 
 # -- one-off launcher tools --------------------------------------------------
 FoM.exe
+
+# -- Personal brainstorm doc (Italian, design notes, not for public) -------
+fallout_multiplayer_project_brainstorm.md
