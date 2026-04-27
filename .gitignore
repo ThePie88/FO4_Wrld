@@ -153,9 +153,10 @@ setup_fo4_b*.py
 # -- one-off launcher tools --------------------------------------------------
 FoM.exe
 
-# -- raw demo capture (full uncompressed, 200+ MB). The compressed
-#    version lives at assets/demo.mp4 and IS tracked.
+# -- demo captures: hosted on YouTube, never committed to repo
+#    (raw OBS capture is 200+ MB; compressed copies are also kept local).
 /DEMO_FoW.mp4
+/assets/demo.mp4
 
 # -- Personal brainstorm doc (Italian, design notes, not for public) -------
 fallout_multiplayer_project_brainstorm.md

@@ -18,17 +18,15 @@ Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 
 ## Demo
 
-90s clip — 2 clients side-by-side. Movement + full-body animation sync,
-ground-pickup replication (peer A picks up an item → peer B sees it
-disappear from the world), and live container UI update across peers
-(peer A deposits items into a nightstand → peer B's open ContainerMenu
-reflects the new entries in real time):
+[![FalloutWorld demo on YouTube](https://img.youtube.com/vi/Qs3dNzXnnko/maxresdefault.jpg)](https://www.youtube.com/watch?v=Qs3dNzXnnko)
 
-https://github.com/ThePie88/FO4_Wrld/blob/master/assets/demo.mp4
+▶ **[Watch the 90s demo on YouTube](https://www.youtube.com/watch?v=Qs3dNzXnnko)**
 
-If your GitHub view doesn't auto-embed the player above, the file is
-in [`assets/demo.mp4`](assets/demo.mp4) (19 MB, h264 1080p30 CRF 23
-preset veryslow).
+2 clients side-by-side. Movement + full-body animation sync, ground-pickup
+replication (peer A picks up an item → peer B sees it disappear from the
+world), and live container UI update across peers (peer A deposits items
+into a nightstand → peer B's open ContainerMenu reflects the new entries
+in real time).
 
 ---
 
