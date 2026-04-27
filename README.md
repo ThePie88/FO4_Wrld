@@ -1,3 +1,6 @@
+
+This project uses unconventional approaches in several critical areas (scene graph injection, skin buffer manipulation, binary patches). External contributions could inadvertently break invariants that aren't documented at the line level. The license reflects this — the source is published for transparency and review, not for collaborative development at this stage. May reconsider after the architecture stabilizes and a CONTRIBUTING.md exists.
+
 # FO4_Wrld
 
 Fallout 4 1.11.191 next-gen — multiplayer mod (FoM-lite framework).
