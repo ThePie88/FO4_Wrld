@@ -126,27 +126,50 @@ Latest 3 patches summarized below. **Full version history in
 - New modules: `skin_rebind.{cpp,h}`, POSE_STATE/POSE_BROADCAST
   protocol, server fan-out, TTD diagnostic infra.
 
-## How to build (developer notes)
+## Why this exists
 
-Required:
-- Visual Studio Build Tools 2022 (`E:\BuildTools\` assumed by `build.bat`)
-- CMake ≥ 3.25
-- Ninja (bundled with VS Build Tools)
-- Python 3.12 (for launcher + server)
-- Frida 17+ (for live RE traces)
+I've been waiting ~10 years for someone to ship Fallout 4 multiplayer.
+Existing efforts I'm aware of:
 
-Build native DLL:
-```
-cd fw_native
-build.bat       # produces build/dxgi.dll
-deploy.bat      # copies to Side A + Side B game dirs
-```
+- **Fallout Together** — abandoned 2020, never reached stable bone
+  replication.
+- **F4MP** — paused / no animation system in the public state I last saw.
+- **Skyrim Together** (predecessor for SkyrimSE) — got working but with
+  desync issues that informed several of the architecture choices here.
 
-Run multiplayer (after deploy):
-```
-launcher/start_A.bat
-launcher/start_B.bat
-```
+This project takes a different architectural bet: **native scene-graph
+injection** (BSFadeNode → ShadowSceneNode) plus per-bone joint
+replication via the engine's own `UpdateDownwardPass` propagation,
+instead of reimplementing skinning from scratch. We let the engine do
+the heavy lifting (skin upload, GPU constant buffers, lighting, shadows
+when fixed) and feed it joint matrices via memory writes that match
+exactly what its anim graph would produce.
+
+Whether this scales cleanly to 10 peers is an open question — current
+testing is 2-peer. The RE work for the 1.11.191 next-gen build (skin
+pipeline, pointer-cache layout, NIF loader API) is the contribution
+that should be most reusable for anyone else attempting the same thing.
+
+## Known limitations
+
+- **Fingers don't articulate** — finger joints exist only in the
+  underlying havok skeleton (`.hkx`), not in the rendered scene-graph
+  tree we walk. Receiver gets a sentinel quat for them and falls back
+  to bind pose (slightly curled fingers, not extended T-pose).
+- **1st-person sender → ghost adopts V/T-pose stub** — when the sender
+  is in 1P view, the engine animates the alt-tree body to a simplified
+  stub pose since the body is invisible to the local camera. Two
+  detection heuristics were tried (Pelvis canary, rotation hash); both
+  failed because the alt-tree retains all named bones and rotations
+  jitter every tick. Proper fix needs `PlayerCamera` singleton RE.
+  Workaround: keep the observed peer in 3rd-person.
+- **Ghost body has no shadow** — separate render flag investigation,
+  deferred.
+- **Tested with 2 peers** — multi-peer ghost cache (peer-id keyed
+  registry) not yet implemented; 10-peer scaling is theoretical.
+- **Network rate-limited to 20Hz** — works smoothly on LAN, untested
+  over real-world internet routes; receiver-side interpolation between
+  POSE_BROADCAST frames is open work.
 
 ## Reverse-engineering target
 
