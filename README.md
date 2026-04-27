@@ -91,11 +91,19 @@ in real time).
 | **M8P2** RE BSGeometry skin instance offsets | ✅ done — `+0x140` confirmed |
 | **M8P3** Skin pipeline RE + per-bone pose replication | ✅ M8P3.23 — body+head+hands animated, see [CHANGELOG.md](CHANGELOG.md) |
 | **B5** D3D11 custom render | 🗿 not needed — Strada B native injection replaced |
-| **B6** World-state sync expansion *(composite — split into wedges below)* | 🟡 wedge 1 done, 2-4 pending |
-| ↳ **B6.1** Door open/close sync | ✅ done — `sub_140514180` Activate worker hook + `DOOR_OP`/`DOOR_BCAST` protocol, dual-agent RE convergence (see `re/B6_doors_AGENT_{A,B}_dossier.txt`) |
-| ↳ **B6.2** NPC actor pos + pose sync | ⏳ — extend POSE_BROADCAST to remote actors with authority-per-NPC model |
-| ↳ **B6.3** NPC combat target sync | ⏳ — RE `CombatController::SetTarget`, broadcast NPC→target so observers see "raider shoots peer A" not "raider shoots air" |
-| ↳ **B6.4** Cell-cleared / workshop / faction rep | ⏳ |
+| **B6** World-state sync expansion *(composite — 12 wedges, multi-month epic)* | 🟡 1/12 done |
+| ↳ **B6.1** Door open/close sync | ✅ done — `sub_140514180` Activate worker hook + dual-agent RE convergence, [30s demo](https://youtu.be/T8wLZmCqjxw), see [CHANGELOG.md](CHANGELOG.md) |
+| ↳ **B6.2** Lights toggle sync (lamps, lanterns, generators) | ⏳ — same Activate worker pattern as doors, formType filter on `0x20` LIGH |
+| ↳ **B6.3** Locks state sync (lockpicked → unlocked cross-client) | ⏳ — REFR lock extra-data + `OnLockedClick` callback hook |
+| ↳ **B6.4** Terminals state sync (hacked / unlocked) | ⏳ — TerminalMenu activation event + persisted "hacked" flag |
+| ↳ **B6.5** NPC actor pos + pose sync | ⏳ — extend POSE_BROADCAST to remote actors with authority-per-NPC model. The big one — turns "co-op chat in same world" into "actual multiplayer game" |
+| ↳ **B6.6** NPC combat target + aggro sync | ⏳ — RE `CombatController::SetTarget`, broadcast NPC→target so observers see "raider shoots peer A" not "raider shoots air" |
+| ↳ **B6.7** NPC dialogue state + faction joined | ⏳ — quest-stage adjacent; brainstorm §3.2 says 10 players = 1 entity, simplifies state |
+| ↳ **B6.8** Companion state (recruited / position) | ⏳ — companions are NPCs with extra ownership flag |
+| ↳ **B6.9** Cell-cleared status (no respawn after group clear) | ⏳ — `cleared` flag in cell extra-data, persisted server-side |
+| ↳ **B6.10** One-shot loot pickups (bobbleheads, magazines, holotapes, skill books) | ⏳ — single-pickup persistence, partially covered by container `kill` events |
+| ↳ **B6.11** Time of day + weather sync | ⏳ — GlobalVar `GameHour` + Sky weather state |
+| ↳ **B6.12** Workshop / settlement build state sync | ⏳ — major epic; build/scrap/move workshop refs + furniture |
 | **B7** Rust server port | ⏳ |
 
 ## Major RE achievements
