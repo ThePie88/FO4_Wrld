@@ -164,6 +164,8 @@ no decomp dumps — only our own analysis dossiers).
 
 ## Notes
 
-- Solution dossiers: `re/stradaB_*.txt` (production-grade RE writeups)
-- Tools list: `fw_native/docs/tools-da-usare.md`
+- RE dossiers (English, public): `re/M8P{1,2,3}_*.txt`,
+  `re/M8_strategic_decision.txt` — full reverse-engineering writeups
+  for the player-creation pipeline (NIF loader API, BSGeometry skin
+  instance layout, BSSkin pipeline + bones_pri pointer cache).
 - Full version history: [CHANGELOG.md](CHANGELOG.md)

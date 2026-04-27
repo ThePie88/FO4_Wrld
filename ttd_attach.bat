@@ -4,8 +4,9 @@ REM Run as Administrator. Optional arg: PID to attach to.
 
 setlocal EnableDelayedExpansion
 
-set "TTD_DIR=C:\Users\filip\Desktop\FalloutWorld\ttd_local"
-set "OUT_DIR=C:\Users\filip\Desktop\FalloutWorld\ttd_traces"
+REM Use script-relative paths (works from any clone location).
+set "TTD_DIR=%~dp0ttd_local"
+set "OUT_DIR=%~dp0ttd_traces"
 
 if not exist "%OUT_DIR%" mkdir "%OUT_DIR%"
 

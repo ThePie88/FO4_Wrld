@@ -113,24 +113,25 @@ DWORD WINAPI init_thread(LPVOID) {
 
     // --- STRADA A (custom D3D11) — DORMANT dal 2026-04-23 ---
     //
-    // Il pivot a Strada B (native Creation Engine integration) è
-    // documentato in docs/PIVOT_StradaA_to_StradaB.md. Il codice Strada A
-    // resta COMPILATO e INTATTO nei file src/render/* come reference e
-    // per eventuale retrofit futuro (il piano ReShade-style DSV tracking
-    // + pixel shader depth discard è tutto studiato, manca solo che
-    // qualcuno lo implementi).
+    // The pivot to Strada B (native Creation Engine integration —
+    // BSFadeNode injection into ShadowSceneNode) was decided after
+    // hitting depth-buffer issues with the D3D11 custom-render path.
+    // Strada A code in src/render/* is left COMPILED but DORMANT for
+    // reference / future retrofit (the ReShade-style DSV tracking +
+    // pixel-shader depth discard plan is fully designed, just not
+    // implemented).
     //
-    // Come riattivare Strada A:
-    //   1. Uncomment il blocco sotto (init_present_hook + init_body_asset)
-    //   2. Se si vuole il depth fix: implementare ReShade strategy
-    //      (draw call tracking per DSV + ClearDepthStencilView hook +
-    //       CopyResource backup + SRV-based depth discard in pixel shader)
-    //   3. Eventualmente hookare BSGraphics::State viewProjMat per
-    //      risolvere il VP shake (richiede F4SE AddressLibrary RVA)
+    // To re-enable Strada A:
+    //   1. Uncomment the init_present_hook + init_body_asset block below.
+    //   2. For the depth fix: implement ReShade strategy (draw-call
+    //      tracking per DSV + ClearDepthStencilView hook +
+    //      CopyResource backup + SRV-based depth discard in PS).
+    //   3. Optionally hook BSGraphics::State viewProjMat to fix the
+    //      VP shake (requires F4SE AddressLibrary RVA).
     //
-    // Cosa rimane ATTIVO di Strada A anche in modalità dormant:
-    //   - Nulla. Senza init_present_hook + init_body_asset tutto il
-    //     rendering custom non parte. I file sono solo compilazione.
+    // What stays ACTIVE of Strada A even in dormant mode:
+    //   - Nothing. Without init_present_hook + init_body_asset the
+    //     custom rendering path doesn't run. Files are compile-only.
     //
     // Cosa di Strada A siamo sicuri FUNZIONI (verified live):
     //   - MaleBody.fwn load + upload GPU
