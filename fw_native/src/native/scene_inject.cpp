@@ -91,6 +91,28 @@ static const char* seh_read_bone_name(void* node) {
     } __except (EXCEPTION_EXECUTE_HANDLER) { return ""; }
 }
 
+// Resolve both candidate player_3d paths (+0xF0+0x08 and +0xB78). NO C++
+// objects in this function so __try is safe (C2712 avoidance).
+// Returns true if PlayerSingleton was readable. path_a / path_b may
+// individually be null (sparse/1P scenarios).
+static bool seh_read_player_3d_paths(std::uintptr_t base,
+                                     void*& path_a, void*& path_b) {
+    path_a = nullptr; path_b = nullptr;
+    void* player = nullptr;
+    __try {
+        player = *reinterpret_cast<void**>(base + PLAYER_SINGLETON_RVA);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    if (!player) return false;
+    __try {
+        char* pb = reinterpret_cast<char*>(player);
+        void* f0 = *reinterpret_cast<void**>(pb + 0xF0);
+        if (f0) path_a = *reinterpret_cast<void**>(
+            reinterpret_cast<char*>(f0) + 8);
+        path_b = *reinterpret_cast<void**>(pb + REFR_LOADED_3D_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { /* one or both null */ }
+    return true;
+}
+
 // Helper: name ends with "_skin" suffix?
 static bool ends_with_skin(const char* s) {
     if (!s) return false;
@@ -3596,23 +3618,39 @@ void update_downward_safe(void* root) {
 //  — see top of file. inject_body_nif calls it post-swap.)
 
 // Find the local player's 3D body (rendered character we control).
-// Same path as bone_copy::copy_bones_once: PlayerSingleton +0xF0 +0x08.
+//
+// M8P3.20 — multi-path lookup for 1P/3P agnostic operation.
+//   path A: PlayerSingleton +0xF0 +0x08 (alt-tree 3rd-person body — has
+//           full anim'd skeleton when in 3P; may be null in 1P)
+//   path B: PlayerSingleton +0xB78 (REFR_LOADED_3D — 1P stub or fallback)
+//   path C: walk both, pick the one with the most named non-_skin nodes
+//           (the animated skeleton has the most body joints visible)
+//
+// We try A first; if it has < 30 named joints (likely a 1P stub), try B
+// and use whichever has more. Simple heuristic, no view-mode detection.
 void* find_local_player_3d(std::uintptr_t base) {
     void* player = nullptr;
     __try {
         player = *reinterpret_cast<void**>(base + PLAYER_SINGLETON_RVA);
     } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
     if (!player) return nullptr;
-    void* p_3d = nullptr;
+
+    void* path_a = nullptr;  // +0xF0 +0x08
+    void* path_b = nullptr;  // +0xB78
     __try {
         char* pb = reinterpret_cast<char*>(player);
         void* f0 = *reinterpret_cast<void**>(pb + 0xF0);
         if (f0) {
-            p_3d = *reinterpret_cast<void**>(
+            path_a = *reinterpret_cast<void**>(
                 reinterpret_cast<char*>(f0) + 8);
         }
-    } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
-    return p_3d;
+        path_b = *reinterpret_cast<void**>(pb + REFR_LOADED_3D_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { /* fall through */ }
+
+    // Quick prefer A (the proven 3P tree). Only fall back to B if A is
+    // null or visibly empty. We don't want to walk both every tick.
+    if (path_a) return path_a;
+    return path_b;
 }
 
 }  // anonymous namespace
@@ -3628,12 +3666,11 @@ void on_bone_tick_message() {
     const bool log_now = (++s_decim >= 60);  // ~3-second log decimation
     if (log_now) s_decim = 0;
 
-    // M8P3.15: only broadcast every Nth tick (5Hz instead of 20Hz)
-    // to keep CPU + bandwidth modest. 10 Hz is plenty for animation
-    // replication; clients interpolate.
-    static int s_broadcast_decim = 0;
-    const bool broadcast_now = (++s_broadcast_decim >= 4);
-    if (broadcast_now) s_broadcast_decim = 0;
+    // M8P3.20 — broadcast every tick (20Hz). At 80 bones × 16B = 1280B
+    // payload + 12B frame header = 1292B per packet × 20Hz = 25.8 KB/s
+    // upload per peer. With 9 peers max = 232 KB/s downstream per
+    // client. Acceptable for LAN; for internet may want adaptive rate.
+    const bool broadcast_now = true;
 
     void* body = g_injected_cube.load(std::memory_order_acquire);
     if (!body) {
@@ -3684,20 +3721,53 @@ void on_bone_tick_message() {
     if (!game) return;
     const auto base = reinterpret_cast<std::uintptr_t>(game);
 
-    void* player_3d = find_local_player_3d(base);
-    if (!player_3d) {
-        if (log_now) FW_DBG("[pose-tx] local player_3d not yet ready");
+    // Try TWO paths to the local PC's 3D body — in 1st-person view
+    // the +0xF0+0x08 path may return the 1P hand-stub tree (few bones);
+    // +0xB78 (REFR_LOADED_3D) is the alternate. Pick whichever yields
+    // the better match against canonical (the more populated joint tree).
+    void* path_a = nullptr;
+    void* path_b = nullptr;
+    if (!seh_read_player_3d_paths(base, path_a, path_b)) {
+        if (log_now) FW_DBG("[pose-tx] PlayerSingleton or paths null");
         return;
     }
 
-    // Walk local PC tree once → name → bone map.
     using BoneMap = std::unordered_map<std::string, void*>;
-    BoneMap player_map;
-    bone_copy::walk_player_nested(player_3d, 0, player_map);
+    BoneMap player_map_a, player_map_b;
+    if (path_a) bone_copy::walk_player_nested(path_a, 0, player_map_a);
+    // Probe path B only if A is empty or sparse (< 30 nodes likely
+    // means 1P stub). Avoids per-tick double-walk in normal 3P case.
+    if (path_b && (path_a == nullptr || player_map_a.size() < 30)) {
+        bone_copy::walk_player_nested(path_b, 0, player_map_b);
+    }
+
+    // Pick whichever has more named entries (the richer tree).
+    BoneMap& player_map =
+        (player_map_b.size() > player_map_a.size()) ? player_map_b
+                                                    : player_map_a;
     if (player_map.empty()) {
-        if (log_now) FW_DBG("[pose-tx] player tree empty");
+        if (log_now) FW_DBG("[pose-tx] both player trees empty (paths "
+                            "A=%p B=%p)", path_a, path_b);
         return;
     }
+    static int s_path_log_decim = 0;
+    if (++s_path_log_decim >= 100) {
+        s_path_log_decim = 0;
+        FW_DBG("[pose-tx] path A=%zu nodes, path B=%zu nodes (using %s)",
+               player_map_a.size(), player_map_b.size(),
+               (&player_map == &player_map_a) ? "A" : "B");
+    }
+
+    // M8P3.22 KNOWN LIMITATION: in 1st-person view the alt-tree's
+    // bones are animated by the engine to V-pose (idle) or T-pose
+    // (moving) stub anims because the body is invisible. Both
+    // hash-based and bone-canary heuristics failed to discriminate
+    // (bones DO get rotated, just to stub poses).
+    //
+    // Proper fix requires reading the engine's PlayerCamera singleton
+    // state field for 1stPerson/3rdPerson — RE pending. Until then,
+    // remote ghost displays 1P sender's V/T-pose stub. Workaround:
+    // user keeps sender in 3P while observed.
 
     // For each canonical JOINT name, look up exactly in local PC tree.
     // Joint names match identically (skel.nif schema is the same on
