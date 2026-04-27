@@ -103,7 +103,7 @@ SIDE_A = SideConfig(
     launcher_exe=STEAM_F4SE_LOADER,
     other_peer_id="player_B",
     log_prefix="\x1b[36m[A]\x1b[0m",  # cyan
-    auto_load_save="Exitsave0_896A9D0E__Commonwealth_000037_20260420190445_1_2",   # set to your save filename to skip the main menu
+    auto_load_save="world_base",   # set to your save filename to skip the main menu
 )
 
 SIDE_B = SideConfig(
@@ -112,7 +112,7 @@ SIDE_B = SideConfig(
     launcher_exe=FO4B_COLDCLIENT_LOADER,
     other_peer_id="player_A",
     log_prefix="\x1b[35m[B]\x1b[0m",  # magenta
-    auto_load_save="Exitsave0_896A9D0E__Commonwealth_000037_20260420190445_1_2",   # set to your save filename to skip the main menu
+    auto_load_save="world_base",   # set to your save filename to skip the main menu
 )
 
 

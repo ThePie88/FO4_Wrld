@@ -37,6 +37,7 @@ from protocol import (  # noqa: E402
     QuestStateBootPayload, QuestStageStateEntry,
     GlobalVarSetPayload, GlobalVarBroadcastPayload,
     GlobalVarStateBootPayload, GlobalVarStateEntry,
+    DoorOpPayload, DoorBroadcastPayload,
     encode_frame, decode_frame,
 )
 from server.state import ServerState, PeerSession, SessionState  # noqa: E402
@@ -171,6 +172,9 @@ class ServerProtocol(asyncio.DatagramProtocol):
             return
         if mtype == MessageType.GLOBAL_VAR_SET:
             self._handle_global_var_set(session, payload, now_ms)
+            return
+        if mtype == MessageType.DOOR_OP:
+            self._handle_door_op(session, payload, now_ms)
             return
         if mtype == MessageType.CHAT:
             self._handle_chat(session, payload, now_ms)
@@ -675,6 +679,39 @@ class ServerProtocol(asyncio.DatagramProtocol):
             raw = session.channel.send_reliable(
                 MessageType.GLOBAL_VAR_STATE_BOOT, payload, now_ms)
             self._send(session.addr, raw)
+
+    def _handle_door_op(self, session: PeerSession, payload, now_ms: float) -> None:
+        """B6.1 — door activation broadcast.
+
+        Pure fan-out, no validation. Doors use toggle semantics (engine
+        Activate worker flips the open state). Server doesn't track door
+        state — receivers re-invoke their local Activate worker on the
+        matching REFR, which preserves engine animation + persistence
+        side effects. If clients diverge (rare missed BCAST), the next
+        press resyncs them.
+        """
+        if not isinstance(payload, DoorOpPayload):
+            return
+        if payload.door_form_id == 0 or payload.door_base_id == 0:
+            log.debug("door_op from %s: zero identity (form=0x%X base=0x%X) — drop",
+                      session.peer_id, payload.door_form_id, payload.door_base_id)
+            return
+
+        broadcast = DoorBroadcastPayload(
+            peer_id=session.peer_id,
+            door_form_id=payload.door_form_id,
+            door_base_id=payload.door_base_id,
+            door_cell_id=payload.door_cell_id,
+            timestamp_ms=payload.timestamp_ms,
+        )
+        for other in self.state.other_sessions(session.addr):
+            raw = other.channel.send_reliable(
+                MessageType.DOOR_BCAST, broadcast, now_ms)
+            self._send(other.addr, raw)
+
+        log.debug("door op form=0x%X base=0x%X cell=0x%X by %s",
+                  payload.door_form_id, payload.door_base_id,
+                  payload.door_cell_id, session.peer_id)
 
     def _handle_chat(self, session: PeerSession, payload, now_ms: float) -> None:
         if not isinstance(payload, ChatPayload):

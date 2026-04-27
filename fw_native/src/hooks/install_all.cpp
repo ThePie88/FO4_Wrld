@@ -7,6 +7,7 @@
 #include "player_pos_hook.h"
 #include "main_menu_hook.h"
 #include "worldstate_hook.h"
+#include "door_hook.h"
 #include "engine_tracer.h"
 
 #include "../log.h"
@@ -32,6 +33,8 @@ InstallSummary install_all(std::uintptr_t module_base,
     s.player_pos_ok  = start_player_pos_poll(module_base);
     s.main_menu_ok   = install_main_menu_hook(module_base, cfg);
     s.worldstate_ok  = install_worldstate_hooks(module_base);
+    // B6.1: door SetOpenState observation (phase 1).
+    s.door_ok        = install_door_hook(module_base);
     // M6.3: engine_tracer disabled post-discovery.
     //   2026-04-24 enabled → captured vanilla head NIF paths
     //     (BaseMaleHead.nif, MaleHeadRear.nif) during Museum gameplay.
@@ -40,10 +43,10 @@ InstallSummary install_all(std::uintptr_t module_base,
     // (void)install_engine_tracer(module_base);
 
     FW_LOG("hooks: install summary kill=%d container=%d put=%d pickup=%d "
-           "pos=%d main_menu=%d worldstate=%d (total %zu/7)",
+           "pos=%d main_menu=%d worldstate=%d door=%d (total %zu/8)",
            int(s.kill_ok), int(s.container_ok), int(s.put_ok), int(s.pickup_ok),
            int(s.player_pos_ok), int(s.main_menu_ok), int(s.worldstate_ok),
-           s.success_count());
+           int(s.door_ok), s.success_count());
     return s;
 }
 

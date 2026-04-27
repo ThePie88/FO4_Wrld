@@ -69,6 +69,15 @@ MaterializeInvListFn g_materialize_inv = nullptr;
 GetComponentFn       g_get_component  = nullptr;
 EngineAddItemFn      g_engine_add_item    = nullptr;
 EngineRemoveItemFn   g_engine_remove_item = nullptr;
+
+// B6.1: Activate worker = sub_140514180. Reused for door open/close
+// receive-side apply. 7-arg signature inferred from Papyrus SetOpen
+// callsite (the args 5-7 we logged were stack noise — first 4 are real:
+// refr, activator, ?, force).
+using ActivateWorkerFn = char (*)(void* refr, void* activator,
+                                  void* a3, void* a4,
+                                  void* a5, void* a6, void* a7);
+ActivateWorkerFn     g_engine_activate    = nullptr;
 RefHandleResolveFn   g_refhandle_resolve  = nullptr;
 InvEntryToFormFn     g_inv_entry_to_form  = nullptr;
 // B1.k.3: form-cache global slot. Value at this address is the "form cache"
@@ -145,6 +154,10 @@ bool init(std::uintptr_t module_base) {
         module_base + offsets::ENGINE_ADD_ITEM_RVA);
     g_engine_remove_item = reinterpret_cast<EngineRemoveItemFn>(
         module_base + offsets::ENGINE_REMOVE_ITEM_RVA);
+
+    // B6.1: Activate worker resolver (door open/close engine call).
+    g_engine_activate = reinterpret_cast<ActivateWorkerFn>(
+        module_base + offsets::ENGINE_ACTIVATE_WORKER_RVA);
 
     // B1.k.2: BGSObjectRefHandle resolver — for ContainerMenu::TransferItem
     // we need to reach the container REFR from `this+1064` (a handle slot).
@@ -558,6 +571,86 @@ bool apply_container_op_to_engine(
                "(base=0x%X cell=0x%X) item=0x%X count=%d",
                op_tag, container_form_id,
                id.base_id, id.cell_id, item_base_id, count);
+    }
+    return ok;
+}
+
+bool apply_door_op_to_engine(
+    std::uint32_t door_form_id,
+    std::uint32_t expected_base_id,
+    std::uint32_t expected_cell_id)
+{
+    if (!g_ready.load(std::memory_order_acquire)) return false;
+    if (door_form_id == 0) {
+        FW_DBG("engine: apply_door_op: zero form_id");
+        return false;
+    }
+    if (!g_engine_activate) {
+        FW_WRN("engine: apply_door_op: activate worker resolver not ready");
+        return false;
+    }
+
+    void* door_ref = lookup_by_form_id(door_form_id);
+    if (!door_ref) {
+        // Door not loaded in our world (cell not streamed in, peer is in
+        // a different area). Not a bug — silent no-op apply. The next
+        // time the cell streams in, save-load propagator (vt[0x99] =
+        // sub_140510CE0) will set the persisted state, which catches up
+        // any drift.
+        FW_DBG("engine: apply_door_op: door form 0x%X not found locally",
+               door_form_id);
+        return false;
+    }
+
+    // Identity check: refuse if (base, cell) don't match what the sender
+    // saw. Same defensive pattern as apply_container_op_to_engine — guards
+    // against plugin-load-order drift and the 0xFF______ aliasing bug.
+    const auto id = read_ref_identity(door_ref);
+    const bool base_mismatch =
+        (expected_base_id != 0) && (id.base_id != expected_base_id);
+    const bool cell_mismatch =
+        (expected_cell_id != 0) && (id.cell_id != expected_cell_id);
+    if (base_mismatch || cell_mismatch) {
+        FW_WRN("engine: apply_door_op: identity mismatch dfid=0x%X "
+               "got=(base=0x%X cell=0x%X) expected=(base=0x%X cell=0x%X)",
+               door_form_id,
+               id.base_id, id.cell_id,
+               expected_base_id, expected_cell_id);
+        return false;
+    }
+
+    // Invoke the engine's Activate worker. Args 2-7 from the phase-1.b
+    // observation:
+    //   args=(activator_refr, 0, 0x1, garbage, garbage, garbage)
+    // The 4 in-register args (RCX/RDX/R8/R9) are: refr, activator, ?, force
+    // For receive-side we pass:
+    //   refr      = local door ref
+    //   activator = nullptr (no in-game activator initiated the action)
+    //   a3        = nullptr
+    //   a4        = (void*)1 — observed "force" / "process_inactive" flag
+    //   a5..a7    = nullptr (out of arg-count range; harmless)
+    bool ok = false;
+    __try {
+        g_engine_activate(door_ref,
+                          /*activator=*/nullptr,
+                          /*a3=*/nullptr,
+                          /*a4=*/reinterpret_cast<void*>(static_cast<std::uintptr_t>(1)),
+                          /*a5=*/nullptr,
+                          /*a6=*/nullptr,
+                          /*a7=*/nullptr);
+        ok = true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_ERR("engine: SEH in apply_door_op_to_engine "
+               "dfid=0x%X (base=0x%X cell=0x%X)",
+               door_form_id, expected_base_id, expected_cell_id);
+        return false;
+    }
+
+    if (ok) {
+        FW_LOG("engine: apply_door_op_to_engine dfid=0x%X "
+               "(base=0x%X cell=0x%X)",
+               door_form_id, id.base_id, id.cell_id);
     }
     return ok;
 }

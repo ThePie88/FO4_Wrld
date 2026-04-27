@@ -181,6 +181,33 @@ bool apply_container_op_to_engine(
     std::uint32_t item_base_id,
     std::int32_t  count);
 
+// B6.1 — apply a remote door activation by invoking the engine's
+// Activate worker (sub_140514180 @ RVA 0x514180) on the local REFR
+// matching the broadcast identity.
+//
+// Pipeline:
+//   1. lookup_by_form_id(door_form_id) → local REFR
+//   2. validate (base, cell) match the expected values from the sender
+//   3. invoke sub_140514180(local_refr, nullptr, nullptr, 1, 0, 0, 0)
+//      — args 2-7 use the same shape we observed during phase 1.b
+//        (activator=null, force=1). The engine fires the door's
+//        animation graph notify automatically, propagating to physics
+//        + persistence (vt[0x99] save-load slot stays consistent).
+//
+// Caller MUST be inside an fw::hooks::ApplyingRemoteGuard scope so the
+// door_hook detour sees `tls_applying_remote=true` and skips the observe
+// + broadcast path on this re-entry — otherwise we'd echo the remote
+// activation back to the server (infinite ping-pong between peers).
+//
+// Returns true on apply, false if:
+//   - lookup_by_form_id returned null (REFR not loaded in our world)
+//   - identity mismatch (wrong base_id or cell_id)
+//   - SEH raised inside the engine call
+bool apply_door_op_to_engine(
+    std::uint32_t door_form_id,
+    std::uint32_t expected_base_id,
+    std::uint32_t expected_cell_id);
+
 // B5 scene view-proj capture: read the 4x4 matrix at NiCamera+288
 // owned by PlayerCamera.states[0] (FirstPersonState — always populated)
 // plus the player eye world position. Hypothesis: captured matrix is

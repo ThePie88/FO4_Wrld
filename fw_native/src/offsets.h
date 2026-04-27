@@ -324,6 +324,45 @@ constexpr std::uintptr_t FORM_CACHE_SINGLETON_RVA  = 0x030E1370;   // qword_1430
 constexpr std::uintptr_t ENGINE_ADD_ITEM_RVA    = 0x011735A0;
 constexpr std::uintptr_t ENGINE_REMOVE_ITEM_RVA = 0x011825A0;
 
+// --- B6 wedge 1: door open/close ---
+//
+// PHASE 1 EMPIRICAL RESULT (2026-04-27 live test):
+// sub_140305760 (RVA 0x305760) does NOT fire on live keypress E.
+// 3527 fires logged, ALL within 6 sec of save-load, then ZERO during
+// 75 sec of active gameplay including E-presses on doors. Conclusion:
+// sub_140305760 is the SAVE-LOAD apply function (sets persisted state),
+// not the live mutator. Useful for receiver-side apply (call it directly
+// to set door state to match remote peer), NOT useful for sender-side
+// detection of "player just opened a door".
+constexpr std::uintptr_t ENGINE_SET_OPEN_STATE_RVA = 0x00305760;
+//
+// LIVE KEYPRESS TARGET (per Agent A dossier recommendation):
+// sub_140514180 = "Activate worker" (non-virtual). Called by:
+//   - Papyrus Door.SetOpen native (verified: SetOpen ends in
+//       sub_140514180(refr, 0, 0, 1, 0, 0, 0); sub_1404F3E00(refr, "Open"|"Close"))
+//   - Live player Activate path (sub_140467740, "door activate path
+//       handles type 65 = TESObjectDOOR derived")
+//   - BSAutoCloseController timer
+//
+// Signature (7 args inferred from Papyrus call site decomp; exact
+// types unknown but layout matches x64 ABI: 4 in regs RCX/RDX/R8/R9,
+// rest on stack). Return type is void or char; declare char (most
+// Bethesda mutators return success/status; if actually void we waste
+// 1 byte of AL — harmless).
+//
+//   char sub_140514180(
+//       TESObjectREFR* refr,    // target REFR (door, container, activator, ...)
+//       void*          a2,
+//       void*          a3,
+//       void*          a4,      // observed value 1 in Papyrus SetOpen
+//       void*          a5,
+//       void*          a6,
+//       void*          a7);
+//
+// Phase 1.b validates: hook here OBSERVE-only, spam E on door, expect
+// 1 fire per E press with refr being the door + identity_ok=1.
+constexpr std::uintptr_t ENGINE_ACTIVATE_WORKER_RVA = 0x00514180;
+
 // --- B3.b engine LoadGame ---
 // Decoded from the `LoadGame` console command exec_fn (sub_1405EFAC0) via
 // re/console_table_report.txt. Signature of the real loader:

@@ -153,6 +153,31 @@ void Client::enqueue_global_var_set(std::uint32_t global_form_id, double value) 
     }
 }
 
+void Client::enqueue_door_op(std::uint32_t door_form_id,
+                             std::uint32_t door_base_id,
+                             std::uint32_t door_cell_id,
+                             std::uint64_t timestamp_ms)
+{
+    if (!connected_.load() || stopping_.load()) return;
+    if (door_form_id == 0 || door_base_id == 0) return;
+
+    DoorOpPayload p{};
+    p.door_form_id  = door_form_id;
+    p.door_base_id  = door_base_id;
+    p.door_cell_id  = door_cell_id;
+    p.timestamp_ms  = timestamp_ms;
+
+    QueuedSend q;
+    q.msg_type = MessageType::DOOR_OP;
+    q.reliable = true;
+    q.payload_bytes.resize(sizeof(p));
+    std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
+    {
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+}
+
 void Client::enqueue_container_seed(std::uint32_t base_id, std::uint32_t cell_id,
                                     const ContainerStateEntry* entries,
                                     std::size_t num_entries)
@@ -679,6 +704,27 @@ void Client::dispatch(const Delivered& d) {
                    b.peer_id.get().c_str(),
                    b.container_base_id, b.container_cell_id);
         }
+        break;
+    }
+
+    case static_cast<std::uint16_t>(MessageType::DOOR_BCAST): {
+        if (d.payload.size() < sizeof(DoorBroadcastPayload)) break;
+        DoorBroadcastPayload b{};
+        std::memcpy(&b, d.payload.data(), sizeof(b));
+        if (b.door_form_id == 0 || b.door_base_id == 0) break;
+
+        // Enqueue main-thread apply (same pattern as CONTAINER_BCAST).
+        // Direct call from net thread would race with the engine's
+        // animation-graph manager which lives on the main thread.
+        fw::dispatch::PendingDoorOp op{};
+        op.door_form_id  = b.door_form_id;
+        op.door_base_id  = b.door_base_id;
+        op.door_cell_id  = b.door_cell_id;
+        fw::dispatch::enqueue_door_apply(op);
+        FW_DBG("net: DOOR_BCAST enqueued for main-thread apply "
+               "peer=%s form=0x%X base=0x%X cell=0x%X",
+               b.peer_id.get().c_str(),
+               b.door_form_id, b.door_base_id, b.door_cell_id);
         break;
     }
 

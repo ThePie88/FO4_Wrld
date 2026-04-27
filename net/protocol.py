@@ -98,6 +98,8 @@ class MessageType(IntEnum):
     CONTAINER_BCAST  = 0x0202   # server -> client: relay of container op (authoritative)
     CONTAINER_SEED   = 0x0203   # client -> server: full inventory dump at first-open
     CONTAINER_OP_ACK = 0x0204   # server -> sender: verdict (accepted / rejected + reason)
+    DOOR_OP          = 0x0230   # B6.1: client -> server: I activated door X (toggle)
+    DOOR_BCAST       = 0x0231   # B6.1: server -> other peers: peer X activated door Y
 
     # Social (0x03XX) — reliable
     CHAT          = 0x0300
@@ -1150,6 +1152,83 @@ class GlobalVarStateBootPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class DoorOpPayload:
+    """B6.1: client -> server: 'I just activated door X'.
+
+    Toggle semantics — sub_140514180 (engine Activate worker) flips the
+    door's open state on every call. The op is identity-only; the new
+    state isn't carried because we don't need it: the receiver invokes
+    its own Activate worker on the matching local REFR, which performs
+    the same flip from whatever local state was. Both clients converge
+    as long as they started from the same world_base save (engine load
+    applies persisted state via vt[0x99] = sub_140510CE0 → all doors
+    start in the save's recorded state).
+
+    Identity is the (door_base_id, door_cell_id) tuple, plus form_id
+    for the receiver to look up its local REFR. Same approach used by
+    container ops — proven in B1 + B5.
+    """
+    door_form_id: int    # u32 — sender's REFR form_id (lookup_by_form_id on receiver)
+    door_base_id: int    # u32 — base TESObjectACTI/DOOR formID (identity check)
+    door_cell_id: int    # u32 — cell formID (identity check)
+    timestamp_ms: int    # u64 — sender wall clock for ordering / telemetry
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIQ")  # 20B
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.door_form_id, self.door_base_id,
+            self.door_cell_id, self.timestamp_ms,
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "DoorOpPayload":
+        if len(data) != cls._STRUCT.size:
+            raise ValueError(
+                f"DoorOpPayload: expected {cls._STRUCT.size} bytes, got {len(data)}")
+        fid, bid, cid, ts = cls._STRUCT.unpack(data)
+        return cls(door_form_id=fid, door_base_id=bid,
+                   door_cell_id=cid, timestamp_ms=ts)
+
+
+@dataclass(frozen=True, slots=True)
+class DoorBroadcastPayload:
+    """B6.1: server -> other peers: 'peer X activated door Y'.
+
+    Mirrors DoorOpPayload but adds peer_id for attribution / telemetry.
+    No validation server-side; doors are toggle-only and self-correcting
+    (next press resyncs).
+    """
+    peer_id: str                 # ASCII max MAX_CLIENT_ID_LEN
+    door_form_id: int
+    door_base_id: int
+    door_cell_id: int
+    timestamp_ms: int
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIQ")  # 20B + 16B peer_id = 36B total
+
+    def encode(self) -> bytes:
+        return (
+            _encode_fixed_string(self.peer_id, MAX_CLIENT_ID_LEN)
+            + self._STRUCT.pack(
+                self.door_form_id, self.door_base_id,
+                self.door_cell_id, self.timestamp_ms,
+            )
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "DoorBroadcastPayload":
+        expected = MAX_CLIENT_ID_LEN + 1 + cls._STRUCT.size  # 16 + 20 = 36
+        if len(data) != expected:
+            raise ValueError(
+                f"DoorBroadcastPayload: expected {expected} bytes, got {len(data)}")
+        peer = _decode_fixed_string(data[: MAX_CLIENT_ID_LEN + 1], MAX_CLIENT_ID_LEN)
+        fid, bid, cid, ts = cls._STRUCT.unpack(data[MAX_CLIENT_ID_LEN + 1:])
+        return cls(peer_id=peer, door_form_id=fid, door_base_id=bid,
+                   door_cell_id=cid, timestamp_ms=ts)
+
+
+@dataclass(frozen=True, slots=True)
 class RawMessage:
     """Fallback for unknown msg_type — preserves payload for forward compat."""
     msg_type: int
@@ -1168,6 +1247,7 @@ Payload = Union[
     ContainerOpAckPayload, ContainerSeedPayload,
     QuestStageSetPayload, QuestStageBroadcastPayload, QuestStateBootPayload,
     GlobalVarSetPayload, GlobalVarBroadcastPayload, GlobalVarStateBootPayload,
+    DoorOpPayload, DoorBroadcastPayload,
     RawMessage,
 ]
 
@@ -1198,6 +1278,8 @@ _TYPE_TO_PAYLOAD_CLS: dict[int, type] = {
     MessageType.GLOBAL_VAR_SET:        GlobalVarSetPayload,
     MessageType.GLOBAL_VAR_BCAST:      GlobalVarBroadcastPayload,
     MessageType.GLOBAL_VAR_STATE_BOOT: GlobalVarStateBootPayload,
+    MessageType.DOOR_OP:               DoorOpPayload,
+    MessageType.DOOR_BCAST:            DoorBroadcastPayload,
 }
 
 

@@ -105,6 +105,13 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         fw::dispatch::drain_container_apply_queue();
         return 0;
     }
+    // B6.1: drain remote door-activate queue on main thread. Same rationale
+    // as container apply — Activate worker fires anim graph notify which
+    // mutates the scene's per-cell anim state; not net-thread-safe.
+    if (msg == fw::dispatch::FW_MSG_DOOR_APPLY) {
+        fw::dispatch::drain_door_apply_queue();
+        return 0;
+    }
     // Z.2 (Path B): spawn ghost actor on main thread. PlaceAtMe is
     // TLS-sensitive and takes the REFR cell-attach lock — must run
     // here, not on the net thread where request_spawn is issued.

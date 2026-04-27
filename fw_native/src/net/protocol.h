@@ -72,6 +72,8 @@ enum class MessageType : std::uint16_t {
     CONTAINER_BCAST = 0x0202,
     CONTAINER_SEED  = 0x0203,   // v3: client -> server full inventory dump
     CONTAINER_OP_ACK = 0x0204,  // v3: server -> sender verdict
+    DOOR_OP         = 0x0230,   // B6.1: client -> server door activated
+    DOOR_BCAST      = 0x0231,   // B6.1: server -> other peers door activated
 
     CHAT            = 0x0300,
 
@@ -344,6 +346,27 @@ struct ContainerBroadcastPayload {
     std::uint32_t container_form_id;   // v5
 };
 static_assert(sizeof(ContainerBroadcastPayload) == 48, "ContainerBroadcastPayload size");
+
+// B6.1 — DOOR_OP / DOOR_BCAST. Toggle semantics; receiver re-invokes
+// engine Activate worker (sub_140514180) on the matching local REFR.
+// Python: I I I Q = 20 bytes (DoorOpPayload), 16 + 20 = 36 (Broadcast).
+// C++ pack(1) makes struct size == wire size — clean memcpy both ways.
+struct DoorOpPayload {
+    std::uint32_t door_form_id;    // sender's REFR form_id (lookup_by_form_id receiver)
+    std::uint32_t door_base_id;    // base TESObjectACTI/DOOR formID (identity)
+    std::uint32_t door_cell_id;    // cell formID (identity)
+    std::uint64_t timestamp_ms;    // sender wall clock
+};
+static_assert(sizeof(DoorOpPayload) == 20, "DoorOpPayload size");
+
+struct DoorBroadcastPayload {
+    FixedClientId peer_id;         // 16 bytes
+    std::uint32_t door_form_id;
+    std::uint32_t door_base_id;
+    std::uint32_t door_cell_id;
+    std::uint64_t timestamp_ms;
+};
+static_assert(sizeof(DoorBroadcastPayload) == 36, "DoorBroadcastPayload size");
 
 // WORLD_STATE entry. Python: I I I B = 13 bytes
 struct WorldActorEntry {

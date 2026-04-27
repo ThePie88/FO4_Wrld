@@ -26,6 +26,7 @@ struct InstallSummary {
     bool player_pos_ok  = false;
     bool main_menu_ok   = false;
     bool worldstate_ok  = false;
+    bool door_ok        = false;    // B6.1: SetOpenState mutator (phase 1 OBSERVE)
 
     [[nodiscard]] std::size_t success_count() const noexcept {
         return (kill_ok ? 1u : 0u)
@@ -34,7 +35,8 @@ struct InstallSummary {
              + (pickup_ok ? 1u : 0u)
              + (player_pos_ok ? 1u : 0u)
              + (main_menu_ok ? 1u : 0u)
-             + (worldstate_ok ? 1u : 0u);
+             + (worldstate_ok ? 1u : 0u)
+             + (door_ok ? 1u : 0u);
     }
 };
 

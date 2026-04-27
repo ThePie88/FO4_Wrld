@@ -30,10 +30,24 @@
 
 namespace fw::dispatch {
 
-// WM_APP offsets:
-//   0x42 = FW_MSG_LOAD_GAME (B3.b)  — owned by main_menu_hook.cpp
-//   0x43 = FW_MSG_CONTAINER_APPLY   — owned here (B1.l)
+// WM_APP offsets (CORRECTED 2026-04-27 after collision bug):
+//   0x42 = FW_MSG_LOAD_GAME (B3.b)         — main_menu_hook.cpp
+//   0x43 = FW_MSG_CONTAINER_APPLY (B1.l)   — owned here
+//   0x44 = FW_MSG_SPAWN_GHOST              — ghost/actor_hijack.h
+//   0x45 = FW_MSG_STRADAB_INJECT           — native/scene_inject.h
+//   0x46 = FW_MSG_STRADAB_POS_UPDATE       — native/scene_inject.h
+//   0x47 = FW_MSG_STRADAB_BONE_TICK        — native/scene_inject.h
+//   0x48 = FW_MSG_STRADAB_POSE_APPLY       — native/scene_inject.h
+//   0x49 = FW_MSG_DOOR_APPLY (B6.1)        — owned here
+//
+// PRE-FIX BUG (commit landed 2026-04-27 evening): DOOR_APPLY was set
+// to 0x47 in the initial Phase 2 ship, colliding with STRADAB_BONE_TICK.
+// Result: 20Hz pose-tx never fired (bone tick worker posted 0x47, our
+// WndProc dispatched it as DOOR_APPLY → empty drain → on_bone_tick_message
+// never called → ghost body stuck in T-pose for receivers). Fixed by
+// moving DOOR_APPLY to 0x49.
 constexpr UINT FW_MSG_CONTAINER_APPLY = WM_APP + 0x43;
+constexpr UINT FW_MSG_DOOR_APPLY      = WM_APP + 0x49;
 
 struct PendingContainerOp {
     std::uint32_t kind;               // 1=TAKE, 2=PUT
@@ -42,6 +56,12 @@ struct PendingContainerOp {
     std::uint32_t container_cell_id;  // identity check component
     std::uint32_t item_base_id;       // what to add/remove
     std::int32_t  count;              // how many (>0)
+};
+
+struct PendingDoorOp {
+    std::uint32_t door_form_id;   // sender's form_id (lookup_by_form_id)
+    std::uint32_t door_base_id;   // identity check
+    std::uint32_t door_cell_id;   // identity check
 };
 
 // Net thread → enqueues op and posts FW_MSG_CONTAINER_APPLY to the FO4
@@ -56,6 +76,10 @@ void enqueue_container_apply(const PendingContainerOp& op);
 // under an fw::hooks::ApplyingRemoteGuard to suppress feedback from any
 // internal vt[0x7A] re-entry.
 void drain_container_apply_queue();
+
+// B6.1: door apply queue — same pattern as container.
+void enqueue_door_apply(const PendingDoorOp& op);
+void drain_door_apply_queue();
 
 // Wires the HWND of the main FO4 window. Called exactly once from
 // main_menu_hook after SetWindowLongPtr succeeds. Also flushes any ops

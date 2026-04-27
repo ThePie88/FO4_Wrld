@@ -107,6 +107,15 @@ public:
     // other peers; sender applies optimistically via the engine hook itself.
     void enqueue_global_var_set(std::uint32_t global_form_id, double value);
 
+    // B6.1: reliable DOOR_OP — fire-and-forget. Server broadcasts to other
+    // peers as DOOR_BCAST. Toggle semantics — the receiver re-invokes its
+    // local Activate worker on the matching REFR; both sides converge as
+    // long as they started from the same world_base save.
+    void enqueue_door_op(std::uint32_t door_form_id,
+                         std::uint32_t door_base_id,
+                         std::uint32_t door_cell_id,
+                         std::uint64_t timestamp_ms);
+
     // B1.d: Blocking submit. Fills op.client_op_id from an internal counter,
     // sends reliable, waits up to `timeout_ms` on a condvar for the matching
     // CONTAINER_OP_ACK from the server. Returns:
