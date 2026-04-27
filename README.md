@@ -1,5 +1,5 @@
 
-This project uses unconventional approaches in several critical areas (scene graph injection, skin buffer manipulation, binary patches). External contributions could inadvertently break invariants that aren't documented at the line level. The license reflects this — the source is published for transparency and review, not for collaborative development at this stage. May reconsider after the architecture stabilizes and a CONTRIBUTING.md exists.
+This project uses unconventional approaches in several critical areas (scene graph injection, skin buffer manipulation, binary patches). External contributions could inadvertently break invariants [...]
 
 # FO4_Wrld
 
@@ -24,7 +24,7 @@ disappear from the world), and live container UI update across peers
 (peer A deposits items into a nightstand → peer B's open ContainerMenu
 reflects the new entries in real time):
 
-https://github.com/ThePie88/FO4_Wrld/raw/master/assets/demo.mp4
+https://github.com/ThePie88/FO4_Wrld/blob/master/assets/demo.mp4
 
 If your GitHub view doesn't auto-embed the player above, the file is
 in [`assets/demo.mp4`](assets/demo.mp4) (31 MB, h264 1080p30 CRF 20).
@@ -34,11 +34,11 @@ in [`assets/demo.mp4`](assets/demo.mp4) (31 MB, h264 1080p30 CRF 20).
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                     Python Server (asyncio UDP)                   │
-│  authoritative state · identity-keyed (base, cell) · validator    │
-│  reliable channel (SACK + retransmit) · JSON snapshot persistence │
-└─────────────────────────┬────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│                     Python Server (asyncio UDP)                        │
+│  authoritative state · identity-keyed (base, cell) · validator         │
+│  reliable channel (SACK + retransmit) · JSON snapshot persistence      │
+└─────────────────────────┬──────────────────────────────────────────────┘
                           │ binary protocol v4 (44B POS_BCAST)
             ┌─────────────┼─────────────┐
             │             │             │
