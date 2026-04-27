@@ -2174,6 +2174,29 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
                                             /*reuseFirstEmpty=*/0);
                 }
 
+                // M8P3.23 — apply skin swap on the head NIF too.
+                // Without this the head's BSGeometry skin instance still
+                // binds to the head NIF's internal _skin stubs (frozen
+                // bind pose). With swap, head bones_fb is rebound to
+                // the cached skel.nif's joints (which our pose-rx
+                // pipeline writes via canonical). bones_pri re-cache
+                // happens inside swap_for_geometry.
+                {
+                    void* skel_for_head =
+                        fw::native::skin_rebind::get_cached_skeleton();
+                    if (skel_for_head) {
+                        int head_swapped = -2;
+                        __try {
+                            head_swapped = fw::native::skin_rebind::
+                                swap_skin_bones_to_skeleton(head, skel_for_head);
+                        } __except (EXCEPTION_EXECUTE_HANDLER) {
+                            FW_ERR("[native] inject_head: SEH in skin swap");
+                        }
+                        FW_LOG("[native] inject_head: skin swap returned %d",
+                               head_swapped);
+                    }
+                }
+
                 // v18 REVERT: head attached to BODY (which now IS skel_root
                 // alias). v14 architecture.
                 _InterlockedIncrement(reinterpret_cast<long*>(
@@ -2244,6 +2267,26 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
                 if (hands_name) {
                     g_r.set_name(hands, reinterpret_cast<void*>(hands_name));
                     g_r.fs_release(&hands_name);
+                }
+
+                // M8P3.23 — apply skin swap on the hands NIF too.
+                // Same rationale as head (see above): rebind hands'
+                // bones_fb from internal _skin stubs to the cached
+                // skel joints so our pose-rx pipeline drives them.
+                {
+                    void* skel_for_hands =
+                        fw::native::skin_rebind::get_cached_skeleton();
+                    if (skel_for_hands) {
+                        int hands_swapped = -2;
+                        __try {
+                            hands_swapped = fw::native::skin_rebind::
+                                swap_skin_bones_to_skeleton(hands, skel_for_hands);
+                        } __except (EXCEPTION_EXECUTE_HANDLER) {
+                            FW_ERR("[native] inject_hands: SEH in skin swap");
+                        }
+                        FW_LOG("[native] inject_hands: skin swap returned %d",
+                               hands_swapped);
+                    }
                 }
 
                 // v18 REVERT: hands attached to BODY (v14 arch).
@@ -3777,14 +3820,25 @@ void on_bone_tick_message() {
         canonical.size(),
         static_cast<std::size_t>(fw::net::MAX_POSE_BONES));
 
+    // M8P3.23 — for joints NOT found in local PC tree (e.g. fingers,
+    // which exist in skel.nif but NOT in the render-scene tree we
+    // walk), mark with a SENTINEL quaternion (qw=2.0, invalid for any
+    // unit quat). Receiver detects sentinel and SKIPS that bone, so
+    // engine keeps its natural bind pose (slightly curled fingers,
+    // not extended T-pose). Identity (0,0,0,1) would force extended
+    // pose which looks worse than bind.
+    constexpr float kSentinelQw = 2.0f;
+
     fw::net::PoseBoneEntry quats[fw::net::MAX_POSE_BONES] = {};
     int hits = 0, missing = 0;
     static bool s_diag_dumped = false;
-    std::string miss_sample;  // first few names that don't match (diag once)
+    std::string miss_sample;
     for (std::size_t i = 0; i < n; ++i) {
         auto it = player_map.find(canonical[i]);
         if (it == player_map.end()) {
-            quats[i].qx = 0; quats[i].qy = 0; quats[i].qz = 0; quats[i].qw = 1;
+            // Not found → send sentinel.
+            quats[i].qx = 0; quats[i].qy = 0; quats[i].qz = 0;
+            quats[i].qw = kSentinelQw;
             ++missing;
             if (!s_diag_dumped && miss_sample.size() < 800) {
                 if (!miss_sample.empty()) miss_sample += ", ";
@@ -3794,7 +3848,9 @@ void on_bone_tick_message() {
         }
         float m3[9];
         if (!read_local_3x3(it->second, m3)) {
-            quats[i].qx = 0; quats[i].qy = 0; quats[i].qz = 0; quats[i].qw = 1;
+            // Read failed → send sentinel (don't corrupt with identity).
+            quats[i].qx = 0; quats[i].qy = 0; quats[i].qz = 0;
+            quats[i].qw = kSentinelQw;
             continue;
         }
         float q[4];
@@ -3883,12 +3939,15 @@ void on_pose_apply_message() {
     if (ptrs.empty()) return;
 
     const std::size_t apply_n = std::min<std::size_t>(n, ptrs.size());
-    int wrote = 0;
+    int wrote = 0, skipped_sentinel = 0;
     for (std::size_t i = 0; i < apply_n; ++i) {
         void* bone = ptrs[i];
         if (!bone) continue;
         const float qx = quats[i].qx, qy = quats[i].qy,
                     qz = quats[i].qz, qw = quats[i].qw;
+        // M8P3.23 sentinel: sender marks "not found in local PC" with
+        // qw=2.0. We skip → engine keeps the bone's bind pose.
+        if (qw > 1.5f) { ++skipped_sentinel; continue; }
         // Defensive: skip degenerate quaternions (near zero-length).
         const float ml = qx*qx + qy*qy + qz*qz + qw*qw;
         if (ml < 0.5f) continue;
@@ -3904,8 +3963,9 @@ void on_pose_apply_message() {
     static int s_decim = 0;
     if (++s_decim >= 30) {
         s_decim = 0;
-        FW_LOG("[pose-rx] applied %d/%zu bones to ghost=%p",
-               wrote, apply_n, ghost);
+        FW_LOG("[pose-rx] applied %d/%zu bones (skipped %d sentinels) "
+               "to ghost=%p",
+               wrote, apply_n, skipped_sentinel, ghost);
     }
 }
 
