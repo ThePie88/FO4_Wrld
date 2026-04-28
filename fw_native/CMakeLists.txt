@@ -30,6 +30,7 @@ add_library(fw_native SHARED
     src/hooks/main_menu_hook.cpp
     src/hooks/worldstate_hook.cpp
     src/hooks/door_hook.cpp         # B6.1: SetOpenState mutator observation
+    src/hooks/equip_cycle.cpp       # B8  : post-LoadGame BipedAnim normalize
     src/hooks/engine_tracer.cpp     # M6.3: native NIF-load path observation
     src/net/udp_socket.cpp
     src/net/reliable.cpp

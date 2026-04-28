@@ -15,6 +15,7 @@
 #include "../main_thread_dispatch.h"
 #include "../native/scene_inject.h"
 #include "../offsets.h"
+#include "equip_cycle.h"  // B8: WndProc dispatches FW_MSG_FORCE_EQUIP_CYCLE_*
 
 namespace fw::hooks {
 
@@ -92,7 +93,19 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         const bool ok = fw::engine::load_game_by_name(g_save_name.c_str());
         if (!ok) {
             FW_WRN("[main_menu] LoadGame returned failure — main menu stays up");
+            return 0;
         }
+        // B8 — arm force-equip-cycle worker NOW (after LoadGame native
+        // returns; timing measured from this point, not DLL inject).
+        // 10s delay lands the cycle ~5s after the loading screen ends
+        // (LoadGame is async — kicks off load, returns immediately;
+        // loading screen typically takes 3-5s). The cycle fires before
+        // any peer can connect (net thread handshake takes ~15s+ from
+        // boot), satisfying the "before ghost spawn" precondition that
+        // makes BipedAnim normalize work. Per user empirical validation
+        // 2026-04-28: cycle pre-peer = no crash, post-peer = crash.
+        // See offsets.h "B8 force-equip-cycle" for full rationale.
+        fw::hooks::arm_equip_cycle_after_loadgame(10000);
         return 0;
     }
     // B1.l: CONTAINER_BCAST apply. Drains any container ops that the net
@@ -143,6 +156,21 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     // Posted by net thread after stashing quats into shared slot.
     if (msg == fw::native::FW_MSG_STRADAB_POSE_APPLY) {
         fw::native::on_pose_apply_message();
+        return 0;
+    }
+    // B8: post-LoadGame BipedAnim normalize cycle. Two-phase:
+    //   - WM_APP+0x4A → unequip Vault Suit
+    //   - WM_APP+0x4B → re-equip Vault Suit (500ms later, posted by worker)
+    // Both run on this thread (main/UI thread guaranteed by Win32 WndProc
+    // dispatch). Engine ActorEquipManager calls take per-actor locks +
+    // mutate BipedAnim — main-thread is required.
+    // See offsets.h "B8 force-equip-cycle" comment block for rationale.
+    if (msg == (WM_APP + 0x4A)) {
+        fw::hooks::on_force_equip_cycle_unequip_message();
+        return 0;
+    }
+    if (msg == (WM_APP + 0x4B)) {
+        fw::hooks::on_force_equip_cycle_equip_message();
         return 0;
     }
     // Forward everything else to the original WndProc.

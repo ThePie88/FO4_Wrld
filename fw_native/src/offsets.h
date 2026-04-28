@@ -503,6 +503,78 @@ constexpr std::uintptr_t PLACE_AT_ME_RVA = 0x01159C10;
 // save bloat we OR in 0x4000 post-return.
 constexpr std::uint32_t REFR_FLAG_TEMPORARY = 0x00004000;
 
+// --- B8 force-equip-cycle on game start (M9 architectural workaround) ---
+//
+// Background (2026-04-28):
+//   The M8P3 ghost body's skin instance shares pointers (bones_fb,
+//   bones_pri, skel_root) with the LOCAL player's skeleton. When the
+//   player's BipedAnim is rebuilt by an equip change, the ghost's stale
+//   pointers crash the engine's biped processor walk.
+//
+//   Two days of M9 attempts (B-MOD+E null skel_root, recursive cull-flags,
+//   PipBoy SSN-detach gating) all failed because they don't address the
+//   architectural root cause: the player's BipedAnim is in a SEMI-ALLOCATED
+//   state immediately after save-load (some fields point at globally-pooled
+//   data instead of heap-owned). The FIRST equip cycle through
+//   ActorEquipManager normalizes this state. After that first cycle,
+//   subsequent equip events don't leave dangling refs.
+//
+//   User empirically validated 2026-04-28:
+//     - Unequip Vault Suit BEFORE peer joins → no crash, ghost spawns
+//       cleanly afterwards, subsequent equip cycles never crash.
+//     - Skip the pre-cycle → first equip after peer joins crashes.
+//
+// FIX: on game start, after LoadGame completes and player is in-world but
+// BEFORE peer can connect, programmatically call:
+//   ActorEquipManager::UnequipObject(player, VaultSuit, ...)
+//   wait ~500ms for BipedAnim to settle
+//   ActorEquipManager::EquipObject  (player, VaultSuit, ...)
+// This exercises the BipedAnim through the normal engine pipeline,
+// converting it from "post-load-pool-refs" to "fully-heap-owned". The
+// ghost subsequently bound by M8P3 swap_for_geometry latches onto stable
+// pointers; equip changes after peer-connect become safe.
+//
+// ENGINE FUNCTIONS (RE'd from re/B8_force_equip_cycle.log):
+//
+//   sub_140CE5DA0 = ActorEquipManager::UnequipObject(11 args):
+//     a1 = ActorEquipManager*  (singleton, see ACTOR_EQUIP_MGR_SINGLETON_RVA)
+//     a2 = Actor*              (target — the player)
+//     a3 = _QWORD form_pair[2] = {VMHandle/0, TESForm* item}
+//     a4 = int  count          (1 for single)
+//     a5 = i64  slot           (0 = let engine decide from biped data)
+//     a6 = int  stack_id       (1 or 0 — pass 0 makes engine compute via sub_140CE6DF0)
+//     a7 = char (preventEquip flag, 0 = no)
+//     a8 = char (silent / queued / ?)
+//     a9 = char (?)
+//     a10 = char (?)
+//     a11 = i64 (TLS event sink override; 0 = use default)
+//   Returns: char success
+//
+//   sub_140CE5900 = ActorEquipManager::EquipObject(11 args):
+//     a1 = ActorEquipManager*
+//     a2 = Actor*
+//     a3 = form_pair
+//     a4 = uint count
+//     a5 = int  stack_id
+//     a6 = i64  slot
+//     a7..a11 = char flags (preventRemoval, silent, ...)
+//   IMPORTANT: arg 4-5-6 ORDER differs from Unequip:
+//     Equip:    a4=count, a5=stackID, a6=slot
+//     Unequip:  a4=count, a5=slot,    a6=stackID
+//   This was the M9 mistake yesterday — args swapped between the two.
+//
+// SINGLETON (qword_1431E3328) — confirmed by xref pass: 4+ callers all
+// pass `qword_1431E3328` as a1 to sub_140CE5900. RVA 0x031E3328 in .data.
+//
+// VAULT SUIT form ID 0x0001EED7 — observed in our equip detour logs from
+// the M9 attempts. It's the start-state armor in our world_base.fos save.
+// If a future save doesn't have it equipped, the unequip is a no-op and
+// the equip might error — currently acceptable; we ignore failure return.
+constexpr std::uintptr_t ENGINE_EQUIP_OBJECT_RVA          = 0x00CE5900;
+constexpr std::uintptr_t ENGINE_UNEQUIP_OBJECT_RVA        = 0x00CE5DA0;
+constexpr std::uintptr_t ACTOR_EQUIP_MGR_SINGLETON_RVA    = 0x031E3328;
+constexpr std::uint32_t  VAULT_SUIT_FORM_ID               = 0x0001EED7;
+
 // Template form ID for ghost spawn. Agent 3 recommended 0x0020593F
 // (LCharWorkshopNPC leveled list) but live test 2026-04-22 showed
 // lookup_by_form_id returned null on that one — leveled lists aren't

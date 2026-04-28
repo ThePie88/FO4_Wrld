@@ -5,6 +5,99 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## B8 — force-equip-cycle on game start (2026-04-28)
+
+**Three days of crashes finally resolved.** Player can now change clothes
+freely with the M8P3 ghost body of remote peers active, no SEGV.
+
+### The problem
+
+After save-load, the local player's `BipedAnim` is in a semi-allocated
+state — some fields point at globally-pooled save-format data instead of
+heap-owned. The M8P3 ghost body (representing remote peers visually) binds
+its skin instance pointers (`bones_fb`, `bones_pri`, `skel_root` at
+`skin+0x10/+0x28/+0x48`) to that semi-allocated skel. When the LOCAL player
+then triggers an equip change (Vault Suit, armor, anything biped), the
+engine's `BipedAnim` rebuild walker (`sub_1416C7510` →
+`BSAttachReferenceProcess::Process`) iterates over the freed pool refs
+holding stale `BSFlattenedBoneTree` joints → AV.
+
+### Why M9 attempts failed (3 days, 3 different crashes)
+
+| Approach | Crash signature |
+|---|---|
+| B-MOD+E null `skin->skel_root` | RIP=0x16D7A1E, AV @ 0xA0 (engine deref'd null skel_root) |
+| Recursive cull-flag 0x2001 | Crash returned to FBT walker (different walker entirely) |
+| PipBoy SSN-detach gating | `detach_child` itself SEH'd; walker never visits SSN anyway |
+
+Common architectural error: all three tried to protect the ghost during
+the equip event. But the engine reaches our skin via a "users-of-bone"
+internal cache, NOT via SSN. The ghost can't hide from that walker no
+matter where it sits in the scene tree.
+
+### The fix — workaround, not architectural
+
+User's empirical observation 2026-04-28: cycling Vault Suit
+unequip+equip BEFORE peer connects normalizes the BipedAnim state.
+After the cycle, M8P3 binds to fully-heap-owned data → equip changes
+post-peer-connect no longer dangle.
+
+Implementation (`fw_native/src/hooks/equip_cycle.{cpp,h}`):
+1. `arm_equip_cycle_after_loadgame(10000)` armed in `main_menu_hook`'s
+   `fw_wndproc` post-LoadGame callback (timing measured from LoadGame
+   call, not DLL inject).
+2. Worker thread sleeps 10s → posts `WM_APP+0x4A` (UNEQUIP).
+3. Main thread WndProc receives → calls `ActorEquipManager::UnequipObject(
+   mgr=qword_1431E3328, player, vault_suit_form_pair, count=1, slot=0,
+   stack_id=0, flags=0)`.
+4. Worker sleeps 2000ms (gap for biped rebuild settle — 500ms was too
+   short, caused EQUIP SEH).
+5. Worker posts `WM_APP+0x4B` (EQUIP). Main thread calls
+   `ActorEquipManager::EquipObject(mgr, player, vault_suit, count=1,
+   stack_id=1, slot=0, ...)` — args `a5=1, a9=1` literal, mirrors the
+   common engine caller pattern (a5=0/a9=0 path goes through
+   `sub_140505440` which faults on freshly-unequipped stack info).
+
+Visually: ~2s flicker of "no Vault Suit" right after entering the world,
+then automatic re-equip. After this, peer connection + ghost spawn +
+manual equip changes work cleanly on both clients.
+
+### Reverse engineering
+
+Dossier: `re/B8_force_equip_cycle.log` (5331 lines). Identified:
+- `ActorEquipManager` singleton at `qword_1431E3328` (RVA `0x031E3328`),
+  confirmed via xref pass on 4 callers all passing it as a1.
+- `sub_140CE5900` `EquipObject` 11-arg signature (a4=count, a5=stack_id,
+  a6=slot, ...).
+- `sub_140CE5DA0` `UnequipObject` 11-arg signature — args 4-5-6 are in
+  DIFFERENT ORDER from Equip (a5=slot, a6=stack_id). Yesterday's M9 hook
+  attempt got these swapped.
+- Form pair layout: `{TESForm*, extra/0}`. Initial implementation had
+  it backwards (`{0, TESForm*}`) which made both calls early-exit
+  silently — fixed by swapping.
+
+### Known limitations
+
+1. EQUIP engine call still SEH's internally on completion (caught by
+   our `__try`, game stays alive). The work has fully landed by the time
+   the fault hits — Vault Suit re-equipped, BipedAnim normalized. Looks
+   like cleanup-path bug in our arg combination; not blocking.
+2. Hardcoded to Vault Suit form `0x1EED7` from our `world_base.fos`.
+   A save without it would no-op the cycle and the M8P3 crash would
+   re-emerge. Future polish: cycle whatever's currently equipped.
+3. Architectural root cause (M8P3 sharing player skel pointers) is NOT
+   fixed. Option C (independent skeleton.nif loaded for the ghost) is
+   the proper fix, multi-day RE work — deferred.
+
+### Failed M9 work archived
+
+`re/M9_y_post_bmod_crash_dossier.txt` documents the post-B-MOD+E crash
+analysis (2-loop bug in `NiNode::Update`, vt[51] of BSGeometry =
+`UpdateLocalGeomBound`, why nullifying `skel_root` causes a NEW null
+deref). Useful reference if Option C is ever tackled.
+
+---
+
 ## B6 wedge 1 — door open/close sync between peers (2026-04-27)
 
 [![Door sync demo on YouTube](https://img.youtube.com/vi/T8wLZmCqjxw/maxresdefault.jpg)](https://youtu.be/T8wLZmCqjxw)

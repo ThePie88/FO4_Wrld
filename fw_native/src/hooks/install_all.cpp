@@ -8,6 +8,7 @@
 #include "main_menu_hook.h"
 #include "worldstate_hook.h"
 #include "door_hook.h"
+#include "equip_cycle.h"     // B8: post-LoadGame BipedAnim normalize
 #include "engine_tracer.h"
 
 #include "../log.h"
@@ -35,6 +36,15 @@ InstallSummary install_all(std::uintptr_t module_base,
     s.worldstate_ok  = install_worldstate_hooks(module_base);
     // B6.1: door SetOpenState observation (phase 1).
     s.door_ok        = install_door_hook(module_base);
+    // B8: NOTE — arm call MOVED to main_menu_hook::fw_wndproc post-LoadGame
+    //   callback (instead of armed here at install time). Reason:
+    //   the prior install-time arm with 20s delay was measured from DLL
+    //   inject (T+0), which yielded "10s post in-world" — too long.
+    //   User requested earlier firing ("Prima cazzo, fai 10 secondi o 5
+    //   dopo il loading nel mondo" 2026-04-28). Solution: arm AFTER
+    //   load_game_by_name() returns, so the worker delay is measured
+    //   from LoadGame call time. With 10s delay we get ~5s in-world.
+    //   See main_menu_hook.cpp + offsets.h "B8" block.
     // M6.3: engine_tracer disabled post-discovery.
     //   2026-04-24 enabled → captured vanilla head NIF paths
     //     (BaseMaleHead.nif, MaleHeadRear.nif) during Museum gameplay.
