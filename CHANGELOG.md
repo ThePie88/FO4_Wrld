@@ -5,10 +5,29 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
-## B8 — force-equip-cycle on game start (2026-04-28)
+## B8 — force-equip-cycle on game start (2026-04-28) — ⚠️ TEMPORARY WORKAROUND
 
-**Three days of crashes finally resolved.** Player can now change clothes
-freely with the M8P3 ghost body of remote peers active, no SEGV.
+> **This is a band-aid, not a fix.** It papers over an M8P3 architectural
+> bug (ghost body skin instance shares pointers with the local player
+> skeleton) by exercising the player's `BipedAnim` through
+> `ActorEquipManager` once on game start, before any remote peer can
+> connect and bind a ghost. After that initial cycle, subsequent equip
+> changes don't crash — but the underlying fragility remains: any save
+> without `Vault Suit 111` (form `0x1EED7`) silently no-ops the cycle and
+> the crash returns. Proper fix is **Option C** (load an independent
+> `skeleton.nif` for the ghost via the canonical NIF loader so it has its
+> own `BSFlattenedBoneTree` not shared with the player) — deferred,
+> multi-day RE work.
+>
+> Tracking: `re/M9_y_post_bmod_crash_dossier.txt` documents the failed
+> M9 attempts (B-MOD+E null `skel_root`, recursive cull-flag 0x2001,
+> PipBoy SSN-detach gating — all 3 produced different crash signatures).
+> Reopen and finish Option C when M9 (equipment sync between peers)
+> becomes a milestone priority.
+
+**Three days of crashes finally bypassed.** Player can now change clothes
+freely with the M8P3 ghost body of remote peers active, no SEGV — as long
+as the cycle ran on game start and the save has Vault Suit equipped.
 
 ### The problem
 
