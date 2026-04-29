@@ -152,35 +152,55 @@ in real time).
 Latest 3 patches summarized below. **Full version history in
 [CHANGELOG.md](CHANGELOG.md).**
 
-### M8P3.23 (2026-04-27) — head + hands animated
+### M9 wedge 1+2 (2026-04-29) — clothing sync between peers [Video coming soon]
 
-- Apply skin swap to head NIF (`BaseMaleHead.nif`) + hands NIF
-  (`MaleHands.nif`), not only body. All three meshes now share the
-  same skel joint hierarchy → engine UpdateDownwardPass propagates
-  joint rotations uniformly → head bobs with neck, hands curl with
-  forearm chain.
-- Sentinel quaternion (qw=2.0) for joints absent from local PC's
-  render-scene tree (fingers, AnimObjects, helpers). Receiver detects
-  and skips → engine keeps natural bind pose instead of T-pose.
-- Verified: walk / run / idle / sneak / turn / jump replicate body-wide.
+- Sender hooks `ActorEquipManager::EquipObject/UnequipObject` (`sub_140CE5900`
+  / `sub_140CE5DA0`), filters local-player only, broadcasts `EQUIP_OP`
+  with `{item_form_id, kind, slot_form_id, count}`. Protocol bumped to v6.
+- Receiver walks `TESObjectARMO+0x2A8` addon array → `TESObjectARMA`
+  → embedded `TESModel` → BSFixedString path. Score-based offset probing
+  picks male 3rd-person variant over `_F.nif` female / `1stPerson` arms-only.
+- Loads NIF via `g_r.nif_load_by_path` + POSTPROC for material/texture
+  resolution → `attach_child_direct` to ghost root → `skin_rebind::
+  swap_skin_bones_to_skeleton` re-binds armor's `bones_fb[i]` from inert
+  NIF stub bones to ghost's animated `skel.nif` joints → animation
+  propagates from `pose-rx` to armor mesh.
+- Per-peer FIFO pending queue handles boot-time race: when peer's force-
+  equip-cycle broadcast arrives before ghost is spawned, ops are queued
+  and drained on next `inject_debug_cube` success.
+- Live-tested: peer A equips Vault Suit (`0x1EED7`) / Raider Underarmor
+  (`0x18E3F7`) → peer B's ghost-of-A wears + animates with same outfit.
+  Bidirectional. PoC; armor pieces over outfits z-fight (no biped slot
+  masking yet), BGSMod attachments not covered, A-first-B-later case
+  open. See [CHANGELOG.md](CHANGELOG.md).
 
-### M8P3.20+22 (2026-04-27) — 20Hz rate + 1P limitation documented
+### B8 (2026-04-28) — force-equip-cycle on game start ⚠️ workaround
 
-- Network rate 5Hz → 20Hz (every bone-tick). Smoothness confirmed.
-- Dual-path lookup `Player+0xF0+0x08` / `Player+0xB78` for 1P/3P
-  agnosticism (path B currently always null but future-proofed).
-- Two failed heuristics for 1P sender V/T-pose detection (Pelvis canary,
-  rotation hash). Proper fix needs PlayerCamera singleton RE — deferred.
+- Three days of equip-related crashes resolved by exercising the player's
+  `BipedAnim` through `ActorEquipManager` once before any peer connects.
+  Worker fires 10s post-`LoadGame`: posts `WM_APP+0x4A` to unequip
+  Vault Suit, waits 2s for biped rebuild to settle, posts `WM_APP+0x4B`
+  to re-equip → `BipedAnim` allocator state normalizes from semi-allocated
+  pool refs to fully heap-owned → M8P3 ghost binding latches onto stable
+  pointers and equip changes post-peer-connect no longer dangle.
+- Tag: `v0.2.1-equip-stable`.
+- ⚠️ Band-aid, not architectural fix. Hardcoded to Vault Suit `0x1EED7`;
+  saves without it silently no-op. Proper fix is independent ghost
+  `skeleton.nif` (Option C). See [CHANGELOG.md](CHANGELOG.md).
 
-### M8P3 (2026-04-26) — pose replication network milestone
+### B6 wedge 1 (2026-04-27) — door open/close sync between peers
 
-- First end-to-end body animation replication. ~31 of ~70 skel joints
-  driven over network. Sender reads local PC `m_kLocal`, packs
-  quaternions, broadcasts. Receiver writes to ghost skel and lets
-  engine UpdateDownwardPass propagate.
-- 9 chained bugs squashed (see CHANGELOG.md for full list).
-- New modules: `skin_rebind.{cpp,h}`, POSE_STATE/POSE_BROADCAST
-  protocol, server fan-out, TTD diagnostic infra.
+[![Door sync demo](https://img.youtube.com/vi/T8wLZmCqjxw/maxresdefault.jpg)](https://youtu.be/T8wLZmCqjxw)
+
+- First true world-state replication beyond player avatar + inventory.
+  Peer A presses E on door → peer B's same door swings open in real time
+  (and vice versa). Spam-tested A↔B for 5-10 cycles without desync.
+- Sender hooks engine `Activate worker` (`sub_140514180`), filters door-
+  like form types (`0x1F` / `0x20` / `0x24` / `0x29`), broadcasts
+  `DOOR_OP`. Receiver re-invokes the same Activate worker on its local
+  REFR via main-thread queue + `ApplyingRemoteGuard` feedback-loop guard.
+- Toggle semantics — both clients converge from same `world_base` save
+  without server-side state tracking. Tag: `v0.2.0-pre-worldsync`.
 
 ## Why this exists
 
