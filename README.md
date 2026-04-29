@@ -107,12 +107,12 @@ in real time).
 | **B5** D3D11 custom render | 🗿 not needed — Strada B native injection replaced |
 | **B6** World-state sync expansion *(composite — 12 wedges, multi-month epic)* | 🟡 1/12 done |
 | ↳ **B6.1** Door open/close sync | ✅ done — `sub_140514180` Activate worker hook + dual-agent RE convergence, [30s demo](https://youtu.be/T8wLZmCqjxw), see [CHANGELOG.md](CHANGELOG.md) |
-| **M9** Equipment sync between peers *(clothing + armor visual replication)* | 🟡 PoC shipped (wedges 1+2) |
+| **M9** Equipment sync between peers *(clothing + armor visual replication)* | 🟡 3/6 wedges done — clothing works end-to-end, armor over outfits + BGSMod + material variants pending |
 | ↳ **M9.w1** Equip event detection + broadcast (sender hook OBSERVE-only) | ✅ done — `ActorEquipManager::EquipObject/UnequipObject` detour, EQUIP_OP/EQUIP_BCAST opcodes (protocol v6), [video coming soon] |
-| ↳ **M9.w2** Receiver-side NIF resolution + ghost attach + animation | ✅ PoC done — TESObjectARMO struct walk, score-based male 3rd-person path selection, skin-rebind to ghost skel for animation propagation |
+| ↳ **M9.w2** Receiver-side NIF resolution + ghost attach + animation | ✅ done — TESObjectARMO struct walk, score-based path selection (male 3rd-person preferred over female / 1st-person / faceBones variants), skin-rebind to ghost skel for animation propagation |
 | ↳ **M9.w3** Biped slot masking (hide ghost body parts under armor) | ⏳ — fixes z-fight when armor pieces equipped over outfits (e.g. metal arm over vault suit) |
 | ↳ **M9.w4** Object Modification (BGSMod) sync — shoulder pads, weapon mods, paint variants | ⏳ — not covered by ActorEquipManager hook; separate workshop-attachment path RE needed |
-| ↳ **M9.w5** Peer rejoin equipment-state push | ⏳ — A-first-B-later case: A's force-equip-cycle broadcast lost when B was offline; server-side cache or PEER_JOIN trigger to re-broadcast |
+| ↳ **M9.w5** Peer rejoin equipment-state push | ✅ done in v0.3.1 — PEER_JOIN trigger re-arms equip cycle (DONE→ARMED state transition), 1500ms delay, current outfit re-broadcast to newly-joined peer |
 | ↳ **M9.w6** Material swap variants (rusty/clean raider, paint jobs) | ⏳ — RE BSMaterialDB swap path used by `nsInventory3DManager::*MaterialSwap*Task` |
 | ↳ **B6.2** Lights toggle sync (lamps, lanterns, generators) | ⏳ — same Activate worker pattern as doors, formType filter on `0x20` LIGH |
 | ↳ **B6.3** Locks state sync (lockpicked → unlocked cross-client) | ⏳ — REFR lock extra-data + `OnLockedClick` callback hook |
