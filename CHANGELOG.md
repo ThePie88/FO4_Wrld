@@ -8,7 +8,7 @@ older lives here. Format: newest first, milestones / patches inline.
 ## M9 v0.3.1 — peer-join re-broadcast + path scoring polish (2026-04-29) — STABLE / NEED MORE TESTING
 
 Two follow-up patches on top of the wedge 1+2 PoC, addressing the two
-non-cosmetic issues from the user-list:
+non-cosmetic issues from the list:
 
 ### 1. Boot-timing race — peer-join re-broadcast
 
@@ -67,7 +67,7 @@ After fix:
 
 ### Status — STABLE / NEED MORE TESTING
 
-Marker: things mostly work, but the user has reported visual
+Marker: things mostly work, but the  visual
 inconsistencies between the local player's render and the ghost
 rendition (local has fewer mesh pieces than ghost in some cases —
 unclear if that's our resolver picking too many addons, the engine's
@@ -295,7 +295,7 @@ matter where it sits in the scene tree.
 
 ### The fix — workaround, not architectural
 
-User's empirical observation 2026-04-28: cycling Vault Suit
+My observation 2026-04-28: cycling Vault Suit
 unequip+equip BEFORE peer connects normalizes the BipedAnim state.
 After the cycle, M8P3 binds to fully-heap-owned data → equip changes
 post-peer-connect no longer dangle.
@@ -446,7 +446,6 @@ with `FW_MSG_STRADAB_BONE_TICK`** (also `WM_APP + 0x47`, owned by
 BONE_TICK → 20Hz pose-tx never fired → ghost body stuck in T-pose
 for the OTHER peer.
 
-User flagged "regressione gravissima animazioni rotte sul body".
 Caught + fixed pre-commit: moved `DOOR_APPLY` to `WM_APP + 0x49`,
 added an exhaustive offset table comment in `main_thread_dispatch.h`
 to prevent recurrence. Lesson: `grep "WM_APP +"` across the project
