@@ -221,6 +221,15 @@ that should be most reusable for anyone else attempting the same thing.
   Workaround: keep the observed peer in 3rd-person.
 - **Ghost body has no shadow** — separate render flag investigation,
   deferred.
+- **PipBoy animation is broken on the ghost** — when a peer opens their
+  PipBoy, the engine plays a 1st-person camera-relative arm-raise anim
+  on the local player. The ghost on observers' screens has no equivalent
+  3rd-person animation set up (vanilla FO4 doesn't really animate a
+  remote player's PipBoy because there are no remote players in
+  vanilla), so the ghost's arms freeze / contort during the peer's
+  PipBoy session. Cosmetic, doesn't crash. Workaround / future wedge:
+  detect peer-PipBoy state and either despawn ghost or play a static
+  "looking at PipBoy" placeholder pose.
 - **Tested with 2 peers** — multi-peer ghost cache (peer-id keyed
   registry) not yet implemented; 10-peer scaling is theoretical.
 - **Network rate-limited to 20Hz** — works smoothly on LAN, untested
