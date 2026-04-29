@@ -22,6 +22,20 @@ Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 > REFR via main-thread queue + `ApplyingRemoteGuard` feedback-loop guard.
 > Toggle semantics — both clients converge from the same `world_base`
 > save without server-side state tracking.
+>
+> **M9 wedge 1+2 PoC shipped** — **clothing sync between peers** [video coming
+> soon]. Peer A equips Vault Suit / Raider outfit → Peer B sees the same
+> clothing on A's ghost body, animated with A's pose. Sender hooks
+> `ActorEquipManager::EquipObject/UnequipObject`, receiver walks
+> `TESObjectARMO → TESObjectARMA → TESModel` to resolve the 3rd-person NIF
+> path, loads the NIF, attaches it to the ghost, and re-binds the armor's
+> skin to the shared skel.nif so animation propagates. Path scoring picks
+> male 3rd-person variant over 1st-person/female fallbacks. Per-peer
+> pending queue handles the boot-time race when ghost spawns after the
+> peer's force-equip-cycle. Limitations: armor pieces ON TOP of outfits
+> z-fight (no biped slot masking), some NIFs have bind-pose mismatch
+> clipping (Vault Suit), Object Modifications (BGSMod) like shoulder
+> pads/weapon mods not covered. See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -93,6 +107,13 @@ in real time).
 | **B5** D3D11 custom render | 🗿 not needed — Strada B native injection replaced |
 | **B6** World-state sync expansion *(composite — 12 wedges, multi-month epic)* | 🟡 1/12 done |
 | ↳ **B6.1** Door open/close sync | ✅ done — `sub_140514180` Activate worker hook + dual-agent RE convergence, [30s demo](https://youtu.be/T8wLZmCqjxw), see [CHANGELOG.md](CHANGELOG.md) |
+| **M9** Equipment sync between peers *(clothing + armor visual replication)* | 🟡 PoC shipped (wedges 1+2) |
+| ↳ **M9.w1** Equip event detection + broadcast (sender hook OBSERVE-only) | ✅ done — `ActorEquipManager::EquipObject/UnequipObject` detour, EQUIP_OP/EQUIP_BCAST opcodes (protocol v6), [video coming soon] |
+| ↳ **M9.w2** Receiver-side NIF resolution + ghost attach + animation | ✅ PoC done — TESObjectARMO struct walk, score-based male 3rd-person path selection, skin-rebind to ghost skel for animation propagation |
+| ↳ **M9.w3** Biped slot masking (hide ghost body parts under armor) | ⏳ — fixes z-fight when armor pieces equipped over outfits (e.g. metal arm over vault suit) |
+| ↳ **M9.w4** Object Modification (BGSMod) sync — shoulder pads, weapon mods, paint variants | ⏳ — not covered by ActorEquipManager hook; separate workshop-attachment path RE needed |
+| ↳ **M9.w5** Peer rejoin equipment-state push | ⏳ — A-first-B-later case: A's force-equip-cycle broadcast lost when B was offline; server-side cache or PEER_JOIN trigger to re-broadcast |
+| ↳ **M9.w6** Material swap variants (rusty/clean raider, paint jobs) | ⏳ — RE BSMaterialDB swap path used by `nsInventory3DManager::*MaterialSwap*Task` |
 | ↳ **B6.2** Lights toggle sync (lamps, lanterns, generators) | ⏳ — same Activate worker pattern as doors, formType filter on `0x20` LIGH |
 | ↳ **B6.3** Locks state sync (lockpicked → unlocked cross-client) | ⏳ — REFR lock extra-data + `OnLockedClick` callback hook |
 | ↳ **B6.4** Terminals state sync (hacked / unlocked) | ⏳ — TerminalMenu activation event + persisted "hacked" flag |

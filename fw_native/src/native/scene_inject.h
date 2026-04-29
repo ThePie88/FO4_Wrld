@@ -99,6 +99,70 @@ void on_pose_apply_message();
 // sleeping), then calls detach_debug_node(). Idempotent.
 void shutdown();
 
+// === M9 wedge 2 — armor visual sync on the ghost body =====================
+//
+// Approach: when the receiver gets EQUIP_BCAST(form_id) for a peer, we
+// resolve the form to its 3rd-person NIF path (via TESObjectARMO struct
+// walk — see offsets.h "M9 wedge 2"), load the NIF via the canonical
+// engine loader (g_r.nif_load_by_path), and attach it as a child of the
+// ghost root NiNode (via g_r.attach_child_direct).
+//
+// The ghost shares the LOCAL player's skeleton through M8P3 swap, so the
+// armor NIF's BSDismemberSkinInstance resolver finds bone names ("Pelvis",
+// "SPINE1", ...) in the ghost subtree and skins to them — same bones the
+// body uses, so the armor follows the same animation.
+//
+// Wedge 2 limitations (deliberately accepted, see CHANGELOG):
+//   - Single-peer scope: the SINGLE g_injected_cube ghost is used for
+//     all attached armor regardless of peer_id. Multi-peer ghosts are
+//     a future wedge.
+//   - No material swap variants — only the base ARMA path is loaded.
+//     Items with cosmetic variants (rusty/clean/painted raider) show
+//     the default skin.
+//   - No biped slot mask hiding — base body geometry is fully visible
+//     under the armor; if the armor doesn't fully cover (most don't,
+//     OK), no visible glitch. If it tries to hide body parts (Vault
+//     Suit hides arms), there may be minor body-clip at the edges.
+//   - Power Armor not supported — multi-piece + animation integration
+//     requires a separate architecture.
+//
+// Threading: both functions are MAIN-THREAD-ONLY. Called from the WndProc
+// drain of FW_MSG_EQUIP_APPLY (queued by net thread). Engine NIF loader
+// + scene graph mutations require main-thread affinity.
+//
+// State: per-peer attached-NIF map kept in scene_inject's anonymous
+// namespace, keyed by (peer_id, item_form_id) → loaded NiNode* + bsfade
+// parent slot. UNEQUIP looks up the entry, detaches, drops refcount,
+// removes from map.
+//
+// peer_id parameter: ASCII null-terminated, max 15 chars (FixedClientId
+// from protocol). Used as map key. Currently we just log it; visually
+// only ONE ghost is updated regardless of which peer's BCAST we got.
+//
+// Returns true if the operation completed without SEH or null-deref.
+// Logs success/failure details (NIF path, parent node ptr, error code).
+bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id);
+bool ghost_detach_armor(const char* peer_id, std::uint32_t item_form_id);
+
+// M9 wedge 2 — flush deferred armor ops accumulated while the ghost
+// wasn't yet spawned. Pending queue addresses the boot-time race where
+// peer A's force-equip-cycle (B8) broadcasts EQUIP/UNEQUIP for the
+// Vault Suit BEFORE peer B's ghost has been injected → without queueing
+// those events would be permanently lost (no later broadcast unless A
+// changes equipment again, which they typically don't).
+//
+// Called after inject_debug_cube success (i.e. ghost_attach_armor will
+// no longer skip with "no ghost yet"). Idempotent: calling with no
+// pending ops is a cheap no-op.
+//
+// Internally it swaps the queue out under a mutex and processes each op
+// by calling ghost_attach_armor / ghost_detach_armor — same path as
+// fresh RX. Order is FIFO per peer (matches send order, so a
+// UNEQUIP→EQUIP cycle resolves correctly even with cancellation).
+//
+// Main thread only.
+void flush_pending_armor_ops();
+
 // --- M2.2: BSDynamicTriShape allocation (empty, no geometry yet) -----------
 
 // Allocate + in-place-ctor a BSDynamicTriShape via the engine's allocator,

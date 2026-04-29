@@ -32,7 +32,15 @@ from typing import ClassVar, Union
 # ------------------------------------------------------------------ constants
 
 PROTOCOL_MAGIC: int = 0xFA
-PROTOCOL_VERSION: int = 5
+PROTOCOL_VERSION: int = 6
+# v6 (2026-04-28): M9 wedge 1 equipment-event observation. New message types
+# EQUIP_OP (client→server) and EQUIP_BCAST (server→peers) carrying
+# {item_form_id, kind=equip|unequip, slot_form_id, count, timestamp_ms}.
+# Sender hooks ActorEquipManager::EquipObject + UnequipObject in Fallout4.exe,
+# filters local-player-only events, broadcasts. Receiver in wedge 1 just
+# logs RX (no apply on ghost yet — wedge 2 will swap visuals on the M8P3
+# ghost body using the same singleton + RVAs proven stable in B8).
+# Wire growth: 21B for OP, 37B for BCAST.
 # v5 (2026-04-21): B1.g container apply-to-engine. ContainerOpPayload and
 # ContainerBroadcastPayload gain `container_form_id` (u32) — the sender's
 # engine form_id for the touched container REFR. Receivers use
@@ -100,6 +108,8 @@ class MessageType(IntEnum):
     CONTAINER_OP_ACK = 0x0204   # server -> sender: verdict (accepted / rejected + reason)
     DOOR_OP          = 0x0230   # B6.1: client -> server: I activated door X (toggle)
     DOOR_BCAST       = 0x0231   # B6.1: server -> other peers: peer X activated door Y
+    EQUIP_OP         = 0x0240   # M9 w1: client -> server: I equipped/unequipped item X
+    EQUIP_BCAST      = 0x0241   # M9 w1: server -> other peers: peer X equipped/unequipped item Y
 
     # Social (0x03XX) — reliable
     CHAT          = 0x0300
@@ -620,6 +630,17 @@ class ContainerOpKind(IntEnum):
     """Kind of container modification."""
     TAKE = 1   # player removed N items from container
     PUT  = 2   # player added N items to container
+
+
+class EquipOpKind(IntEnum):
+    """M9 w1: kind of equipment-state change observed on the local player.
+
+    Wedge 1 is OBSERVE-only: server fans out, peers log. Wedge 2 will branch
+    on this enum to call ActorEquipManager::EquipObject vs ::UnequipObject
+    on the M8P3 ghost body representing the originating peer.
+    """
+    EQUIP   = 1   # local player equipped (post-Equip detour fire)
+    UNEQUIP = 2   # local player unequipped
 
 
 @dataclass(frozen=True, slots=True)
@@ -1229,6 +1250,91 @@ class DoorBroadcastPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class EquipOpPayload:
+    """M9 w1: client -> server: 'I just equipped/unequipped item X'.
+
+    Sender hooks ActorEquipManager::EquipObject (sub_140CE5900) and
+    ::UnequipObject (sub_140CE5DA0) in the engine — both fire 11-arg with
+    args 4-5-6 in DIFFERENT ORDER between equip and unequip (a4=count is
+    common; a5/a6 are stack_id vs slot vs swapped — this trapped M9 day 1).
+    Detour observes, filters to actor==player (form_id == 0x14), enqueues
+    this payload, then chains to g_orig.
+
+    Wedge 1 receiver: just log + telemetry — NO apply on the ghost yet.
+    The ghost body is fragile to scene-graph mutation (root cause of the
+    3-day crash hunt resolved by B8 force-equip-cycle on game start).
+    Wedge 2 will add the safe apply path now that B8 has stabilized
+    BipedAnim allocator state.
+
+    Identity: item_form_id is a TESForm.formID, plugin-stable. slot_form_id
+    is the BGSEquipSlot.formID; pass 0 to mean "engine auto-resolves from
+    the item's biped data". count is signed for symmetry with container
+    ops; in practice always >= 1.
+    """
+    item_form_id: int    # u32 — e.g. 0x1EED7 = Vault Suit 111
+    kind: int            # u8 — EquipOpKind (1=EQUIP, 2=UNEQUIP)
+    slot_form_id: int    # u32 — BGSEquipSlot.formID, 0 = auto
+    count: int           # i32 — stack count (always positive in practice)
+    timestamp_ms: int    # u64 — sender wall clock for ordering
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IBIiQ")  # 4+1+4+4+8 = 21B
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.item_form_id, self.kind, self.slot_form_id,
+            self.count, self.timestamp_ms,
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "EquipOpPayload":
+        if len(data) != cls._STRUCT.size:
+            raise ValueError(
+                f"EquipOpPayload: expected {cls._STRUCT.size} bytes, got {len(data)}")
+        ifid, kind, sfid, cnt, ts = cls._STRUCT.unpack(data)
+        return cls(item_form_id=ifid, kind=kind, slot_form_id=sfid,
+                   count=cnt, timestamp_ms=ts)
+
+
+@dataclass(frozen=True, slots=True)
+class EquipBroadcastPayload:
+    """M9 w1: server -> other peers: 'peer X equipped/unequipped item Y'.
+
+    Mirrors EquipOpPayload + peer_id for attribution. Server fan-out is
+    pure (no validation, no rate-limiting) — wedge 1 is OBSERVE-only on
+    receivers so worst-case a flood of equip events is just log spam.
+    Wedge 2 may add rate-limit when ghost mutation lands.
+    """
+    peer_id: str
+    item_form_id: int
+    kind: int
+    slot_form_id: int
+    count: int
+    timestamp_ms: int
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IBIiQ")  # 21B + 16B peer_id = 37B total
+
+    def encode(self) -> bytes:
+        return (
+            _encode_fixed_string(self.peer_id, MAX_CLIENT_ID_LEN)
+            + self._STRUCT.pack(
+                self.item_form_id, self.kind, self.slot_form_id,
+                self.count, self.timestamp_ms,
+            )
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "EquipBroadcastPayload":
+        expected = MAX_CLIENT_ID_LEN + 1 + cls._STRUCT.size  # 16 + 21 = 37
+        if len(data) != expected:
+            raise ValueError(
+                f"EquipBroadcastPayload: expected {expected} bytes, got {len(data)}")
+        peer = _decode_fixed_string(data[: MAX_CLIENT_ID_LEN + 1], MAX_CLIENT_ID_LEN)
+        ifid, kind, sfid, cnt, ts = cls._STRUCT.unpack(data[MAX_CLIENT_ID_LEN + 1:])
+        return cls(peer_id=peer, item_form_id=ifid, kind=kind,
+                   slot_form_id=sfid, count=cnt, timestamp_ms=ts)
+
+
+@dataclass(frozen=True, slots=True)
 class RawMessage:
     """Fallback for unknown msg_type — preserves payload for forward compat."""
     msg_type: int
@@ -1248,6 +1354,7 @@ Payload = Union[
     QuestStageSetPayload, QuestStageBroadcastPayload, QuestStateBootPayload,
     GlobalVarSetPayload, GlobalVarBroadcastPayload, GlobalVarStateBootPayload,
     DoorOpPayload, DoorBroadcastPayload,
+    EquipOpPayload, EquipBroadcastPayload,
     RawMessage,
 ]
 
@@ -1280,6 +1387,8 @@ _TYPE_TO_PAYLOAD_CLS: dict[int, type] = {
     MessageType.GLOBAL_VAR_STATE_BOOT: GlobalVarStateBootPayload,
     MessageType.DOOR_OP:               DoorOpPayload,
     MessageType.DOOR_BCAST:            DoorBroadcastPayload,
+    MessageType.EQUIP_OP:              EquipOpPayload,
+    MessageType.EQUIP_BCAST:           EquipBroadcastPayload,
 }
 
 

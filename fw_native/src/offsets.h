@@ -575,6 +575,67 @@ constexpr std::uintptr_t ENGINE_UNEQUIP_OBJECT_RVA        = 0x00CE5DA0;
 constexpr std::uintptr_t ACTOR_EQUIP_MGR_SINGLETON_RVA    = 0x031E3328;
 constexpr std::uint32_t  VAULT_SUIT_FORM_ID               = 0x0001EED7;
 
+// --- M9 wedge 2 — armor visual sync via TESObjectARMO/ARMA struct walk ---
+//
+// Background (2026-04-28):
+//   M9 wedge 1 already broadcasts EQUIP_OP / EQUIP_BCAST when local player
+//   equips/unequips. Wedge 2 makes the receiver SHOW the armor visually
+//   on the M8P3 ghost body of the originating peer.
+//
+// Approach (Option δ — TESObjectARMO struct walk):
+//   We REJECTED several alternatives:
+//     - actor hijack: permanently bocciato per user memory
+//     - Inventory3DManager engine API: too menu-coupled (requires
+//       Inventory3DSceneRoot wrapper class with vt[136], not a plain
+//       NiNode — see re/M9_w2_inv3d_main.log)
+//     - Hook deep engine attach (sub_140C45450): args are in-process
+//       NiNode pointers, not file paths — can't replicate cross-client
+//
+//   Therefore: walk TESObjectARMO struct ourselves to resolve the
+//   3rd-person NIF path, then load + attach to the ghost via primitives
+//   we already have (g_r.nif_load_by_path + attach_child_direct).
+//
+// LAYOUT (RE'd 2026-04-28 from sub_140462370 = ARMO::FinalizeAfterLoad
+// + sub_14045FD90 = ARMA::~TESObjectARMA — re/M9_w2_armo_layout.log):
+//
+//   TESObjectARMO struct:
+//     +0x2A8  = ARMA addon array base (stride 16, addon[i] at +i*16)
+//     +0x2B8  = u32 addon count
+//     entries: { ??? @+0, TESObjectARMA* @+8 }  — 16-byte stride
+//
+//   TESObjectARMA struct (6 sub-component objects, ~64B each):
+//     +0x50   = TESRaceForm
+//     +0x90   = BGSBipedObjectForm
+//     +0xD0   = TESModel male 3rd-person   ← what we read for ghost
+//     +0x110  = TESModel female 3rd-person
+//     +0x150  = TESModel male 1st-person
+//     +0x190  = TESModel female 1st-person
+//
+//   TESModel struct:
+//     +0x08   = BSFixedString model_path (pool handle, +0x18 = c_str)
+//
+// The ghost shares the LOCAL player's skel via M8P3 swap. When we attach
+// an armor NIF as child of the ghost root, the engine's
+// BSDismemberSkinInstance resolver looks up bone names ("Pelvis",
+// "SPINE1", etc.) in the parent tree — which IS shared with the player
+// skel — so resolution should succeed and the armor renders skinned to
+// the same bones as the body. Tested initially with Vault Suit (form
+// 0x1EED7) and any raider chest armor for live validation.
+constexpr std::size_t TESOBJECTARMO_ADDON_ARR_OFF      = 0x2A8;
+constexpr std::size_t TESOBJECTARMO_ADDON_COUNT_OFF    = 0x2B8;
+constexpr std::size_t TESOBJECTARMO_ADDON_ENTRY_STRIDE = 0x10;
+constexpr std::size_t TESOBJECTARMO_ADDON_ARMA_PTR_OFF = 0x08;
+
+constexpr std::size_t TESOBJECTARMA_MODEL_M3RD_OFF     = 0xD0;
+constexpr std::size_t TESOBJECTARMA_MODEL_F3RD_OFF     = 0x110;
+
+constexpr std::size_t TESMODEL_PATH_BSFIXEDSTR_OFF     = 0x08;
+
+// Pool layout for BSFixedString (RE'd in skin_rebind.cpp 2026-04-24):
+//   pool_entry + 0x18 = c_str (preceded by 24-byte header containing
+//   length, refcount, hash, etc).
+constexpr std::size_t BSFIXEDSTRING_CSTR_OFF           = 0x18;
+
 // Template form ID for ghost spawn. Agent 3 recommended 0x0020593F
 // (LCharWorkshopNPC leveled list) but live test 2026-04-22 showed
 // lookup_by_form_id returned null on that one — leveled lists aren't

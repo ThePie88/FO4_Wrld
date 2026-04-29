@@ -7,6 +7,7 @@
 #include "engine/engine_calls.h"
 #include "hooks/container_hook.h"   // ApplyingRemoteGuard + tls_applying_remote
 #include "log.h"
+#include "native/scene_inject.h"    // M9 wedge 2: ghost armor attach/detach
 
 namespace fw::dispatch {
 
@@ -19,6 +20,12 @@ std::deque<PendingContainerOp> g_queue;
 // ops. Doors are toggle-only and high-frequency (one per E press).
 std::mutex g_door_mtx;
 std::deque<PendingDoorOp> g_door_queue;
+
+// M9 wedge 2: equip queue — for armor visual sync.
+//   Per-event: net thread enqueues + posts FW_MSG_EQUIP_APPLY.
+//   Drained on main thread by WndProc dispatcher.
+std::mutex g_equip_mtx;
+std::deque<PendingEquipOp> g_equip_queue;
 
 // The FO4 main window handle. Set exactly once by main_menu_hook after
 // it subclasses WndProc (post-B3.b-registrar detection). Read lock-free
@@ -41,6 +48,15 @@ void post_wakeup_door() noexcept {
     if (!h) return;
     if (!PostMessageW(h, FW_MSG_DOOR_APPLY, 0, 0)) {
         FW_DBG("dispatch: PostMessage(FW_MSG_DOOR_APPLY) failed (err=%lu)",
+               GetLastError());
+    }
+}
+
+void post_wakeup_equip() noexcept {
+    HWND h = g_hwnd.load(std::memory_order_acquire);
+    if (!h) return;
+    if (!PostMessageW(h, FW_MSG_EQUIP_APPLY, 0, 0)) {
+        FW_DBG("dispatch: PostMessage(FW_MSG_EQUIP_APPLY) failed (err=%lu)",
                GetLastError());
     }
 }
@@ -69,6 +85,50 @@ void enqueue_door_apply(const PendingDoorOp& op) {
     FW_DBG("dispatch: door enqueued form=0x%X base=0x%X cell=0x%X (qsize=%zu)",
            op.door_form_id, op.door_base_id, op.door_cell_id, qsize);
     post_wakeup_door();
+}
+
+void enqueue_equip_apply(const PendingEquipOp& op) {
+    std::size_t qsize;
+    {
+        std::lock_guard lk(g_equip_mtx);
+        g_equip_queue.push_back(op);
+        qsize = g_equip_queue.size();
+    }
+    FW_DBG("dispatch: equip enqueued peer=%s form=0x%X kind=%u (qsize=%zu)",
+           op.peer_id, op.item_form_id, op.kind, qsize);
+    post_wakeup_equip();
+}
+
+void drain_equip_apply_queue() {
+    std::deque<PendingEquipOp> local;
+    {
+        std::lock_guard lk(g_equip_mtx);
+        local.swap(g_equip_queue);
+    }
+    if (local.empty()) {
+        FW_DBG("dispatch: equip drain with empty queue — no-op");
+        return;
+    }
+
+    // We're on the main thread. Each equip op resolves the item form via
+    // lookup_by_form_id, walks ARMO→ARMA→TESModel→path, loads the NIF,
+    // and attaches it to the ghost. UNEQUIP unloads + detaches.
+    //
+    // No ApplyingRemoteGuard needed here — we are NOT calling any engine
+    // function that the equip_hook detour intercepts. The ghost-armor
+    // attach uses g_r.nif_load_by_path + g_r.attach_child_direct, which
+    // are NIF/scene primitives unrelated to ActorEquipManager.
+    std::size_t applied_ok = 0, failed = 0;
+    for (const auto& op : local) {
+        // EquipOpKind: 1=EQUIP, 2=UNEQUIP. See net/protocol.h.
+        const bool is_equip = (op.kind == 1);
+        const bool ok = is_equip
+            ? fw::native::ghost_attach_armor(op.peer_id, op.item_form_id)
+            : fw::native::ghost_detach_armor(op.peer_id, op.item_form_id);
+        if (ok) ++applied_ok; else ++failed;
+    }
+    FW_LOG("dispatch: drained %zu equip ops (applied=%zu failed=%zu)",
+           local.size(), applied_ok, failed);
 }
 
 void drain_door_apply_queue() {
@@ -154,6 +214,16 @@ void set_target_hwnd(HWND hwnd) {
     if (pending_doors > 0) {
         FW_LOG("dispatch: flushing %zu pre-hwnd queued door ops", pending_doors);
         post_wakeup_door();
+    }
+    // M9 wedge 2: flush any equip ops accumulated pre-subclass.
+    std::size_t pending_equips = 0;
+    {
+        std::lock_guard lk(g_equip_mtx);
+        pending_equips = g_equip_queue.size();
+    }
+    if (pending_equips > 0) {
+        FW_LOG("dispatch: flushing %zu pre-hwnd queued equip ops", pending_equips);
+        post_wakeup_equip();
     }
 }
 

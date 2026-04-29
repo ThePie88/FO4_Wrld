@@ -178,6 +178,38 @@ void Client::enqueue_door_op(std::uint32_t door_form_id,
     }
 }
 
+void Client::enqueue_equip_op(std::uint32_t item_form_id,
+                              std::uint8_t  kind,
+                              std::uint32_t slot_form_id,
+                              std::int32_t  count,
+                              std::uint64_t timestamp_ms)
+{
+    if (!connected_.load() || stopping_.load()) return;
+    if (item_form_id == 0) return;  // sender filters this too, defensive
+    if (kind != static_cast<std::uint8_t>(EquipOpKind::EQUIP)
+        && kind != static_cast<std::uint8_t>(EquipOpKind::UNEQUIP)) {
+        // Out-of-band kind value — drop. Could be sender bug.
+        return;
+    }
+
+    EquipOpPayload p{};
+    p.item_form_id = item_form_id;
+    p.kind         = kind;
+    p.slot_form_id = slot_form_id;
+    p.count        = count;
+    p.timestamp_ms = timestamp_ms;
+
+    QueuedSend q;
+    q.msg_type = MessageType::EQUIP_OP;
+    q.reliable = true;
+    q.payload_bytes.resize(sizeof(p));
+    std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
+    {
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+}
+
 void Client::enqueue_container_seed(std::uint32_t base_id, std::uint32_t cell_id,
                                     const ContainerStateEntry* entries,
                                     std::size_t num_entries)
@@ -725,6 +757,49 @@ void Client::dispatch(const Delivered& d) {
                "peer=%s form=0x%X base=0x%X cell=0x%X",
                b.peer_id.get().c_str(),
                b.door_form_id, b.door_base_id, b.door_cell_id);
+        break;
+    }
+
+    case static_cast<std::uint16_t>(MessageType::EQUIP_BCAST): {
+        // M9 wedge 2 — apply equip event to peer's ghost body visually.
+        // Pipeline: net thread (here) → enqueue PendingEquipOp →
+        // PostMessage FW_MSG_EQUIP_APPLY → main thread WndProc drains
+        // → fw::native::ghost_attach_armor / ghost_detach_armor.
+        //
+        // Direct call from net thread would race with the engine's
+        // scene-graph mutations (NIF loader allocates BSFadeNode via
+        // pool, attach_child mutates parent's child array — both
+        // main-thread-affinity). Same pattern we use for CONTAINER_BCAST
+        // (B1.l) and DOOR_BCAST (B6.1).
+        if (d.payload.size() < sizeof(EquipBroadcastPayload)) break;
+        EquipBroadcastPayload b{};
+        std::memcpy(&b, d.payload.data(), sizeof(b));
+        if (b.item_form_id == 0) break;
+
+        const char* kind_str =
+            (b.kind == static_cast<std::uint8_t>(EquipOpKind::EQUIP))   ? "EQUIP" :
+            (b.kind == static_cast<std::uint8_t>(EquipOpKind::UNEQUIP)) ? "UNEQUIP" :
+                                                                          "?";
+        FW_LOG("[equip-rx] EQUIP_BCAST peer=%s %s item=0x%X slot=0x%X count=%d "
+               "ts=%llu — enqueueing for main-thread apply",
+               b.peer_id.get().c_str(),
+               kind_str,
+               b.item_form_id, b.slot_form_id, b.count,
+               static_cast<unsigned long long>(b.timestamp_ms));
+
+        // Enqueue + PostMessage. Main-thread WndProc handler resolves
+        // form_id → NIF path and attaches to ghost (or detaches on
+        // UNEQUIP). See main_thread_dispatch.cpp::drain_equip_apply_queue.
+        fw::dispatch::PendingEquipOp op{};
+        const std::string peer = b.peer_id.get();
+        const std::size_t pn = peer.size() < 15 ? peer.size() : 15;
+        std::memcpy(op.peer_id, peer.data(), pn);
+        op.peer_id[pn] = 0;
+        op.item_form_id = b.item_form_id;
+        op.kind         = b.kind;
+        op.slot_form_id = b.slot_form_id;
+        op.count        = b.count;
+        fw::dispatch::enqueue_equip_apply(op);
         break;
     }
 

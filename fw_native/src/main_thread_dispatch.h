@@ -39,6 +39,9 @@ namespace fw::dispatch {
 //   0x47 = FW_MSG_STRADAB_BONE_TICK        — native/scene_inject.h
 //   0x48 = FW_MSG_STRADAB_POSE_APPLY       — native/scene_inject.h
 //   0x49 = FW_MSG_DOOR_APPLY (B6.1)        — owned here
+//   0x4A = FW_MSG_FORCE_EQUIP_CYCLE_UNEQUIP (B8) — equip_cycle.cpp
+//   0x4B = FW_MSG_FORCE_EQUIP_CYCLE_EQUIP   (B8) — equip_cycle.cpp
+//   0x4C = FW_MSG_EQUIP_APPLY (M9 wedge 2) — owned here
 //
 // PRE-FIX BUG (commit landed 2026-04-27 evening): DOOR_APPLY was set
 // to 0x47 in the initial Phase 2 ship, colliding with STRADAB_BONE_TICK.
@@ -48,6 +51,7 @@ namespace fw::dispatch {
 // moving DOOR_APPLY to 0x49.
 constexpr UINT FW_MSG_CONTAINER_APPLY = WM_APP + 0x43;
 constexpr UINT FW_MSG_DOOR_APPLY      = WM_APP + 0x49;
+constexpr UINT FW_MSG_EQUIP_APPLY     = WM_APP + 0x4C;
 
 struct PendingContainerOp {
     std::uint32_t kind;               // 1=TAKE, 2=PUT
@@ -62,6 +66,26 @@ struct PendingDoorOp {
     std::uint32_t door_form_id;   // sender's form_id (lookup_by_form_id)
     std::uint32_t door_base_id;   // identity check
     std::uint32_t door_cell_id;   // identity check
+};
+
+// M9 wedge 2: armor visual sync.
+// Receiver gets EQUIP_BCAST(item_form_id, kind), enqueues this struct,
+// posts FW_MSG_EQUIP_APPLY. Main thread drains and either attaches the
+// armor's 3rd-person NIF to the ghost (kind=EQUIP) or detaches+releases
+// the previously attached NIF (kind=UNEQUIP). Per-peer attribution via
+// peer_id (matches ghost lookup once multi-peer ghost lands; for now
+// the SINGLE g_injected_cube ghost is used).
+//
+// item_form_id is plugin-stable (same form on both clients since they
+// share the same Fallout4.esm). Receiver resolves via lookup_by_form_id
+// and walks TESObjectARMO → TESObjectARMA → TESModel → BSFixedString
+// path. See offsets.h "M9 wedge 2" comment block for layout.
+struct PendingEquipOp {
+    char           peer_id[16];   // null-terminated, ASCII (FixedClientId)
+    std::uint32_t  item_form_id;
+    std::uint8_t   kind;          // EquipOpKind (1=EQUIP, 2=UNEQUIP)
+    std::uint32_t  slot_form_id;  // BGSEquipSlot.formID, 0 = auto
+    std::int32_t   count;
 };
 
 // Net thread → enqueues op and posts FW_MSG_CONTAINER_APPLY to the FO4
@@ -80,6 +104,14 @@ void drain_container_apply_queue();
 // B6.1: door apply queue — same pattern as container.
 void enqueue_door_apply(const PendingDoorOp& op);
 void drain_door_apply_queue();
+
+// M9 wedge 2: equip apply queue — visual armor on ghost.
+//   enqueue_equip_apply: net thread, after EQUIP_BCAST decode
+//   drain_equip_apply_queue: main thread (WndProc dispatch),
+//     resolves form_id → ARMO → ARMA → 3rd-person NIF path,
+//     loads via nif_load_by_path, attaches to ghost via attach_child_direct
+void enqueue_equip_apply(const PendingEquipOp& op);
+void drain_equip_apply_queue();
 
 // Wires the HWND of the main FO4 window. Called exactly once from
 // main_menu_hook after SetWindowLongPtr succeeds. Also flushes any ops

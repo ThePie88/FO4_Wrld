@@ -125,6 +125,14 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         fw::dispatch::drain_door_apply_queue();
         return 0;
     }
+    // M9 wedge 2: drain remote equip events. Each op resolves form_id →
+    // ARMA → 3rd-person NIF path and attaches/detaches on the ghost.
+    // Engine NIF loader + scene graph mutation = main-thread-required.
+    // See offsets.h "M9 wedge 2" comment block for layout + flow.
+    if (msg == fw::dispatch::FW_MSG_EQUIP_APPLY) {
+        fw::dispatch::drain_equip_apply_queue();
+        return 0;
+    }
     // Z.2 (Path B): spawn ghost actor on main thread. PlaceAtMe is
     // TLS-sensitive and takes the REFR cell-attach lock — must run
     // here, not on the net thread where request_spawn is issued.

@@ -38,6 +38,7 @@ from protocol import (  # noqa: E402
     GlobalVarSetPayload, GlobalVarBroadcastPayload,
     GlobalVarStateBootPayload, GlobalVarStateEntry,
     DoorOpPayload, DoorBroadcastPayload,
+    EquipOpPayload, EquipBroadcastPayload, EquipOpKind,
     encode_frame, decode_frame,
 )
 from server.state import ServerState, PeerSession, SessionState  # noqa: E402
@@ -175,6 +176,9 @@ class ServerProtocol(asyncio.DatagramProtocol):
             return
         if mtype == MessageType.DOOR_OP:
             self._handle_door_op(session, payload, now_ms)
+            return
+        if mtype == MessageType.EQUIP_OP:
+            self._handle_equip_op(session, payload, now_ms)
             return
         if mtype == MessageType.CHAT:
             self._handle_chat(session, payload, now_ms)
@@ -712,6 +716,50 @@ class ServerProtocol(asyncio.DatagramProtocol):
         log.debug("door op form=0x%X base=0x%X cell=0x%X by %s",
                   payload.door_form_id, payload.door_base_id,
                   payload.door_cell_id, session.peer_id)
+
+    def _handle_equip_op(self, session: PeerSession, payload, now_ms: float) -> None:
+        """M9 wedge 1 — equipment-event broadcast.
+
+        Pure fan-out, no validation. Sender hooked the engine's
+        ActorEquipManager::EquipObject + UnequipObject and forwards each
+        fire the local player triggered. Server just attributes (peer_id)
+        and relays to all other peers as EQUIP_BCAST.
+
+        No state tracking server-side: equip events are CHANGE notifications,
+        not state — peers compose their own view of "what is peer X
+        currently wearing" by accumulating equip/unequip diffs since
+        connect. Initial state is implicit from the B8 force-equip-cycle
+        (every client cycles its Vault Suit on game start, broadcasting
+        an UNEQUIP+EQUIP pair, which gives joining peers a baseline).
+
+        Wedge 1 is observe-only on receivers — no apply, just log RX.
+        Wedge 2 lands the visual swap on the M8P3 ghost body.
+        """
+        if not isinstance(payload, EquipOpPayload):
+            return
+        if payload.item_form_id == 0:
+            log.debug("equip_op from %s: zero item_form_id — drop",
+                      session.peer_id)
+            return
+
+        broadcast = EquipBroadcastPayload(
+            peer_id=session.peer_id,
+            item_form_id=payload.item_form_id,
+            kind=payload.kind,
+            slot_form_id=payload.slot_form_id,
+            count=payload.count,
+            timestamp_ms=payload.timestamp_ms,
+        )
+        for other in self.state.other_sessions(session.addr):
+            raw = other.channel.send_reliable(
+                MessageType.EQUIP_BCAST, broadcast, now_ms)
+            self._send(other.addr, raw)
+
+        kind_str = "EQUIP" if payload.kind == EquipOpKind.EQUIP else (
+            "UNEQUIP" if payload.kind == EquipOpKind.UNEQUIP else f"?{payload.kind}?")
+        log.debug("equip_op %s item=0x%X slot=0x%X count=%d by %s",
+                  kind_str, payload.item_form_id, payload.slot_form_id,
+                  payload.count, session.peer_id)
 
     def _handle_chat(self, session: PeerSession, payload, now_ms: float) -> None:
         if not isinstance(payload, ChatPayload):

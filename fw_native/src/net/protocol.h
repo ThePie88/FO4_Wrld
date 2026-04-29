@@ -24,6 +24,12 @@ namespace fw::net {
 // -------------------------------------------------------------- constants
 
 constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
+// v6: M9 wedge 1 equipment-event observation. Adds EQUIP_OP (client→server)
+//     and EQUIP_BCAST (server→peers) carrying {item_form_id, kind=
+//     equip|unequip, slot_form_id, count, timestamp_ms}. Sender hooks
+//     ActorEquipManager::EquipObject + UnequipObject, filters local-player
+//     events, broadcasts. Receiver in wedge 1 just logs RX (no apply on
+//     ghost yet — that's wedge 2). 25 wire bytes for OP, 41 for BCAST.
 // v5: B1.g container apply-to-engine. ContainerOpPayload and
 //     ContainerBroadcastPayload gain `container_form_id` (u32) so receivers
 //     can resolve their local REFR via lookup_by_form_id + (base, cell)
@@ -38,7 +44,7 @@ constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
 //     back in CONTAINER_OP_ACK. Enables sender-side pre-mutation block
 //     (DLL waits on condvar keyed on op_id before letting the engine's
 //     AddObjectToContainer proceed). Closes the container dup race.
-constexpr std::uint8_t  PROTOCOL_VERSION  = 5;
+constexpr std::uint8_t  PROTOCOL_VERSION  = 6;
 constexpr std::size_t   HEADER_SIZE       = 12;
 constexpr std::size_t   MAX_PAYLOAD_SIZE  = 1400;
 constexpr std::size_t   MAX_FRAME_SIZE    = HEADER_SIZE + MAX_PAYLOAD_SIZE;
@@ -74,6 +80,8 @@ enum class MessageType : std::uint16_t {
     CONTAINER_OP_ACK = 0x0204,  // v3: server -> sender verdict
     DOOR_OP         = 0x0230,   // B6.1: client -> server door activated
     DOOR_BCAST      = 0x0231,   // B6.1: server -> other peers door activated
+    EQUIP_OP        = 0x0240,   // M9 w1: client -> server: I equipped/unequipped item X
+    EQUIP_BCAST     = 0x0241,   // M9 w1: server -> other peers: peer X equipped/unequipped item Y
 
     CHAT            = 0x0300,
 
@@ -97,6 +105,16 @@ enum class ActorEventKind : std::uint32_t {
 enum class ContainerOpKind : std::uint32_t {
     TAKE = 1,
     PUT  = 2,
+};
+
+// M9 w1: discriminator for EQUIP_OP / EQUIP_BCAST.
+//   EQUIP   = local player just equipped an item (post-Equip detour fire)
+//   UNEQUIP = local player just unequipped an item
+// On the receiver in wedge 1 we only log; in wedge 2 we'll branch on this
+// to call ActorEquipManager::EquipObject vs ::UnequipObject on the ghost.
+enum class EquipOpKind : std::uint8_t {
+    EQUIP   = 1,
+    UNEQUIP = 2,
 };
 
 // v3: verdict the server ships back in CONTAINER_OP_ACK.
@@ -367,6 +385,38 @@ struct DoorBroadcastPayload {
     std::uint64_t timestamp_ms;
 };
 static_assert(sizeof(DoorBroadcastPayload) == 36, "DoorBroadcastPayload size");
+
+// M9 w1 — EQUIP_OP / EQUIP_BCAST. Carries the result of an
+// ActorEquipManager::EquipObject or ::UnequipObject fire that we observed
+// on the LOCAL player. Identity is the item form_id (resolvable via
+// lookup_by_form_id on the receiver in wedge 2). Slot_form_id is the
+// BGSEquipSlot's TESForm.formID — when the engine auto-resolved (no
+// explicit slot was passed), we record 0 and the receiver also lets the
+// engine auto-resolve.
+//
+// Wire layout — Python: I B I i Q  =  4+1+4+4+8 = 21 bytes (pack=1).
+struct EquipOpPayload {
+    std::uint32_t item_form_id;    // TESForm.formID (e.g. 0x1EED7 = Vault Suit 111)
+    std::uint8_t  kind;            // EquipOpKind (1=equip, 2=unequip)
+    std::uint32_t slot_form_id;    // BGSEquipSlot.formID, 0 = engine auto-pick
+    std::int32_t  count;           // signed; in practice ≥1 (stack size)
+    std::uint64_t timestamp_ms;    // sender wall clock for telemetry / ordering
+};
+static_assert(sizeof(EquipOpPayload) == 21, "EquipOpPayload size");
+
+// Server → other peers fan-out. Adds peer_id for attribution. Same shape
+// as DoorBroadcastPayload extended-with-peer-id.
+//
+// Wire layout — 16 (FixedClientId) + 21 (op fields) = 37 bytes.
+struct EquipBroadcastPayload {
+    FixedClientId peer_id;         // 16 bytes ASCII + 1 null
+    std::uint32_t item_form_id;
+    std::uint8_t  kind;
+    std::uint32_t slot_form_id;
+    std::int32_t  count;
+    std::uint64_t timestamp_ms;
+};
+static_assert(sizeof(EquipBroadcastPayload) == 37, "EquipBroadcastPayload size");
 
 // WORLD_STATE entry. Python: I I I B = 13 bytes
 struct WorldActorEntry {

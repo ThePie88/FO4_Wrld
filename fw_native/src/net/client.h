@@ -116,6 +116,26 @@ public:
                          std::uint32_t door_cell_id,
                          std::uint64_t timestamp_ms);
 
+    // M9 wedge 1: reliable EQUIP_OP — fire-and-forget. Sender hooks
+    // ActorEquipManager::Equip/UnequipObject in the engine and forwards
+    // each LOCAL-PLAYER fire here. Server fans out as EQUIP_BCAST to
+    // other peers. In wedge 1 receivers just log (observe-only); wedge 2
+    // will swap visuals on the M8P3 ghost body.
+    //
+    // `kind` is EquipOpKind cast to u8 (1=EQUIP, 2=UNEQUIP) — keeping the
+    // arg as plain u8 avoids a header include of protocol.h's enum class
+    // in callers that already cast at the call site.
+    //
+    // `slot_form_id` is 0 when the engine auto-resolved the slot (which
+    // is the typical case from PipBoy UI equip clicks). Receivers in
+    // wedge 2 will pass null for the slot* arg of EquipObject when this
+    // is 0, letting their engine auto-resolve again.
+    void enqueue_equip_op(std::uint32_t item_form_id,
+                          std::uint8_t  kind,
+                          std::uint32_t slot_form_id,
+                          std::int32_t  count,
+                          std::uint64_t timestamp_ms);
+
     // B1.d: Blocking submit. Fills op.client_op_id from an internal counter,
     // sends reliable, waits up to `timeout_ms` on a condvar for the matching
     // CONTAINER_OP_ACK from the server. Returns:

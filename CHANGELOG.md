@@ -5,6 +5,172 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## M9 wedge 1+2 — equipment sync between peers (2026-04-29)
+
+▶ **[Video coming soon]**
+
+Sender hooks `ActorEquipManager::EquipObject` / `::UnequipObject`, broadcasts
+`EQUIP_OP` to server, server fans out `EQUIP_BCAST` to peers. Receiver looks
+up the item form, walks `TESObjectARMO → TESObjectARMA → TESModel` for the
+3rd-person NIF path, loads the NIF, attaches it as a child of the M8P3 ghost
+body, and re-binds the armor's skin to the ghost's skel.nif so animation
+propagates.
+
+**Working scenarios** (live-tested 2026-04-29):
+- Peer A equips Vault Suit / Raider Underarmor → Peer B sees it on A's ghost,
+  animated
+- Bidirectional A↔B sync within the same session
+- Equipment changes mid-session (PipBoy → Inventory → equip/unequip)
+- Multi-armor: equipping a different outfit replaces the previous
+
+### Pipeline
+
+**Sender side**: detour `ActorEquipManager::EquipObject` (RVA `0xCE5900`) and
+`UnequipObject` (RVA `0xCE5DA0`).
+- Filter to `actor.formID == 0x14` (local player only — NPC equip events
+  would flood the network).
+- Read item TESForm pointer from `BGSObjectInstance` arg, extract `formID`.
+- Read slot `BGSEquipSlot.formID` if non-null.
+- Enqueue `EQUIP_OP { item_form_id, kind, slot_form_id, count, ts }`.
+- `tls_applying_remote` re-entry guard for forward-compat with wedge 3
+  (currently unused — receiver doesn't call back into engine).
+
+**Server**: pure fan-out (`net/server/main.py::_handle_equip_op`) — no
+validation, mirrors `DOOR_OP` pattern from B6.1.
+
+**Receiver side** (the heavy lift):
+- Net thread: enqueue `PendingEquipOp`, post `FW_MSG_EQUIP_APPLY`
+  (`WM_APP+0x4C`) to FO4 main window.
+- Main thread `fw_wndproc`: drain queue, call `ghost_attach_armor` /
+  `ghost_detach_armor`.
+- `resolve_armor_nif_path`: walk `TESObjectARMO+0x2A8` (addon array, count
+  at `+0x2B8`, stride 16 with `ARMA*` at entry+8). For each ARMA, probe
+  candidate offsets `0x50, 0x90, 0xD0, 0x110, 0x150, 0x190` for embedded
+  `TESModel` whose `+0x08` BSFixedString points at a 3rd-person NIF path.
+- Score paths: prefer male 3rd-person (score 0) over male 1st-person
+  (`-5`, arms-only mesh) and female variants (`-10` / `-15` — wrong
+  bones for our `MaleBody.nif` ghost).
+- Load NIF via `g_r.nif_load_by_path` with `NIF_OPT_FADE_WRAP | POSTPROC`
+  (same as body load — POSTPROC triggers BSModelProcessor for material/
+  texture resolution).
+- `apply_materials` for shader+texture binding.
+- `attach_child_direct(ghost, armor_node)` to add to ghost subtree.
+- **Critical**: `skin_rebind::swap_skin_bones_to_skeleton(armor_node,
+  cached_skel)` — re-binds the armor NIF's `bones_fb[i]` from the
+  internal stub bones (loaded with the NIF, inert) to the GHOST's
+  cached skel.nif joints. Without this, armor renders T-pose. With
+  this, animation propagates from `pose-rx` to armor skinning naturally.
+
+### Boot-timing race fix (pending queue)
+
+When the local force-equip-cycle (B8) on a peer fires its UNEQUIP+EQUIP
+broadcast, the OTHER peer's ghost might not yet be spawned (POSE_BROADCAST
+hasn't started flowing). Without a queue these events would be permanently
+lost.
+
+`g_pending_armor_ops` is a per-peer FIFO deque of `{form_id, kind}`.
+`ghost_attach_armor` / `ghost_detach_armor` enqueue when the ghost isn't
+ready, then `flush_pending_armor_ops()` drains on `inject_debug_cube`
+success. Order is FIFO so a UNEQUIP→EQUIP cycle drains correctly even
+across the spawn boundary.
+
+### Reverse engineering
+
+- `re/M9_equipment_AGENT_A_dossier.txt`: original wedge 1 RE with sender
+  hook signatures. Confirmed `a4-a5-a6` ARGUMENT ORDER differs between
+  Equip and Unequip — yesterday's M9 hook attempt swapped them and
+  introduced the 3-day crash class B8 papers over.
+- `re/M9_w2_armo_layout.log`: ARMO struct layout at `+0x2A8/+0x2B8` from
+  `sub_140462370` (FinalizeAfterLoad). 6 sub-component objects in ARMA
+  (`+0x50, +0x90, +0xD0, +0x110, +0x150, +0x190` each 64 bytes).
+  Empirical identification of male 3rd-person at `+0x50` from live test
+  paths.
+- `re/M9_w2_arch_hole.log`: dossier of REJECTED approaches:
+  - `Inventory3DManager` (PipBoy 3D preview) — too coupled with the
+    Scaleform menu infrastructure (requires `Inventory3DSceneRoot`
+    wrapper class with vt[136], not a plain NiNode target)
+  - `actor hijack` (Z.2, PlaceAtMe) — permanently shelved per project
+    memory
+  - Hooking `sub_140C45450` (engine attach task enqueue) — args are
+    in-process NiNode pointers, not file paths, so cross-client
+    replication impossible
+
+### Known limitations
+
+⚠️ **Status: PoC. Production polish pending.** This wedge ships a working
+end-to-end pipeline but several sub-cases are documented unsupported:
+
+1. **Limited NIF coverage tested**: Vault Suit (`0x1EED7`) and Raider
+   Underarmor (`0x18E3F7`) confirmed end-to-end. Vault Suit shows
+   clipping/compenetration patches on the ghost — bind-pose mismatch
+   between `Vault111Suit_YanEdits` mesh and our `MaleBody.nif` skel.
+   Raider Underarmor renders cleanly. Other outfits untested — expect
+   variable results.
+
+2. **Armor pieces ON TOP of outfits don't render visibly**: equipping
+   e.g. Metal Arm armor (`0x4B933`) over Vault Suit succeeds at the
+   network/attach level (logs show `armor-attach OK`) but the metal
+   armor mesh is occluded by the vault suit's sleeve geometry — the
+   engine's biped slot masking system would normally hide the suit's
+   sleeve when arm armor is equipped, but we bypass that system and
+   render BOTH meshes simultaneously → z-fighting / inner mesh
+   invisible. Future wedge: replicate biped slot masking on the ghost.
+
+3. **A-first-B-later misses A's initial outfit**: if Peer A connects
+   first and runs the B8 force-equip-cycle BEFORE Peer B is online,
+   the EQUIP broadcasts go nowhere (no listening peer). When B
+   subsequently joins, A doesn't re-broadcast its current state →
+   B's ghost of A renders without clothing. The receiver-side pending
+   queue we added handles the SYMMETRIC case (B has ghost not ready
+   when A's broadcast arrives) but not this case. Future wedge: peer
+   re-broadcast on `PEER_JOIN`, or server-side equipment-state cache
+   that's pushed to new joiners.
+
+4. **Object Modifications (BGSMod) not covered**: shoulder pads, weapon
+   mods, paint jobs etc. attach via the `BGSMod::Attachment::Mod` system
+   (Workshop / weapon workbench), NOT via `ActorEquipManager`. Our hook
+   doesn't observe these. Affected items are e.g. raider heavy shoulder
+   pad, weapon scopes, etc. Future wedge: hook the mod-application
+   path separately.
+
+5. **T-pose ghost when peer is in 1st-person view**: pre-existing M8P3.22
+   limitation. The 3rd-person body tree is animated by stub anim while
+   the player is in 1P → sender reads stub → ghost shows V-pose.
+   Workaround: keep peer in 3P view. Unrelated to wedge 2.
+
+### Files
+
+- New: `fw_native/src/hooks/equip_hook.{cpp,h}` (sender detour)
+- Modified:
+  - `net/protocol.py` + `fw_native/src/net/protocol.h` — `EQUIP_OP` /
+    `EQUIP_BCAST` opcodes (`0x0240` / `0x0241`), `EquipOpKind` enum,
+    payload structs (21B OP, 37B BCAST). PROTOCOL_VERSION 5→6.
+  - `net/server/main.py` — `_handle_equip_op` fan-out
+  - `fw_native/src/net/client.{cpp,h}` — `enqueue_equip_op` send,
+    `EQUIP_BCAST` receive → main-thread dispatch
+  - `fw_native/src/main_thread_dispatch.{cpp,h}` — `FW_MSG_EQUIP_APPLY`
+    + `PendingEquipOp` queue
+  - `fw_native/src/native/scene_inject.{cpp,h}` — `ghost_attach_armor` /
+    `ghost_detach_armor` / `flush_pending_armor_ops` + path resolver
+    + per-peer state map + pending queue
+  - `fw_native/src/hooks/main_menu_hook.cpp` — WndProc handler
+  - `fw_native/src/hooks/install_all.{cpp,h}` — wire-up
+  - `fw_native/src/offsets.h` — TESObjectARMO/ARMA layout offsets
+  - `fw_native/CMakeLists.txt` — new hook compilation unit
+
+### Forward path
+
+The PoC validates the end-to-end pipeline. Production-grade equipment
+sync should add:
+- Biped slot masking emulation (hide ghost body parts under armor)
+- BGSMod attachment hook (shoulder pads, weapon mods, paint variants)
+- Peer rejoin equipment state push (covers A-first-B-later)
+- Material swap support (cosmetic variants like rusty/clean raider)
+- More NIF testing (different outfit families: vault, raider, leather,
+  combat, power armor frames)
+
+---
+
 ## B8 — force-equip-cycle on game start (2026-04-28) — ⚠️ TEMPORARY WORKAROUND
 
 > **This is a band-aid, not a fix.** It papers over an M8P3 architectural

@@ -31,12 +31,14 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <deque>
 #include <unordered_map>
 #include <vector>
 
 #include "../log.h"
 #include "../main_thread_dispatch.h"
 #include "../net/client.h"
+#include "../offsets.h"   // M9 wedge 2: TESObjectARMO/ARMA + lookup_by_form_id RVAs
 
 namespace fw::native {
 
@@ -2511,6 +2513,12 @@ bool inject_debug_cube(float x, float y, float z) {
         g_injected_cube.store(body, std::memory_order_release);
         FW_LOG("[native] inject_cube (M5 body): SUCCESS body=%p "
                "pos=(%.1f, %.1f, %.1f)", body, x, y, z);
+
+        // M9 wedge 2: drain any equip events that arrived while the
+        // ghost wasn't yet ready (boot-time race with peer's B8
+        // force-equip-cycle). With g_injected_cube now non-null, the
+        // replayed ghost_attach_armor calls will succeed.
+        flush_pending_armor_ops();
     } else {
         FW_WRN("[native] inject_cube (M5 body): failed — see preceding log");
     }
@@ -2522,6 +2530,617 @@ void detach_debug_cube() {
     if (!cube) return;
     if (!g_resolved.load(std::memory_order_acquire)) return;
     try_detach(cube);
+}
+
+// === M9 wedge 2 — armor visual sync on the ghost body =====================
+//
+// Pipeline summary (full rationale in scene_inject.h "M9 wedge 2" comment
+// block + offsets.h "M9 wedge 2" RVA + struct documentation):
+//
+//   Receiver gets EQUIP_BCAST(peer_id, item_form_id, kind) → enqueues
+//   PendingEquipOp → posts FW_MSG_EQUIP_APPLY → main thread WndProc
+//   drains queue → calls ghost_attach_armor / ghost_detach_armor here.
+//
+//   ghost_attach_armor:
+//     1. lookup_by_form_id(item_form_id) → TESObjectARMO*
+//     2. Walk armor.addons[0].arma → TESModel(male 3rd) → BSFixedString → c_str
+//     3. nif_load_by_path(path) → NiNode* armor_root
+//     4. apply_materials(armor_root) — texture/material resolve via BSModelProcessor
+//     5. attach_child_direct(g_injected_cube, armor_root)
+//     6. Track in g_attached_armor[peer_id][form_id] = armor_root for later detach
+//
+//   ghost_detach_armor:
+//     1. Look up armor_root in tracking map
+//     2. detach_child(g_injected_cube, armor_root)
+//     3. Drop refcount (engine bumped on load; we own the +1)
+//     4. Remove from tracking map
+// MSVC C2712 workaround: __try cannot live in a function with C++ unwind
+// objects (std::lock_guard, std::unordered_map ops). These POD-only
+// wrappers isolate the SEH calls so the higher-level ghost_attach_armor
+// / ghost_detach_armor (which use std:: types) can drive them safely.
+namespace {
+std::uint32_t seh_nif_load_armor(NifLoadByPathFn fn,
+                                  const char* path,
+                                  void** out_node,
+                                  NifLoadOpts* opts) {
+    __try {
+        return fn(path, out_node, opts);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0xDEADBEEFu;
+    }
+}
+void seh_apply_materials_armor(ApplyMaterialsWalkerFn fn, void* node) {
+    __try { fn(node, 0, 0, 0, 0); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+bool seh_attach_child_armor(AttachChildFn fn, void* parent, void* child) {
+    __try { fn(parent, child, 0); return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+bool seh_detach_child_armor(DetachChildFn fn, void* parent, void* child,
+                             void** out_removed) {
+    __try { fn(parent, child, out_removed); return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+long seh_refcount_dec_armor(void* node) {
+    __try {
+        auto* rc = reinterpret_cast<long*>(
+            reinterpret_cast<char*>(node) + NIAV_REFCOUNT_OFF);
+        return _InterlockedDecrement(rc);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return -999; }
+}
+// SEH-protected lookup_by_form_id call (POD: takes a fn ptr + u32, returns ptr).
+void* seh_lookup_form(void* (__fastcall* fn)(std::uint32_t),
+                       std::uint32_t form_id) {
+    __try { return fn(form_id); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+// SEH-protected struct walk for ARMO addon array meta.
+// Returns true if read succeeded; out args populated.
+bool seh_read_armo_addons(void* tes_form, void*** out_array,
+                           std::uint32_t* out_count) {
+    __try {
+        auto bytes = reinterpret_cast<char*>(tes_form);
+        *out_array = *reinterpret_cast<void***>(
+            bytes + offsets::TESOBJECTARMO_ADDON_ARR_OFF);
+        *out_count = *reinterpret_cast<std::uint32_t*>(
+            bytes + offsets::TESOBJECTARMO_ADDON_COUNT_OFF);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *out_array = nullptr;
+        *out_count = 0;
+        return false;
+    }
+}
+// SEH-protected ARMA[i] entry → ARMA pointer extraction.
+void* seh_read_arma_at(void** addon_array, std::uint32_t index) {
+    __try {
+        auto entry = reinterpret_cast<char*>(addon_array) +
+                     index * offsets::TESOBJECTARMO_ADDON_ENTRY_STRIDE;
+        return *reinterpret_cast<void**>(
+            entry + offsets::TESOBJECTARMO_ADDON_ARMA_PTR_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+// SEH-protected TESModel.path BSFixedString handle read at given offset.
+// Generic: caller probes multiple candidate offsets to find which one
+// holds the actual male 3rd-person model. Initial guess (0xD0) was
+// wrong — the live ARMA struct in 1.11.191 next-gen has different
+// layout; this generic helper lets us iterate at runtime.
+void* seh_read_arma_path_handle_at(void* arma, std::size_t component_off) {
+    __try {
+        auto model_obj = reinterpret_cast<char*>(arma) + component_off;
+        return *reinterpret_cast<void**>(
+            model_obj + offsets::TESMODEL_PATH_BSFIXEDSTR_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+// Diagnostic: dump 8 bytes (qword) at arma+offset for layout RE.
+std::uint64_t seh_read_arma_qword_at(void* arma, std::size_t off) {
+    __try {
+        return *reinterpret_cast<std::uint64_t*>(
+            reinterpret_cast<char*>(arma) + off);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+// SEH-protected BSFixedString c_str pointer compute.
+const char* seh_bsfs_cstr(void* bsfs_handle) {
+    __try {
+        return reinterpret_cast<const char*>(bsfs_handle) +
+               offsets::BSFIXEDSTRING_CSTR_OFF;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+// SEH-protected strnlen (the result of seh_bsfs_cstr might point at an
+// arbitrary memory region — we cannot trust regular strlen because the
+// string may not be null-terminated within page bounds).
+std::size_t seh_strnlen_armor(const char* s, std::size_t maxlen) {
+    if (!s) return 0;
+    __try {
+        std::size_t n = 0;
+        while (n < maxlen && s[n]) ++n;
+        return n;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+// Case-insensitive substring search (POD-only, no std::string).
+// Used to filter "Female" / "_F." patterns in armor NIF paths so we
+// can prefer male variants (the M8P3 ghost uses MaleBody.nif → male
+// armor bones align, female don't → female armor renders T-pose).
+bool seh_path_contains_ci(const char* hay, std::size_t hay_len, const char* needle) {
+    if (!hay || !needle) return false;
+    std::size_t nlen = 0;
+    while (needle[nlen]) ++nlen;
+    if (nlen == 0 || nlen > hay_len) return false;
+    auto tolower_ascii = [](char c) -> char {
+        return (c >= 'A' && c <= 'Z') ? (c + 32) : c;
+    };
+    for (std::size_t i = 0; i + nlen <= hay_len; ++i) {
+        std::size_t j = 0;
+        for (; j < nlen; ++j) {
+            if (tolower_ascii(hay[i + j]) != tolower_ascii(needle[j])) break;
+        }
+        if (j == nlen) return true;
+    }
+    return false;
+}
+// Returns true if `path` looks like a FEMALE armor NIF path (e.g. ends
+// in "_F.nif", contains "Female", contains "_f." mid-path). Used by
+// resolve_armor_nif_path to deprioritize female variants.
+bool path_is_female_variant(const char* path, std::size_t len) {
+    if (!path || len == 0) return false;
+    // Case-insensitive check against common female markers.
+    return seh_path_contains_ci(path, len, "female") ||
+           seh_path_contains_ci(path, len, "_f.nif") ||
+           seh_path_contains_ci(path, len, "_f.tri");
+}
+// Returns true if `path` is a 1st-person variant — those are arms-only
+// meshes used for FPS view, NOT the full body NIF we want for the
+// 3rd-person ghost. Common naming: "1stPerson", "_1st", "_1stperson".
+bool path_is_first_person(const char* path, std::size_t len) {
+    if (!path || len == 0) return false;
+    return seh_path_contains_ci(path, len, "1stperson") ||
+           seh_path_contains_ci(path, len, "1st_person") ||
+           seh_path_contains_ci(path, len, "_1st.");
+}
+// Compute selection score for an armor NIF path. Higher = better.
+// We want: MALE 3rd-person → +0
+//          MALE 1st-person → -5  (visible only as arms when attached
+//                                  to a 3rd-person ghost body)
+//          FEMALE 3rd-person → -10 (wrong gender bones, T-pose risk)
+//          FEMALE 1st-person → -15 (worst of both)
+int armor_path_score(const char* path, std::size_t len) {
+    int score = 0;
+    if (path_is_female_variant(path, len)) score -= 10;
+    if (path_is_first_person(path, len))  score -= 5;
+    return score;
+}
+} // anon namespace (SEH POD wrappers)
+
+namespace {
+
+// Tracking map: peer_id (str) → form_id → loaded NiNode*
+//
+// Per-peer scoping is for forward-compat with multi-peer ghost wedge.
+// Today we only have ONE g_injected_cube ghost, so the per-peer key is
+// informational — physically the armor goes onto that single ghost
+// regardless of peer_id. When the multi-peer ghost lands, this map's
+// outer key naturally maps to per-peer ghost selection.
+std::mutex g_armor_map_mtx;
+std::unordered_map<std::string,
+                    std::unordered_map<std::uint32_t, void*>>
+    g_attached_armor;
+
+// Pending equip ops accumulated while the ghost wasn't yet spawned.
+// At boot time peer A's B8 force-equip-cycle broadcasts UNEQUIP+EQUIP
+// for the Vault Suit before peer B's ghost is injected. Without a
+// pending queue, B never sees A's outfit because A doesn't re-broadcast
+// later. Drained on inject_debug_cube success via flush_pending_armor_ops.
+//
+// Order matters: queued FIFO per peer. A natural UNEQUIP→EQUIP cycle
+// drains correctly (UNEQUIP is no-op since nothing's attached, then
+// EQUIP attaches). Reverse would also work via the idempotent skip
+// in ghost_attach_armor.
+struct PendingArmorOp {
+    std::uint32_t form_id;
+    std::uint8_t  kind;   // EquipOpKind: 1=EQUIP, 2=UNEQUIP
+};
+std::mutex g_pending_armor_mtx;
+std::unordered_map<std::string, std::deque<PendingArmorOp>>
+    g_pending_armor_ops;
+
+// Walk TESObjectARMO → TESObjectARMA[i] → TESModel(male3rd) → BSFixedString
+// → c_str. Returns the first valid path found in the armor's addon list,
+// or nullptr if the form is not an armor / has no usable addons.
+//
+// We pick the FIRST addon's path because:
+//   - Most armor only has 1 addon (single mesh covers all races we use)
+//   - Multi-race armor (e.g., rare pre-gen ones) has separate ARMAs per
+//     race — the engine picks one based on actor race; we don't have an
+//     actor here, so we just pick [0] and accept potential mismatch
+//   - For the wedge 2 test scope (Vault Suit + raider chest), [0] is
+//     the right one (vanilla human male)
+//
+// Path is returned WITHOUT "Meshes\\" prefix — nif_load_by_path prepends
+// it internally.
+//
+// All struct dereferences go through the seh_* POD wrappers above,
+// avoiding MSVC C2712 (FW_LOG / FW_WRN expand to code with C++ unwind
+// objects, so we cannot use __try in this function directly).
+const char* resolve_armor_nif_path(std::uint32_t item_form_id) {
+    if (item_form_id == 0 || g_r.base == 0) return nullptr;
+
+    // 1. lookup_by_form_id — same RVA used by container_hook for REFR resolve.
+    using LookupFn = void* (__fastcall*)(std::uint32_t);
+    auto lookup = reinterpret_cast<LookupFn>(
+        g_r.base + offsets::LOOKUP_BY_FORMID_RVA);
+
+    void* tes_form = seh_lookup_form(lookup, item_form_id);
+    if (!tes_form) {
+        FW_WRN("[armor-resolve] lookup_by_form_id(0x%X) returned null / faulted "
+               "(form not loaded? wrong plugin?)", item_form_id);
+        return nullptr;
+    }
+
+    // 2. Read ARMO addon array base + count.
+    // Offsets per re/M9_w2_armo_layout.log §H (sub_140462370 =
+    // ARMO::FinalizeAfterLoad iterates `*(armo+0x2A8)+i*16+8`).
+    void** addon_array = nullptr;
+    std::uint32_t addon_count = 0;
+    if (!seh_read_armo_addons(tes_form, &addon_array, &addon_count)) {
+        FW_ERR("[armor-resolve] SEH reading ARMO addon array (form=0x%X "
+               "may not be ARMO)", item_form_id);
+        return nullptr;
+    }
+    if (!addon_array || addon_count == 0) {
+        FW_WRN("[armor-resolve] form=0x%X: empty addon array (count=%u "
+               "base=%p)", item_form_id, addon_count, addon_array);
+        return nullptr;
+    }
+    if (addon_count > 16) {
+        FW_WRN("[armor-resolve] form=0x%X claims %u addons (suspicious "
+               "— clamp to 16)", item_form_id, addon_count);
+        addon_count = 16;
+    }
+
+    // 3. Walk addons. For each ARMA, probe multiple candidate offsets
+    // for the TESModel(male 3rd) — the exact layout in FO4 1.11.191
+    // next-gen wasn't pinned by the dossier (initial guess 0xD0 was
+    // wrong per live test 2026-04-29). Probe in order of likelihood
+    // based on TESObjectARMA component layout patterns.
+    static const std::size_t kCandidateModelOffsets[] = {
+        0xD0, 0x90, 0x110, 0x150, 0x50, 0x190,  // model 3rd-person candidates
+        0x80, 0xC0, 0x100, 0x140, 0x180,         // alt offsets if the
+                                                  // 64-byte component grid
+                                                  // is shifted
+    };
+    constexpr std::size_t kNumCandidates =
+        sizeof(kCandidateModelOffsets) / sizeof(kCandidateModelOffsets[0]);
+
+    // Collect ALL valid candidates first, then pick the highest-scoring
+    // by armor_path_score. Score deprioritizes female-NIF (wrong gender
+    // bones for our MaleBody ghost) and 1st-person variants (arms-only
+    // meshes intended for FPS view). Empirical layout (RE 2026-04-29):
+    //   +0x50  = TESModel male 3rd-person  ← target (score 0)
+    //   +0x90  = TESModel female 3rd       (score -10)
+    //   +0x150 = TESModel male 1st-person  (score -5, arms only)
+    //   +0x190 = TESModel female 1st       (score -15)
+    struct PathCandidate {
+        std::size_t offset;
+        const char* path;
+        std::size_t len;
+        int         score;
+    };
+    PathCandidate found[16];
+    std::size_t found_count = 0;
+
+    for (std::uint32_t i = 0; i < addon_count; ++i) {
+        void* arma = seh_read_arma_at(addon_array, i);
+        if (!arma) continue;
+
+        for (std::size_t ci = 0; ci < kNumCandidates; ++ci) {
+            if (found_count >= sizeof(found)/sizeof(found[0])) break;
+            const std::size_t cand_off = kCandidateModelOffsets[ci];
+            void* bsfs_handle = seh_read_arma_path_handle_at(arma, cand_off);
+            if (!bsfs_handle) continue;
+
+            const char* path = seh_bsfs_cstr(bsfs_handle);
+            if (!path) continue;
+
+            const std::size_t len = seh_strnlen_armor(path, 256);
+            if (len < 5 || len > 200) continue;
+            const char c0 = path[0];
+            const bool looks_path = ((c0 >= 'A' && c0 <= 'Z') ||
+                                     (c0 >= 'a' && c0 <= 'z'));
+            if (!looks_path) continue;
+
+            // Deduplicate — same BSFixedString handle reused across
+            // multiple offsets (engine commonly stores the same path
+            // pointer for related slots) shouldn't appear twice.
+            bool dup = false;
+            for (std::size_t k = 0; k < found_count; ++k) {
+                if (found[k].path == path) { dup = true; break; }
+            }
+            if (dup) continue;
+
+            const int sc = armor_path_score(path, len);
+            FW_DBG("[armor-resolve] form=0x%X addon[%u] arma=%p "
+                   "model@+0x%zX path='%s' (len=%zu, score=%d)",
+                   item_form_id, i, arma, cand_off, path, len, sc);
+            found[found_count++] = PathCandidate{cand_off, path, len, sc};
+        }
+    }
+
+    if (found_count == 0) {
+        FW_WRN("[armor-resolve] form=0x%X: no valid path across %u addons "
+               "and %zu offset candidates",
+               item_form_id, addon_count, kNumCandidates);
+        return nullptr;
+    }
+
+    // Pick highest-scoring path. Score 0 = ideal male 3rd-person.
+    // Negative scores = female / 1st-person / both (fallbacks).
+    std::size_t best = 0;
+    for (std::size_t k = 1; k < found_count; ++k) {
+        if (found[k].score > found[best].score) best = k;
+    }
+    FW_LOG("[armor-resolve] form=0x%X SELECTED model@+0x%zX path='%s' "
+           "(score=%d, %zu candidates total)",
+           item_form_id, found[best].offset, found[best].path,
+           found[best].score, found_count);
+    return found[best].path;
+}
+
+} // anon namespace (armor helpers)
+
+bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id) {
+    if (!peer_id || item_form_id == 0) return false;
+
+    void* ghost = g_injected_cube.load(std::memory_order_acquire);
+    if (!ghost) {
+        // Ghost not yet spawned — queue for replay on next ghost spawn.
+        // This is the boot-time race: peer's B8 force-equip-cycle fires
+        // before our ghost is injected; without queue we'd permanently
+        // miss the initial equipment state of that peer.
+        std::size_t qsize;
+        {
+            std::lock_guard lk(g_pending_armor_mtx);
+            g_pending_armor_ops[peer_id].push_back(
+                PendingArmorOp{item_form_id, /*EQUIP=*/1});
+            qsize = g_pending_armor_ops[peer_id].size();
+        }
+        FW_LOG("[armor-attach] no ghost yet (peer=%s form=0x%X) — queued "
+               "EQUIP for replay on ghost spawn (pending size=%zu)",
+               peer_id, item_form_id, qsize);
+        return false;
+    }
+    if (!g_resolved.load(std::memory_order_acquire) ||
+        !g_r.nif_load_by_path || !g_r.attach_child_direct) {
+        FW_WRN("[armor-attach] engine refs not resolved yet — skip");
+        return false;
+    }
+
+    // Idempotent: if same peer+form already attached, skip silently.
+    // Happens when the B8 force-equip-cycle on each client re-broadcasts
+    // an EQUIP for the Vault Suit while it's already on, or when peer
+    // double-clicks an item.
+    {
+        std::lock_guard lk(g_armor_map_mtx);
+        auto& peer_map = g_attached_armor[peer_id];
+        auto it = peer_map.find(item_form_id);
+        if (it != peer_map.end()) {
+            FW_DBG("[armor-attach] peer=%s form=0x%X already attached "
+                   "(node=%p) — idempotent skip", peer_id, item_form_id,
+                   it->second);
+            return true;
+        }
+    }
+
+    const char* path = resolve_armor_nif_path(item_form_id);
+    if (!path) return false;  // resolve_armor_nif_path already logged the issue
+
+    // Pool init guard — same as inject_body_nif. The NIF loader allocates
+    // BSFadeNode internally and needs the pool ready.
+    if (g_r.pool_init_flag &&
+        *g_r.pool_init_flag != POOL_INIT_FLAG_READY) {
+        FW_DBG("[armor-attach] pool not ready, initializing");
+        g_r.pool_init(g_r.pool, g_r.pool_init_flag);
+    }
+
+    // Load the NIF. Same opts as body load: FADE_WRAP | POSTPROC (0x18).
+    // POSTPROC triggers BSModelProcessor → resolves .bgsm → DDS textures
+    // (without it, materials render pink/purple as we discovered in M6.1).
+    void* armor_node = nullptr;
+    NifLoadOpts opts{};
+    opts.flags = NIF_OPT_FADE_WRAP | NIF_OPT_POSTPROC;
+
+    // M6.1 killswitch dance — same as body load. byte_143E488C0 gates
+    // the texture-resolution loop inside BSLightingShaderProperty bind.
+    // Default 0 = skip resolution (pink). We force ON during our load
+    // and restore after.
+    std::uint8_t* killswitch_byte = reinterpret_cast<std::uint8_t*>(
+        g_r.base + BSLSP_BIND_KILLSWITCH_BYTE_RVA);
+    const std::uint8_t saved_ks = *killswitch_byte;
+    *killswitch_byte = 1;
+
+    const std::uint32_t rc = seh_nif_load_armor(g_r.nif_load_by_path,
+                                                  path, &armor_node, &opts);
+    if (rc == 0xDEADBEEFu) {
+        *killswitch_byte = saved_ks;
+        FW_ERR("[armor-attach] SEH in nif_load_by_path('%s')", path);
+        return false;
+    }
+    if (rc != 0 || !armor_node) {
+        *killswitch_byte = saved_ks;
+        FW_ERR("[armor-attach] nif_load_by_path('%s') failed rc=%u node=%p",
+               path, rc, armor_node);
+        return false;
+    }
+
+    // apply_materials — runs BSModelProcessor's texture+shader bind so
+    // the loaded NIF has its full PBR rendering set up. Without it the
+    // armor would render with placeholder pink-squared materials.
+    seh_apply_materials_armor(g_r.apply_materials, armor_node);
+    *killswitch_byte = saved_ks;
+
+    // Attach as child of the ghost root. attach_child_direct bumps engine
+    // refcount internally for the slot. nif_load_by_path also bumped
+    // (caller-owned ref); the +1 from attach is the engine's slot ref.
+    // On detach we drop ours, engine drops its slot ref, total 0 → free.
+    if (!seh_attach_child_armor(g_r.attach_child_direct, ghost, armor_node)) {
+        FW_ERR("[armor-attach] SEH in attach_child_direct(ghost=%p, "
+               "armor=%p, path='%s')", ghost, armor_node, path);
+        return false;
+    }
+
+    // === M9 wedge 2 ANIMATION FIX (2026-04-29) ===
+    // The armor NIF we just loaded has its OWN skin_instance.bones_fb[]
+    // array pointing at internal stub bones (Pelvis, SPINE1, ...) that
+    // the NIF parser created at load time. Those stub bones are INERT —
+    // they sit in the armor's subtree at bind pose forever. Result: the
+    // armor renders in T-pose regardless of what the underlying body
+    // is doing.
+    //
+    // Fix: re-bind the armor's bones_fb[] to the GHOST's CACHED skel
+    // (the skeleton.nif we loaded as a child of the body at inject
+    // time, which IS receiving live pose data via on_pose_apply_message).
+    // Same skin_rebind::swap_skin_bones_to_skeleton call we do for the
+    // BODY at inject time — just applied to each armor NIF too.
+    //
+    // After swap, armor.bones_fb[i] points at the skel.nif joint with
+    // matching name, and bones_pri[i] = bones_fb[i]+0x70 → the same
+    // animated joint world matrices the body skin reads from. Armor
+    // skinning becomes synchronized with body animation automatically.
+    void* cached_skel = fw::native::skin_rebind::get_cached_skeleton();
+    if (cached_skel) {
+        const int swapped = fw::native::skin_rebind::swap_skin_bones_to_skeleton(
+            armor_node, cached_skel);
+        FW_LOG("[armor-attach] skin rebind: armor=%p skel=%p swapped=%d "
+               "bones (now reads ghost-anim joints)",
+               armor_node, cached_skel, swapped);
+    } else {
+        FW_WRN("[armor-attach] no cached skeleton — armor will render in "
+               "T-pose (body anim won't propagate to armor skinning)");
+    }
+
+    // Track for later detach.
+    {
+        std::lock_guard lk(g_armor_map_mtx);
+        g_attached_armor[peer_id][item_form_id] = armor_node;
+    }
+
+    FW_LOG("[armor-attach] peer=%s form=0x%X path='%s' node=%p ghost=%p OK",
+           peer_id, item_form_id, path, armor_node, ghost);
+    return true;
+}
+
+bool ghost_detach_armor(const char* peer_id, std::uint32_t item_form_id) {
+    if (!peer_id || item_form_id == 0) return false;
+
+    void* ghost = g_injected_cube.load(std::memory_order_acquire);
+    if (!ghost) {
+        // Ghost not yet spawned (boot race) OR destroyed (cell change).
+        // Queue UNEQUIP for replay too: when ghost spawns and pending
+        // queue drains, we want to honor the cancellation. Order is
+        // FIFO so EQUIP→UNEQUIP queued in that order resolves to "no
+        // armor" cleanly. Also clean up tracking map (if there's a
+        // racy stale entry).
+        {
+            std::lock_guard lk(g_pending_armor_mtx);
+            g_pending_armor_ops[peer_id].push_back(
+                PendingArmorOp{item_form_id, /*UNEQUIP=*/2});
+        }
+        {
+            std::lock_guard lk(g_armor_map_mtx);
+            auto pit = g_attached_armor.find(peer_id);
+            if (pit != g_attached_armor.end()) pit->second.erase(item_form_id);
+        }
+        FW_DBG("[armor-detach] no ghost yet (peer=%s form=0x%X) — queued "
+               "UNEQUIP for replay", peer_id, item_form_id);
+        return false;
+    }
+    if (!g_resolved.load(std::memory_order_acquire) || !g_r.detach_child) {
+        FW_WRN("[armor-detach] engine refs not resolved — skip");
+        return false;
+    }
+
+    // Look up + remove from tracking map.
+    void* armor_node = nullptr;
+    {
+        std::lock_guard lk(g_armor_map_mtx);
+        auto pit = g_attached_armor.find(peer_id);
+        if (pit == g_attached_armor.end()) {
+            FW_DBG("[armor-detach] peer=%s has no attached armor map — "
+                   "no-op", peer_id);
+            return false;
+        }
+        auto fit = pit->second.find(item_form_id);
+        if (fit == pit->second.end()) {
+            FW_DBG("[armor-detach] peer=%s form=0x%X not in map — was "
+                   "probably never attached (resolve failed?)",
+                   peer_id, item_form_id);
+            return false;
+        }
+        armor_node = fit->second;
+        pit->second.erase(fit);
+    }
+    if (!armor_node) return false;
+
+    // Remove from ghost subtree. detach_child returns the pointer in
+    // `removed` (which is just armor_node — sanity check); we're holding
+    // the +1 ref from nif_load_by_path so the object stays alive until
+    // we drop it below.
+    void* removed = nullptr;
+    if (!seh_detach_child_armor(g_r.detach_child, ghost, armor_node, &removed)) {
+        FW_ERR("[armor-detach] SEH in detach_child(ghost=%p, armor=%p)",
+               ghost, armor_node);
+        return false;
+    }
+
+    // Drop our +1 ref → engine destroys via vtable[0] when refcount hits 0.
+    const long after = seh_refcount_dec_armor(armor_node);
+    if (after == -999) {
+        FW_WRN("[armor-detach] SEH in refcount decrement (already freed? "
+               "memory corruption?)");
+    } else {
+        FW_DBG("[armor-detach] refcount after dec = %ld (0 means freed by engine)",
+               after);
+    }
+
+    FW_LOG("[armor-detach] peer=%s form=0x%X armor=%p ghost=%p OK",
+           peer_id, item_form_id, armor_node, ghost);
+    return true;
+}
+
+// Drain pending equip ops accumulated while ghost wasn't ready.
+// Call after inject_debug_cube success. Idempotent (no-op if queue empty).
+//
+// Strategy: swap the queue under lock to a local copy, then iterate
+// without holding the lock (so the called ghost_attach_armor /
+// ghost_detach_armor can take their own locks freely). This also
+// prevents re-queueing if those calls race somehow back to "no ghost".
+void flush_pending_armor_ops() {
+    std::unordered_map<std::string, std::deque<PendingArmorOp>> local;
+    {
+        std::lock_guard lk(g_pending_armor_mtx);
+        local.swap(g_pending_armor_ops);
+    }
+    if (local.empty()) {
+        FW_DBG("[armor-pending] flush: queue empty — no-op");
+        return;
+    }
+
+    std::size_t total = 0;
+    std::size_t ok = 0;
+    for (auto& kv : local) {
+        const std::string& peer = kv.first;
+        for (const auto& op : kv.second) {
+            ++total;
+            const bool success = (op.kind == 1)
+                ? ghost_attach_armor(peer.c_str(), op.form_id)
+                : ghost_detach_armor(peer.c_str(), op.form_id);
+            if (success) ++ok;
+        }
+    }
+    FW_LOG("[armor-pending] flush: replayed %zu/%zu ops across %zu peers",
+           ok, total, local.size());
 }
 
 #if 0  // --- M2.3 clone_shader_into_cube (SUPERSEDED by M2.4 factory path) ---
