@@ -2681,15 +2681,50 @@ bool seh_path_contains_ci(const char* hay, std::size_t hay_len, const char* need
     }
     return false;
 }
-// Returns true if `path` looks like a FEMALE armor NIF path (e.g. ends
-// in "_F.nif", contains "Female", contains "_f." mid-path). Used by
-// resolve_armor_nif_path to deprioritize female variants.
+// Find the LAST path-separator ('\' or '/') and return the index of the
+// first byte AFTER it (= start of the basename). Returns 0 if no
+// separator found. Doesn't read past `len`.
+std::size_t basename_index(const char* path, std::size_t len) {
+    if (!path) return 0;
+    std::size_t last = 0;
+    for (std::size_t i = 0; i < len; ++i) {
+        if (path[i] == '\\' || path[i] == '/') last = i + 1;
+    }
+    return last;
+}
+
+// Returns true if `path` looks like a FEMALE armor NIF path. Three patterns:
+//   1. Substring "female" anywhere (case-insensitive)
+//   2. Suffix "_f.nif" / "_f.tri" (case-insensitive)
+//   3. BASENAME prefix `F<UpperCase>` — Bethesda's `F<Part>` naming for
+//      female-mesh variants (e.g. `FToroso_Heavy_1.nif`, `FArm_Mid.nif`,
+//      `FLeg_Heavy.nif`). The capital letter after `F` distinguishes from
+//      neutral names like `Foliage.nif` or `FlipBook.nif`.
+//
+// Note for #3: this also matches things like `FistMesh.nif` (FNeutralWord)
+// theoretically, but in practice no FO4 vanilla armor has such a name —
+// the convention is well-followed (`FArm`, `FLeg`, `FTorso`, `FHelmet`,
+// `FPelvis`, etc.). False positives ship as fallbacks (still valid path,
+// just deprioritized).
 bool path_is_female_variant(const char* path, std::size_t len) {
     if (!path || len == 0) return false;
-    // Case-insensitive check against common female markers.
-    return seh_path_contains_ci(path, len, "female") ||
-           seh_path_contains_ci(path, len, "_f.nif") ||
-           seh_path_contains_ci(path, len, "_f.tri");
+    if (seh_path_contains_ci(path, len, "female")) return true;
+    if (seh_path_contains_ci(path, len, "_f.nif")) return true;
+    if (seh_path_contains_ci(path, len, "_f.tri")) return true;
+
+    // Pattern 3: basename starts with 'F' followed by ANOTHER uppercase
+    // letter — Bethesda's F<Part> female-mesh convention. Without the
+    // 2nd-char-uppercase requirement we'd false-positive on words like
+    // "Foliage", "FrameMesh", etc.
+    const std::size_t bi = basename_index(path, len);
+    if (bi + 1 < len) {
+        const char c0 = path[bi];
+        const char c1 = path[bi + 1];
+        if ((c0 == 'F' || c0 == 'f') && c1 >= 'A' && c1 <= 'Z') {
+            return true;
+        }
+    }
+    return false;
 }
 // Returns true if `path` is a 1st-person variant — those are arms-only
 // meshes used for FPS view, NOT the full body NIF we want for the
@@ -2700,16 +2735,33 @@ bool path_is_first_person(const char* path, std::size_t len) {
            seh_path_contains_ci(path, len, "1st_person") ||
            seh_path_contains_ci(path, len, "_1st.");
 }
+// Returns true if `path` is the "_faceBones" variant — these meshes use
+// the FACE/HEAD bone hierarchy (eyebrow, lip, eyelid, jaw, etc.) which
+// our M8P3 ghost's skel.nif does NOT contain (body skel only, ~80 joints).
+// Loading these results in `swap_skin` failed=50+ → vertices stuck at
+// bind pose → mesh renders distorted / out-of-place.
+//
+// Vanilla armor with face anim (gas masks, glasses) typically also ships
+// a SIMPLER variant without face bones (e.g. `MGasMask.nif` vs
+// `MGasMask_faceBones.nif`). We deprioritize the face-bones variant so
+// the simpler one is picked.
+bool path_is_face_bones(const char* path, std::size_t len) {
+    if (!path || len == 0) return false;
+    return seh_path_contains_ci(path, len, "facebones") ||
+           seh_path_contains_ci(path, len, "_faceBones");  // exact case
+}
 // Compute selection score for an armor NIF path. Higher = better.
-// We want: MALE 3rd-person → +0
-//          MALE 1st-person → -5  (visible only as arms when attached
-//                                  to a 3rd-person ghost body)
-//          FEMALE 3rd-person → -10 (wrong gender bones, T-pose risk)
-//          FEMALE 1st-person → -15 (worst of both)
+//   MALE 3rd-person                → +0   (ideal — what we want)
+//   MALE 1st-person                → -5   (arms-only mesh)
+//   _faceBones variant             → -8   (needs face skel we don't have)
+//   FEMALE 3rd-person              → -10  (wrong gender bones)
+//   FEMALE 3rd-person + faceBones  → -18  (worst of both)
+//   FEMALE 1st-person              → -15
 int armor_path_score(const char* path, std::size_t len) {
     int score = 0;
     if (path_is_female_variant(path, len)) score -= 10;
-    if (path_is_first_person(path, len))  score -= 5;
+    if (path_is_first_person(path, len))   score -= 5;
+    if (path_is_face_bones(path, len))     score -= 8;
     return score;
 }
 } // anon namespace (SEH POD wrappers)

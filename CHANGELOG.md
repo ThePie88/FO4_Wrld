@@ -5,6 +5,79 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## M9 v0.3.1 — peer-join re-broadcast + path scoring polish (2026-04-29) — STABLE / NEED MORE TESTING
+
+Two follow-up patches on top of the wedge 1+2 PoC, addressing the two
+non-cosmetic issues from the user-list:
+
+### 1. Boot-timing race — peer-join re-broadcast
+
+Problem: Client A starts first, runs its B8 force-equip-cycle ~10s post-
+LoadGame. Cycle fires UNEQUIP+EQUIP for Vault Suit but no peer is
+connected yet → broadcasts go nowhere. When peer B joins 5 minutes later,
+B's ghost-of-A renders without clothing because A doesn't re-broadcast.
+Receiver-side pending queue (which we already had) covers the symmetric
+case but not this one.
+
+Fix: `arm_equip_cycle_for_peer_join(1500)` — new public function in
+`equip_cycle.cpp`. Called from `client.cpp::dispatch_message` on
+`PEER_JOIN` reception. State machine extended: previously only allowed
+`IDLE → ARMED`; now also `DONE → ARMED` for legitimate re-arming.
+1500ms delay (vs 10s for boot) — engine is already in-world, no need
+for the long settle. UNEQUIP+EQUIP broadcasts reach the just-joined peer
+via the wedge 2 receiver pipeline and apply to their ghost-of-us.
+
+Trade-off: 2s of "no clothing → re-equip" flicker on the LOCAL player
+every time someone connects. Acceptable for correctness.
+
+### 2. Path scoring — F<Uppercase> female detection + faceBones penalty
+
+Two armor families resolved to wrong NIFs in the wedge 1+2 ship:
+
+**Metal Torso `0x536C4`**: 6 candidates, all scored 0. Selected the
+first found = `Armor\Metal\FToroso_Heavy_1.nif` (FEMALE — Bethesda's
+convention is `F<PartName>` for female meshes, but my filter only
+caught literal `_F.nif` suffix or `"female"` substring). Result: ghost
+rendered female torso mesh on male body skel → mild visual mismatch.
+
+**Gas Mask `0x1184C1`**: 4 candidates, all scored 0. Selected
+`Armor\GasMask\MGasMask_faceBones.nif` — the variant with face anim
+bones. swap_skin reported `failed=50` because face bones (eyebrow, lip,
+eyelid, jaw, etc.) don't exist in our body-only `skel.nif`. Mask
+rendered with bind-pose vertices → distorted shape.
+
+Fixes (additive to existing scoring):
+- `path_is_female_variant` extended: also detects basename starting
+  with `F<UpperCase>` (e.g. `FToroso`, `FArm`, `FLeg`) — Bethesda's
+  female-mesh prefix convention. False-positives on `Foliage`,
+  `FrameMesh` etc. acceptable since those aren't armor.
+- `path_is_face_bones` new filter: detects `faceBones` substring
+  (case-insensitive). Penalty -8.
+- New score table:
+  - MALE 3rd-person → 0
+  - MALE 1st-person → -5
+  - faceBones variant → -8
+  - FEMALE 3rd-person → -10
+  - FEMALE 1st-person → -15
+
+After fix:
+- Metal Torso resolves to `MToroso_Heavy_1.nif` (score 0)
+- Gas Mask resolves to `MGasMask.nif` (simple, score 0) instead of
+  `MGasMask_faceBones.nif` (score -8)
+
+### Status — STABLE / NEED MORE TESTING
+
+Marker: things mostly work, but the user has reported visual
+inconsistencies between the local player's render and the ghost
+rendition (local has fewer mesh pieces than ghost in some cases —
+unclear if that's our resolver picking too many addons, the engine's
+biped slot masking that we don't replicate, or weight-tier mismatch
+across ARMA addons). Not blocking; documented for future iteration.
+
+Tag: `v0.3.1-clothing-stable`.
+
+---
+
 ## M9 wedge 1+2 — equipment sync between peers (2026-04-29)
 
 ▶ **[Video coming soon]**

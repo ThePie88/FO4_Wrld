@@ -183,6 +183,43 @@ void arm_equip_cycle_after_loadgame(unsigned int delay_ms) {
     g_worker.detach();   // we'll signal via g_worker_should_stop
 }
 
+void arm_equip_cycle_for_peer_join(unsigned int delay_ms) {
+    // Allowed transitions: IDLE → ARMED (first ever) OR DONE → ARMED
+    // (re-arm after a previous cycle completed). Reject transitions
+    // from ARMED / UNEQUIP_FIRED (cycle already in-flight; would
+    // overlap and double-fire equip events).
+    auto current = g_state.load(std::memory_order_acquire);
+    while (true) {
+        if (current != CycleState::IDLE && current != CycleState::DONE) {
+            FW_DBG("[equip-cycle] peer-join arm: cycle in-flight (state=%d), "
+                   "skipping re-arm — current cycle's broadcast will reach "
+                   "the new peer anyway", static_cast<int>(current));
+            return;
+        }
+        if (g_state.compare_exchange_weak(current, CycleState::ARMED,
+                                           std::memory_order_acq_rel)) {
+            break;
+        }
+        // CAS failed → current was reloaded by exchange_weak; loop retries.
+    }
+
+    FW_LOG("[equip-cycle] peer-join arm: re-firing cycle in %ums to "
+           "broadcast current equipment state to newly-joined peer",
+           delay_ms);
+
+    // Note: previous worker thread already exited (we only re-arm from
+    // DONE). Spawn a fresh worker.
+    g_worker_should_stop.store(false);
+    if (g_worker.joinable()) {
+        // Defensive: if previous worker is still around (unlikely since
+        // we transition to DONE after worker exit), detach it. Avoid
+        // join() because we don't know its exact state.
+        g_worker.detach();
+    }
+    g_worker = std::thread(&worker_main, delay_ms);
+    g_worker.detach();
+}
+
 void on_force_equip_cycle_unequip_message() {
     // We're on the main thread (WndProc dispatch). Safe to call engine.
     ResolvedRefs r;

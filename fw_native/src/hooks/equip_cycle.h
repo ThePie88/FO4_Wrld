@@ -25,10 +25,32 @@ namespace fw::hooks {
 // the peer might have already connected (defeats the "before peer" goal).
 //
 // Idempotent: calling twice is safe (the cycle internally tracks state and
-// no-ops after the first run completes). One-shot per game session.
+// no-ops after the first run completes). One-shot per game session UNLESS
+// arm_equip_cycle_for_peer_join is called to re-arm.
 //
 // Safe to call from any thread (just spawns a worker).
 void arm_equip_cycle_after_loadgame(unsigned int delay_ms);
+
+// Re-arm the cycle when a new peer joins MID-SESSION. Same behavior as
+// arm_equip_cycle_after_loadgame but allows transition DONE → ARMED
+// (the boot-time arm only allows IDLE → ARMED).
+//
+// Why this exists: the boot cycle's UNEQUIP+EQUIP broadcasts go nowhere
+// when no peer is connected yet (server discards or no-ops). When peer
+// B connects 5 minutes later, A doesn't re-broadcast its current
+// equipment state → B's ghost-of-A renders without clothing.
+//
+// On PEER_JOIN net event, calling this function re-fires the cycle with
+// a short delay (`delay_ms` should be ~1500-2000ms — engine is already
+// stable in-world, no need for the long boot delay). The new UNEQUIP+
+// EQUIP broadcasts reach the just-joined peer, who applies them via
+// the wedge 2 receiver pipeline.
+//
+// If a cycle is already in-progress (ARMED / UNEQUIP_FIRED), calling
+// this is a no-op (we don't want to interrupt an ongoing cycle).
+//
+// Safe to call from any thread.
+void arm_equip_cycle_for_peer_join(unsigned int delay_ms);
 
 // Main-thread WndProc handlers, dispatched by main_menu_hook's fw_wndproc.
 // Call only from the engine's UI/main thread — these invoke

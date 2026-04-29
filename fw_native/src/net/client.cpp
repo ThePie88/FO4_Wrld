@@ -9,6 +9,7 @@
 #include "../engine/engine_calls.h"
 #include "../ghost/actor_hijack.h"
 #include "../hooks/container_hook.h"
+#include "../hooks/equip_cycle.h"   // M9 v0.3.x: re-arm cycle on PEER_JOIN
 #include "../main_thread_dispatch.h"
 #include "../native/scene_inject.h"
 
@@ -862,7 +863,29 @@ void Client::dispatch(const Delivered& d) {
         if (d.payload.size() < sizeof(PeerJoinPayload)) break;
         PeerJoinPayload p{};
         std::memcpy(&p, d.payload.data(), sizeof(p));
-        FW_LOG("net: peer joined: %s (sid=%u)", p.peer_id.get().c_str(), p.session_id);
+        FW_LOG("net: peer joined: %s (sid=%u) — re-arming equip cycle to "
+               "re-broadcast our current equipment state to the new peer",
+               p.peer_id.get().c_str(), p.session_id);
+
+        // M9 v0.3.x — boot-timing race fix.
+        //
+        // Problem: at boot, the equip cycle (B8) UNEQUIP+EQUIP fires once
+        // ~10s post-LoadGame. If no peer is connected yet, the EQUIP
+        // broadcast goes nowhere. When peer B joins 5 minutes later, B's
+        // ghost-of-A is rendered without clothing because B never
+        // received A's equipment state.
+        //
+        // Fix: every time ANY peer joins, re-fire our cycle with a short
+        // delay. The new peer (and any others) receive the EQUIP_BCAST
+        // and apply via wedge 2 receiver pipeline. Cost: 2s of "no
+        // clothing → re-equip" flicker on the LOCAL player every time
+        // someone connects (acceptable trade for visual sync correctness).
+        //
+        // Delay: 1500ms — short because we're already in-world (no
+        // engine startup state to wait for) but still gives a small
+        // buffer in case the just-joined peer's ghost spawn / WELCOME
+        // exchange takes a moment.
+        fw::hooks::arm_equip_cycle_for_peer_join(1500);
         break;
     }
 
