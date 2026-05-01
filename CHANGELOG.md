@@ -77,7 +77,7 @@ attempt has the rake-stepping done already.
    Walker on bipedAnim grabbed 15 BSGeometry leaves of body + clothing
    (≈106 KB blob, 77 chunks reliable) → saturated UDP reliable channel
    → `reliable_recv` froze at 3747, peer events stopped flowing → ghost
-   stuck on previous weapon (manganello). Required form-type filter
+   stuck on previous weapon (baton). Required form-type filter
    (`is_weapon_form` via TESModel `Weapons\\` heuristic) to exclude
    armor entirely.
 
@@ -100,7 +100,7 @@ attempt has the rake-stepping done already.
    - 10mm pistol: `Materials\Weapons\10mmPistol\10mmPistol.bgsm` →
      `Weapons\10mmPistol\10mmPistol.nif` ✓ (canonical, folder ==
      filename)
-   - Shotgun (canne mozze): meshes have `ShotgunShell.bgsm` (the shell
+   - Double-barrel shotgun: meshes have `ShotgunShell.bgsm` (the shell
      casing), `ShotgunStock.bgsm`, never `Shotgun.bgsm` →
      wrong NIF derived.
    - Assault rifle: `MachineGunBarrelLong01.bgsm`,
@@ -202,7 +202,7 @@ attempt has the rake-stepping done already.
 
 - 10mm pistol (modded + stock): peer sees pistol on ghost, **stock
   visual** (no compensator/grip mods rendered).
-- Manganello: visible, proper NIF.
+- Baton (nightstick): visible, proper NIF.
 - Fat Man: perfect.
 - Grognak's Axe: visible (handle position slightly high — minor
   transform offset).

@@ -152,7 +152,7 @@ in real time).
 Latest 3 patches summarized below. **Full version history in
 [CHANGELOG.md](CHANGELOG.md).**
 
-### M9 v0.4.0 (2026-05-01) — wedge 4 foundation: weapon mesh on ghost (PoC, drastica polish da fare) [Video coming soon]
+### M9 v0.4.0 (2026-05-01) — wedge 4 foundation: weapon mesh on ghost (PoC, needs heavy polish) [Video coming soon]
 
 - New protocol v9 message types `MESH_BLOB_OP/BCAST` (chunked mesh
   replication, 1372 B `chunk_data` sized BCAST-safe so server can
@@ -172,7 +172,7 @@ Latest 3 patches summarized below. **Full version history in
   sub-component bgsm paths) → all sub-component bgsm-derived → legacy
   TESModel probe (extended `[0x60..0x180]` range + generic Dummy
   filter).
-- ⚠️ **Hard-won PoC, NOT production**. Working: pistols, manganello,
+- ⚠️ **Hard-won PoC, NOT production**. Working: pistols, baton,
   Fat Man, Grognak's Axe, Deathclaw Gauntlet visible on ghost as
   STOCK base. Modded firearms render without mod parts. Heavily-modded
   rifles show only one sub-component (just the barrel for assault
