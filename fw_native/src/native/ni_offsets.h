@@ -276,6 +276,69 @@ constexpr std::uintptr_t BSDYNAMICTRISHAPE_VTABLE_ALT_RVA = 0x0267F948;
 constexpr std::size_t BSGEOM_ALPHAPROP_OFF           = 0x130; // NiPointer<NiAlphaProperty>
 constexpr std::size_t BSGEOM_SHADERPROP_OFF          = 0x138; // NiPointer<BSShaderProperty>
 
+// === BSGeometry mesh-extract offsets (M9.w4 Path B / iter 11 dossier) ====
+//
+// Read-side layout for raw mesh extraction. Confirmed via direct decomp
+// of sub_14182FFD0 (factory) → sub_1416DA0A0 (post-alloc populate) and
+// the BSPositionData ctor sub_1416CE630 in re/M9_w4_iter11_ida.log.
+//
+// NOTE: M2 dossier called +0x160 "index count". That was a misnomer.
+// Direct decomp shows it's TRI count (idx_count = 3 * tri_count).
+constexpr std::size_t BSGEOM_SKIN_INSTANCE_OFF       = 0x140; // BSSkinInstance* (null = static)
+constexpr std::size_t BSGEOM_POSITION_DATA_OFF       = 0x148; // BSPositionData*
+constexpr std::size_t BSGEOM_VERTEX_DESC_OFF         = 0x150; // packed u64 BSVertexDesc
+constexpr std::size_t BSGEOM_MAT_TYPE_OFF            = 0x158; // u8 (3 = BSTriShape)
+constexpr std::size_t BSGEOM_TRI_COUNT_OFF           = 0x160; // u32  (NOT idx count!)
+constexpr std::size_t BSGEOM_VERT_COUNT_OFF          = 0x164; // u16
+
+// BSPositionData layout (sizeof 0x38, vtable @ qword_1434391D0)
+//   NOTE: this struct is attached as ExtraData on a node, NOT at +0x148.
+//   Iter 12 dossier proved +0x148 holds a different struct entirely.
+//   Layout retained here for completeness — used by ExtraData walks.
+//     [0          .. 6*vc)              packed half-prec positions
+//     [6*vc       .. 12*vc)             packed half-prec normals/aux
+//     [12*vc      .. 12*vc + 2*ic)      u16 INDICES (extraction target)
+constexpr std::size_t BSPOSDATA_SIZEOF                = 0x38;
+constexpr std::size_t BSPOSDATA_PACKED_BUFFER_OFF     = 0x18;
+constexpr std::size_t BSPOSDATA_FULL_PREC_OFF         = 0x20;
+constexpr std::size_t BSPOSDATA_PACKED_SIZE_OFF       = 0x28;
+constexpr std::size_t BSPOSDATA_FULL_SIZE_OFF         = 0x2C;
+constexpr std::size_t BSPOSDATA_FLAG_OFF              = 0x30;
+
+// === REAL +0x148 layout — BSGeometryStreamHelper (M9.w4 iter 12 dossier) ==
+//
+// 32 bytes, allocated from BSSmallBlockAllocatorUtil::TLockingUserPool<32,
+// BSGraphics::ResourceCacheAllocator, BSNonReentrantSpinLock>. Pool blocks
+// are CONTIGUOUS in memory — reading past +0x1F lands in the NEXT block.
+// (Iter 11 misread the +0x18..+0x30 region exactly because of this.)
+//
+// Layout:
+//   +0x00  uint64_t  vertex_desc      (packed BSVertexDesc — same as clone+0x150)
+//   +0x08  void*     vstream_desc     (~80 bytes; +0x08 inside = raw vertex bytes)
+//   +0x10  void*     istream_desc     (~80 bytes; +0x08 inside = raw u16 indices)
+//   +0x18  uint32_t  refcount         (1 source + N clones)
+//   +0x1C..+0x1F     padding
+constexpr std::size_t BSGEOSTREAMH_SIZEOF             = 0x20;
+constexpr std::size_t BSGEOSTREAMH_VERTEX_DESC_OFF    = 0x00;
+constexpr std::size_t BSGEOSTREAMH_VSTREAM_OFF        = 0x08;
+constexpr std::size_t BSGEOSTREAMH_ISTREAM_OFF        = 0x10;
+constexpr std::size_t BSGEOSTREAMH_REFCOUNT_OFF       = 0x18;
+
+// BSStreamDesc layout (~80+ bytes, allocated by sub_14184EF10).
+// One per buffer (vertex stream OR index stream). The actual raw buffer
+// hangs off +0x08; the size at +0x30 is byte count rounded up to multiple
+// of 4 (so for indices: (3 * tri_count * 2 + 3) & ~3).
+constexpr std::size_t BSSTREAMDESC_RAW_BUF_OFF        = 0x08; // void* raw buffer
+constexpr std::size_t BSSTREAMDESC_SIZE_OFF           = 0x30; // u32 size in bytes
+constexpr std::size_t BSSTREAMDESC_TYPE_TAG_OFF       = 0x38; // u32 (2 = index buffer)
+constexpr std::size_t BSSTREAMDESC_FILLED_FLAG_OFF    = 0x4E; // u8  (1 = data uploaded)
+
+// Common subexpressions for extraction:
+//   indices_byte_offset_in_packed_buffer = 12 * vc
+//   indices_byte_size                    = 2 * idx_count  (= 6 * tri_count)
+//   half_prec_positions_byte_size        = 6 * vc
+//   full_prec_positions_byte_size        = 12 * vc
+
 // BSGeometry::vt[42] = SetAlphaProperty (5-instruction refcount-safe setter).
 // Writes to +0x130. Inherited unchanged by BSTriShape / BSDynamicTriShape.
 constexpr std::size_t    BSGEOM_VT_SLOT_SET_ALPHA    = 42;    // offset 0x150 in vtable
@@ -378,6 +441,64 @@ constexpr std::uintptr_t UPDATE_DOWNWARD_PASS_RVA    = 0x016C8050; // sub_1416C8
 // loader itself is synchronous (blocking) — ~2-10 ms for a body NIF.
 constexpr std::uintptr_t NIF_LOAD_BY_PATH_RVA        = 0x0017B3E90; // sub_1417B3E90
 constexpr std::uintptr_t NIF_LOAD_RESMGR_SLOT_RVA    = 0x030DD618;  // qword_1430DD618 (diagnostics)
+
+// === LOWER-LEVEL WORKER (for choke-point hooking) ===
+//
+// sub_1417B3480 is the actual NIF-parse-and-build worker that ALL the
+// public/wrapper APIs converge on (per re/stradaB_nif_loader_api.txt §1):
+//
+//   sub_1417B3E90 (public API, what `g_r.nif_load_by_path` calls)
+//   sub_14026E1C0 (TESModel wrapper)        ─┐
+//   sub_14033EC90 (batch loader 6-args)      ├─→ all funnel into → sub_1417B3480
+//   sub_14033D1E0 (REFR::Load3D pipeline)    │
+//   sub_140458740 (Actor::Load3D pipeline)  ─┘
+//
+// Hooking the public API ONLY misses every load that flows through the
+// other wrappers — observed in M9.w4 logs as zero "Weapons\..." entries
+// in the cache, since cell-load weapons go through Actor/REFR Load3D paths
+// rather than the bare sub_1417B3E90 entry.
+//
+// Worker signature (5 args, from raw decomp lines 67-89 of nif_loader_api):
+//   _DWORD* __fastcall sub_1417B3480(
+//       __int64           streamCtx,   // rcx — BSResourceNiBinaryStream* (or null)
+//       const char*       pathCstr,    // rdx — ANSI; null falls back to global
+//       void*             opts,        // r8  — 16-byte NifLoadOpts (same as public)
+//       NiAVObject**      outNode,     // r9  — BYREF, receives BSFadeNode*
+//       __int64           userCtx);    // stack — passed to BSModelProcessor cb
+//
+// Return: a TLS scratch DWORD* (irrelevant to caller). Real output is
+// *outNode (refcount already incremented). Caller treats the return as
+// success-by-side-effect.
+constexpr std::uintptr_t NIF_LOAD_WORKER_RVA         = 0x0017B3480; // sub_1417B3480
+
+// === CACHE RESOLVER (last shot before Path B raw capture) ===
+//
+// sub_1416A6D00 ("ResolveFromCacheOrQueue") sits ABOVE the worker.
+// EVERY NIF lookup goes through it — cache hit AND cache miss alike.
+// If weapons are pre-loaded by the engine into the BSModelDB cache
+// before our DLL injects, the worker hook never sees them on subsequent
+// equip events; but the resolver does, on every cache HIT.
+//
+// Signature (from re/stradaB_nif_loader_api.txt §6, line 238):
+//   v10 = sub_1416A6D00(modelDB, pathCstr, entry, &handle, flag);
+//
+// Argument order (Windows x64 fastcall):
+//   rcx = modelDB                  (ResourceManager-derived ptr)
+//   rdx = pathCstr                 (ANSI; THE path we want to log)
+//   r8  = entry                    (BSResource::EntryDB::Entry* or similar)
+//   r9  = &handle                  (BYREF intermediate state — used by
+//                                   worker as streamCtx if cache miss)
+//   stack = flag                   (char/byte)
+//
+// Return value semantics:
+//   1 = cache hit  → caller extracts BSFadeNode from `handle` (offset TBD)
+//   2 = cache miss → caller calls sub_1417B3480 with `handle`
+//   0 = ambiguous / pending
+//
+// We HOOK this with logging-only behavior first to confirm weapon paths
+// flow through it. If they do, a follow-up pass extracts the NiAVObject*
+// from `handle` to populate the cache map for cache-hit lookups.
+constexpr std::uintptr_t NIF_CACHE_RESOLVER_RVA      = 0x0016A6D00; // sub_1416A6D00
 
 // Player singleton + loaded3D offset for M7.b bone-copy approach.
 // See re/_player_copy_m7.log. Player's loaded3D is a direct BSFadeNode*

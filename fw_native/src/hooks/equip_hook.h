@@ -21,6 +21,7 @@
 
 #pragma once
 
+#include <windows.h>
 #include <cstdint>
 
 namespace fw::hooks {
@@ -29,5 +30,12 @@ namespace fw::hooks {
 // success returns false but does not roll back the successful one
 // (matches install_pipboy_hook pattern from the rolled-back B7 attempt).
 bool install_equip_hook(std::uintptr_t module_base);
+
+// M9 w4 v9 — deferred mesh-tx infrastructure. Posted via PostMessage
+// 300ms after each equip event so the engine has time to finish
+// runtime weapon assembly. WndProc dispatches → on_deferred_mesh_tx_message
+// → walks player's bipedAnim → ships mesh-blob if non-empty.
+inline constexpr UINT FW_MSG_DEFERRED_MESH_TX = WM_APP + 0x4E;
+void on_deferred_mesh_tx_message();
 
 } // namespace fw::hooks

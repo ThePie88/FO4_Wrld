@@ -2517,8 +2517,14 @@ bool inject_debug_cube(float x, float y, float z) {
         // M9 wedge 2: drain any equip events that arrived while the
         // ghost wasn't yet ready (boot-time race with peer's B8
         // force-equip-cycle). With g_injected_cube now non-null, the
-        // replayed ghost_attach_armor calls will succeed.
+        // replayed ghost_attach_armor / ghost_attach_weapon calls will
+        // succeed. Both flushes are independent; armor flush handles
+        // ARMO forms, weapon flush handles WEAP forms (boot-race may
+        // queue the same form to BOTH queues — see ghost_attach_weapon
+        // header — which self-corrects: wrong-type flush silently fails,
+        // right-type flush succeeds).
         flush_pending_armor_ops();
+        flush_pending_weapon_ops();
     } else {
         FW_WRN("[native] inject_cube (M5 body): failed — see preceding log");
     }
@@ -2942,6 +2948,396 @@ const char* resolve_armor_nif_path(std::uint32_t item_form_id) {
 
 } // anon namespace (armor helpers)
 
+// === M9 wedge 7 — weapon helpers (anon namespace) ==========================
+// Mirror of armor helpers above for TESObjectWEAP forms. Simpler than armor
+// because:
+//   - Single 3rd-person model per weapon (no addon array, no scoring)
+//   - Rigid mesh (no skinning, no skin_rebind)
+//   - Attach to a SINGLE bone (the "WEAPON" node) — not the ghost root
+//
+// See scene_inject.h "M9 wedge 7" block for design rationale and the
+// limitations we accept (no BGSMod attachments, no holstered render,
+// finger curl missing on grip).
+namespace {
+
+// Returns true if `path` looks like a vanilla/DLC/mod weapon NIF — checks
+// for "weapons\\" prefix anywhere in the path (case-insensitive). Most
+// weapon NIFs in FO4 live under "Weapons\\..." (Weapons\\Laser\\Pistol.nif,
+// Weapons\\1HMelee\\Baton.nif, ...). Some power-armor / fusion-core
+// integrated weapons may be under different roots — those won't match
+// here and will fall through (acceptable, not common in survival
+// gameplay).
+bool path_looks_like_weapon(const char* path, std::size_t len) {
+    if (!path || len < 8) return false;
+    return seh_path_contains_ci(path, len, "weapons\\") ||
+           seh_path_contains_ci(path, len, "weapons/");
+}
+
+// Walk TESObjectWEAP → embedded TESModel → BSFixedString → c_str. Returns
+// the first valid path found at any candidate offset that ALSO matches
+// the "weapons\\" path heuristic. Returns nullptr if the form isn't a
+// weapon (or isn't loaded, or layout differs from our probe set).
+//
+// Mirror of resolve_armor_nif_path but simpler — no addon array walk,
+// no male/female/1P scoring (single 3rd-person model per weapon).
+const char* resolve_weapon_nif_path(std::uint32_t item_form_id) {
+    if (item_form_id == 0 || g_r.base == 0) return nullptr;
+
+    using LookupFn = void* (__fastcall*)(std::uint32_t);
+    auto lookup = reinterpret_cast<LookupFn>(
+        g_r.base + offsets::LOOKUP_BY_FORMID_RVA);
+
+    void* tes_form = seh_lookup_form(lookup, item_form_id);
+    if (!tes_form) {
+        FW_DBG("[weapon-resolve] lookup_by_form_id(0x%X) returned null/SEH "
+               "(form not loaded?)", item_form_id);
+        return nullptr;
+    }
+
+    // TESObjectWEAP TESModel offset — uncertain on FO4 1.11.191 next-gen.
+    // Extended probe range (2026-05-01 21:55) — old set [0x60..0xC0]
+    // matched 10mmPistol's "RecieverDummy.nif" placeholder at +0x78
+    // before reaching the proper "10mmPistol.nif" offset.
+    //
+    // Strategy:
+    //   1. Scan ALL candidates, collect every "Weapons\\..." path found.
+    //   2. PREFER paths that don't look like placeholder/dummy NIFs.
+    //      Filters out: "RecieverDummy", "_Dummy", "Dummy_". Keeps real
+    //      weapon NIFs like "10mmPistol.nif", "Baton_1.nif", etc.
+    //   3. Fall back to first dummy match if no proper match found.
+    //
+    // We probe in 8-byte steps from 0x60 to 0x180 to cover the full
+    // TESObjectWEAP struct layout. False positives (paths bleeding through
+    // adjacent fields) are filtered by path_looks_like_weapon (must
+    // contain "Weapons\\").
+    auto path_is_placeholder = [](const char* p, std::size_t len) -> bool {
+        // Case-insensitive substring match for known placeholder fragments.
+        // Catches: RecieverDummy.nif (10mm pistol), DummyReciever.nif
+        // (shotgun, reverse-typo), DummyAmmo.nif, _Dummy_, and generic
+        // "Dummy" anywhere. False positives only if a real weapon NIF
+        // contains "Dummy" in its name — rare in vanilla FO4.
+        auto contains_ci = [](const char* hay, std::size_t hlen,
+                              const char* needle) -> bool {
+            const std::size_t nlen = std::strlen(needle);
+            if (nlen > hlen) return false;
+            for (std::size_t i = 0; i + nlen <= hlen; ++i) {
+                bool match = true;
+                for (std::size_t j = 0; j < nlen; ++j) {
+                    char a = hay[i + j];
+                    char b = needle[j];
+                    if (a >= 'A' && a <= 'Z') a = a - 'A' + 'a';
+                    if (b >= 'A' && b <= 'Z') b = b - 'A' + 'a';
+                    if (a != b) { match = false; break; }
+                }
+                if (match) return true;
+            }
+            return false;
+        };
+        // Generic "Dummy" check covers all variants:
+        //   RecieverDummy.nif (typo'd 10mm pistol)
+        //   DummyReciever.nif (shotgun)
+        //   *Dummy*.nif anywhere in path
+        return contains_ci(p, len, "Dummy");
+    };
+
+    const char* best_path = nullptr;       // non-placeholder match
+    const char* fallback_path = nullptr;   // first placeholder match
+
+    for (std::size_t off = 0x60; off <= 0x180; off += 8) {
+        void* bsfs = seh_read_arma_path_handle_at(tes_form, off);
+        if (!bsfs) continue;
+
+        const char* path = seh_bsfs_cstr(bsfs);
+        if (!path) continue;
+
+        const std::size_t len = seh_strnlen_armor(path, 256);
+        if (len < 5 || len > 200) continue;
+
+        const char c0 = path[0];
+        const bool looks_path = ((c0 >= 'A' && c0 <= 'Z') ||
+                                 (c0 >= 'a' && c0 <= 'z'));
+        if (!looks_path) continue;
+
+        if (!path_looks_like_weapon(path, len)) continue;
+
+        if (path_is_placeholder(path, len)) {
+            if (!fallback_path) {
+                fallback_path = path;
+                FW_DBG("[weapon-resolve] form=0x%X off=+0x%zX path='%s' "
+                       "PLACEHOLDER (kept as fallback)",
+                       item_form_id, off, path);
+            }
+            continue;
+        }
+
+        // Proper weapon NIF — return immediately.
+        FW_LOG("[weapon-resolve] form=0x%X SELECTED model@+0x%zX path='%s' "
+               "(non-placeholder)",
+               item_form_id, off, path);
+        return path;
+    }
+
+    if (fallback_path) {
+        FW_LOG("[weapon-resolve] form=0x%X SELECTED placeholder='%s' "
+               "(no non-placeholder path found in extended probe)",
+               item_form_id, fallback_path);
+        return fallback_path;
+    }
+
+    FW_DBG("[weapon-resolve] form=0x%X: no weapon path in extended probe "
+           "[0x60..0x180]",
+           item_form_id);
+    return nullptr;
+}
+
+// (is_weapon_form public API moved out of this anon namespace; see
+//  definition after the weapon-helpers anon namespace closes.)
+
+// Tracking map: peer_id → form_id → loaded weapon NIF NiNode*
+// Per-peer scoping mirrors armor for forward-compat with multi-peer ghost.
+std::mutex g_weapon_map_mtx;
+std::unordered_map<std::string,
+                    std::unordered_map<std::uint32_t, void*>>
+    g_attached_weapons;
+
+// Pending weapon equip ops accumulated while ghost wasn't ready. Mirror
+// of g_pending_armor_ops — both queues coexist; the dispatcher tries
+// both attach paths so a duplicate queue entry on boot race is harmless
+// (one fails silently, the other succeeds).
+struct PendingWeaponOp {
+    std::uint32_t form_id;
+    std::uint8_t  kind;   // 1=EQUIP, 2=UNEQUIP (matches armor)
+};
+std::mutex g_pending_weapon_mtx;
+std::unordered_map<std::string, std::deque<PendingWeaponOp>>
+    g_pending_weapon_ops;
+
+// Find the weapon attach node in the cached ghost skel. Priority list:
+//   1. "WEAPON"     — vanilla FO4 standard (NiNode parented under RArm_Hand)
+//   2. "Weapon"     — case variant some custom skels use
+//   3. "WeaponBone" — alt naming
+//   4. "RArm_Hand"  — fallback: attach directly to the right hand bone
+// Returns nullptr only if NONE of the candidates exist in the cached skel.
+//
+// We try multiple names because the cached skeleton.nif is the one we
+// loaded as a child of the ghost body — its exact bone names depend on
+// the specific NIF file Bethesda shipped, which can vary between builds
+// or come from CharacterAssets vs Skeleton.nif files.
+void* find_weapon_attach_node() {
+    static const char* kCandidates[] = {
+        "WEAPON",
+        "Weapon",
+        "WeaponBone",
+        "RArm_Hand",
+    };
+    for (const char* name : kCandidates) {
+        void* node = fw::native::skin_rebind::get_bone_by_name(name);
+        if (node) {
+            FW_DBG("[weapon-attach] found attach node '%s' = %p", name, node);
+            return node;
+        }
+    }
+    return nullptr;
+}
+
+// === M9 w4 v8 — witness mod-attach helpers =================================
+// All __try-only helpers (POD args, POD returns) so they can be called from
+// inside C++ control flow that holds std::string / std::vector — keeps
+// MSVC C2712 (mixed C++ unwind + SEH) happy.
+
+// SEH-safe read of m_name (NiObjectNET +0x10 → BSFixedString handle).
+// Writes up to bufsz-1 chars + null. Returns true on success.
+static bool seh_read_node_name_w4(void* node, char* buf, std::size_t bufsz) {
+    if (!node || bufsz < 2) {
+        if (bufsz) buf[0] = 0;
+        return false;
+    }
+    std::uint64_t handle = 0;
+    __try {
+        handle = *reinterpret_cast<std::uint64_t*>(
+            reinterpret_cast<char*>(node) + NIAV_NAME_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { buf[0] = 0; return false; }
+    if (!handle) { buf[0] = 0; return false; }
+    // Try double-deref then single-deref (matches scene_walker pattern).
+    __try {
+        const char* inner = *reinterpret_cast<const char* const*>(handle);
+        if (inner) {
+            std::size_t i = 0;
+            for (; i < bufsz - 1 && inner[i]; ++i) {
+                const char c = inner[i];
+                if (c < 0x20 || c > 0x7E) { i = 0; break; }
+                buf[i] = c;
+            }
+            buf[i] = 0;
+            if (i > 0) return true;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    __try {
+        const char* s = reinterpret_cast<const char*>(handle);
+        std::size_t i = 0;
+        for (; i < bufsz - 1 && s[i]; ++i) {
+            const char c = s[i];
+            if (c < 0x20 || c > 0x7E) { i = 0; break; }
+            buf[i] = c;
+        }
+        buf[i] = 0;
+        return i > 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        buf[0] = 0;
+        return false;
+    }
+}
+
+// SEH-safe NiNode children read.
+static bool seh_read_children_w4(void* node, void**& kids, std::uint16_t& count) {
+    kids = nullptr;
+    count = 0;
+    if (!node) return false;
+    __try {
+        char* nb = reinterpret_cast<char*>(node);
+        kids  = *reinterpret_cast<void***>(nb + NINODE_CHILDREN_PTR_OFF);
+        count = *reinterpret_cast<std::uint16_t*>(nb + NINODE_CHILDREN_CNT_OFF);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        kids = nullptr; count = 0;
+        return false;
+    }
+}
+
+// SEH-safe array index (kids[i]).
+static void* seh_kid_at_w4(void** kids, std::uint16_t i) {
+    if (!kids) return nullptr;
+    __try { return kids[i]; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+
+// SEH-safe write of 16 floats (NiTransform) into node+0x30..+0x70.
+static bool seh_write_local_transform(void* node, const float xf[16]) {
+    if (!node) return false;
+    __try {
+        char* base = reinterpret_cast<char*>(node) + NIAV_LOCAL_ROTATE_OFF;
+        std::memcpy(base, xf, sizeof(float) * 16);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// Recursive find by name, depth-first. Returns first match or nullptr.
+// max_depth bounded; SEH per-node so a corrupt subtree caps the search
+// without taking down the caller.
+static void* find_node_by_name_w4(void* root, const char* target,
+                                   int depth = 0, int max_depth = 16) {
+    if (!root || !target || depth > max_depth) return nullptr;
+    char nm[128];
+    if (seh_read_node_name_w4(root, nm, sizeof(nm)) && nm[0]
+        && std::strcmp(nm, target) == 0) {
+        return root;
+    }
+    void** kids = nullptr;
+    std::uint16_t count = 0;
+    if (!seh_read_children_w4(root, kids, count)) return nullptr;
+    if (!kids || count == 0 || count > 256) return nullptr;
+    for (std::uint16_t i = 0; i < count; ++i) {
+        void* k = seh_kid_at_w4(kids, i);
+        if (!k) continue;
+        void* hit = find_node_by_name_w4(k, target, depth + 1, max_depth);
+        if (hit) return hit;
+    }
+    return nullptr;
+}
+
+// Apply one witness NIF descriptor to an already-loaded weapon root.
+//   weapon_root: the loaded base weapon NIF (root of the receiver-side
+//                assembled weapon, attached to the WEAPON bone).
+//   path:        mod NIF path (e.g. "Weapons\10mmPistol\Mods\Barrel_Long.nif")
+//   parent_name: name of the NiNode INSIDE weapon_root where the mod
+//                should be attached (e.g. "BarrelAttachNode").
+//   xform:       16 floats from sender's NiAVObject local transform.
+// Returns true if the mod NIF was loaded AND attached successfully.
+//
+// Threading: main-thread only (calls nif_load_by_path + attach_child_direct
+// + writes scene-graph transform). Called from ghost_attach_weapon which
+// is itself main-thread only.
+static bool attach_witness_mod(void* weapon_root,
+                                const char* path,
+                                const char* parent_name,
+                                const float xform[16],
+                                std::uint8_t* killswitch_byte)
+{
+    if (!weapon_root || !path || !parent_name || !xform) return false;
+    if (!path[0]) return false;
+
+    // Locate the parent node by name inside the loaded weapon tree.
+    // If the engine's NIF loader didn't include this attach node (e.g.
+    // base weapon variant doesn't have a "BarrelAttachNode"), we can't
+    // place the mod — log + skip.
+    void* parent = find_node_by_name_w4(weapon_root, parent_name);
+    if (!parent) {
+        FW_WRN("[weapon-attach][witness-mod] parent '%s' not found in "
+               "weapon_root=%p — cannot attach mod NIF '%s'",
+               parent_name, weapon_root, path);
+        return false;
+    }
+
+    // Load the mod NIF. Same opts as base weapon (FADE_WRAP | POSTPROC).
+    void* mod_node = nullptr;
+    NifLoadOpts opts{};
+    opts.flags = NIF_OPT_FADE_WRAP | NIF_OPT_POSTPROC;
+    const std::uint8_t saved_ks = killswitch_byte ? *killswitch_byte : 0;
+    if (killswitch_byte) *killswitch_byte = 1;
+    const std::uint32_t rc = seh_nif_load_armor(g_r.nif_load_by_path,
+                                                  path, &mod_node, &opts);
+    if (rc == 0xDEADBEEFu) {
+        if (killswitch_byte) *killswitch_byte = saved_ks;
+        FW_ERR("[weapon-attach][witness-mod] SEH in nif_load_by_path('%s')",
+               path);
+        return false;
+    }
+    if (rc != 0 || !mod_node) {
+        if (killswitch_byte) *killswitch_byte = saved_ks;
+        FW_WRN("[weapon-attach][witness-mod] nif_load_by_path('%s') failed "
+               "rc=%u node=%p", path, rc, mod_node);
+        return false;
+    }
+
+    // apply_materials walker — texture/shader bind for the loaded subtree.
+    seh_apply_materials_armor(g_r.apply_materials, mod_node);
+    if (killswitch_byte) *killswitch_byte = saved_ks;
+
+    // Apply the local transform the sender captured. The engine wrote
+    // these 16 floats into the corresponding NiAVObject after running
+    // its mod-attach pipeline; we replicate identically on the receiver.
+    if (!seh_write_local_transform(mod_node, xform)) {
+        FW_WRN("[weapon-attach][witness-mod] SEH writing local transform "
+               "to mod_node=%p — proceeding with default identity", mod_node);
+    }
+
+    // Attach as child of the named parent inside weapon_root.
+    if (!seh_attach_child_armor(g_r.attach_child_direct, parent, mod_node)) {
+        FW_ERR("[weapon-attach][witness-mod] SEH in attach_child_direct"
+               "(parent=%p, mod=%p, path='%s')", parent, mod_node, path);
+        return false;
+    }
+
+    FW_LOG("[weapon-attach][witness-mod] attached '%s' to parent='%s'(%p) "
+           "mod_node=%p trans=(%.2f,%.2f,%.2f) scale=%.3f",
+           path, parent_name, parent, mod_node,
+           xform[12], xform[13], xform[14], xform[15]);
+    return true;
+}
+
+} // anon namespace (weapon helpers)
+
+// === M9 wedge 4 v9 — form-type probe (public API) =========================
+//
+// Reuses resolve_weapon_nif_path's logic (engine lookup + TESModel walk +
+// "Weapons\\" path heuristic). For the equip_hook mesh-tx gate we only
+// need a yes/no answer; rejecting forms with no weapon path catches all
+// non-WEAP cases (armor, ammo, food, misc) including the Vault-Suit-with-
+// OMOD case that broke the channel pre-fix.
+bool is_weapon_form(std::uint32_t item_form_id) {
+    return resolve_weapon_nif_path(item_form_id) != nullptr;
+}
+
 bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id) {
     if (!peer_id || item_form_id == 0) return false;
 
@@ -3062,6 +3458,18 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id) {
     // skinning becomes synchronized with body animation automatically.
     void* cached_skel = fw::native::skin_rebind::get_cached_skeleton();
     if (cached_skel) {
+        // M9 wedge 2 vault-suit-cycle fix (2026-05-01): take a snapshot
+        // of the armor's bones_fb[] / bones_pri[] / skel_root BEFORE the
+        // swap. ghost_detach_armor will restore from this snapshot so
+        // the next attach (which gets the SAME armor pointer back from
+        // the engine's NIF cache) starts from a clean state pointing at
+        // the original "_skin" stub bones (kept alive by niptr_swap's
+        // increment-only leak). Without this restore, the 2nd attach
+        // tries to swap bones already pointing at potentially-freed skel
+        // bones from the previous attach → corrupted bone table → ghost
+        // disappears / crashes after a few cycles.
+        fw::native::skin_rebind::take_skin_snapshot(armor_node);
+
         const int swapped = fw::native::skin_rebind::swap_skin_bones_to_skeleton(
             armor_node, cached_skel);
         FW_LOG("[armor-attach] skin rebind: armor=%p skel=%p swapped=%d "
@@ -3135,6 +3543,24 @@ bool ghost_detach_armor(const char* peer_id, std::uint32_t item_form_id) {
     }
     if (!armor_node) return false;
 
+    // M9 wedge 2 vault-suit-cycle fix (2026-05-01): restore the armor's
+    // bones_fb[] / bones_pri[] / skel_root from the snapshot taken at
+    // attach time. This MUST happen BEFORE detach_child + refcount dec
+    // because:
+    //   1. The engine's NIF cache may keep this armor pointer alive
+    //      across detach/re-attach (refcount stays > 0). On re-attach
+    //      we get the SAME pointer back; if its bones point to garbage,
+    //      skin rebind only partially fixes it and render crashes /
+    //      shows broken geometry.
+    //   2. By writing back the original "_skin" stub pointers (kept
+    //      alive by niptr_swap's increment-only leak — see comment at
+    //      line ~464 of skin_rebind.cpp), the cached NIF returns to a
+    //      clean post-NIF-load state. Next attach can do a full clean
+    //      swap from stubs to skel.
+    // Idempotent — if no snapshot exists for this armor (e.g. attach
+    // happened without snapshot for some reason) restore is a no-op.
+    fw::native::skin_rebind::restore_skin_from_snapshot(armor_node);
+
     // Remove from ghost subtree. detach_child returns the pointer in
     // `removed` (which is just armor_node — sanity check); we're holding
     // the +1 ref from nif_load_by_path so the object stays alive until
@@ -3192,6 +3618,1385 @@ void flush_pending_armor_ops() {
         }
     }
     FW_LOG("[armor-pending] flush: replayed %zu/%zu ops across %zu peers",
+           ok, total, local.size());
+}
+
+// === M9 wedge 7 — public weapon attach/detach/flush ========================
+// Mirror of armor public functions. See scene_inject.h "M9 wedge 7" block
+// for limitations. Threading: MAIN-THREAD-ONLY (called from
+// drain_equip_apply_queue).
+
+bool ghost_attach_weapon(const char* peer_id, std::uint32_t item_form_id,
+                          const void*  nif_descs_v,
+                          std::uint8_t nif_count,
+                          const char*  nif_path_override) {
+    if (!peer_id || item_form_id == 0) return false;
+
+    // The dispatcher passes a pointer to the PendingEquipOp's nif_descs
+    // array; cast back to typed view here.
+    const auto* nif_descs =
+        reinterpret_cast<const fw::net::NifDescriptor*>(nif_descs_v);
+    if (!nif_descs) nif_count = 0;
+    if (nif_count > fw::net::MAX_NIF_DESCRIPTORS) {
+        nif_count = fw::net::MAX_NIF_DESCRIPTORS;
+    }
+
+    void* ghost = g_injected_cube.load(std::memory_order_acquire);
+    if (!ghost) {
+        // Boot race: ghost not yet spawned. Queue for replay on next ghost
+        // spawn (mirror armor). Note that the dispatcher tries armor first —
+        // if armor's path also queued for the SAME form, that's fine: on
+        // flush, armor's resolve fails (form is WEAP) and weapon's resolve
+        // succeeds. Cost: 2x queue size, harmless.
+        //
+        // NOTE: pending replay drops the nif_descs (witness data). When the
+        // ghost spawns and we replay, the receiver attaches the BASE NIF
+        // only, not the mods. Acceptable because the sender will broadcast
+        // the next equip-cycle (B8 force-equip-cycle on every game start)
+        // with the witness data again. The boot-race window is small.
+        std::size_t qsize;
+        {
+            std::lock_guard lk(g_pending_weapon_mtx);
+            g_pending_weapon_ops[peer_id].push_back(
+                PendingWeaponOp{item_form_id, /*EQUIP=*/1});
+            qsize = g_pending_weapon_ops[peer_id].size();
+        }
+        FW_LOG("[weapon-attach] no ghost yet (peer=%s form=0x%X) — queued "
+               "EQUIP for replay (pending size=%zu, witness mods=%u dropped)",
+               peer_id, item_form_id, qsize,
+               static_cast<unsigned>(nif_count));
+        return false;
+    }
+    if (!g_resolved.load(std::memory_order_acquire) ||
+        !g_r.nif_load_by_path || !g_r.attach_child_direct) {
+        FW_WRN("[weapon-attach] engine refs not resolved yet — skip");
+        return false;
+    }
+
+    // Idempotent: if same peer+form already attached, normally skip.
+    // EXCEPTION (M9 w4 v8 stage-2 delta): if the broadcast carries
+    // nif_descs and the weapon is already attached, apply just the
+    // witness mod loop on the existing weapon node. This is how the
+    // two-stage broadcast pattern works:
+    //   - Stage 1 (no nif_descs) fires before sender's g_orig_equip and
+    //     does the base NIF attach here.
+    //   - Stage 2 (with nif_descs) fires after sender's chain returned
+    //     and the engine assembled the modded subtree. We get here a
+    //     second time with the SAME form_id and nif_count > 0.
+    void* existing_weapon_node = nullptr;
+    {
+        std::lock_guard lk(g_weapon_map_mtx);
+        auto& peer_map = g_attached_weapons[peer_id];
+        auto it = peer_map.find(item_form_id);
+        if (it != peer_map.end()) {
+            existing_weapon_node = it->second;
+        }
+    }
+    if (existing_weapon_node) {
+        if (nif_count > 0 && nif_descs) {
+            // STAGE 2 delta: apply mods on the existing base.
+            std::uint8_t* mod_killswitch = reinterpret_cast<std::uint8_t*>(
+                g_r.base + BSLSP_BIND_KILLSWITCH_BYTE_RVA);
+            std::size_t attached_ok = 0, attach_failed = 0;
+            for (std::uint8_t i = 0; i < nif_count; ++i) {
+                const auto& d = nif_descs[i];
+                const bool ok = attach_witness_mod(existing_weapon_node,
+                                                    d.nif_path,
+                                                    d.parent_name,
+                                                    d.local_transform,
+                                                    mod_killswitch);
+                if (ok) ++attached_ok; else ++attach_failed;
+            }
+            FW_LOG("[weapon-attach] peer=%s form=0x%X STAGE-2 witness-mods: "
+                   "%zu ok / %zu failed (out of %u descriptors) on existing "
+                   "weapon=%p",
+                   peer_id, item_form_id, attached_ok, attach_failed,
+                   static_cast<unsigned>(nif_count), existing_weapon_node);
+            return true;
+        }
+        // No nif_descs → plain re-broadcast / double-EQUIP race / peer-join
+        // push. Idempotent skip.
+        FW_DBG("[weapon-attach] peer=%s form=0x%X already attached "
+               "(node=%p) — idempotent skip",
+               peer_id, item_form_id, existing_weapon_node);
+        return true;
+    }
+
+    // Resolve weapon NIF path. Override has priority — caller from
+    // mesh-blob path supplies a bgsm-derived path (e.g. "Weapons\10mmPistol\
+    // 10mmPistol.nif") that's more accurate than the TESModel offset probe
+    // (which often returns "10mmRecieverDummy.nif" placeholder for the
+    // pistol). Override is null for the legacy EQUIP_BCAST path → falls
+    // back to the original probe.
+    const char* path = nif_path_override
+        ? nif_path_override
+        : resolve_weapon_nif_path(item_form_id);
+    if (!path) return false;
+
+    // Find the WEAPON attach node in the cached ghost skel. If none found,
+    // we cannot place the weapon — abort (logged).
+    void* attach_node = find_weapon_attach_node();
+    if (!attach_node) {
+        FW_ERR("[weapon-attach] no WEAPON / Weapon / WeaponBone / RArm_Hand "
+               "node in cached ghost skel — cannot attach (peer=%s form=0x%X "
+               "path='%s')", peer_id, item_form_id, path);
+        return false;
+    }
+
+    // Pool init guard (same as body/armor load).
+    if (g_r.pool_init_flag &&
+        *g_r.pool_init_flag != POOL_INIT_FLAG_READY) {
+        FW_DBG("[weapon-attach] pool not ready, initializing");
+        g_r.pool_init(g_r.pool, g_r.pool_init_flag);
+    }
+
+    // Load the NIF with FADE_WRAP | POSTPROC for material/texture resolution
+    // (POSTPROC triggers BSModelProcessor → resolves .bgsm → DDS textures).
+    void* weapon_node = nullptr;
+    NifLoadOpts opts{};
+    opts.flags = NIF_OPT_FADE_WRAP | NIF_OPT_POSTPROC;
+
+    // M6.1 killswitch dance — same as armor/body load.
+    std::uint8_t* killswitch_byte = reinterpret_cast<std::uint8_t*>(
+        g_r.base + BSLSP_BIND_KILLSWITCH_BYTE_RVA);
+    const std::uint8_t saved_ks = *killswitch_byte;
+    *killswitch_byte = 1;
+
+    // Reuse the armor SEH wrapper (function signature is identical for any
+    // NIF load — wrapper doesn't care about the asset type).
+    const std::uint32_t rc = seh_nif_load_armor(g_r.nif_load_by_path,
+                                                  path, &weapon_node, &opts);
+    if (rc == 0xDEADBEEFu) {
+        *killswitch_byte = saved_ks;
+        FW_ERR("[weapon-attach] SEH in nif_load_by_path('%s')", path);
+        return false;
+    }
+    if (rc != 0 || !weapon_node) {
+        *killswitch_byte = saved_ks;
+        FW_ERR("[weapon-attach] nif_load_by_path('%s') failed rc=%u node=%p",
+               path, rc, weapon_node);
+        return false;
+    }
+
+    // apply_materials walker — texture+shader bind.
+    seh_apply_materials_armor(g_r.apply_materials, weapon_node);
+    *killswitch_byte = saved_ks;
+
+    // Attach as child of the WEAPON bone (NOT the ghost root). The bone's
+    // world transform is driven by the synced peer pose (POSE_BROADCAST →
+    // skel.nif joint matrices), so the weapon inherits the correct
+    // position/rotation automatically. No skin_rebind needed — weapon NIF
+    // is rigid (single-bone or no-bone mesh).
+    if (!seh_attach_child_armor(g_r.attach_child_direct, attach_node, weapon_node)) {
+        FW_ERR("[weapon-attach] SEH in attach_child_direct(parent=%p, "
+               "weapon=%p, path='%s')", attach_node, weapon_node, path);
+        return false;
+    }
+
+    // Track for later detach.
+    {
+        std::lock_guard lk(g_weapon_map_mtx);
+        g_attached_weapons[peer_id][item_form_id] = weapon_node;
+    }
+
+    FW_LOG("[weapon-attach] peer=%s form=0x%X path='%s' node=%p "
+           "attach_parent=%p OK",
+           peer_id, item_form_id, path, weapon_node, attach_node);
+
+    // === M9 w4 v8 — witness mod-attach loop ===
+    // For each NIF descriptor the sender captured (by walking its own
+    // BipedAnim post-equip), load the mod NIF, find the named parent
+    // inside our just-loaded weapon_node tree, apply the captured local
+    // transform, attach as child. This replicates the engine's mod
+    // assembly result on our ghost weapon WITHOUT invoking the engine's
+    // mod pipeline (which is fused with REFR vt[119]/vt[136] Reset3D
+    // and cannot run on a non-Actor receiver — proven across 4 IDA iters).
+    if (nif_count > 0) {
+        // Re-acquire killswitch byte for the mod loads (each load needs
+        // it set so BSLightingShaderProperty bind resolves DDS textures
+        // properly — same dance as the base load above).
+        std::uint8_t* mod_killswitch = reinterpret_cast<std::uint8_t*>(
+            g_r.base + BSLSP_BIND_KILLSWITCH_BYTE_RVA);
+        std::size_t attached_ok = 0, attach_failed = 0;
+        for (std::uint8_t i = 0; i < nif_count; ++i) {
+            const auto& d = nif_descs[i];
+            const bool ok = attach_witness_mod(weapon_node,
+                                                d.nif_path,
+                                                d.parent_name,
+                                                d.local_transform,
+                                                mod_killswitch);
+            if (ok) ++attached_ok; else ++attach_failed;
+        }
+        FW_LOG("[weapon-attach] peer=%s form=0x%X witness-mods: "
+               "%zu ok / %zu failed (out of %u descriptors)",
+               peer_id, item_form_id, attached_ok, attach_failed,
+               static_cast<unsigned>(nif_count));
+    }
+    return true;
+}
+
+bool ghost_detach_weapon(const char* peer_id, std::uint32_t item_form_id) {
+    if (!peer_id || item_form_id == 0) return false;
+
+    void* ghost = g_injected_cube.load(std::memory_order_acquire);
+    if (!ghost) {
+        // Queue UNEQUIP for replay too (mirror armor — preserves cancellation
+        // ordering when a peer rapidly EQUIP→UNEQUIP before our ghost spawns).
+        {
+            std::lock_guard lk(g_pending_weapon_mtx);
+            g_pending_weapon_ops[peer_id].push_back(
+                PendingWeaponOp{item_form_id, /*UNEQUIP=*/2});
+        }
+        {
+            std::lock_guard lk(g_weapon_map_mtx);
+            auto pit = g_attached_weapons.find(peer_id);
+            if (pit != g_attached_weapons.end()) pit->second.erase(item_form_id);
+        }
+        FW_DBG("[weapon-detach] no ghost yet (peer=%s form=0x%X) — queued "
+               "UNEQUIP for replay", peer_id, item_form_id);
+        return false;
+    }
+    if (!g_resolved.load(std::memory_order_acquire) || !g_r.detach_child) {
+        FW_WRN("[weapon-detach] engine refs not resolved — skip");
+        return false;
+    }
+
+    // Look up weapon node in tracking map.
+    void* weapon_node = nullptr;
+    {
+        std::lock_guard lk(g_weapon_map_mtx);
+        auto pit = g_attached_weapons.find(peer_id);
+        if (pit == g_attached_weapons.end()) {
+            FW_DBG("[weapon-detach] peer=%s has no attached weapons map — "
+                   "no-op", peer_id);
+            return false;
+        }
+        auto fit = pit->second.find(item_form_id);
+        if (fit == pit->second.end()) {
+            FW_DBG("[weapon-detach] peer=%s form=0x%X not in map — was "
+                   "probably never attached (resolve failed at attach time?)",
+                   peer_id, item_form_id);
+            return false;
+        }
+        weapon_node = fit->second;
+        pit->second.erase(fit);
+    }
+    if (!weapon_node) return false;
+
+    // Re-find attach parent (we don't store it per-form to keep the map
+    // small; refind is cheap — a tree walk in cached skel). Same priority
+    // list as attach.
+    void* attach_node = find_weapon_attach_node();
+    if (!attach_node) {
+        FW_WRN("[weapon-detach] attach parent no longer exists in cached skel "
+               "(peer=%s form=0x%X) — weapon already orphaned, skip detach to "
+               "avoid AV", peer_id, item_form_id);
+        return false;
+    }
+
+    void* removed = nullptr;
+    if (!seh_detach_child_armor(g_r.detach_child, attach_node, weapon_node, &removed)) {
+        FW_ERR("[weapon-detach] SEH in detach_child(parent=%p, weapon=%p)",
+               attach_node, weapon_node);
+        return false;
+    }
+
+    // Drop our +1 ref → engine destroys via vtable[0] when refcount hits 0.
+    const long after = seh_refcount_dec_armor(weapon_node);
+    if (after == -999) {
+        FW_WRN("[weapon-detach] SEH in refcount decrement");
+    } else {
+        FW_DBG("[weapon-detach] refcount after dec = %ld (0 means freed)",
+               after);
+    }
+
+    FW_LOG("[weapon-detach] peer=%s form=0x%X weapon=%p OK",
+           peer_id, item_form_id, weapon_node);
+    return true;
+}
+
+// === M9 wedge 4 v9 — raw mesh weapon attach (REPLACEMENT semantics) =======
+//
+// Receives decoded mesh records (deserialized from MESH_BLOB_BCAST chunks)
+// and rebuilds geometry on the matching ghost via the engine's factory
+// sub_14182FFD0 (g_r.geo_builder).
+//
+// Storage: per-peer weapon_root NiNode. On each attach we DESTROY any
+// previous weapon_root (cascade-frees its child meshes via refcount) and
+// build a fresh one. This is the "replacement" strategy chosen 2026-05-01:
+// the receiver does NOT load the base weapon NIF; it relies on the wire
+// blob to carry the entire weapon geometry. Trade-off: ~50-200 ms ghost
+// hand-empty between EQUIP_BCAST arrival and last MESH_BLOB chunk landing.
+// Acceptable.
+namespace {
+
+// peer_id → weapon root NiNode* (the parent we attach all meshes under).
+std::mutex g_ghost_weapon_root_mtx;
+std::unordered_map<std::string, void*> g_ghost_weapon_root;
+
+// SEH-safe refcount increment (POD helper to avoid C2712 in callers
+// holding std::vector / std::string).
+void seh_refcount_inc_local(void* node) {
+    if (!node) return;
+    __try {
+        auto* rc = reinterpret_cast<long*>(
+            reinterpret_cast<char*>(node) + NIAV_REFCOUNT_OFF);
+        _InterlockedIncrement(rc);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+// SEH-safe vtable read (POD).
+void* seh_read_vt(void* obj) {
+    if (!obj) return nullptr;
+    __try {
+        return *reinterpret_cast<void**>(obj);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
+// SEH-safe set MOVABLE flag (NIAV+0x108 |= 0x800).
+// Without this flag the engine doesn't recompute world from local each
+// frame — meshes get stuck at the first frame's world transform regardless
+// of whether the parent (RArm_Hand bone) moves.
+void seh_set_movable_flag(void* node) {
+    if (!node) return;
+    __try {
+        auto* flags = reinterpret_cast<std::uint64_t*>(
+            reinterpret_cast<char*>(node) + NIAV_FLAGS_OFF);
+        *flags |= NIAV_FLAG_MOVABLE;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+// SEH-safe update_downward call (POD wrapper).
+void seh_update_downward(UpdateDownwardFn fn, void* node) {
+    if (!fn || !node) return;
+    std::uint64_t update_data[4] = { 0, 0, 0, 0 };  // NiUpdateData stub
+    __try {
+        fn(node, update_data);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+// SEH-safe DFS for first BSGeometry-derived child under `root` (POD).
+// Returns a BSGeometry* if found, nullptr otherwise. Used by donor pattern
+// to harvest a working shader from a vanilla NIF.
+void* seh_find_first_geom_dfs(void* root, int depth = 0) {
+    if (!root || depth > 24) return nullptr;
+    std::uintptr_t vt_rva = 0;
+    __try {
+        void* vt = *reinterpret_cast<void**>(root);
+        // Read base from a global to avoid passing it explicitly.
+        vt_rva = reinterpret_cast<std::uintptr_t>(vt) - g_r.base;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+    if (is_geometry_vtable_rva(vt_rva)) return root;
+
+    void** kids = nullptr;
+    std::uint16_t cnt = 0;
+    __try {
+        char* nb = reinterpret_cast<char*>(root);
+        kids = *reinterpret_cast<void***>(nb + NINODE_CHILDREN_PTR_OFF);
+        cnt  = *reinterpret_cast<std::uint16_t*>(nb + NINODE_CHILDREN_CNT_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+    if (!kids || cnt == 0 || cnt > 256) return nullptr;
+    for (std::uint16_t i = 0; i < cnt; ++i) {
+        void* k = nullptr;
+        __try { k = kids[i]; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { break; }
+        if (!k) continue;
+        void* g = seh_find_first_geom_dfs(k, depth + 1);
+        if (g) return g;
+    }
+    return nullptr;
+}
+
+// SEH-safe pointer read at offset.
+void* seh_read_ptr_at(void* obj, std::size_t off) {
+    if (!obj) return nullptr;
+    __try {
+        return *reinterpret_cast<void**>(reinterpret_cast<char*>(obj) + off);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+
+// SEH-safe pointer write at offset.
+void seh_write_ptr_at(void* obj, std::size_t off, void* val) {
+    if (!obj) return;
+    __try {
+        *reinterpret_cast<void**>(reinterpret_cast<char*>(obj) + off) = val;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+// SEH-safe BSTriShape state dump for diagnostic. Dumps fields critical for
+// rendering: vtable, refcount, flags, alpha, shader, skin, posdata, vert/idx
+// counts, bbox, world transform. POD-only so callers with std::vector are
+// safe.
+struct BsTriDiagState {
+    std::uint64_t vt_rva;       // vtable RVA (or -1)
+    std::uint32_t refcount;
+    std::uint64_t flags;
+    void*         alpha_prop;   // +0x130
+    void*         shader_prop;  // +0x138
+    void*         skin_inst;    // +0x140
+    void*         pos_data;     // +0x148 (BSGeometryStreamHelper)
+    std::uint64_t vertex_desc;  // +0x150
+    std::uint16_t vert_count;   // +0x164
+    std::uint32_t idx_count;    // +0x160 (3 * tri_count)
+    float         bound_x, bound_y, bound_z, bound_r;  // +0x120..+0x12C
+    float         world_tx, world_ty, world_tz;        // +0xA0 (NIAV_WORLD_TRANSLATE_OFF)
+};
+void seh_dump_bstri_state(void* bs, std::uintptr_t base, BsTriDiagState* out) {
+    if (!bs || !out) return;
+    std::memset(out, 0, sizeof(*out));
+    out->vt_rva = 0xFFFFFFFFFFFFFFFFull;
+    __try {
+        auto cb = reinterpret_cast<char*>(bs);
+        void* vt = *reinterpret_cast<void**>(bs);
+        if (vt) {
+            out->vt_rva = reinterpret_cast<std::uintptr_t>(vt) - base;
+        }
+        out->refcount    = *reinterpret_cast<std::uint32_t*>(cb + NIAV_REFCOUNT_OFF);
+        out->flags       = *reinterpret_cast<std::uint64_t*>(cb + NIAV_FLAGS_OFF);
+        out->alpha_prop  = *reinterpret_cast<void**>(cb + BSGEOM_ALPHAPROP_OFF);
+        out->shader_prop = *reinterpret_cast<void**>(cb + BSGEOM_SHADERPROP_OFF);
+        out->skin_inst   = *reinterpret_cast<void**>(cb + 0x140);
+        out->pos_data    = *reinterpret_cast<void**>(cb + 0x148);
+        out->vertex_desc = *reinterpret_cast<std::uint64_t*>(cb + 0x150);
+        out->idx_count   = *reinterpret_cast<std::uint32_t*>(cb + 0x160);
+        out->vert_count  = *reinterpret_cast<std::uint16_t*>(cb + 0x164);
+        const float* bc = reinterpret_cast<const float*>(cb + 0x120);
+        out->bound_x = bc[0]; out->bound_y = bc[1]; out->bound_z = bc[2]; out->bound_r = bc[3];
+        const float* wt = reinterpret_cast<const float*>(cb + NIAV_WORLD_TRANSLATE_OFF);
+        out->world_tx = wt[0]; out->world_ty = wt[1]; out->world_tz = wt[2];
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+// === Opzione A — manual shader+material setup for wire-built BSTriShape ===
+//
+// Diagnosis 2026-05-01 15:56: factory output has shader=NULL post-call.
+// The previous `bgsm_load + mat_bind_to_geom` attempt returned "OK" but
+// shader stayed NULL — mat_bind_to_geom presumably requires an existing
+// shader to bind into. We replicate the cube path's manual BSLSP setup,
+// substituting bgsm_load for texset+bind_mat_texset:
+//
+//   1. bslsp_new() → fresh BSLightingShaderProperty (refcount=0)
+//   2. shader+0x64 = 1.0f (drawable flag — vt[43] SetupGeometry early-rejects
+//      if zero, per cube comment line ~843)
+//   3. bgsm_load(trimmed_path, &mat, 0) → loads .bgsm file → material
+//   4. Refcount-safe swap shader+0x58: shared default → loaded material
+//   5. fs_create(bgsm_path) → BSFixedString handle, write to shader+0x10
+//      (so apply_materials_walker can read it back for re-resolve)
+//   6. Write shader to bs+0x138 with refcount bump (geom takes ownership)
+//
+// DDS texture resolution: we DON'T call mat_bind_to_geom or bind_mat_texset
+// here — those need a texset or AV'd in past attempts. Instead we rely on
+// apply_materials_walker called on weapon_root POST-attach to walk the
+// subtree and resolve textures from the bgsm paths we just wired.
+//
+// Returns the BSLSP shader pointer on success (caller's responsibility:
+// keep it pointed-to via bs+0x138, or release if abandoning). Returns
+// nullptr on any sub-step failure; caller continues with mesh sans shader.
+void* seh_setup_weapon_shader(
+    BSLSPNewFn bslsp_new,
+    BgsmLoadFn bgsm_load,
+    FixedStrCreateFn fs_create,
+    std::uint8_t* killswitch_byte,
+    void* bs,
+    const char* bgsm_path)
+{
+    if (!bslsp_new || !bgsm_load || !bs || !bgsm_path || !bgsm_path[0]) {
+        return nullptr;
+    }
+
+    // 1. Allocate fresh BSLSP shader.
+    void* shader = nullptr;
+    __try { shader = bslsp_new(); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+    if (!shader) return nullptr;
+
+    // 2. Drawable flag.
+    __try {
+        float* drawable = reinterpret_cast<float*>(
+            reinterpret_cast<char*>(shader) + BSLSP_DRAWABLE_FLOAT_OFF);
+        *drawable = 1.0f;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+
+    // 3. Strip "Materials\\" prefix and load bgsm.
+    const char* trimmed = bgsm_path;
+    {
+        const char* prefixes[] = { "Materials\\", "materials\\" };
+        for (const char* pfx : prefixes) {
+            const std::size_t plen = std::strlen(pfx);
+            if (std::strncmp(trimmed, pfx, plen) == 0) { trimmed += plen; break; }
+        }
+    }
+    void* mat = nullptr;
+    std::uint32_t rc = 0xFFFFFFFFu;
+    const std::uint8_t saved_ks = killswitch_byte ? *killswitch_byte : 0;
+    if (killswitch_byte) *killswitch_byte = 1;
+    __try { rc = bgsm_load(trimmed, &mat, 0); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { rc = 0xDEADBEEFu; mat = nullptr; }
+    if (killswitch_byte) *killswitch_byte = saved_ks;
+    if (rc != 0 || !mat) {
+        // Leak shader — refcount=0 means it'll get GC'd (or just stays
+        // detached, harmless tiny leak). Returning nullptr signals failure.
+        return nullptr;
+    }
+
+    // 4. Refcount-safe swap shader+0x58: shared default → loaded material.
+    __try {
+        void** mat_slot = reinterpret_cast<void**>(
+            reinterpret_cast<char*>(shader) + BSLSP_MATERIAL_OFF);
+        void* old_mat = *mat_slot;
+        // Bump new material refcount BEFORE installing.
+        _InterlockedIncrement(reinterpret_cast<long*>(
+            reinterpret_cast<char*>(mat) + NIAV_REFCOUNT_OFF));
+        *mat_slot = mat;
+        // Release old (likely shared default at high refcount).
+        if (old_mat) {
+            const long prev = _InterlockedExchangeAdd(
+                reinterpret_cast<long*>(
+                    reinterpret_cast<char*>(old_mat) + NIAV_REFCOUNT_OFF), -1);
+            if (prev == 1) {
+                void** old_vt = *reinterpret_cast<void***>(old_mat);
+                using DtorFn = void(*)(void*);
+                auto dtor = reinterpret_cast<DtorFn>(old_vt[1]);
+                dtor(old_mat);
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+
+    // 5. (DISABLED 2026-05-01 16:15 — SUSPECTED CRASH CAUSE)
+    //    Original step 5 wrote bgsm path to shader+0x10 via fs_create,
+    //    intended so apply_materials_walker could re-resolve textures.
+    //    Test 16:09:18 crashed in render walk after this setup; possible
+    //    causes: BSFixedString refcount mismanagement, walker AVing on
+    //    handle format, or both. Skip both fs_create AND apply_materials_
+    //    walker for now — see commented-out call at the end of
+    //    ghost_attach_mesh_blob. If mesh now renders pink/garbage but
+    //    doesn't crash → confirmed this path was the culprit; can re-add
+    //    once the format is right.
+    (void)fs_create;
+    (void)bgsm_path;
+
+    // 6. Write shader to BSGeometry+0x138 with refcount bump.
+    __try {
+        _InterlockedIncrement(reinterpret_cast<long*>(
+            reinterpret_cast<char*>(shader) + NIAV_REFCOUNT_OFF));
+        *reinterpret_cast<void**>(
+            reinterpret_cast<char*>(bs) + BSGEOM_SHADERPROP_OFF) = shader;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+
+    return shader;
+}
+
+// SEH-protected factory call. Returns nullptr on AV / NULL result.
+//
+// build_mesh_extra=1 (matches inject_debug_cube): the factory allocates
+// a BSPositionData wrapper for the geometry — required for GPU upload.
+//
+// Test 21:10 confirmed: passing positions-only (rest NULL) generates a
+// minimal vd (0x100000000002, stride 8). Donor shader expects full-
+// attribute layout → render walk AVs. Fix: pass dummy UVs/normals/
+// tangents/colors so factory generates a full vd matching what shaders
+// expect (matches cube path).
+void* seh_geo_builder(GeoBuilderFn fn,
+                      int tri_count, void* indices_u16, unsigned vert_count,
+                      void* positions_vec3, void* uvs_vec2,
+                      void* tangents_vec4, void* normals_vec3,
+                      void* colors_vec4) {
+    __try {
+        return fn(tri_count, indices_u16, vert_count, positions_vec3,
+                  /*uvs*/        uvs_vec2,
+                  /*tangents*/   tangents_vec4,
+                  /*pos_alt*/    nullptr,
+                  /*normals*/    normals_vec3,
+                  /*colors*/     colors_vec4,
+                  /*sk_w*/       nullptr,
+                  /*sk_idx*/     nullptr,
+                  /*tan_ex*/     nullptr,
+                  /*eye_data*/   nullptr,
+                  /*norm_alt*/   nullptr,
+                  /*remap*/      nullptr,
+                  /*build_extra*/1);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
+} // namespace
+
+int ghost_attach_mesh_blob(const char* peer_id, std::uint32_t item_form_id,
+                            std::uint32_t equip_seq,
+                            const void*  meshes_blob_ptr) {
+    if (!peer_id || !meshes_blob_ptr) return -1;
+    const auto* meshes =
+        reinterpret_cast<const std::vector<fw::dispatch::PendingMeshRecord>*>(
+            meshes_blob_ptr);
+    if (meshes->empty()) {
+        FW_DBG("[mesh-attach] peer=%s form=0x%X equip_seq=%u empty mesh list — no-op",
+               peer_id, item_form_id, equip_seq);
+        return 0;
+    }
+
+    void* ghost = g_injected_cube.load(std::memory_order_acquire);
+    if (!ghost) {
+        FW_WRN("[mesh-attach] peer=%s no ghost spawned yet — drop blob "
+               "(equip_seq=%u, %zu meshes)",
+               peer_id, equip_seq, meshes->size());
+        return -1;
+    }
+    if (!g_resolved.load(std::memory_order_acquire) ||
+        !g_r.geo_builder ||
+        !g_r.attach_child_direct ||
+        !g_r.detach_child ||
+        !g_r.allocate ||
+        !g_r.ninode_ctor)
+    {
+        FW_WRN("[mesh-attach] engine refs not resolved — skip");
+        return -1;
+    }
+
+    // ---- 1. Find attach parent (RArm_Hand etc.) ------------------------
+    void* attach_node = find_weapon_attach_node();
+    if (!attach_node) {
+        FW_ERR("[mesh-attach] no WEAPON / RArm_Hand attach node in cached "
+               "ghost skel (peer=%s) — cannot attach", peer_id);
+        return -1;
+    }
+
+    // ---- 2. REPLACEMENT — destroy any previous weapon root for this peer
+    void* old_root = nullptr;
+    {
+        std::lock_guard lk(g_ghost_weapon_root_mtx);
+        auto it = g_ghost_weapon_root.find(peer_id);
+        if (it != g_ghost_weapon_root.end()) {
+            old_root = it->second;
+            g_ghost_weapon_root.erase(it);
+        }
+    }
+    if (old_root) {
+        void* removed = nullptr;
+        if (!seh_detach_child_armor(g_r.detach_child, attach_node,
+                                     old_root, &removed)) {
+            FW_WRN("[mesh-attach] SEH detaching old weapon root peer=%s old=%p "
+                   "(continuing — replacement)", peer_id, old_root);
+        }
+        const long after = seh_refcount_dec_armor(old_root);
+        FW_DBG("[mesh-attach] dropped old weapon root peer=%s old=%p "
+               "refcount_after=%ld", peer_id, old_root, after);
+    }
+
+    // ---- 3. Pool init guard --------------------------------------------
+    if (g_r.pool_init_flag &&
+        *g_r.pool_init_flag != POOL_INIT_FLAG_READY) {
+        FW_DBG("[mesh-attach] pool not ready, initializing");
+        g_r.pool_init(g_r.pool, g_r.pool_init_flag);
+    }
+
+    // ---- 4. Allocate fresh weapon root NiNode --------------------------
+    void* weapon_root = g_r.allocate(g_r.pool, NINODE_SIZEOF, NINODE_ALIGN, true);
+    if (!weapon_root) {
+        FW_ERR("[mesh-attach] alloc(NiNode) returned null (peer=%s)", peer_id);
+        return -1;
+    }
+    g_r.ninode_ctor(weapon_root, /*capacity=*/0);
+    {
+        // Sanity: vt should match NiNode's vftable.
+        void* vt = seh_read_vt(weapon_root);
+        const void* expected_vt = reinterpret_cast<void*>(
+            g_r.base + NINODE_VTABLE_RVA);
+        if (vt != expected_vt) {
+            FW_ERR("[mesh-attach] ninode_ctor produced wrong vtable "
+                   "got=%p expected=%p — leak alloc, abort",
+                   vt, expected_vt);
+            return -1;
+        }
+    }
+    // Optional: name the root so it shows in scene dumps.
+    {
+        char name_buf[64];
+        std::snprintf(name_buf, sizeof(name_buf), "WeaponRoot_%s", peer_id);
+        std::uint64_t name_handle = 0;
+        g_r.fs_create(&name_handle, name_buf);
+        if (name_handle) {
+            g_r.set_name(weapon_root, reinterpret_cast<void*>(name_handle));
+            g_r.fs_release(&name_handle);
+        }
+    }
+
+    // Mark weapon_root MOVABLE — required so the engine recomputes its
+    // world transform each frame as the parent bone (RArm_Hand) moves
+    // with the body anim. Without this, the weapon stays glued to the
+    // first frame's RArm_Hand world pose and clips through the body
+    // when the peer walks/turns.
+    seh_set_movable_flag(weapon_root);
+
+    // Pre-bump our +1 ref. attach_child_direct will Inc once for the slot.
+    seh_refcount_inc_local(weapon_root);
+
+    // Attach the weapon root to the bone.
+    if (!seh_attach_child_armor(g_r.attach_child_direct, attach_node, weapon_root)) {
+        FW_ERR("[mesh-attach] SEH attaching weapon root to bone (peer=%s)",
+               peer_id);
+        // weapon_root ref leaks — safer than free path
+        return -1;
+    }
+
+    // ---- 4.5. DONOR PATTERN — load base weapon NIF, harvest shader+alpha
+    //
+    // Bisect 20:54 + 21:03 confirmed: manual shader setup (bslsp_new +
+    // bgsm_load + swap) crashes the render walk; apply_materials_walker
+    // does NOT auto-allocate shader for shader=NULL geoms.
+    //
+    // Donor pattern: load the base weapon NIF (e.g. 10mmPistol.nif) via
+    // nif_load_by_path. The engine builds a complete BSFadeNode tree with
+    // proper BSLightingShaderProperty + material + texture chain on each
+    // BSTriShape (apply_materials in POSTPROC resolves DDS). We harvest
+    // the FIRST BSGeometry's shader+alpha pointers, refcount-bump them,
+    // and write the same pointers into our factory-built BSTriShapes.
+    //
+    // Result: our factory shapes share a working shader chain. All 8
+    // meshes will render with the FIRST donor shape's material — for a
+    // 10mm pistol that's typically the receiver bgsm. Suboptimal (per-
+    // mesh material variation lost) but VISIBLE, which is the PoC goal.
+    // Per-mesh material match-by-name is a follow-up refinement.
+    void* donor_root = nullptr;
+    void* donor_shader = nullptr;
+    void* donor_alpha = nullptr;
+    {
+        // Derive donor NIF path. Strategy:
+        //   1. PRIMARY: derive from first mesh's bgsm_path
+        //      (e.g. "Materials\Weapons\10mmPistol\10mmPistol.BGSM"
+        //       → "Weapons\10mmPistol\10mmPistol.nif")
+        //      Direct mapping, always returns the actual base weapon NIF.
+        //   2. FALLBACK: resolve_weapon_nif_path's TESModel offset probe.
+        //      Often returns wrong slot (e.g. "10mmRecieverDummy.nif"
+        //      placeholder for the 10mm pistol — empty NIF, no BSGeometry).
+        std::string nif_from_bgsm;
+        if (!meshes->empty()) {
+            const std::string& bgsm = (*meshes)[0].bgsm_path;
+            if (!bgsm.empty()) {
+                std::string trimmed = bgsm;
+                static const char kPrefix[] = "Materials\\";
+                static const char kPrefixLow[] = "materials\\";
+                const std::size_t plen = sizeof(kPrefix) - 1;
+                if (trimmed.size() >= plen &&
+                    (std::strncmp(trimmed.c_str(), kPrefix, plen) == 0 ||
+                     std::strncmp(trimmed.c_str(), kPrefixLow, plen) == 0))
+                {
+                    trimmed = trimmed.substr(plen);
+                }
+                // Replace last extension (.BGSM/.bgsm) with .nif
+                const std::size_t dot = trimmed.find_last_of('.');
+                if (dot != std::string::npos) {
+                    trimmed.replace(dot, std::string::npos, ".nif");
+                }
+                nif_from_bgsm = std::move(trimmed);
+            }
+        }
+        const char* base_nif_path = nif_from_bgsm.empty()
+            ? resolve_weapon_nif_path(item_form_id)
+            : nif_from_bgsm.c_str();
+        if (base_nif_path && g_r.nif_load_by_path) {
+            NifLoadOpts opts{};
+            opts.flags = NIF_OPT_FADE_WRAP | NIF_OPT_POSTPROC;
+            std::uint8_t* ks = (g_r.base != 0)
+                ? reinterpret_cast<std::uint8_t*>(g_r.base + BSLSP_BIND_KILLSWITCH_BYTE_RVA)
+                : nullptr;
+            const std::uint8_t saved = ks ? *ks : 0;
+            if (ks) *ks = 1;
+            const std::uint32_t rc = seh_nif_load_armor(
+                g_r.nif_load_by_path, base_nif_path, &donor_root, &opts);
+            if (rc == 0 && donor_root && g_r.apply_materials) {
+                seh_apply_materials_armor(g_r.apply_materials, donor_root);
+            }
+            if (ks) *ks = saved;
+
+            if (rc != 0 || !donor_root) {
+                FW_WRN("[mesh-attach] donor: nif_load_by_path('%s') rc=%u "
+                       "donor=%p — proceeding without donor (meshes will "
+                       "be invisible)",
+                       base_nif_path, rc, donor_root);
+                donor_root = nullptr;
+            } else {
+                void* donor_geom = seh_find_first_geom_dfs(donor_root);
+                if (donor_geom) {
+                    donor_shader = seh_read_ptr_at(donor_geom,
+                        BSGEOM_SHADERPROP_OFF);
+                    donor_alpha = seh_read_ptr_at(donor_geom,
+                        BSGEOM_ALPHAPROP_OFF);
+                    FW_LOG("[mesh-attach] donor: base='%s' geom=%p "
+                           "shader=%p alpha=%p (will be shared across all "
+                           "%zu factory meshes)",
+                           base_nif_path, donor_geom, donor_shader,
+                           donor_alpha, meshes->size());
+
+                    // DIAGNOSTIC: dump donor BSGeometry state — compare
+                    // against our factory output to identify mismatches.
+                    BsTriDiagState ds{};
+                    seh_dump_bstri_state(donor_geom, g_r.base, &ds);
+                    FW_LOG("[mesh-attach][DIAG] DONOR geom=%p vt_rva=0x%llX "
+                           "rc=%u flags=0x%llX skin=%p posdata=%p vd=0x%llX "
+                           "idx=%u vert=%u bound_r=%.2f",
+                           donor_geom,
+                           static_cast<unsigned long long>(ds.vt_rva),
+                           ds.refcount,
+                           static_cast<unsigned long long>(ds.flags),
+                           ds.skin_inst, ds.pos_data,
+                           static_cast<unsigned long long>(ds.vertex_desc),
+                           ds.idx_count, ds.vert_count, ds.bound_r);
+                } else {
+                    FW_WRN("[mesh-attach] donor: no BSGeometry under "
+                           "donor_root=%p — release donor + skip",
+                           donor_root);
+                }
+            }
+        }
+    }
+
+    // ---- 5. Per mesh: factory → donor share → transform → attach ------
+    int attached_meshes = 0;
+    int failed_meshes = 0;
+    int bound_materials = 0;  // count of donor-shared shaders
+    std::uint8_t* mesh_killswitch = nullptr;
+    if (g_r.base) {
+        mesh_killswitch = reinterpret_cast<std::uint8_t*>(
+            g_r.base + BSLSP_BIND_KILLSWITCH_BYTE_RVA);
+    }
+    for (std::size_t i = 0; i < meshes->size(); ++i) {
+        const auto& m = (*meshes)[i];
+        if (m.vert_count == 0 || m.tri_count == 0
+            || m.positions.empty() || m.indices.empty())
+        {
+            FW_DBG("[mesh-attach] mesh[%zu] '%s' empty (vc=%u tc=%u) — skip",
+                   i, m.m_name.c_str(), m.vert_count, m.tri_count);
+            continue;
+        }
+
+        // Defensive cast: factory wants non-const pointers (it doesn't
+        // mutate, but old C signature). const_cast is safe here.
+        void* idx_ptr = const_cast<std::uint16_t*>(m.indices.data());
+        void* pos_ptr = const_cast<float*>(m.positions.data());
+
+        // Dummy UVs/normals/tangents — match donor's vd (stride 20 = 5*4).
+        // Diag 21:38 confirmed donor vd=0x1B00000430205 (low nibble 0x5 →
+        // stride 20). Adding colors → stride 24 (low nibble 0x6) → vd
+        // mismatch with donor shader → render AV. So skip colors.
+        std::vector<float> dummy_uvs(static_cast<std::size_t>(m.vert_count) * 2, 0.0f);
+        std::vector<float> dummy_normals(static_cast<std::size_t>(m.vert_count) * 3);
+        std::vector<float> dummy_tangents(static_cast<std::size_t>(m.vert_count) * 4);
+        for (std::uint16_t v = 0; v < m.vert_count; ++v) {
+            dummy_normals[v*3+0] = 0.0f;
+            dummy_normals[v*3+1] = 0.0f;
+            dummy_normals[v*3+2] = 1.0f;  // up
+            dummy_tangents[v*4+0] = 1.0f;
+            dummy_tangents[v*4+1] = 0.0f;
+            dummy_tangents[v*4+2] = 0.0f;
+            dummy_tangents[v*4+3] = 1.0f;
+        }
+
+        void* bs = seh_geo_builder(
+            g_r.geo_builder,
+            static_cast<int>(m.tri_count),
+            idx_ptr,
+            static_cast<unsigned>(m.vert_count),
+            pos_ptr,
+            dummy_uvs.data(),
+            dummy_tangents.data(),
+            dummy_normals.data(),
+            nullptr /* no colors → stride 20 to match donor */);
+        if (!bs) {
+            FW_WRN("[mesh-attach] mesh[%zu] '%s' factory returned null / SEH "
+                   "(vc=%u tc=%u)", i, m.m_name.c_str(), m.vert_count, m.tri_count);
+            ++failed_meshes;
+            continue;
+        }
+        FW_DBG("[mesh-attach] mesh[%zu] '%s' factory OK bs=%p (vc=%u tc=%u)",
+               i, m.m_name.c_str(), bs, m.vert_count, m.tri_count);
+
+        // DIAGNOSTIC: dump BSTriShape state immediately post-factory (only
+        // for first 2 meshes per blob to avoid log spam).
+        if (i < 2) {
+            BsTriDiagState st{};
+            seh_dump_bstri_state(bs, g_r.base, &st);
+            FW_LOG("[mesh-attach][DIAG] mesh[%zu] '%s' POST-FACTORY: "
+                   "vt_rva=0x%llX rc=%u flags=0x%llX alpha=%p shader=%p "
+                   "skin=%p posdata=%p vd=0x%llX idx=%u vert=%u",
+                   i, m.m_name.c_str(),
+                   static_cast<unsigned long long>(st.vt_rva),
+                   st.refcount,
+                   static_cast<unsigned long long>(st.flags),
+                   st.alpha_prop, st.shader_prop, st.skin_inst, st.pos_data,
+                   static_cast<unsigned long long>(st.vertex_desc),
+                   st.idx_count, st.vert_count);
+            FW_LOG("[mesh-attach][DIAG] mesh[%zu] bound=(%.2f,%.2f,%.2f) r=%.2f "
+                   "world.t=(%.2f,%.2f,%.2f)",
+                   i, st.bound_x, st.bound_y, st.bound_z, st.bound_r,
+                   st.world_tx, st.world_ty, st.world_tz);
+        }
+
+        // B-2 DONOR SHARE — RE-ENABLED 2026-05-01 21:42
+        // Bisect 21:38 confirmed: shader share previously crashed because
+        // factory output vd (0x...3206 stride 24) didn't match donor's vd
+        // (0x...0205 stride 20). Now factory call uses 4 attributes (no
+        // colors) → stride 20 → matches donor → shader vertex compatible.
+        if (donor_shader) {
+            seh_refcount_inc_local(donor_shader);
+            seh_write_ptr_at(bs, BSGEOM_SHADERPROP_OFF, donor_shader);
+            ++bound_materials;
+        }
+        if (donor_alpha) {
+            seh_refcount_inc_local(donor_alpha);
+            seh_write_ptr_at(bs, BSGEOM_ALPHAPROP_OFF, donor_alpha);
+        }
+
+        // Write local_transform (16 floats = NiTransform: rot 3x4 + trans + scale)
+        if (!seh_write_local_transform(bs, m.local_transform)) {
+            FW_WRN("[mesh-attach] mesh[%zu] '%s' SEH writing local_transform "
+                   "— continuing without xform", i, m.m_name.c_str());
+        }
+
+        // DIAGNOSTIC: dump state after bgsm bind + transform write.
+        if (i < 2) {
+            BsTriDiagState st{};
+            seh_dump_bstri_state(bs, g_r.base, &st);
+            FW_LOG("[mesh-attach][DIAG] mesh[%zu] POST-BGSM+XFORM: "
+                   "shader=%p flags=0x%llX bound_r=%.2f world.t=(%.2f,%.2f,%.2f)",
+                   i, st.shader_prop,
+                   static_cast<unsigned long long>(st.flags),
+                   st.bound_r,
+                   st.world_tx, st.world_ty, st.world_tz);
+        }
+
+        // Mark BSTriShape MOVABLE — the geometry inherits world from
+        // weapon_root, but the engine still needs the per-node movable
+        // bit to walk the update propagation through it.
+        seh_set_movable_flag(bs);
+
+        // Pre-bump our +1 ref before attach (matches engine pattern).
+        seh_refcount_inc_local(bs);
+        if (!seh_attach_child_armor(g_r.attach_child_direct, weapon_root, bs)) {
+            FW_WRN("[mesh-attach] mesh[%zu] '%s' SEH on attach_child — drop",
+                   i, m.m_name.c_str());
+            ++failed_meshes;
+            continue;
+        }
+        ++attached_meshes;
+    }
+
+    // ---- 6. Force world-transform recomputation ------------------------
+    // Without this, each freshly-attached BSTriShape's world.translate
+    // stays at (0,0,0) (identity from ctor) until the next frame's
+    // engine update walks it. UpdateDownwardPass walks the subtree
+    // immediately and recomputes world from local. Identical pattern
+    // to inject_debug_cube post-attach (line ~1188-1197).
+    // ---- 6.5. apply_materials_walker — DISABLED 2026-05-01 21:35 ------
+    // Test 21:31 with donor-shared shader + leak STILL crashed in render
+    // walk. Hypothesis: walker traverses our 8 BSTriShapes (all sharing
+    // the SAME donor shader), calls bgsm_load + swap material on shader
+    // multiple times — possibly corrupting shader's internal state. The
+    // donor was already loaded with POSTPROC + apply_materials at load
+    // time, so its shader+material+textures are already wired and don't
+    // need re-walk. Skip for diagnostic — if no crash → walker is culprit.
+    if (false /* g_r.apply_materials */) {
+        const std::uint8_t saved_ks = mesh_killswitch ? *mesh_killswitch : 0;
+        if (mesh_killswitch) *mesh_killswitch = 1;
+        seh_apply_materials_armor(g_r.apply_materials, weapon_root);
+        if (mesh_killswitch) *mesh_killswitch = saved_ks;
+        FW_DBG("[mesh-attach] apply_materials_walker(weapon_root=%p) called",
+               weapon_root);
+
+        // Diagnostic: dump first 2 meshes' state POST-WALKER. If walker
+        // populated shader/alpha, those slots will be non-null.
+        for (std::size_t i = 0; i < std::min<std::size_t>(2, meshes->size()); ++i) {
+            void** kids = nullptr;
+            std::uint16_t cnt = 0;
+            if (seh_read_children_w4(weapon_root, kids, cnt) && kids
+                && i < cnt)
+            {
+                void* bs_i = seh_kid_at_w4(kids, static_cast<std::uint16_t>(i));
+                if (bs_i) {
+                    BsTriDiagState st{};
+                    seh_dump_bstri_state(bs_i, g_r.base, &st);
+                    FW_LOG("[mesh-attach][DIAG] mesh[%zu] POST-WALKER: "
+                           "shader=%p alpha=%p flags=0x%llX",
+                           i, st.shader_prop, st.alpha_prop,
+                           static_cast<unsigned long long>(st.flags));
+                }
+            }
+        }
+    }
+
+    if (g_r.update_downward) {
+        seh_update_downward(g_r.update_downward, weapon_root);
+        FW_DBG("[mesh-attach] update_downward(weapon_root=%p) called",
+               weapon_root);
+
+        // DIAGNOSTIC: dump first 2 meshes' state POST-UPDATE-DOWNWARD.
+        // If world.t is now non-zero (close to RArm_Hand world position),
+        // the transform pipeline works. If still (0,0,0), the mesh is
+        // rendered at world origin — nowhere near the player.
+        for (std::size_t i = 0; i < std::min<std::size_t>(2, meshes->size()); ++i) {
+            // Find the i-th attached BSTriShape via weapon_root children.
+            void** kids = nullptr;
+            std::uint16_t cnt = 0;
+            if (seh_read_children_w4(weapon_root, kids, cnt) && kids
+                && i < cnt)
+            {
+                void* bs_i = seh_kid_at_w4(kids, static_cast<std::uint16_t>(i));
+                if (bs_i) {
+                    BsTriDiagState st{};
+                    seh_dump_bstri_state(bs_i, g_r.base, &st);
+                    FW_LOG("[mesh-attach][DIAG] mesh[%zu] POST-UPDATE-DOWNWARD: "
+                           "world.t=(%.2f,%.2f,%.2f) bound_r=%.2f flags=0x%llX",
+                           i,
+                           st.world_tx, st.world_ty, st.world_tz,
+                           st.bound_r,
+                           static_cast<unsigned long long>(st.flags));
+                }
+            }
+        }
+    }
+
+    // ---- 7. Cache new weapon root --------------------------------------
+    {
+        std::lock_guard lk(g_ghost_weapon_root_mtx);
+        g_ghost_weapon_root[peer_id] = weapon_root;
+    }
+
+    // ---- 8. Donor LEAK (deliberate, 2026-05-01 21:25) -----------------
+    // PROBLEM: releasing donor here drops its BSTriShape's +1 ref to the
+    // shared shader+material+textures. While we refcount-bumped the
+    // shader (each mesh has +1 on shader), the SHADER->material->texture
+    // chain has its OWN refcounts and we only have one level of ref.
+    // When donor's BSTriShape destructs, it dec's material refs, and
+    // possibly the texture handles inside material lose their last ref →
+    // freed → render walk dereferences freed texture → AV.
+    //
+    // Temp fix: leak the donor BSFadeNode (don't refcount-dec). Memory
+    // cost ~70 KB per equip event. Acceptable for PoC. Proper fix is
+    // to walk the donor BSGeometry → shader → material → texture slots
+    // and refcount-bump the textures explicitly before donor release.
+    if (donor_root) {
+        FW_DBG("[mesh-attach] donor LEAKED (root=%p) — refcount intact, "
+               "shared textures stay alive (proper fix: deep refcount-bump)",
+               donor_root);
+    }
+
+    FW_LOG("[mesh-attach] peer=%s form=0x%X equip_seq=%u weapon_root=%p "
+           "attach_node=%p attached=%d/%zu (failed=%d, donor_shared=%d)",
+           peer_id, item_form_id, equip_seq, weapon_root, attach_node,
+           attached_meshes, meshes->size(), failed_meshes, bound_materials);
+    return attached_meshes;
+}
+
+bool ghost_detach_mesh_blob(const char* peer_id) {
+    if (!peer_id) return false;
+
+    void* ghost = g_injected_cube.load(std::memory_order_acquire);
+    if (!ghost) {
+        FW_DBG("[mesh-detach] peer=%s no ghost — no-op", peer_id);
+        return true;  // idempotent
+    }
+    if (!g_resolved.load(std::memory_order_acquire) || !g_r.detach_child) {
+        FW_WRN("[mesh-detach] engine refs not resolved — skip");
+        return false;
+    }
+
+    void* weapon_root = nullptr;
+    {
+        std::lock_guard lk(g_ghost_weapon_root_mtx);
+        auto it = g_ghost_weapon_root.find(peer_id);
+        if (it == g_ghost_weapon_root.end()) {
+            FW_DBG("[mesh-detach] peer=%s no weapon root cached — no-op",
+                   peer_id);
+            return true;
+        }
+        weapon_root = it->second;
+        g_ghost_weapon_root.erase(it);
+    }
+    if (!weapon_root) return true;
+
+    void* attach_node = find_weapon_attach_node();
+    if (!attach_node) {
+        FW_WRN("[mesh-detach] peer=%s attach parent gone — orphaned weapon "
+               "root leaked at %p", peer_id, weapon_root);
+        return false;
+    }
+
+    void* removed = nullptr;
+    if (!seh_detach_child_armor(g_r.detach_child, attach_node,
+                                 weapon_root, &removed)) {
+        FW_ERR("[mesh-detach] SEH in detach_child(parent=%p, root=%p)",
+               attach_node, weapon_root);
+        return false;
+    }
+
+    const long after = seh_refcount_dec_armor(weapon_root);
+    FW_LOG("[mesh-detach] peer=%s weapon_root=%p refcount_after=%ld OK",
+           peer_id, weapon_root, after);
+    return true;
+}
+
+// === M9 wedge 4 v9.1 — UNIFIED ghost weapon state machine =================
+//
+// See header doc for design. Implementation notes:
+//
+// State: g_ghost_weapon_slot[peer_id] = {form_id, nif_node, nif_path}
+// Mutex: g_ghost_weapon_slot_mtx (per-process; per-peer would be overkill
+// since we're main-thread-only).
+//
+// Path resolution:
+//   1. Try each caller-provided candidate. First load that succeeds wins.
+//   2. If all fail, try resolve_weapon_nif_path (legacy probe).
+//   3. If everything fails, return false. Existing slot untouched.
+//
+// Atomic transitions:
+//   - On success: detach old (if any), attach new, update slot
+//   - Idempotent: same form_id + same path → no engine work
+//   - Downgrade rejected: new placeholder vs current proper → no-op
+namespace {
+
+struct GhostWeaponSlot {
+    std::uint32_t form_id   = 0;
+    void*         nif_node  = nullptr;
+    std::string   nif_path;
+};
+
+std::mutex g_ghost_weapon_slot_mtx;
+std::unordered_map<std::string, GhostWeaponSlot> g_ghost_weapon_slot;
+
+// Returns true iff the given path looks like a placeholder/dummy NIF.
+// Mirrors the filter in resolve_weapon_nif_path. Used here for downgrade
+// protection — we never replace a proper NIF with a placeholder.
+bool is_placeholder_nif_path(const std::string& path) {
+    if (path.empty()) return true;
+    // Generic case-insensitive "Dummy" substring match.
+    for (std::size_t i = 0; i + 5 <= path.size(); ++i) {
+        char a = path[i+0]; if (a >= 'A' && a <= 'Z') a = a - 'A' + 'a';
+        char b = path[i+1]; if (b >= 'A' && b <= 'Z') b = b - 'A' + 'a';
+        char c = path[i+2]; if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';
+        char d = path[i+3]; if (d >= 'A' && d <= 'Z') d = d - 'A' + 'a';
+        char e = path[i+4]; if (e >= 'A' && e <= 'Z') e = e - 'A' + 'a';
+        if (a=='d' && b=='u' && c=='m' && d=='m' && e=='y') return true;
+    }
+    return false;
+}
+
+// Try to load + apply_materials a single NIF path. Returns the loaded
+// node on success (refcount=1, owned by caller). Returns nullptr on any
+// failure. SEH-wrapped via existing helpers.
+void* load_one_weapon_nif(const char* path) {
+    if (!path || !path[0]) return nullptr;
+    if (!g_resolved.load(std::memory_order_acquire)) return nullptr;
+    if (!g_r.nif_load_by_path) return nullptr;
+
+    // Pool init guard.
+    if (g_r.pool_init_flag &&
+        *g_r.pool_init_flag != POOL_INIT_FLAG_READY) {
+        g_r.pool_init(g_r.pool, g_r.pool_init_flag);
+    }
+
+    NifLoadOpts opts{};
+    opts.flags = NIF_OPT_FADE_WRAP | NIF_OPT_POSTPROC;
+
+    std::uint8_t* killswitch_byte = reinterpret_cast<std::uint8_t*>(
+        g_r.base + BSLSP_BIND_KILLSWITCH_BYTE_RVA);
+    const std::uint8_t saved_ks = *killswitch_byte;
+    *killswitch_byte = 1;
+
+    void* node = nullptr;
+    const std::uint32_t rc = seh_nif_load_armor(
+        g_r.nif_load_by_path, path, &node, &opts);
+    if (rc == 0xDEADBEEFu || rc != 0 || !node) {
+        *killswitch_byte = saved_ks;
+        return nullptr;
+    }
+    seh_apply_materials_armor(g_r.apply_materials, node);
+    *killswitch_byte = saved_ks;
+    return node;
+}
+
+// Detach a weapon NIF from the WEAPON attach node and drop our +1 ref.
+// SEH-wrapped. Safe even if the attach parent has changed (refcount
+// dec is independent of scene parentage).
+void release_weapon_node(void* node) {
+    if (!node) return;
+    void* attach_node = find_weapon_attach_node();
+    if (attach_node && g_r.detach_child) {
+        void* removed = nullptr;
+        seh_detach_child_armor(g_r.detach_child, attach_node, node, &removed);
+    }
+    seh_refcount_dec_armor(node);
+}
+
+} // namespace
+
+bool ghost_set_weapon(const char* peer_id,
+                       std::uint32_t item_form_id,
+                       const char* const* candidate_paths,
+                       std::size_t num_candidates) {
+    if (!peer_id || item_form_id == 0) return false;
+
+    void* ghost = g_injected_cube.load(std::memory_order_acquire);
+    if (!ghost) {
+        FW_DBG("[set-weapon] peer=%s no ghost yet — skip", peer_id);
+        return false;
+    }
+    if (!g_resolved.load(std::memory_order_acquire)) {
+        FW_DBG("[set-weapon] peer=%s engine refs not resolved — skip", peer_id);
+        return false;
+    }
+
+    void* attach_node = find_weapon_attach_node();
+    if (!attach_node) {
+        FW_WRN("[set-weapon] peer=%s no WEAPON attach node — skip", peer_id);
+        return false;
+    }
+
+    // ---- Phase 1: try caller candidates, fall back to legacy resolve.
+    std::string winning_path;
+    void* new_node = nullptr;
+    for (std::size_t i = 0; i < num_candidates && !new_node; ++i) {
+        const char* p = candidate_paths[i];
+        if (!p || !p[0]) continue;
+        FW_DBG("[set-weapon] peer=%s form=0x%X try candidate[%zu]='%s'",
+               peer_id, item_form_id, i, p);
+        new_node = load_one_weapon_nif(p);
+        if (new_node) {
+            winning_path = p;
+            FW_LOG("[set-weapon] peer=%s form=0x%X loaded candidate[%zu]='%s'",
+                   peer_id, item_form_id, i, p);
+        }
+    }
+    if (!new_node) {
+        const char* legacy = resolve_weapon_nif_path(item_form_id);
+        if (legacy) {
+            FW_DBG("[set-weapon] peer=%s form=0x%X try legacy='%s'",
+                   peer_id, item_form_id, legacy);
+            new_node = load_one_weapon_nif(legacy);
+            if (new_node) {
+                winning_path = legacy;
+                FW_LOG("[set-weapon] peer=%s form=0x%X loaded legacy='%s'",
+                       peer_id, item_form_id, legacy);
+            }
+        }
+    }
+    if (!new_node) {
+        FW_WRN("[set-weapon] peer=%s form=0x%X all paths failed — slot untouched",
+               peer_id, item_form_id);
+        return false;
+    }
+
+    // ---- Phase 2: examine current slot.
+    std::lock_guard lk(g_ghost_weapon_slot_mtx);
+    auto& slot = g_ghost_weapon_slot[peer_id];
+
+    // Idempotent: same form + same path → release new (we don't need it),
+    // keep current.
+    if (slot.form_id == item_form_id && slot.nif_path == winning_path
+        && slot.nif_node)
+    {
+        FW_DBG("[set-weapon] peer=%s form=0x%X path='%s' idempotent — release new",
+               peer_id, item_form_id, winning_path.c_str());
+        release_weapon_node(new_node);
+        return true;
+    }
+
+    // Downgrade protection: same form_id, current is proper, new is
+    // placeholder → reject.
+    if (slot.form_id == item_form_id && slot.nif_node
+        && !is_placeholder_nif_path(slot.nif_path)
+        && is_placeholder_nif_path(winning_path))
+    {
+        FW_LOG("[set-weapon] peer=%s form=0x%X DOWNGRADE refused — "
+               "current='%s' (proper) vs new='%s' (placeholder)",
+               peer_id, item_form_id, slot.nif_path.c_str(),
+               winning_path.c_str());
+        release_weapon_node(new_node);
+        return true;
+    }
+
+    // ---- Phase 3: detach old, attach new, update slot.
+    void* old_node = slot.nif_node;
+    const std::uint32_t old_form = slot.form_id;
+
+    if (!seh_attach_child_armor(g_r.attach_child_direct, attach_node, new_node))
+    {
+        FW_ERR("[set-weapon] peer=%s form=0x%X SEH attaching new node — "
+               "release new, keep old",
+               peer_id, item_form_id);
+        release_weapon_node(new_node);
+        return false;
+    }
+
+    if (old_node) {
+        FW_DBG("[set-weapon] peer=%s detaching old form=0x%X path='%s' node=%p",
+               peer_id, old_form, slot.nif_path.c_str(), old_node);
+        release_weapon_node(old_node);
+    }
+
+    slot.form_id = item_form_id;
+    slot.nif_node = new_node;
+    slot.nif_path = std::move(winning_path);
+    FW_LOG("[set-weapon] peer=%s SLOT UPDATED form=0x%X path='%s' node=%p "
+           "(was form=0x%X)",
+           peer_id, item_form_id, slot.nif_path.c_str(), new_node, old_form);
+    return true;
+}
+
+bool ghost_clear_weapon(const char* peer_id,
+                         std::uint32_t expected_form_id) {
+    if (!peer_id) return false;
+
+    std::lock_guard lk(g_ghost_weapon_slot_mtx);
+    auto it = g_ghost_weapon_slot.find(peer_id);
+    if (it == g_ghost_weapon_slot.end()) {
+        FW_DBG("[clear-weapon] peer=%s no slot — no-op", peer_id);
+        return true;
+    }
+
+    if (expected_form_id != 0 && it->second.form_id != expected_form_id) {
+        FW_DBG("[clear-weapon] peer=%s expected form=0x%X but slot has form="
+               "0x%X — no-op (peer already switched)",
+               peer_id, expected_form_id, it->second.form_id);
+        return true;
+    }
+
+    if (it->second.nif_node) {
+        release_weapon_node(it->second.nif_node);
+    }
+    FW_LOG("[clear-weapon] peer=%s cleared form=0x%X path='%s'",
+           peer_id, it->second.form_id, it->second.nif_path.c_str());
+    g_ghost_weapon_slot.erase(it);
+    return true;
+}
+
+void flush_pending_weapon_ops() {
+    std::unordered_map<std::string, std::deque<PendingWeaponOp>> local;
+    {
+        std::lock_guard lk(g_pending_weapon_mtx);
+        local.swap(g_pending_weapon_ops);
+    }
+    if (local.empty()) {
+        FW_DBG("[weapon-pending] flush: queue empty — no-op");
+        return;
+    }
+
+    std::size_t total = 0;
+    std::size_t ok = 0;
+    for (auto& kv : local) {
+        const std::string& peer = kv.first;
+        for (const auto& op : kv.second) {
+            ++total;
+            const bool success = (op.kind == 1)
+                ? ghost_attach_weapon(peer.c_str(), op.form_id)
+                : ghost_detach_weapon(peer.c_str(), op.form_id);
+            if (success) ++ok;
+        }
+    }
+    FW_LOG("[weapon-pending] flush: replayed %zu/%zu ops across %zu peers",
            ok, total, local.size());
 }
 

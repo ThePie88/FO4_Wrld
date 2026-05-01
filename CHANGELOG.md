@@ -5,6 +5,248 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## M9 v0.4.0 — wedge 4 foundation: weapon mesh replication on ghost (2026-05-01) — PoC, NEEDS DEEP POLISH
+
+▶ **[Video coming soon]**
+
+Wedge 4 (BGSMod / weapon mod sync) had a chicken-and-egg dependency: modded
+weapons in FO4 are runtime-assembled from N sub-component NIFs (receiver +
+barrel + scope + grip + …) into a single BSFadeNode tree. There is NO
+canonical "AssaultRifleWithCompensatorAndScope.nif" on disk — the engine
+composes it dynamically post-`EquipObject`. Replicating that on the peer's
+ghost requires either (a) capturing the assembled BSGeometry leaves on the
+sender and replaying them on the receiver, or (b) the receiver doing the
+same runtime assembly itself.
+
+This patch ships the FOUNDATION for path (a) — wire format, sender capture,
+receiver state machine, smart NIF path resolution. **The full mod
+replication is NOT achieved.** Modded weapons appear as their stock base
+NIF; some assembled-only weapons show only one sub-component. The
+infrastructure is there for v0.5+ work to plug in proper mesh
+reconstruction.
+
+### Why this was extremely hard — context for v0.5+ work
+
+The PoC took a multi-hour deep-dive iteration cycle, and most of the time
+was spent fighting hidden engine constraints. Documenting them so the next
+attempt has the rake-stepping done already.
+
+1. **Runtime-assembled weapons have no static NIF**. Engine composes the
+   `Weapon (form_id)` BSFadeNode tree from N sub-NIFs at EquipObject time.
+   The TESObjectWEAP `TESModel` slot at `+0x78` returns
+   `Weapons\10mmPistol\10mmRecieverDummy.nif` for the pistol — a literally
+   empty placeholder (no BSGeometry under it, confirmed via donor probe).
+   The proper `10mmPistol.nif` is found indirectly via bgsm-derived path
+   from the assembled mesh data. The engine probably reads from a struct
+   slot Bethesda only populates at runtime; an offset probe in
+   `[0x60..0x180]` step 8 didn't reveal a non-Dummy slot.
+
+2. **Walker race with engine async weapon assembly**. Post-
+   `g_orig_equip`, the engine is STILL composing the weapon tree on a
+   worker thread. Synchronous walker call right after returns 0 meshes
+   most of the time. Required `arm_deferred_mesh_tx(form, 300ms)` worker
+   pattern that posts `WM_APP+0x4E` to the main thread WndProc; handler
+   re-runs the walker once assembly has settled. ~70% capture success
+   rate empirically. Cap on concurrent workers (4) prevents thread spam
+   on rapid equips.
+
+3. **BSVertexDesc proprietary format — donor shader sharing crashes**.
+   Tried the elegant approach: load the base NIF (donor), grab its
+   BSGeometry's `shader+0x138` and `alpha+0x130`, refcount-bump, share
+   into our factory-built BSTriShape. CRASHED in render walk every time.
+   Diag dump revealed donor's `vd=0x1B00000430205` (stride 20) vs our
+   factory's `vd=0x1700000503206` (stride 24). The GPU vertex shader
+   compiled against donor's layout reads attributes at wrong offsets in
+   our buffer → reads garbage → access violation. Fixing requires full
+   RE of all 8 bytes of `BSVertexDesc` (top byte flag bits + middle
+   byte stream offsets, not just the low-nibble stride). Out of scope
+   for this iteration; deferred to v0.5+.
+
+4. **Wire format chunking — silent server fan-out drop**. Sender split
+   blobs at `MESH_BLOB_OP_CHUNK_DATA_MAX = 1388` (= MAX_PAYLOAD - OP
+   header). Server re-emits as `MESH_BLOB_BCAST` which has a 16-byte
+   `peer_id` prefix — total payload = 28 + 1388 = 1416 > 1400 →
+   `MeshBlobChunkBroadcastPayload.encode()` raises `ProtocolError`,
+   silently dropped at server. Receivers got NOTHING. Took a Python
+   roundtrip test to identify. Fix: sender always sizes chunks at
+   1372 (BCAST-safe).
+
+5. **Vault Suit channel saturation** — chasing the "is weapon" gate. The
+   first `!wire_mods.empty()` filter (intended to mean "modded weapon")
+   triggered for Vault Suit (`0x1EED7`) because it had a legendary OMOD.
+   Walker on bipedAnim grabbed 15 BSGeometry leaves of body + clothing
+   (≈106 KB blob, 77 chunks reliable) → saturated UDP reliable channel
+   → `reliable_recv` froze at 3747, peer events stopped flowing → ghost
+   stuck on previous weapon (manganello). Required form-type filter
+   (`is_weapon_form` via TESModel `Weapons\\` heuristic) to exclude
+   armor entirely.
+
+6. **Multiple shader/material binding strategies, all crashed**:
+   - `bgsm_load + mat_bind_to_geom` (the v17.1 walker pattern): crashed
+     on render walk; the `mat_bind_to_geom` (`sub_142169AD0`) needs an
+     existing shader to bind into and silently no-ops with shader=NULL.
+   - Manual `bslsp_new` + `bgsm_load` + swap material at `shader+0x58`
+     + write shader to `geom+0x138`: crashed in next render frame.
+     Suspected refcount management on shared default material destruction
+     when the shader was destroyed mid-frame.
+   - `apply_materials_walker` post-attach with shader=NULL: walker
+     skipped (no shader to read bgsm path from at `shader+0x10`).
+   - **Working approach** (this PoC): bypass factory entirely. Load the
+     base weapon NIF directly via `nif_load_by_path` with FADE_WRAP +
+     POSTPROC. Engine itself binds shader+material+textures correctly.
+     Cost: only the BASE NIF visible — no mod parts.
+
+7. **bgsm-to-NIF path heuristic varies wildly by weapon**:
+   - 10mm pistol: `Materials\Weapons\10mmPistol\10mmPistol.bgsm` →
+     `Weapons\10mmPistol\10mmPistol.nif` ✓ (canonical, folder ==
+     filename)
+   - Shotgun (canne mozze): meshes have `ShotgunShell.bgsm` (the shell
+     casing), `ShotgunStock.bgsm`, never `Shotgun.bgsm` →
+     wrong NIF derived.
+   - Assault rifle: `MachineGunBarrelLong01.bgsm`,
+     `MachineGunReceiver01Dielectric.bgsm`, `308Casings.bgsm` —
+     all sub-component names. Folder is `MachineGun`. **Required
+     folder-derived canonical fallback**: for each unique parent folder,
+     construct `Weapons\<folder>\<folder>.nif`. Catches `MachineGun.nif`,
+     `Shotgun.nif`, `HuntingRifle.nif`. Even so, hunting rifle still
+     fails — the proper NIF doesn't follow the canonical convention.
+   - Cross-form contamination: walker sometimes captures bgsm from a
+     PREVIOUSLY-equipped weapon still in bipedAnim subtree (observed:
+     assault rifle equip captures hunting rifle .308 ammo bgsms).
+
+8. **Multi-attach state corruption** — initial implementation tracked
+   `g_attached_weapons[peer][form_id]` per-form. Switching weapons
+   without explicit UNEQUIP left old form's NIF attached as sibling of
+   new form's NIF under the same WEAPON bone → both rendered (visual
+   mess). Required full state machine refactor: single slot per peer
+   (`g_ghost_weapon_slot`), atomic transitions, mutex-guarded.
+
+9. **Downgrade race** — once we had bgsm-derived path working for
+   modded pistol, EQUIP_BCAST arriving AFTER MESH_BLOB would re-call
+   `ghost_attach_weapon` with the legacy resolve path (RecieverDummy)
+   → overwrote the proper NIF with placeholder → ghost weaponless.
+   Required downgrade-protection in `ghost_set_weapon`: refuses to
+   replace a non-placeholder NIF with a placeholder for the same
+   form_id.
+
+10. **Multiple bisects, each one masking deeper issues**. Iteration
+    pattern: deploy fix → user tests → new symptom → bisect (disable
+    last change, see if symptom changes) → identify culprit → re-fix.
+    Often a single "fix" required 3-4 bisect rounds because earlier
+    "fixes" had set up state that masked the root cause. The full
+    iteration loop ate ~6 hours of focused debugging.
+
+### Pipeline shipped
+
+**Wire format (protocol v9)**:
+- New message types `MESH_BLOB_OP` (0x0250, client→server) and
+  `MESH_BLOB_BCAST` (0x0251, server→peers).
+- Each frame carries one CHUNK of a serialized mesh blob (1372 B max
+  chunk_data — sized for BCAST overhead so server can relay verbatim
+  without re-fragmentation).
+- A blob is a linear concatenation of N mesh records; each record:
+  `m_name` + `parent_placeholder` + `bgsm_path` + `vert_count` +
+  `tri_count` + `local_transform` + `positions[3*vc]` + `indices[3*tc]`.
+- Receiver buffers chunks keyed on (peer_id, equip_seq), decodes once
+  all arrive. 5 s timeout for incomplete reassemblies. Bitmap-based
+  duplicate detection. Roundtrip tests added (22 new pytest cases —
+  `test_protocol.py::TestMeshBlob*`).
+
+**Sender mesh extraction**:
+- `weapon_witness::snapshot_player_weapon_meshes()` walks the local
+  player's bipedAnim WEAPON node, locates the assembled weapon
+  BSFadeNode, then DFS-walks BSGeometry leaves.
+- Per leaf: extracts `vert_count`, `tri_count`, `local_transform`,
+  `m_name`, `parent_placeholder`, `bgsm_path`. Decodes positions
+  from the packed half-prec stream via 3-level indirection on the
+  `BSGeometryStreamHelper` at `clone+0x148` (full RE in
+  `re/M9_w4_iter12_AGENT_analysis.md`).
+- 300 ms deferred re-walk via `FW_MSG_DEFERRED_MESH_TX` worker
+  thread.
+- Form-type gate: only TESObjectWEAP forms with non-empty OMOD list
+  trigger mesh-tx (excludes armor/ammo/clothing).
+- Chunks cap 150 (≈200 KB/blob).
+
+**Receiver state machine** (the centerpiece):
+- `g_ghost_weapon_slot[peer_id] = {form_id, nif_node, nif_path}`
+  — single slot per peer, mutex-guarded.
+- `ghost_set_weapon(peer, form, candidate_paths[])` atomic transition:
+  1. Try each candidate via `nif_load_by_path` until first success.
+  2. Fall back to `resolve_weapon_nif_path` (legacy probe) if no
+     candidate loads.
+  3. Idempotent: same form + same path → no engine work.
+  4. Downgrade protection: refuses to overwrite proper NIF with
+     placeholder for the same `form_id`.
+  5. Detach old + attach new + update slot atomically.
+- `ghost_clear_weapon(peer, expected_form)` with form_id guard
+  (no-op if peer already switched).
+- All wire receivers (EQUIP_BCAST, MESH_BLOB_BCAST, UNEQUIP_BCAST)
+  funnel through this API.
+
+**Smart NIF path resolution**:
+- Smart bgsm pick: per blob, walk all meshes' `bgsm_path`, pick the
+  one matching canonical `Weapons\X\X.bgsm` pattern (folder name ==
+  file basename).
+- Folder-derived canonical fallback: for each unique parent folder
+  in the blob's bgsm paths, construct `Weapons\<folder>\<folder>.nif`
+  candidate. Catches assault rifle (MachineGun → MachineGun.nif),
+  shotgun (Shotgun → Shotgun.nif), hunting rifle attempts.
+- Sub-component bgsms as last-resort candidates.
+
+**`resolve_weapon_nif_path` improvements**:
+- Probe range extended `[0x60..0x180]` step 8.
+- Generic case-insensitive "Dummy" filter (catches `RecieverDummy`,
+  `DummyReciever`, `_Dummy_`, `*Dummy*` anywhere).
+
+### Working scenarios (live-tested 2026-05-01)
+
+- 10mm pistol (modded + stock): peer sees pistol on ghost, **stock
+  visual** (no compensator/grip mods rendered).
+- Manganello: visible, proper NIF.
+- Fat Man: perfect.
+- Grognak's Axe: visible (handle position slightly high — minor
+  transform offset).
+- Deathclaw Gauntlet: perfect.
+- Missile Launcher: visible, half-textures broken.
+
+### Known limitations — w4 PROPER not done
+
+⚠️ **Status: foundation only. M9.w4 OFFICIAL = still TODO.**
+
+- Modded firearms render as STOCK base NIF (no compensator, scope,
+  custom barrel, etc. visible). The mod parts ARE captured in the
+  wire data but the receiver doesn't reconstruct them.
+- Heavily-modded assault rifles / shotguns: only ONE sub-component
+  loads (e.g. shotgun shows only its wood stock; assault rifle only
+  the barrel). The smart NIF resolution picks one candidate that
+  loads, which is some sub-NIF rather than the assembled tree.
+- Hunting rifle: invisible — neither smart pick nor folder-derived
+  canonical finds a loadable NIF.
+- Cross-form mesh contamination: walker sometimes captures bgsm from
+  a previously-equipped weapon still in the bipedAnim subtree.
+
+### What's needed for true w4
+
+1. **Full RE of `BSVertexDesc`** (top byte + middle bytes + flag
+   attributes, not just the stride nibble). Required to rebuild a
+   factory-output BSTriShape that the engine's existing shaders can
+   consume.
+2. **Donor shader cloning with vd-aware patching**. Tried and
+   crashed in this iteration; needs careful refcount + vertex layout
+   matching.
+3. **Mod NIF replay**: load each sub-component NIF (capture or derive
+   paths), parent under a synthetic weapon root with correct
+   `local_transform`s.
+4. Or alternative architectural pivot: server-authoritative equip
+   state + donor-actor approach — the GHOST becomes a real Actor with
+   bipedAnim, receives equip via the same engine pipeline, runtime
+   assembly happens identically on both clients. Multi-week refactor;
+   deferred.
+
+Tag: `v0.4.0-w4-foundation`.
+
+---
+
 ## M9 v0.3.1 — peer-join re-broadcast + path scoring polish (2026-04-29) — STABLE / NEED MORE TESTING
 
 Two follow-up patches on top of the wedge 1+2 PoC, addressing the two

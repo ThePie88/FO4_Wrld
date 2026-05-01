@@ -29,6 +29,8 @@
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 #include "../log.h"
 #include "../hook_manager.h"
@@ -712,6 +714,265 @@ int swap_skin_bones_to_skeleton(void* body_root, void* skel_root) {
     FW_LOG("[skin] swap END  swapped=%d failed=%d already_correct=%d",
            swapped, failed, already);
     return swapped;
+}
+
+// =====================================================================
+// M9 wedge 2 — vault-suit-cycle regression fix (2026-05-01)
+// =====================================================================
+//
+// See header doc for design. Below is the implementation.
+//
+// Snapshot store keyed on the body_root (== armor_node from
+// ghost_attach_armor's call site). Each snapshot records, per skin
+// instance found in the subtree:
+//   - the skin pointer itself (so on restore we re-walk and match)
+//   - the original bones_fb[] head pointer + a DEEP COPY of the
+//     contents (each bones_fb[i] before swap)
+//   - the original bones_pri[] head pointer + a DEEP COPY
+//   - the original skel_root pointer
+//
+// At restore: walk skin instances, look up snapshot by skin pointer,
+// memcpy back the bones_fb[] / bones_pri[] / skel_root contents.
+// Refcount-neutral on the slots (we're putting back exactly what was
+// there before; the swap that displaced these did NOT decrement
+// refcount — see niptr_swap leak philosophy at line 464).
+//
+// What "leaks": the skel_root bones we displaced via niptr_swap during
+// the original swap_skin_bones_to_skeleton call. Those bones got their
+// refcount bumped by niptr_swap; we never decrement. After restore,
+// they're no longer referenced by bones_fb[i] but their refcount stays
+// elevated. ~12KB per attach/detach cycle. Trivial.
+
+namespace {
+
+struct SkinSnapshot {
+    void*               skin_ptr   = nullptr;
+    void**              fb_head    = nullptr;   // address of skin+0x10 deref target
+    std::vector<void*>  fb_orig;                // deep copy
+    void**              pri_head   = nullptr;
+    std::vector<void*>  pri_orig;
+    void*               skel_root  = nullptr;
+};
+
+struct ArmorSnapshot {
+    std::vector<SkinSnapshot> skins;
+};
+
+std::mutex                                g_armor_snap_mtx;
+std::unordered_map<void*, ArmorSnapshot>  g_armor_snapshots;
+
+// Walk a subtree and call cb(skin_instance, skin_offset_inside_geom) for
+// every BSGeometry encountered. cb MUST be SEH-internal-safe.
+template <typename Cb>
+void for_each_skin_instance(void* node, int depth, Cb&& cb) {
+    if (!node || depth > 32) return;
+    const auto vt_rva = read_vt_rva(node);
+    if (is_geometry(vt_rva)) {
+        void* skin = nullptr;
+        __try {
+            skin = *reinterpret_cast<void**>(
+                reinterpret_cast<char*>(node) + kBSGeometrySkinInstanceOff);
+        } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+        if (skin) cb(skin);
+        return;
+    }
+    if (!is_node_with_children(vt_rva)) return;
+
+    void** kids = nullptr;
+    std::uint16_t cnt = 0;
+    __try {
+        auto bytes = reinterpret_cast<char*>(node);
+        kids = *reinterpret_cast<void***>(bytes + kNiNodeChildrenPtrOff);
+        cnt  = *reinterpret_cast<std::uint16_t*>(bytes + kNiNodeChildrenCountOff);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+    if (!kids || cnt == 0 || cnt > 256) return;
+    for (std::uint16_t i = 0; i < cnt; ++i) {
+        void* child = nullptr;
+        __try { child = kids[i]; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { break; }
+        for_each_skin_instance(child, depth + 1, cb);
+    }
+}
+
+// Read fb_head, fb_count, pri_head, pri_count, skel_root from a skin
+// instance. POD-only (callable from within __try of a non-POD function).
+struct SkinSlots {
+    void**          fb_head    = nullptr;
+    std::uint32_t   fb_count   = 0;
+    void**          pri_head   = nullptr;
+    std::uint32_t   pri_count  = 0;
+    void*           skel_root  = nullptr;
+    bool            ok         = false;
+};
+
+SkinSlots read_skin_slots(void* skin) {
+    SkinSlots s{};
+    if (!skin) return s;
+    __try {
+        auto sb = reinterpret_cast<char*>(skin);
+        s.fb_head   = *reinterpret_cast<void***>(
+            sb + kSkinInstanceBonesFallbackHeadOff);
+        s.fb_count  = *reinterpret_cast<std::uint32_t*>(
+            sb + kSkinInstanceBonesFallbackCountOff);
+        s.pri_head  = *reinterpret_cast<void***>(
+            sb + kSkinInstanceBonesPrimaryHeadOff);
+        s.pri_count = *reinterpret_cast<std::uint32_t*>(
+            sb + kSkinInstanceBonesPrimaryCountOff);
+        s.skel_root = *reinterpret_cast<void**>(
+            sb + kSkinInstanceSkelRootOff);
+        s.ok = true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    return s;
+}
+
+// Snapshot the contents (deep copy) of a head[] array of size count.
+// SEH-protected. Returns whether the read succeeded; on failure `out`
+// is left empty.
+bool seh_snapshot_array(void** head, std::uint32_t count,
+                        std::vector<void*>& out) {
+    out.clear();
+    if (!head || count == 0 || count > 1024) return false;
+    out.reserve(count);
+    for (std::uint32_t i = 0; i < count; ++i) {
+        void* v = nullptr;
+        __try { v = head[i]; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+        out.push_back(v);
+    }
+    return true;
+}
+
+// Write back contents from `src` into head[]. SEH-protected. Refcount-
+// neutral — the slot held this pointer before (or its replacement that
+// was leaked during niptr_swap), so writing it back does not require
+// any new refcount manipulation.
+void seh_restore_array(void** head, const std::vector<void*>& src) {
+    if (!head || src.empty()) return;
+    for (std::size_t i = 0; i < src.size(); ++i) {
+        __try { head[i] = src[i]; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+    }
+}
+
+void seh_write_skel_root(void* skin, void* val) {
+    if (!skin) return;
+    __try {
+        auto sb = reinterpret_cast<char*>(skin);
+        *reinterpret_cast<void**>(sb + kSkinInstanceSkelRootOff) = val;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+} // namespace
+
+int take_skin_snapshot(void* body_root) {
+    ensure_base();
+    if (!body_root) {
+        FW_ERR("[skin] take_snapshot: null body_root");
+        return -1;
+    }
+
+    ArmorSnapshot snap;
+    for_each_skin_instance(body_root, 0, [&](void* skin) {
+        SkinSlots slots = read_skin_slots(skin);
+        if (!slots.ok) {
+            FW_WRN("[skin] take_snapshot: SEH reading skin=%p slots — skip",
+                   skin);
+            return;
+        }
+        SkinSnapshot ss{};
+        ss.skin_ptr  = skin;
+        ss.fb_head   = slots.fb_head;
+        ss.pri_head  = slots.pri_head;
+        ss.skel_root = slots.skel_root;
+        if (!seh_snapshot_array(slots.fb_head, slots.fb_count, ss.fb_orig)) {
+            FW_WRN("[skin] take_snapshot: skin=%p fb head read failed (count=%u)",
+                   skin, slots.fb_count);
+        }
+        if (!seh_snapshot_array(slots.pri_head, slots.pri_count, ss.pri_orig)) {
+            FW_WRN("[skin] take_snapshot: skin=%p pri head read failed (count=%u)",
+                   skin, slots.pri_count);
+        }
+        FW_DBG("[skin] take_snapshot: skin=%p fb=%zu pri=%zu skel=%p",
+               skin, ss.fb_orig.size(), ss.pri_orig.size(), ss.skel_root);
+        snap.skins.push_back(std::move(ss));
+    });
+
+    if (snap.skins.empty()) {
+        FW_DBG("[skin] take_snapshot: body=%p has no skin instances — no-op",
+               body_root);
+        return -1;
+    }
+
+    {
+        std::lock_guard lk(g_armor_snap_mtx);
+        g_armor_snapshots[body_root] = std::move(snap);
+    }
+    FW_LOG("[skin] take_snapshot: body=%p stored snapshot for %zu skin "
+           "instances", body_root,
+           g_armor_snapshots[body_root].skins.size());
+    return 0;
+}
+
+int restore_skin_from_snapshot(void* body_root) {
+    ensure_base();
+    if (!body_root) {
+        FW_ERR("[skin] restore: null body_root");
+        return -1;
+    }
+
+    ArmorSnapshot snap;
+    {
+        std::lock_guard lk(g_armor_snap_mtx);
+        auto it = g_armor_snapshots.find(body_root);
+        if (it == g_armor_snapshots.end()) {
+            FW_DBG("[skin] restore: body=%p no snapshot — idempotent no-op",
+                   body_root);
+            return 1;
+        }
+        snap = std::move(it->second);
+        g_armor_snapshots.erase(it);
+    }
+
+    int restored_skins = 0;
+    for (const auto& ss : snap.skins) {
+        // Defensive: re-read the skin's current slot pointers. If the
+        // engine relocated the bones array between attach and detach,
+        // our cached fb_head / pri_head pointers would be stale.
+        SkinSlots cur = read_skin_slots(ss.skin_ptr);
+        if (!cur.ok) {
+            FW_WRN("[skin] restore: skin=%p SEH on read — skip", ss.skin_ptr);
+            continue;
+        }
+        // If the array head moved or count changed, log + skip — restore
+        // is unsafe. The skin was rebuilt by the engine; whatever state
+        // it's in now we leave alone.
+        if (cur.fb_head != ss.fb_head ||
+            cur.pri_head != ss.pri_head ||
+            cur.fb_count != ss.fb_orig.size() ||
+            cur.pri_count != ss.pri_orig.size())
+        {
+            FW_WRN("[skin] restore: skin=%p layout changed since attach "
+                   "(fb_head %p->%p, pri_head %p->%p, fb_cnt %zu->%u, "
+                   "pri_cnt %zu->%u) — skip",
+                   ss.skin_ptr,
+                   ss.fb_head,  cur.fb_head,
+                   ss.pri_head, cur.pri_head,
+                   ss.fb_orig.size(),  cur.fb_count,
+                   ss.pri_orig.size(), cur.pri_count);
+            continue;
+        }
+        seh_restore_array(cur.fb_head,  ss.fb_orig);
+        seh_restore_array(cur.pri_head, ss.pri_orig);
+        seh_write_skel_root(ss.skin_ptr, ss.skel_root);
+        ++restored_skins;
+        FW_DBG("[skin] restore: skin=%p restored %zu fb + %zu pri + skel=%p",
+               ss.skin_ptr, ss.fb_orig.size(), ss.pri_orig.size(),
+               ss.skel_root);
+    }
+
+    FW_LOG("[skin] restore: body=%p restored %d/%zu skin instances",
+           body_root, restored_skins, snap.skins.size());
+    return 0;
 }
 
 void* get_bone_by_name(const char* name) {

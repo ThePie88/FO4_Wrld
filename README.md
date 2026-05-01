@@ -107,11 +107,11 @@ in real time).
 | **B5** D3D11 custom render | 🗿 not needed — Strada B native injection replaced |
 | **B6** World-state sync expansion *(composite — 12 wedges, multi-month epic)* | 🟡 1/12 done |
 | ↳ **B6.1** Door open/close sync | ✅ done — `sub_140514180` Activate worker hook + dual-agent RE convergence, [30s demo](https://youtu.be/T8wLZmCqjxw), see [CHANGELOG.md](CHANGELOG.md) |
-| **M9** Equipment sync between peers *(clothing + armor visual replication)* | 🟡 3/6 wedges done — clothing works end-to-end, armor over outfits + BGSMod + material variants pending |
+| **M9** Equipment sync between peers *(clothing + armor visual replication)* | 🟡 3/6 wedges done + w4 foundation — clothing works end-to-end, weapon visibility on ghost in PoC quality, armor-over-outfits + true BGSMod + material variants pending |
 | ↳ **M9.w1** Equip event detection + broadcast (sender hook OBSERVE-only) | ✅ done — `ActorEquipManager::EquipObject/UnequipObject` detour, EQUIP_OP/EQUIP_BCAST opcodes (protocol v6), [video coming soon] |
 | ↳ **M9.w2** Receiver-side NIF resolution + ghost attach + animation | ✅ done — TESObjectARMO struct walk, score-based path selection (male 3rd-person preferred over female / 1st-person / faceBones variants), skin-rebind to ghost skel for animation propagation |
 | ↳ **M9.w3** Biped slot masking (hide ghost body parts under armor) | ⏳ — fixes z-fight when armor pieces equipped over outfits (e.g. metal arm over vault suit) |
-| ↳ **M9.w4** Object Modification (BGSMod) sync — shoulder pads, weapon mods, paint variants | ⏳ — not covered by ActorEquipManager hook; separate workshop-attachment path RE needed |
+| ↳ **M9.w4** Object Modification (BGSMod) sync — shoulder pads, weapon mods, paint variants | 🟡 foundation done in v0.4.0 — wire protocol v9 + mesh-blob pipeline + ghost-weapon state machine + smart NIF resolution. Pistols/melee/launchers visible on ghost as STOCK base. Modded firearms still render as base (no compensator/scope/etc. visible); heavily-modded rifles show one sub-component only. True mod replication blocked on full BSVertexDesc RE — deferred to v0.5+ |
 | ↳ **M9.w5** Peer rejoin equipment-state push | ✅ done in v0.3.1 — PEER_JOIN trigger re-arms equip cycle (DONE→ARMED state transition), 1500ms delay, current outfit re-broadcast to newly-joined peer |
 | ↳ **M9.w6** Material swap variants (rusty/clean raider, paint jobs) | ⏳ — RE BSMaterialDB swap path used by `nsInventory3DManager::*MaterialSwap*Task` |
 | ↳ **B6.2** Lights toggle sync (lamps, lanterns, generators) | ⏳ — same Activate worker pattern as doors, formType filter on `0x20` LIGH |
@@ -152,6 +152,38 @@ in real time).
 Latest 3 patches summarized below. **Full version history in
 [CHANGELOG.md](CHANGELOG.md).**
 
+### M9 v0.4.0 (2026-05-01) — wedge 4 foundation: weapon mesh on ghost (PoC, drastica polish da fare) [Video coming soon]
+
+- New protocol v9 message types `MESH_BLOB_OP/BCAST` (chunked mesh
+  replication, 1372 B `chunk_data` sized BCAST-safe so server can
+  fan-out without re-fragmentation). Sender extracts BSGeometry leaves
+  from runtime-assembled weapon via 3-level indirection on
+  `BSGeometryStreamHelper` at `clone+0x148`. 22 new pytest cases.
+- 300 ms deferred mesh-tx via `FW_MSG_DEFERRED_MESH_TX`/`WM_APP+0x4E`
+  worker — beats the race against engine's async weapon assembly post-
+  `g_orig_equip` (immediate walker frequently captures empty).
+- Receiver unified state machine `ghost_set_weapon(peer, form,
+  candidates[])` — single weapon slot per peer, atomic transitions,
+  downgrade protection (placeholder NIFs never overwrite proper ones),
+  idempotent. All wire receivers (EQUIP_BCAST, MESH_BLOB, UNEQUIP)
+  funnel through.
+- Smart NIF resolution chain: canonical `Weapons\X\X.bgsm` pick →
+  folder-derived canonical (`Weapons\MachineGun\MachineGun.nif` from
+  sub-component bgsm paths) → all sub-component bgsm-derived → legacy
+  TESModel probe (extended `[0x60..0x180]` range + generic Dummy
+  filter).
+- ⚠️ **Hard-won PoC, NOT production**. Working: pistols, manganello,
+  Fat Man, Grognak's Axe, Deathclaw Gauntlet visible on ghost as
+  STOCK base. Modded firearms render without mod parts. Heavily-modded
+  rifles show only one sub-component (just the barrel for assault
+  rifle, just the stock for shotgun). Hunting rifle invisible. True
+  mod replication blocked on full BSVertexDesc RE — see [CHANGELOG.md
+  ](CHANGELOG.md) "Why this was extremely hard" for the 10-point
+  list of engine constraints fought (runtime-assembled weapons with
+  no static NIF, async assembly walker race, donor shader vd
+  mismatch crashes, server fan-out chunk-overflow, downgrade races,
+  cross-form mesh contamination, ...). Tag: `v0.4.0-w4-foundation`.
+
 ### M9 wedge 1+2 (2026-04-29) — clothing sync between peers [Video coming soon]
 
 - Sender hooks `ActorEquipManager::EquipObject/UnequipObject` (`sub_140CE5900`
@@ -187,20 +219,6 @@ Latest 3 patches summarized below. **Full version history in
 - ⚠️ Band-aid, not architectural fix. Hardcoded to Vault Suit `0x1EED7`;
   saves without it silently no-op. Proper fix is independent ghost
   `skeleton.nif` (Option C). See [CHANGELOG.md](CHANGELOG.md).
-
-### B6 wedge 1 (2026-04-27) — door open/close sync between peers
-
-[![Door sync demo](https://img.youtube.com/vi/T8wLZmCqjxw/maxresdefault.jpg)](https://youtu.be/T8wLZmCqjxw)
-
-- First true world-state replication beyond player avatar + inventory.
-  Peer A presses E on door → peer B's same door swings open in real time
-  (and vice versa). Spam-tested A↔B for 5-10 cycles without desync.
-- Sender hooks engine `Activate worker` (`sub_140514180`), filters door-
-  like form types (`0x1F` / `0x20` / `0x24` / `0x29`), broadcasts
-  `DOOR_OP`. Receiver re-invokes the same Activate worker on its local
-  REFR via main-thread queue + `ApplyingRemoteGuard` feedback-loop guard.
-- Toggle semantics — both clients converge from same `world_base` save
-  without server-side state tracking. Tag: `v0.2.0-pre-worldsync`.
 
 ## Why this exists
 
@@ -255,6 +273,34 @@ that should be most reusable for anyone else attempting the same thing.
 - **Network rate-limited to 20Hz** — works smoothly on LAN, untested
   over real-world internet routes; receiver-side interpolation between
   POSE_BROADCAST frames is open work.
+- **Modded weapons render as STOCK on ghost** — M9.w4 v0.4.0 ships the
+  pipeline (mesh-blob wire + state machine + NIF resolution) but the
+  receiver doesn't reconstruct mod parts. Compensator / scope / custom
+  barrel / paint variants on a peer's weapon are NOT visible to other
+  peers; they see the base weapon NIF only. True mod replication
+  blocked on full `BSVertexDesc` RE — needed to rebuild factory-output
+  BSTriShapes that the engine's existing shaders accept (donor shader
+  cloning crashed in render walk every time during v0.4.0 iteration —
+  vd format mismatch). Deferred to v0.5+. See [CHANGELOG.md](CHANGELOG.md)
+  "Why this was extremely hard" for the full investigation.
+- **Heavily-modded rifles show only ONE sub-component on ghost** —
+  assault rifle renders just the barrel; double-barrel shotgun renders
+  just the wood stock. The receiver's smart NIF resolution picks the
+  first loadable candidate from the wire's bgsm paths; for runtime-
+  assembled rifles that's a sub-component (`MachineGunBarrelLong01.nif`)
+  rather than an assembled weapon (the latter doesn't exist as a static
+  NIF — it's composed at `EquipObject` time from N sub-NIFs).
+- **Hunting Rifle invisible on ghost** — neither the canonical bgsm
+  pick nor the folder-derived heuristic
+  (`Weapons\HuntingRifle\HuntingRifle.nif`) finds a loadable NIF; falls
+  back to `RecieverDummy.nif` placeholder (empty NIF). Likely needs a
+  hard-coded path table or a different resolution strategy.
+- **Cross-form mesh contamination** — walker on the sender sometimes
+  captures bgsm paths from a PREVIOUSLY-equipped weapon still residing
+  in the player's bipedAnim subtree (observed: assault rifle equip
+  captures hunting rifle `308Casings` bgsm paths). Receiver gets
+  contaminated candidate list; usually still loads correctly thanks to
+  the multi-candidate try-each fallback, but path resolution is brittle.
 
 ## Reverse-engineering target
 

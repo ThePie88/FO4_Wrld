@@ -13,6 +13,10 @@
 #include "engine_tracer.h"
 
 #include "../log.h"
+#include "../native/nif_path_cache.h"  // M9 w4 witness pattern step 1
+#include "../native/bsgeo_input_cache.h" // M9 w4 Path B-alt-1: factory input capture
+#include "../native/ni_alloc_tracker.h"   // M9 w4 Path B-alt-2: alloc caller-RIP tracker
+#include "../native/clone_factory_tracker.h" // M9 w4: clone factory hex-dump + source map
 
 namespace fw::hooks {
 
@@ -62,13 +66,76 @@ InstallSummary install_all(std::uintptr_t module_base,
     //     (BaseMaleHead.nif, MaleHeadRear.nif) during Museum gameplay.
     //   Re-enable if we need to observe other engine calls for M7
     //   animations or M8 facegen.
+    //
+    // ⚠ engine_tracer also hooks sub_1417B3E90 — it conflicts with the
+    //   M9 w4 nif_path_cache below. Re-enabling engine_tracer requires
+    //   either folding its trace logic into the cache detour, or
+    //   uninstalling the cache first.
     // (void)install_engine_tracer(module_base);
 
+    // M9 wedge 4 (witness pattern, step 1) — RE-ENABLED 2026-04-30 22:00.
+    //
+    // The witness pipeline is now structured as a TWO-stage broadcast:
+    //   1. enqueue_equip_op fires BEFORE g_orig_equip with mods only
+    //      (no nif_descs). Receiver does base attach. Crash-safe.
+    //   2. After g_orig_equip returns successfully, walker queries the
+    //      cache and produces a DELTA enqueue with nif_descs. Receiver
+    //      sees "already attached + nif_descs present" and applies just
+    //      the mod-attach loop on the existing weapon node.
+    //
+    // If g_orig_equip SEH AVs (engine bug, see equip_cycle.cpp:367), the
+    // delta enqueue is skipped — peers see the base weapon attached but
+    // not the mods. Acceptable degraded mode; never a crash, never a
+    // missing weapon. The SEH-wrap on the chain itself is a separate
+    // hardening task tracked in the todo list.
+    const bool nif_cache_ok =
+        fw::native::nif_path_cache::install(module_base);
+    if (!nif_cache_ok) {
+        FW_WRN("hooks: nif_path_cache install FAILED (witness pattern "
+               "won't see mod NIFs — sender extraction will be empty)");
+    }
+
+    // M9 wedge 4 Path B-alt-1 — capture geometry factory inputs at the
+    // moment of NIF parse, BEFORE positions get freed (iter 11c finding).
+    // Diagnostic-only first: confirms whether weapon NIFs trigger the
+    // factory at all. If they do, mesh data is in our cache for later
+    // walker query keyed on BSTriShape*.
+    const bool bsgeo_cache_ok =
+        fw::native::bsgeo_input_cache::install(module_base);
+    if (!bsgeo_cache_ok) {
+        FW_WRN("hooks: bsgeo_input_cache install FAILED");
+    }
+
+    // M9 wedge 4 Path B-alt-2 — capture caller RIPs of every BSTriShape /
+    // BSDynamicTriShape allocation. After 4 layers of hook misses (public
+    // API, worker, cache resolver, factory), we go to the ROOT: the pool
+    // allocator that every NiObject derives from. The RIP tells us who
+    // is constructing each shape — from there we identify the secret
+    // weapon NIF parser.
+    const bool alloc_trk_ok =
+        fw::native::ni_alloc_tracker::install(module_base);
+    if (!alloc_trk_ok) {
+        FW_WRN("hooks: ni_alloc_tracker install FAILED");
+    }
+
+    // M9 wedge 4 — hook the BSTriShape CLONE FACTORY (sub_1416D99E0).
+    // The alloc tracker (above) identified ALL weapon BSTriShape leaves
+    // come from caller_rva 0x16D9A5C, which is inside this clone factory.
+    // This hook captures the SOURCE TEMPLATE pointer (a1) and dumps hex
+    // bytes of the mysterious +0x148 struct for layout discovery.
+    const bool clone_trk_ok =
+        fw::native::clone_factory_tracker::install(module_base);
+    if (!clone_trk_ok) {
+        FW_WRN("hooks: clone_factory_tracker install FAILED");
+    }
+
     FW_LOG("hooks: install summary kill=%d container=%d put=%d pickup=%d "
-           "pos=%d main_menu=%d worldstate=%d door=%d equip=%d (total %zu/9)",
+           "pos=%d main_menu=%d worldstate=%d door=%d equip=%d "
+           "nif_cache=%d (total %zu/9)",
            int(s.kill_ok), int(s.container_ok), int(s.put_ok), int(s.pickup_ok),
            int(s.player_pos_ok), int(s.main_menu_ok), int(s.worldstate_ok),
-           int(s.door_ok), int(s.equip_ok), s.success_count());
+           int(s.door_ok), int(s.equip_ok), int(nif_cache_ok),
+           s.success_count());
     return s;
 }
 

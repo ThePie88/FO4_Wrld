@@ -163,6 +163,158 @@ bool ghost_detach_armor(const char* peer_id, std::uint32_t item_form_id);
 // Main thread only.
 void flush_pending_armor_ops();
 
+// === M9 wedge 7 — weapon visual sync on the ghost body ====================
+//
+// Mirror of ghost_attach_armor / ghost_detach_armor for TESObjectWEAP forms.
+// Differences from armor path:
+//   - Weapons are RIGID (not skinned). No skin_rebind needed — the weapon
+//     NIF is attached as a child of a SINGLE bone (the "WEAPON" attach node
+//     parented under RArm_Hand in the cached skel) and inherits its
+//     world transform automatically.
+//   - Single 3rd-person model in TESObjectWEAP — no addon array walk,
+//     no male/female/1P scoring. Just resolve TESModel.path at the right
+//     offset (probed at runtime, see offsets.h "M9 wedge 7" block).
+//   - The dispatcher tries ARMOR first, then WEAPON if armor returned
+//     false (form wasn't ARMO). Either path may queue on boot race; the
+//     duplicate harmless because the wrong-type flush will silently
+//     fail and the right-type flush will succeed (idempotent skip).
+//
+// Limitations (deliberately accepted, see CHANGELOG M9 closure):
+//   - No weapon-mod (BGSMod) attachments — scope/silencer/paint variants
+//     not synced. Same w4-deferred case as armor mods.
+//   - No two-handed support pose adjustment — the 2H rifle attaches to the
+//     RArm WEAPON node only; the LArm holding-the-foregrip pose is whatever
+//     the body anim graph drives (which we sync via POSE_BROADCAST). Should
+//     look right because the player's anim graph rig already poses the
+//     hands correctly when a 2H weapon is equipped.
+//   - No holstered-weapon rendering — when peer rinfodera the weapon, our
+//     UNEQUIP detaches the NIF entirely (peer renders empty-handed). Vanilla
+//     would show holstered on hip/back; that's a future enhancement.
+//   - Finger curl on grip — the ghost's finger joints don't articulate
+//     (they live in havok hkx, not the rendered scene tree — see README
+//     known limitations). Result: weapon grip pose is hand-rest, not
+//     curled. Cosmetic.
+//
+// Threading: MAIN-THREAD-ONLY (same as armor). Called from
+// drain_equip_apply_queue.
+//
+// Returns true on success (NIF loaded + attached). False if form isn't
+// WEAP / not loaded / NIF load failed / SEH. Logs details either way.
+//
+// M9 w4 v8 — `nif_descs` and `nif_count` carry the witness NIF descriptors
+// the SENDER captured by walking its own BipedAnim post-equip. After
+// loading + attaching the base weapon NIF, the receiver iterates these
+// descriptors: for each one, load the mod NIF, find the parent_name
+// node inside the loaded weapon root, apply the local_transform, and
+// attach as a child. nif_count=0 → stock weapon, no extra mods to attach.
+//
+// Forward-declared as `void*` to avoid pulling protocol.h into this
+// header. Pass &PendingEquipOp::nif_descs[0] / .nif_count from the
+// dispatcher.
+bool ghost_attach_weapon(const char* peer_id, std::uint32_t item_form_id,
+                          const void*  nif_descs = nullptr,
+                          std::uint8_t nif_count = 0,
+                          const char*  nif_path_override = nullptr);
+bool ghost_detach_weapon(const char* peer_id, std::uint32_t item_form_id);
+
+// Drain the pending weapon ops queue accumulated while the ghost wasn't
+// spawned yet. Mirror of flush_pending_armor_ops. Idempotent. Called from
+// the same post-inject_debug_cube callback.
+void flush_pending_weapon_ops();
+
+// === M9 wedge 4 v9 — raw mesh weapon attach via wire blob =================
+//
+// Receiver-side reconstruction of a peer's modded weapon from raw mesh
+// data (positions + indices + per-mesh metadata + local_transform). The
+// peer's sender-side walker extracts BSGeometry leaves under their
+// player's bipedAnim WEAPON node and ships them via MESH_BLOB_BCAST
+// (chunked over reliable UDP). This function takes the decoded mesh
+// records and rebuilds geometry on the matching ghost.
+//
+// Pipeline:
+//   1. Allocate a fresh NiNode "WeaponRoot_<peer>" if not yet present
+//      for this peer; attach it under the cached skeleton's RArm_Hand
+//      bone. Cache in g_ghost_weapon_root[peer_id].
+//   2. For each mesh record:
+//        a. Call sub_14182FFD0 (g_r.geo_builder) with positions, indices
+//           and NULL for the optional fields (UVs, normals, tangents,
+//           skin weights, etc. — first PoC ships positions+indices only).
+//        b. Write the mesh's local_transform (16 floats) into bs+0x30.
+//        c. Attach BSTriShape as child of weapon root.
+//      All steps SEH-protected; per-mesh failure logged + skipped.
+//   3. Engine's render walk picks up the new BSTriShapes next frame.
+//      Without proper materials they may render pink/purple — Step 4d
+//      adds material binding via apply_materials_walker.
+//
+// `meshes_blob_ptr` is treated as `std::vector<PendingMeshRecord>*` —
+// passed as void* to keep this header decoupled from main_thread_dispatch.h.
+// Type erasure resolved on the .cpp side.
+//
+// Returns the count of meshes successfully attached. -1 on failure
+// (resolver not ready / no ghost spawned / no cached skeleton).
+//
+// REPLACEMENT semantics: if a weapon was already attached for this peer,
+// we DESTROY the previous weapon root (cascades destroy of all child
+// BSTriShapes via refcount) before creating the new one. This is why
+// we replace EQUIP_BCAST's legacy ghost_attach_weapon — those would
+// fight us on the same parent slot.
+//
+// Threading: MAIN THREAD ONLY. Called from drain_mesh_blob_apply_queue.
+int ghost_attach_mesh_blob(const char* peer_id, std::uint32_t item_form_id,
+                            std::uint32_t equip_seq,
+                            const void*  meshes_blob_ptr);
+
+// Mirror: detach the weapon root for `peer_id`. Cascades destroy of all
+// child BSTriShapes via refcount. Idempotent (no-op if no weapon root
+// exists for this peer). Returns true on success (or no-op).
+bool ghost_detach_mesh_blob(const char* peer_id);
+
+// Form-type probe — returns true iff `item_form_id` resolves to a
+// TESObjectWEAP (i.e. its TESModel path matches the "Weapons\\..." pattern
+// used by resolve_weapon_nif_path). Wraps the engine lookup + struct walk;
+// does NOT mutate state. SEH-protected internally.
+//
+// Used by equip_hook's mesh-tx gate to ensure mesh extraction fires only
+// for actual weapons (not e.g. Vault Suit with a legendary OMOD that
+// passed the older `!wire_mods.empty()` proxy filter).
+bool is_weapon_form(std::uint32_t item_form_id);
+
+// === M9 wedge 4 v9.1 — UNIFIED ghost weapon state machine ================
+//
+// Single source of truth: each peer has at most ONE weapon attached at any
+// time. All wire events (EQUIP_BCAST, UNEQUIP_BCAST, MESH_BLOB_BCAST) go
+// through ghost_set_weapon / ghost_clear_weapon. Atomic transitions, no
+// accumulation, no stale weapons.
+//
+// Path resolution: caller supplies a list of candidate NIF paths in
+// preferred order. The function tries each via nif_load_by_path until one
+// succeeds. Falls back to resolve_weapon_nif_path (legacy probe with
+// Dummy-placeholder filter) if all caller candidates fail.
+//
+// Downgrade protection: if the resolved path is a placeholder (e.g.
+// "RecieverDummy.nif") AND the current slot has a non-placeholder path
+// for the same form_id, the call is REJECTED — refuses to overwrite a
+// proper path with a worse one. This handles the race where EQUIP_BCAST
+// arrives AFTER MESH_BLOB has installed the proper path.
+//
+// Returns true on success or no-op (idempotent), false on hard failure
+// (no candidate path loaded; existing slot left untouched).
+//
+// Threading: MAIN THREAD ONLY. Internal mutex guards the slot map.
+bool ghost_set_weapon(const char* peer_id,
+                       std::uint32_t item_form_id,
+                       const char* const* candidate_paths,
+                       std::size_t num_candidates);
+
+// Clears the peer's weapon slot atomically. Pass `expected_form_id` to
+// guard against spurious clears: if the slot has a different form_id than
+// expected (i.e. peer already switched to a different weapon by the time
+// the UNEQUIP arrives), the call is a no-op. Pass 0 to force-clear.
+//
+// Returns true on success / no-op. Threading: main thread only.
+bool ghost_clear_weapon(const char* peer_id,
+                         std::uint32_t expected_form_id);
+
 // --- M2.2: BSDynamicTriShape allocation (empty, no geometry yet) -----------
 
 // Allocate + in-place-ctor a BSDynamicTriShape via the engine's allocator,

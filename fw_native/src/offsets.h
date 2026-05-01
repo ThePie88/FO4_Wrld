@@ -631,6 +631,31 @@ constexpr std::size_t TESOBJECTARMA_MODEL_F3RD_OFF     = 0x110;
 
 constexpr std::size_t TESMODEL_PATH_BSFIXEDSTR_OFF     = 0x08;
 
+// === M9 wedge 7 — TESObjectWEAP layout =====================================
+// Weapons (pistols, melee, rifles) attach to a SINGLE bone (typically the
+// "WEAPON" node parented under RArm_Hand) and use a single 3rd-person model.
+// No biped slot bitmask, no addon array, no ARMA struct walk needed —
+// simpler than ARMO.
+//
+// TESObjectWEAP inherits TESBoundAnimObject → TESBoundObject → TESForm. The
+// embedded TESModel (3rd-person world model) lives somewhere in the ~0x60..
+// 0xC0 region per CommonLibF4 layout, but the EXACT offset on FO4 1.11.191
+// next-gen wasn't pinned by static decomp. We probe a candidate list at
+// runtime (mirror of the ARMA approach in M9.w2) and pick the first offset
+// yielding a valid path containing "Weapons\\" prefix.
+//
+// Candidate offsets (probed in order in resolve_weapon_nif_path):
+//   0x60, 0x68, 0x70, 0x78, 0x80, 0x88, 0x90, 0xA0, 0xB0, 0xC0
+//
+// Once empirically pinned by live test, replace the probing with a single
+// constant TESOBJECTWEAP_MODEL_OFF. Until then the probe handles the
+// uncertainty.
+//
+// Path heuristic: vanilla FO4 weapon NIFs live under "Weapons\\..." (e.g.
+//   Weapons\\Laser\\Pistol.nif, Weapons\\1HMelee\\Baton.nif). We accept any
+// path whose case-insensitive form contains the substring "weapons\\" —
+// also catches DLC/mod weapons which follow the same convention.
+
 // Pool layout for BSFixedString (RE'd in skin_rebind.cpp 2026-04-24):
 //   pool_entry + 0x18 = c_str (preceded by 24-byte header containing
 //   length, refcount, hash, etc).
@@ -646,5 +671,149 @@ constexpr std::size_t BSFIXEDSTRING_CSTR_OFF           = 0x18;
 // that's fine for pipeline validation. Z.8 replaces identity via
 // SetRace+SetOutfit so the clone ultimately looks like the remote.
 constexpr std::uint32_t GHOST_TEMPLATE_FORM_ID = 0x0001CA7D;
+
+// === M9 wedge 4 — BGSMod (Object Modification) sync =========================
+// RE'd 2026-04-30 via dual-agent IDA analysis + tiebreaker. See
+//   re/M9_w4_TIEBREAKER_analysis.md
+//   re/M9_w4_AGENT_A_analysis.md
+//   re/M9_w4_AGENT_B_analysis.md
+//   re/M9_w4_ida4_comprehensive.log + ida5_tiebreaker.log + ida5b_followup.log
+//
+// Goal: when a peer equips a modded weapon (e.g. 10mm pistol w/ long barrel +
+// reflex sight), peer's ghost on remote clients must render the SAME assembled
+// NIF (base dummy + N mod NIFs). M9.w4 covers extraction (sender) + replay
+// (receiver) of the OMOD list per equipped item.
+//
+// =========================================================================
+// BGSMod::Attachment::Mod (sizeof = 0xC8 = 200 B, formType = 0x90)
+// =========================================================================
+// vtable @ IDA 0x142486630 (RVA 0x2486630). Allocated in ctor sub_140432740.
+//
+// Multi-inheritance layout (FROM dtor thunks `a1 - 32/-48/-72`):
+//   +0x00  vtable_main      (TESForm-derived MAIN)
+//   +0x20  vtable_base_0    (TESFullName / BaseFormComponent)
+//   +0x30  vtable_base_1    (BGSKeywordForm-like)
+//   +0x48  vtable_base_2    (BGSModelMaterialSwap-like)
+//
+// Per-mod data arrays (RE'd in tiebreaker via sub_140433870 DATA-record loader):
+//   +0x88  void*  property records ptr        (16-B stride per record)
+//   +0x90  u32    property records count
+//   +0x98  inline BGSAttachParentArray sub-object
+//          +0x00 vtable, +0x08 data ptr, +0x10 count u32 — i.e. abs offsets:
+//          +0x98 vtable, +0xA0 data ptr, +0xA8 count u32
+//   +0xB0  u16*   keyword-include array        (2-B stride per entry)
+//   +0xB8  u32    keyword-include count
+//   +0xC0  u32    sentinel (init 0xFFFF — TESForm-style "unbound rank/idx")
+//   +0xC4  u16    counter (cleared in ctor)
+//   +0xC6  u8     flag byte (low 2 bits = ApplyMode mask)
+//
+// IMPORTANT — for sender side (extracting peer's mods) we DO NOT walk these
+// arrays. We walk Actor.inventory → BSExtraDataList → BGSObjectInstanceExtra
+// instead. The fields above are needed for the RECEIVER side (deferred to
+// iter 6) when assembling NIFs from individual mods.
+constexpr std::size_t BGSMOD_ATTACHMENT_MOD_SIZE          = 0xC8;
+constexpr std::uint8_t BGSMOD_ATTACHMENT_MOD_FORMTYPE     = 0x90;
+constexpr std::size_t BGSMOD_PROPERTY_ARRAY_DATA_OFF      = 0x88;
+constexpr std::size_t BGSMOD_PROPERTY_ARRAY_COUNT_OFF     = 0x90;
+constexpr std::size_t BGSMOD_PROPERTY_RECORD_STRIDE       = 0x10;
+constexpr std::size_t BGSMOD_ATTACH_PARENT_ARRAY_OFF      = 0x98;
+constexpr std::size_t BGSMOD_ATTACH_PARENT_DATA_OFF       = 0xA0; // abs
+constexpr std::size_t BGSMOD_ATTACH_PARENT_COUNT_OFF      = 0xA8; // abs
+constexpr std::size_t BGSMOD_KEYWORD_LIST_DATA_OFF        = 0xB0;
+constexpr std::size_t BGSMOD_KEYWORD_LIST_COUNT_OFF       = 0xB8;
+constexpr std::size_t BGSMOD_KEYWORD_LIST_STRIDE          = 0x02;
+
+// =========================================================================
+// BGSObjectInstanceExtra (BSExtraData type carrying mods on an inventory item)
+// sizeof = 40, type byte = 0x35 (53), vtable @ IDA 0x142462298
+// =========================================================================
+// Direct evidence in ctor sub_1402471A0:
+//   *(_BYTE *)(a1 + 18) = 53;                  // type byte (= 0x35)
+//   *(_QWORD *)(a1 + 24) = 0;                  // inner = nullptr
+//   *(_WORD *)(a1 + 32) = -1;                  // u16 sentinel @ +0x20
+//
+// NOTE: the type byte value 0x35 contradicts CommonLibF4 (which says 0xA1 for
+// kObjectInstance) — FO4 1.11.191 next-gen has remapped the BSExtraData type
+// table. Trust the binary, NOT the public docs.
+constexpr std::size_t BSEXTRADATA_NEXT_OFF                = 0x08;
+constexpr std::size_t BSEXTRADATA_TYPE_BYTE_OFF           = 0x12;
+
+constexpr std::uint8_t BGSOBJECTINSTANCEEXTRA_TYPE_BYTE   = 0x35;
+constexpr std::size_t BGSOBJECTINSTANCEEXTRA_SIZE         = 40;
+constexpr std::size_t BGSOBJECTINSTANCEEXTRA_INNER_OFF    = 0x18;
+constexpr std::size_t BGSOBJECTINSTANCEEXTRA_VTABLE_RVA   = 0x2462298;
+
+// =========================================================================
+// BGSObjectInstanceExtra::Inner (16 B sub-struct at OIE + 0x18)
+// =========================================================================
+// Direct evidence in OIE dtor sub_14024BC20:
+//   v3 = a1[3];                          // inner ptr at +0x18
+//   v5 = *(void**)v3;                    // data @+0x00
+//   *(_QWORD *)v3 = 0;                   // clear data ptr
+//   *(_DWORD *)(v3 + 8) = 0;             // clear u32 at +0x08
+//   sub_1422B6BC8(v3, 16);               // free 16 B sub-struct
+//
+// Inner.data is NOT a flat record array. It's a packed-bitstream HEADER
+// followed by N×8B records. Walker pattern (verbatim 4× in binary):
+//   while (1) {
+//       v9 = *(_BYTE *)(v6 + 3);          // tag at byte +3 of DWORD
+//       if (!v9) break;                   // end-of-header
+//       if (v9 != -1) {                   // skip 0xFF padding
+//           v10 = *(_DWORD *)v6 & 0xFFFFFF;   // 24-bit length
+//           v6 += 4; v7 += v10;
+//       } else {
+//           v6 += 4;
+//       }
+//   }
+//   v11 = data + v7;                          // start of records
+//   v12 = (*(_DWORD *)v6 >> 3) & 0x1FFFFF;     // 21-bit record count
+//
+// See helpers in oie_walker.{h,cpp} (M9.w4 sender utilities).
+constexpr std::size_t OIE_INNER_DATA_OFF                  = 0x00;
+constexpr std::size_t OIE_INNER_DATA_BYTELEN_OFF          = 0x08;
+constexpr std::size_t OIE_INNER_SIZE                      = 16;
+
+// =========================================================================
+// ObjectModifier — record inside OIE.Inner.data after header walk
+// sizeof = 8 B per record. Three independent decomps confirm stride.
+// =========================================================================
+// Direct evidence (BGSObjectInstanceExtra::Init sub_1402480F0):
+//   *(_DWORD *)(v45 + 8*i + 0) = *(_DWORD *)(a2 + 20);   // mod_form_id
+//   *(_BYTE  *)(v45 + 8*i + 4) = a3;                     // attach_index
+//   *(_BYTE  *)(v45 + 8*i + 5) = a4;                     // index2/rank
+//   *(_BYTE  *)(v45 + 8*i + 6) = 0;                      // flag (=0 on insert)
+constexpr std::size_t OBJMOD_RECORD_STRIDE                = 8;
+constexpr std::size_t OBJMOD_FORM_ID_OFF                  = 0x00;
+constexpr std::size_t OBJMOD_ATTACH_INDEX_OFF             = 0x04;
+constexpr std::size_t OBJMOD_INDEX2_RANK_OFF              = 0x05;
+constexpr std::size_t OBJMOD_FLAG_OFF                     = 0x06;
+
+// =========================================================================
+// BSExtraDataList (well-known FO4 layout, head pointer at +0x08)
+// =========================================================================
+constexpr std::size_t BSEXTRADATALIST_HEAD_OFF            = 0x08;
+
+// =========================================================================
+// BGSInventoryItem.data → Stack chain
+//
+// CORRECTED 2026-04-30 from runtime probe (iter 6 sender test):
+// First attempt used +0x00=next, +0x08=extras (CommonLibF4 read of the
+// struct skipping the vtable). That was wrong. Live test showed
+//   *(stack + 0x00) = 0x7FF6.... — code-segment vtable, NOT a Stack*
+//   *(stack + 0x08) = 0x1 — refcount value, not a pointer
+// confirming Stack has its OWN vtable at +0x00 (RTTI exists for
+// `Stack@BGSInventoryItem` per IDA query 4 line 1275 of dossier).
+//
+// Correct layout (vtable + BSIntrusiveRefCounted (4B + pad) + payload):
+//   Stack {
+//     +0x00 vtable*
+//     +0x08 BSIntrusiveRefCounted::refCount (u32) + 4 B pad
+//     +0x10 BSTSmartPointer<Stack> nextStack    ← this is the NEXT pointer
+//     +0x18 BSExtraDataList* extra              ← this is the EXTRAS pointer
+//     +0x20 i32 count
+//     +0x24 u32 flags
+//   }
+constexpr std::size_t INV_STACK_NEXT_OFF                  = 0x10;
+constexpr std::size_t INV_STACK_EXTRAS_OFF                = 0x18;
 
 } // namespace fw::offsets

@@ -32,7 +32,23 @@ from typing import ClassVar, Union
 # ------------------------------------------------------------------ constants
 
 PROTOCOL_MAGIC: int = 0xFA
-PROTOCOL_VERSION: int = 6
+PROTOCOL_VERSION: int = 9
+# v9 (2026-04-30): M9 wedge 4 — raw mesh replication. New message types
+# MESH_BLOB_OP (client→server) and MESH_BLOB_BCAST (server→peers) carry
+# CHUNKS of a serialized mesh blob extracted from the local player's
+# modded weapon. After 12 RE iterations + 4 failed hook strategies for
+# the witness (NIF-path) pattern, we go BELOW the engine's mod-assembly
+# pipeline and ship raw geometry: positions (decoded from packed half-prec
+# stream), indices (u16), per-mesh metadata (m_name, parent_placeholder,
+# bgsm_path), local transform. Receiver reconstructs each BSTriShape via
+# the engine's clone factory (sub_14182FFD0) and attaches under the
+# ghost's weapon root. See re/M9_w4_iter12_AGENT_analysis.md for the
+# extraction layout (BSGeometryStreamHelper 32B at clone+0x148 →
+# BSStreamDesc → raw vertex/index buffers).
+# Wire format: chunked (per-mesh-blob), see MeshBlobChunkHeader below.
+# Each MESH_BLOB_OP frame carries a slice of one logical mesh blob; the
+# blob contains N meshes serialized linearly. Receiver reassembles by
+# (peer_id, equip_seq) into the full blob then decodes the N meshes.
 # v6 (2026-04-28): M9 wedge 1 equipment-event observation. New message types
 # EQUIP_OP (client→server) and EQUIP_BCAST (server→peers) carrying
 # {item_form_id, kind=equip|unequip, slot_form_id, count, timestamp_ms}.
@@ -110,6 +126,8 @@ class MessageType(IntEnum):
     DOOR_BCAST       = 0x0231   # B6.1: server -> other peers: peer X activated door Y
     EQUIP_OP         = 0x0240   # M9 w1: client -> server: I equipped/unequipped item X
     EQUIP_BCAST      = 0x0241   # M9 w1: server -> other peers: peer X equipped/unequipped item Y
+    MESH_BLOB_OP     = 0x0250   # M9 w4 v9: client -> server: chunked mesh blob for an equip event
+    MESH_BLOB_BCAST  = 0x0251   # M9 w4 v9: server -> peers: chunked mesh blob (peer-attributed)
 
     # Social (0x03XX) — reliable
     CHAT          = 0x0300
@@ -1250,8 +1268,163 @@ class DoorBroadcastPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class EquipModRecord:
+    """M9.w4 v7 — single OMOD attachment record (8 B).
+
+    Mirrors the runtime ObjectModifier in BGSObjectInstanceExtra.inner.data.
+    Each weapon/armor with mods carries an array of these. form_id is the
+    TESForm.formID of a BGSMod::Attachment::Mod (formType=0x90); the
+    receiver looks it up locally and applies to the ghost weapon NIF.
+
+    Empirically across vanilla weapons: attach_index = 0 and rank = 1 in
+    nearly all observed records (the actual attach-slot info is inside
+    the BGSMod itself, not the OIE record). flag is always 0. pad must
+    be 0 on encode (engine leaves uninitialised garbage at runtime, the
+    DLL zeros it before send).
+    """
+    form_id: int        # u32 — BGSMod::Attachment::Mod.formID (formType 0x90)
+    attach_index: int   # u8  — slot index (typically 0)
+    rank: int           # u8  — index2/rank (typically 1)
+    flag: int           # u8  — engine flag (typically 0)
+    pad: int = 0        # u8  — MUST be zero on encode
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IBBBB")  # 4+1+1+1+1 = 8B
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.form_id, self.attach_index, self.rank, self.flag, 0)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "EquipModRecord":
+        if len(data) != cls._STRUCT.size:
+            raise ValueError(
+                f"EquipModRecord: expected {cls._STRUCT.size} bytes, got {len(data)}")
+        f, ai, rk, fl, _pad = cls._STRUCT.unpack(data)
+        return cls(form_id=f, attach_index=ai, rank=rk, flag=fl, pad=0)
+
+
+# Cap on per-weapon mod count. Vanilla ≤12; DLC up to ~20; 32 = safe ceiling.
+MAX_EQUIP_MODS: int = 32
+
+
+# === M9.w4 (witness) v8 — NIF descriptor records ===========================
+
+# Cap on per-weapon NIF descriptors that the witness walker captures.
+# Vanilla mods on a single weapon ≤6 typical; cap also bounded by
+# MAX_PAYLOAD_SIZE remaining after fixed payload + OMOD records.
+MAX_NIF_DESCRIPTORS: int = 8
+
+# Per-string caps. Observed vanilla NIF paths max ~96 chars (Far Harbor
+# harpoon mods); 192 cap leaves headroom for community mods. Parent node
+# names are short — typically named NiNode attach points like
+# "BarrelAttachNode" or "ScopeAttachNode". 64 cap is generous.
+MAX_NIF_PATH_LEN: int = 192
+MAX_NIF_NAME_LEN: int = 64
+
+
+@dataclass(frozen=True, slots=True)
+class NifDescriptor:
+    """M9.w4 v8 — single NIF descriptor for a mod attached to a weapon.
+
+    Sender extracts these by walking its own BipedAnim weapon subtree
+    after the engine has finished mod assembly (post-equip). For each
+    NiAVObject in the subtree that's a cache-hit on the nif_load_by_path
+    detour (RVA 0x017B3E90), it records the .nif path, the parent node
+    name, and the local NiTransform (16 floats = rotation 3x4 + translate
+    vec3 + scale).
+
+    Wire layout (variable-length per record):
+        u8  path_len           # 0..192
+        path_bytes (ASCII)
+        u8  parent_name_len    # 0..64
+        parent_name_bytes
+        16 × float local_transform  # 64 bytes raw
+    """
+    nif_path: str
+    parent_name: str
+    # 16 floats = NiTransform from node+0x30..+0x70 (rot 3x4 SIMD + vec3 + scale).
+    # Indices 12,13,14 hold local translate; index 15 holds local scale.
+    local_transform: tuple  # tuple of 16 floats
+
+    _XFORM_STRUCT: ClassVar[struct.Struct] = struct.Struct("<16f")  # 64B
+
+    def encode(self) -> bytes:
+        path_b = self.nif_path.encode("utf-8")[:MAX_NIF_PATH_LEN]
+        name_b = self.parent_name.encode("utf-8")[:MAX_NIF_NAME_LEN]
+        if len(self.local_transform) != 16:
+            raise ValueError(
+                f"NifDescriptor.local_transform: expected 16 floats, "
+                f"got {len(self.local_transform)}")
+        return (
+            bytes([len(path_b)]) + path_b
+            + bytes([len(name_b)]) + name_b
+            + self._XFORM_STRUCT.pack(*self.local_transform)
+        )
+
+    @classmethod
+    def decode_from(cls, data: bytes, offset: int = 0):
+        """Decode a single NifDescriptor starting at `offset`. Returns
+        (descriptor, bytes_consumed). Raises ValueError on malformed data.
+        """
+        if offset + 1 > len(data):
+            raise ValueError("NifDescriptor: truncated path_len")
+        pl = data[offset]
+        if pl > MAX_NIF_PATH_LEN:
+            raise ValueError(
+                f"NifDescriptor: path_len {pl} exceeds cap {MAX_NIF_PATH_LEN}")
+        off = offset + 1
+        if off + pl + 1 > len(data):
+            raise ValueError("NifDescriptor: truncated path / parent_len")
+        path = data[off:off + pl].decode("utf-8", errors="replace")
+        off += pl
+        nl = data[off]
+        if nl > MAX_NIF_NAME_LEN:
+            raise ValueError(
+                f"NifDescriptor: parent_name_len {nl} exceeds cap "
+                f"{MAX_NIF_NAME_LEN}")
+        off += 1
+        if off + nl + cls._XFORM_STRUCT.size > len(data):
+            raise ValueError("NifDescriptor: truncated parent_name / xform")
+        name = data[off:off + nl].decode("utf-8", errors="replace")
+        off += nl
+        xf = cls._XFORM_STRUCT.unpack(data[off:off + cls._XFORM_STRUCT.size])
+        off += cls._XFORM_STRUCT.size
+        return cls(nif_path=path, parent_name=name, local_transform=xf), off - offset
+
+
+def _encode_nif_tail(descs: tuple) -> bytes:
+    """Encode a [u8 count][N × NifDescriptor] tail. Caps at MAX_NIF_DESCRIPTORS."""
+    n = min(len(descs), MAX_NIF_DESCRIPTORS)
+    out = bytearray([n])
+    for d in descs[:n]:
+        out.extend(d.encode())
+    return bytes(out)
+
+
+def _decode_nif_tail(data: bytes, offset: int) -> tuple:
+    """Decode [u8 count][N × NifDescriptor] starting at `offset`. Returns
+    a tuple of NifDescriptor (possibly empty). Tolerates `offset == len(data)`
+    (no tail present, returns empty tuple)."""
+    if offset >= len(data):
+        return ()
+    n = data[offset]
+    n = min(n, MAX_NIF_DESCRIPTORS)
+    off = offset + 1
+    out: list = []
+    for _ in range(n):
+        try:
+            d, used = NifDescriptor.decode_from(data, off)
+        except ValueError:
+            # Malformed — drop the rest of the tail (defensive).
+            break
+        out.append(d)
+        off += used
+    return tuple(out)
+
+
+@dataclass(frozen=True, slots=True)
 class EquipOpPayload:
-    """M9 w1: client -> server: 'I just equipped/unequipped item X'.
+    """M9 w1+w4: client -> server: 'I just equipped/unequipped item X'.
 
     Sender hooks ActorEquipManager::EquipObject (sub_140CE5900) and
     ::UnequipObject (sub_140CE5DA0) in the engine — both fire 11-arg with
@@ -1260,11 +1433,11 @@ class EquipOpPayload:
     Detour observes, filters to actor==player (form_id == 0x14), enqueues
     this payload, then chains to g_orig.
 
-    Wedge 1 receiver: just log + telemetry — NO apply on the ghost yet.
-    The ghost body is fragile to scene-graph mutation (root cause of the
-    3-day crash hunt resolved by B8 force-equip-cycle on game start).
-    Wedge 2 will add the safe apply path now that B8 has stabilized
-    BipedAnim allocator state.
+    M9.w4 (protocol v7): when the equipped weapon has OMOD attachments
+    (BGSObjectInstanceExtra in inventory), they are appended as a tail
+    after the fixed payload — { u8 mod_count; mod_count × EquipModRecord }.
+    UNEQUIP events typically ship mod_count=0 (the receiver tracks attached
+    mods by form_id locally and detaches everything for that weapon).
 
     Identity: item_form_id is a TESForm.formID, plugin-stable. slot_form_id
     is the BGSEquipSlot.formID; pass 0 to mean "engine auto-resolves from
@@ -1276,33 +1449,60 @@ class EquipOpPayload:
     slot_form_id: int    # u32 — BGSEquipSlot.formID, 0 = auto
     count: int           # i32 — stack count (always positive in practice)
     timestamp_ms: int    # u64 — sender wall clock for ordering
+    mods: tuple = ()     # tuple[EquipModRecord, ...] — w4 OMOD list (empty if no mods)
+    nif_descs: tuple = ()  # tuple[NifDescriptor, ...] — w4 v8 witness data
 
-    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IBIiQ")  # 4+1+4+4+8 = 21B
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IBIiQ")  # 4+1+4+4+8 = 21B (fixed)
 
     def encode(self) -> bytes:
-        return self._STRUCT.pack(
+        head = self._STRUCT.pack(
             self.item_form_id, self.kind, self.slot_form_id,
             self.count, self.timestamp_ms,
         )
+        n = min(len(self.mods), MAX_EQUIP_MODS)
+        omod_tail = bytes([n]) + b"".join(m.encode() for m in self.mods[:n])
+        nif_tail = _encode_nif_tail(self.nif_descs)
+        return head + omod_tail + nif_tail
 
     @classmethod
     def decode(cls, data: bytes) -> "EquipOpPayload":
-        if len(data) != cls._STRUCT.size:
+        if len(data) < cls._STRUCT.size:
             raise ValueError(
-                f"EquipOpPayload: expected {cls._STRUCT.size} bytes, got {len(data)}")
-        ifid, kind, sfid, cnt, ts = cls._STRUCT.unpack(data)
+                f"EquipOpPayload: expected >={cls._STRUCT.size} bytes, got {len(data)}")
+        ifid, kind, sfid, cnt, ts = cls._STRUCT.unpack(data[:cls._STRUCT.size])
+        mods: tuple = ()
+        omod_size = 0  # bytes consumed by the OMOD tail (incl count byte)
+        # v7 OMOD tail (optional — older v6 senders won't include this)
+        if len(data) > cls._STRUCT.size:
+            n = data[cls._STRUCT.size]
+            n = min(n, MAX_EQUIP_MODS)
+            tail_off = cls._STRUCT.size + 1
+            needed = tail_off + n * EquipModRecord._STRUCT.size
+            if len(data) >= needed and n > 0:
+                stride = EquipModRecord._STRUCT.size
+                mods = tuple(
+                    EquipModRecord.decode(data[tail_off + i * stride
+                                                : tail_off + (i+1) * stride])
+                    for i in range(n)
+                )
+                omod_size = 1 + n * stride
+            else:
+                # mod_count=0 still counted the byte itself
+                omod_size = 1
+        # v8 NIF descriptor tail (after OMOD tail)
+        nif_descs = _decode_nif_tail(data, cls._STRUCT.size + omod_size)
         return cls(item_form_id=ifid, kind=kind, slot_form_id=sfid,
-                   count=cnt, timestamp_ms=ts)
+                   count=cnt, timestamp_ms=ts, mods=mods,
+                   nif_descs=nif_descs)
 
 
 @dataclass(frozen=True, slots=True)
 class EquipBroadcastPayload:
-    """M9 w1: server -> other peers: 'peer X equipped/unequipped item Y'.
+    """M9 w1+w4: server -> other peers: 'peer X equipped/unequipped item Y'.
 
-    Mirrors EquipOpPayload + peer_id for attribution. Server fan-out is
-    pure (no validation, no rate-limiting) — wedge 1 is OBSERVE-only on
-    receivers so worst-case a flood of equip events is just log spam.
-    Wedge 2 may add rate-limit when ghost mutation lands.
+    Mirrors EquipOpPayload + peer_id for attribution. Carries the OMOD list
+    (mods tuple) verbatim from the originating EquipOpPayload via server
+    fanout. Server fan-out is pure (no validation, no rate-limiting).
     """
     peer_id: str
     item_form_id: int
@@ -1310,28 +1510,390 @@ class EquipBroadcastPayload:
     slot_form_id: int
     count: int
     timestamp_ms: int
+    mods: tuple = ()     # w4 OMOD list, mirror of EquipOpPayload.mods
+    nif_descs: tuple = ()  # w4 v8 witness data, mirror of EquipOpPayload.nif_descs
 
-    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IBIiQ")  # 21B + 16B peer_id = 37B total
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IBIiQ")  # 21B fixed
 
     def encode(self) -> bytes:
-        return (
+        head = (
             _encode_fixed_string(self.peer_id, MAX_CLIENT_ID_LEN)
             + self._STRUCT.pack(
                 self.item_form_id, self.kind, self.slot_form_id,
                 self.count, self.timestamp_ms,
             )
         )
+        n = min(len(self.mods), MAX_EQUIP_MODS)
+        omod_tail = bytes([n]) + b"".join(m.encode() for m in self.mods[:n])
+        nif_tail = _encode_nif_tail(self.nif_descs)
+        return head + omod_tail + nif_tail
 
     @classmethod
     def decode(cls, data: bytes) -> "EquipBroadcastPayload":
-        expected = MAX_CLIENT_ID_LEN + 1 + cls._STRUCT.size  # 16 + 21 = 37
-        if len(data) != expected:
+        fixed = MAX_CLIENT_ID_LEN + 1 + cls._STRUCT.size  # 16 + 21 = 37
+        if len(data) < fixed:
             raise ValueError(
-                f"EquipBroadcastPayload: expected {expected} bytes, got {len(data)}")
+                f"EquipBroadcastPayload: expected >={fixed} bytes, got {len(data)}")
         peer = _decode_fixed_string(data[: MAX_CLIENT_ID_LEN + 1], MAX_CLIENT_ID_LEN)
-        ifid, kind, sfid, cnt, ts = cls._STRUCT.unpack(data[MAX_CLIENT_ID_LEN + 1:])
+        ifid, kind, sfid, cnt, ts = cls._STRUCT.unpack(
+            data[MAX_CLIENT_ID_LEN + 1 : fixed])
+        mods: tuple = ()
+        omod_size = 0
+        if len(data) > fixed:
+            n = data[fixed]
+            n = min(n, MAX_EQUIP_MODS)
+            tail_off = fixed + 1
+            needed = tail_off + n * EquipModRecord._STRUCT.size
+            if len(data) >= needed and n > 0:
+                stride = EquipModRecord._STRUCT.size
+                mods = tuple(
+                    EquipModRecord.decode(data[tail_off + i * stride
+                                                : tail_off + (i+1) * stride])
+                    for i in range(n)
+                )
+                omod_size = 1 + n * stride
+            else:
+                omod_size = 1
+        nif_descs = _decode_nif_tail(data, fixed + omod_size)
         return cls(peer_id=peer, item_form_id=ifid, kind=kind,
-                   slot_form_id=sfid, count=cnt, timestamp_ms=ts)
+                   slot_form_id=sfid, count=cnt, timestamp_ms=ts, mods=mods,
+                   nif_descs=nif_descs)
+
+
+# =================================================================== M9.w4 v9
+#
+# MESH_BLOB — chunked raw-mesh replication for modded weapons.
+#
+# Why this exists: the witness pattern (NIF-path replay, v8) failed across
+# 4 hook strategies because Fallout 4 builds modded-weapon geometry IN
+# MEMORY at runtime — there is no on-disk .nif for "10mm pistol with Long
+# Barrel + Reflex Sight". After 12 RE iterations we extract the resulting
+# BSTriShape leaves directly from the player's loaded3D, decode positions
+# from the packed half-prec stream and indices from the u16 index buffer,
+# and ship the whole thing to peers as a chunked blob (single equip event
+# = ~10 KB × 8 meshes = ~80 KB total → ~60 UDP frames).
+#
+# Reliability: each chunk is a reliable frame. Receiver buffers chunks
+# keyed on (peer_id, equip_seq) and applies once all chunks land. Drops
+# the buffer on partial timeout (5 s).
+#
+# Layout of one mesh blob (linear bytes — what gets chunked across N
+# MESH_BLOB_OP frames):
+#
+#   BLOB HEADER (10 bytes):
+#     u32 item_form_id            -- correlates with the EQUIP_OP that
+#                                    triggered this blob; receiver uses it
+#                                    to pair with the EQUIP_BCAST it just
+#                                    applied (ghost weapon root).
+#     u32 equip_seq               -- sender's per-equip monotonic counter;
+#                                    same value used in chunk header.
+#     u8  num_meshes              -- 0..MAX_MESHES_PER_BLOB
+#     u8  reserved                -- (=0; align)
+#
+#   PER MESH (×num_meshes):
+#     u8  m_name_len              -- 0..255
+#     u8  parent_placeholder_len  -- 0..255
+#     u16 bgsm_path_len           -- 0..65535
+#     u16 vert_count
+#     u16 reserved                -- (=0; align)
+#     u32 tri_count               -- index_count = 3 * tri_count
+#     16 × f32 local_transform    -- 64B raw NiTransform
+#     m_name_len bytes (UTF-8)
+#     parent_placeholder_len bytes
+#     bgsm_path_len bytes
+#     3 * vert_count × f32 positions   -- 12 * vc bytes (xyz per vertex)
+#     3 * tri_count × u16 indices       -- 6 * tc bytes
+#
+# A typical 10mm pistol modded: 8 meshes × ~10 KB = ~80 KB.
+# Cap MAX_MESHES_PER_BLOB = 32 (vanilla weapons ≤8; heavy-mod stacks ≤16).
+# Cap MAX_BLOB_SIZE = 4 MB (hard ceiling to defend against malformed input).
+#
+# Chunk frame (MESH_BLOB_OP):
+#   u32 equip_seq             -- correlation id (echo of blob header)
+#   u32 total_blob_size       -- byte size of full assembled blob
+#   u16 chunk_index           -- 0..total_chunks-1
+#   u16 total_chunks          -- chunks for THIS blob
+#   N bytes of payload        -- blob slice [chunk_index*CHUNK_SIZE..]
+#
+# Chunk frame (MESH_BLOB_BCAST): same + 16 B FixedClientId prefix.
+# At MAX_PAYLOAD_SIZE=1400, per-chunk data slice:
+#   OP    : 1400 - 12 = 1388 B
+#   BCAST : 1400 - 28 = 1372 B
+#
+# Receiver reassembly state machine:
+#   key = (peer_id, equip_seq)
+#   value = { total_blob_size, total_chunks, received: bitset, buf: bytearray }
+#   on chunk: write slice into buf[off..off+len]; mark received[chunk_idx]=1
+#   when popcount(received) == total_chunks: decode_blob(buf), drop key
+#   timeout 5 s without all chunks → drop key + warn
+
+MAX_MESHES_PER_BLOB: int = 32
+MAX_BLOB_SIZE: int = 4 * 1024 * 1024   # 4 MB hard ceiling
+
+# Chunk header sizes (for derivation; see classes below)
+_MESH_BLOB_OP_CHUNK_HEADER_SIZE: int = 12     # IIHH
+_MESH_BLOB_BCAST_CHUNK_HEADER_SIZE: int = 28  # 16+IIHH
+
+MESH_BLOB_OP_CHUNK_DATA_MAX: int = MAX_PAYLOAD_SIZE - _MESH_BLOB_OP_CHUNK_HEADER_SIZE     # 1388
+MESH_BLOB_BCAST_CHUNK_DATA_MAX: int = MAX_PAYLOAD_SIZE - _MESH_BLOB_BCAST_CHUNK_HEADER_SIZE  # 1372
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractedMesh:
+    """One BSGeometry leaf extracted from a modded weapon assembly.
+
+    `positions` is a flat tuple of 3*vert_count floats (xyz xyz xyz ...).
+    `indices`   is a flat tuple of 3*tri_count u16 (one triangle = 3 indices).
+    """
+    m_name: str
+    parent_placeholder: str
+    bgsm_path: str
+    vert_count: int
+    tri_count: int
+    local_transform: tuple   # 16 floats
+    positions: tuple         # 3 * vert_count floats
+    indices: tuple           # 3 * tri_count u16
+
+    _MESH_HDR: ClassVar[struct.Struct] = struct.Struct("<BBHHHI16f")
+    # Layout: u8 m_name_len, u8 parent_placeholder_len, u16 bgsm_path_len,
+    #         u16 vert_count, u16 reserved, u32 tri_count, 16 × f32 transform.
+    # Size = 1+1+2+2+2+4+64 = 76 bytes.
+
+    def encode(self) -> bytes:
+        m_name_b = self.m_name.encode("utf-8")[:255]
+        parent_b = self.parent_placeholder.encode("utf-8")[:255]
+        bgsm_b = self.bgsm_path.encode("utf-8")[:65535]
+        if len(self.positions) != 3 * self.vert_count:
+            raise ProtocolError(
+                f"ExtractedMesh: positions len {len(self.positions)} != 3*vc {3*self.vert_count}")
+        if len(self.indices) != 3 * self.tri_count:
+            raise ProtocolError(
+                f"ExtractedMesh: indices len {len(self.indices)} != 3*tc {3*self.tri_count}")
+        if len(self.local_transform) != 16:
+            raise ProtocolError(
+                f"ExtractedMesh: local_transform len {len(self.local_transform)} != 16")
+
+        head = self._MESH_HDR.pack(
+            len(m_name_b), len(parent_b), len(bgsm_b),
+            self.vert_count, 0, self.tri_count,
+            *self.local_transform,
+        )
+        positions_b = struct.pack(f"<{3*self.vert_count}f", *self.positions)
+        indices_b = struct.pack(f"<{3*self.tri_count}H", *self.indices)
+        return head + m_name_b + parent_b + bgsm_b + positions_b + indices_b
+
+    @classmethod
+    def decode_from(cls, data: bytes, offset: int = 0):
+        """Returns (mesh, bytes_consumed)."""
+        if offset + cls._MESH_HDR.size > len(data):
+            raise ProtocolError("ExtractedMesh: header truncated")
+        (m_name_len, parent_len, bgsm_len, vc, _resv, tc,
+         *xform) = cls._MESH_HDR.unpack_from(data, offset)
+        off = offset + cls._MESH_HDR.size
+        positions_size = 3 * vc * 4
+        indices_size = 3 * tc * 2
+        total_need = m_name_len + parent_len + bgsm_len + positions_size + indices_size
+        if off + total_need > len(data):
+            raise ProtocolError(
+                f"ExtractedMesh: body truncated: off={off} need={total_need} have={len(data)-off}")
+
+        m_name = data[off:off + m_name_len].decode("utf-8", errors="replace")
+        off += m_name_len
+        parent = data[off:off + parent_len].decode("utf-8", errors="replace")
+        off += parent_len
+        bgsm = data[off:off + bgsm_len].decode("utf-8", errors="replace")
+        off += bgsm_len
+
+        positions = struct.unpack_from(f"<{3*vc}f", data, off)
+        off += positions_size
+        indices = struct.unpack_from(f"<{3*tc}H", data, off)
+        off += indices_size
+
+        return cls(
+            m_name=m_name,
+            parent_placeholder=parent,
+            bgsm_path=bgsm,
+            vert_count=vc,
+            tri_count=tc,
+            local_transform=tuple(xform),
+            positions=tuple(positions),
+            indices=tuple(indices),
+        ), off - offset
+
+
+@dataclass(frozen=True, slots=True)
+class MeshBlobPayload:
+    """Top-level mesh blob (assembled from chunks on the receiver, or
+    serialized on the sender BEFORE chunking).
+
+    Encoded as a single linear byte buffer that's then split into
+    MeshBlobChunkPayload frames for transport. NOT sent directly as a
+    single frame — the encoded bytes are passed through the chunker.
+    """
+    item_form_id: int        # u32; correlates with EQUIP_OP/BCAST
+    equip_seq: int           # u32; sender's per-equip monotonic counter
+    meshes: tuple            # tuple[ExtractedMesh, ...]
+
+    _BLOB_HDR: ClassVar[struct.Struct] = struct.Struct("<IIBB")  # 10B
+
+    def encode(self) -> bytes:
+        n = len(self.meshes)
+        if n > MAX_MESHES_PER_BLOB:
+            raise ProtocolError(
+                f"MeshBlobPayload: {n} meshes > MAX_MESHES_PER_BLOB={MAX_MESHES_PER_BLOB}")
+        head = self._BLOB_HDR.pack(self.item_form_id, self.equip_seq, n, 0)
+        body = b"".join(m.encode() for m in self.meshes)
+        out = head + body
+        if len(out) > MAX_BLOB_SIZE:
+            raise ProtocolError(
+                f"MeshBlobPayload: encoded size {len(out)} > MAX_BLOB_SIZE={MAX_BLOB_SIZE}")
+        return out
+
+    @classmethod
+    def decode(cls, data: bytes) -> "MeshBlobPayload":
+        if len(data) < cls._BLOB_HDR.size:
+            raise ProtocolError("MeshBlobPayload: header truncated")
+        item_form_id, equip_seq, n, _resv = cls._BLOB_HDR.unpack_from(data, 0)
+        if n > MAX_MESHES_PER_BLOB:
+            raise ProtocolError(
+                f"MeshBlobPayload: num_meshes {n} > MAX={MAX_MESHES_PER_BLOB}")
+        meshes: list = []
+        off = cls._BLOB_HDR.size
+        for _ in range(n):
+            mesh, used = ExtractedMesh.decode_from(data, off)
+            meshes.append(mesh)
+            off += used
+        return cls(
+            item_form_id=item_form_id,
+            equip_seq=equip_seq,
+            meshes=tuple(meshes),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MeshBlobChunkPayload:
+    """Single MESH_BLOB_OP frame — one chunk of a serialized MeshBlobPayload.
+
+    Wire format (12 B header + chunk_data):
+        u32 equip_seq
+        u32 total_blob_size
+        u16 chunk_index
+        u16 total_chunks
+        N   chunk_data        (slice of the assembled blob)
+
+    The receiver buffers chunks keyed on (peer_id, equip_seq); when all
+    arrive it concatenates them in chunk_index order and decodes via
+    MeshBlobPayload.decode().
+    """
+    equip_seq: int
+    total_blob_size: int
+    chunk_index: int
+    total_chunks: int
+    chunk_data: bytes
+
+    _HDR: ClassVar[struct.Struct] = struct.Struct("<IIHH")  # 12B
+
+    def encode(self) -> bytes:
+        if len(self.chunk_data) > MESH_BLOB_OP_CHUNK_DATA_MAX:
+            raise ProtocolError(
+                f"MeshBlobChunkPayload: chunk_data {len(self.chunk_data)}B "
+                f"> MAX={MESH_BLOB_OP_CHUNK_DATA_MAX}")
+        return self._HDR.pack(
+            self.equip_seq, self.total_blob_size,
+            self.chunk_index, self.total_chunks,
+        ) + self.chunk_data
+
+    @classmethod
+    def decode(cls, data: bytes) -> "MeshBlobChunkPayload":
+        if len(data) < cls._HDR.size:
+            raise ProtocolError("MeshBlobChunkPayload: header truncated")
+        eq, sz, ci, tc = cls._HDR.unpack_from(data, 0)
+        return cls(
+            equip_seq=eq,
+            total_blob_size=sz,
+            chunk_index=ci,
+            total_chunks=tc,
+            chunk_data=bytes(data[cls._HDR.size:]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MeshBlobChunkBroadcastPayload:
+    """Server -> peers: one chunk of a serialized MeshBlobPayload, attributed.
+
+    Wire format (28 B header + chunk_data):
+        FixedString(16) peer_id
+        u32 equip_seq
+        u32 total_blob_size
+        u16 chunk_index
+        u16 total_chunks
+        N   chunk_data
+    """
+    peer_id: str
+    equip_seq: int
+    total_blob_size: int
+    chunk_index: int
+    total_chunks: int
+    chunk_data: bytes
+
+    _HDR: ClassVar[struct.Struct] = struct.Struct("<IIHH")  # 12B (post peer_id)
+
+    def encode(self) -> bytes:
+        if len(self.chunk_data) > MESH_BLOB_BCAST_CHUNK_DATA_MAX:
+            raise ProtocolError(
+                f"MeshBlobChunkBroadcastPayload: chunk_data {len(self.chunk_data)}B "
+                f"> MAX={MESH_BLOB_BCAST_CHUNK_DATA_MAX}")
+        return (
+            _encode_fixed_string(self.peer_id, MAX_CLIENT_ID_LEN)
+            + self._HDR.pack(
+                self.equip_seq, self.total_blob_size,
+                self.chunk_index, self.total_chunks,
+            )
+            + self.chunk_data
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "MeshBlobChunkBroadcastPayload":
+        peer_off = MAX_CLIENT_ID_LEN + 1
+        if len(data) < peer_off + cls._HDR.size:
+            raise ProtocolError("MeshBlobChunkBroadcastPayload: header truncated")
+        peer = _decode_fixed_string(data[:peer_off], MAX_CLIENT_ID_LEN)
+        eq, sz, ci, tc = cls._HDR.unpack_from(data, peer_off)
+        return cls(
+            peer_id=peer,
+            equip_seq=eq,
+            total_blob_size=sz,
+            chunk_index=ci,
+            total_chunks=tc,
+            chunk_data=bytes(data[peer_off + cls._HDR.size:]),
+        )
+
+
+def chunk_mesh_blob(blob_bytes: bytes,
+                    chunk_data_max: int = MESH_BLOB_OP_CHUNK_DATA_MAX
+                    ) -> "list[tuple[int, int, bytes]]":
+    """Split a serialized mesh blob into chunks.
+
+    Returns a list of (chunk_index, total_chunks, chunk_data) triples.
+    Caller wraps each in a MeshBlobChunkPayload (or BCAST variant) with
+    the per-equip equip_seq and total_blob_size.
+    """
+    if len(blob_bytes) > MAX_BLOB_SIZE:
+        raise ProtocolError(
+            f"chunk_mesh_blob: blob {len(blob_bytes)}B > MAX={MAX_BLOB_SIZE}")
+    if not blob_bytes:
+        return []
+    total_chunks = (len(blob_bytes) + chunk_data_max - 1) // chunk_data_max
+    if total_chunks > 0xFFFF:
+        raise ProtocolError(
+            f"chunk_mesh_blob: total_chunks {total_chunks} > u16 max")
+    out: list = []
+    off = 0
+    for ci in range(total_chunks):
+        end = min(off + chunk_data_max, len(blob_bytes))
+        out.append((ci, total_chunks, blob_bytes[off:end]))
+        off = end
+    return out
 
 
 @dataclass(frozen=True, slots=True)
@@ -1355,6 +1917,7 @@ Payload = Union[
     GlobalVarSetPayload, GlobalVarBroadcastPayload, GlobalVarStateBootPayload,
     DoorOpPayload, DoorBroadcastPayload,
     EquipOpPayload, EquipBroadcastPayload,
+    MeshBlobChunkPayload, MeshBlobChunkBroadcastPayload,
     RawMessage,
 ]
 
@@ -1389,6 +1952,8 @@ _TYPE_TO_PAYLOAD_CLS: dict[int, type] = {
     MessageType.DOOR_BCAST:            DoorBroadcastPayload,
     MessageType.EQUIP_OP:              EquipOpPayload,
     MessageType.EQUIP_BCAST:           EquipBroadcastPayload,
+    MessageType.MESH_BLOB_OP:          MeshBlobChunkPayload,
+    MessageType.MESH_BLOB_BCAST:       MeshBlobChunkBroadcastPayload,
 }
 
 

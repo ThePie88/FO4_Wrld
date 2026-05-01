@@ -93,6 +93,35 @@ void* get_cached_skeleton();
 // Returns the count of bone entries swapped, or -1 on error.
 int swap_skin_bones_to_skeleton(void* body_root, void* skel_root);
 
+// ---- M9 wedge 2 vault-suit-cycle regression fix (2026-05-01) -----------
+//
+// Problem: armor NIF gets cached by the engine's nif_load_by_path. After
+// detach + re-attach (e.g. peer cycles their Vault Suit), the SAME armor
+// pointer is returned. The bones_fb[] array still points to the cached
+// skel bones from the previous attach — but the engine may have freed
+// some of those bones during the equip-cycle on the LOCAL player. The
+// 2nd swap iteration only re-targets the bones whose names are still
+// readable, leaving the rest pointing to garbage memory. Render reads
+// garbage transforms → ghost looks broken or disappears entirely. After
+// N cycles, accumulated corruption causes a crash.
+//
+// Fix: at attach time, snapshot the bones_fb[] / bones_pri[] / skel_root
+// contents BEFORE the swap. At detach time, write those values back so
+// the cached NIF returns to a known-good state pointing at the original
+// "_skin" stub bones (which are kept alive by the existing increment-only
+// niptr_swap leak philosophy).
+//
+// Threading: same as swap_skin_bones_to_skeleton — main thread only.
+//
+// take_skin_snapshot returns 0 on success (snapshot stored), -1 on
+// error / no skin instances found. Call before any swap.
+//
+// restore_skin_from_snapshot returns 0 on success (snapshot found and
+// restored), 1 if no snapshot exists for this body_root (idempotent
+// no-op), -1 on error. Call before detach_child.
+int take_skin_snapshot(void* body_root);
+int restore_skin_from_snapshot(void* body_root);
+
 // Look up a bone NiNode by name in the cached skeleton tree. Returns
 // nullptr if no skeleton is cached or no matching name is found.
 // Useful for driving animations: get the bone, then write to its

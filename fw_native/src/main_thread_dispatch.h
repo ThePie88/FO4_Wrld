@@ -27,6 +27,10 @@
 #include <windows.h>
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <vector>
+
+#include "net/protocol.h"  // M9 w4 v8: NifDescriptor for witness pattern
 
 namespace fw::dispatch {
 
@@ -52,6 +56,7 @@ namespace fw::dispatch {
 constexpr UINT FW_MSG_CONTAINER_APPLY = WM_APP + 0x43;
 constexpr UINT FW_MSG_DOOR_APPLY      = WM_APP + 0x49;
 constexpr UINT FW_MSG_EQUIP_APPLY     = WM_APP + 0x4C;
+constexpr UINT FW_MSG_MESH_BLOB_APPLY = WM_APP + 0x4D;  // M9 w4 v9
 
 struct PendingContainerOp {
     std::uint32_t kind;               // 1=TAKE, 2=PUT
@@ -86,6 +91,14 @@ struct PendingEquipOp {
     std::uint8_t   kind;          // EquipOpKind (1=EQUIP, 2=UNEQUIP)
     std::uint32_t  slot_form_id;  // BGSEquipSlot.formID, 0 = auto
     std::int32_t   count;
+
+    // M9 w4 v8 — witness NIF descriptors. Sender walked its own BipedAnim
+    // post-equip; each descriptor names a mod .nif file the engine attached,
+    // its parent node name, and the local transform. Receiver replays in
+    // ghost_attach_weapon AFTER the base NIF is loaded and attached.
+    // Empty (nif_count=0) means stock weapon — no extra mods to attach.
+    std::uint8_t          nif_count;
+    fw::net::NifDescriptor nif_descs[fw::net::MAX_NIF_DESCRIPTORS];
 };
 
 // Net thread → enqueues op and posts FW_MSG_CONTAINER_APPLY to the FO4
@@ -112,6 +125,37 @@ void drain_door_apply_queue();
 //     loads via nif_load_by_path, attaches to ghost via attach_child_direct
 void enqueue_equip_apply(const PendingEquipOp& op);
 void drain_equip_apply_queue();
+
+// M9 wedge 4 v9 — raw mesh blob apply queue.
+// Receiver decodes the reassembled MESH_BLOB_BCAST into a sequence of
+// PendingMeshRecord (one per BSGeometry leaf the sender extracted), wraps
+// them in a PendingMeshBlob, posts FW_MSG_MESH_BLOB_APPLY to the FO4 main
+// window. Main thread drains and rebuilds each mesh on the matching peer's
+// ghost weapon root via the engine's clone factory (sub_14182FFD0).
+//
+// All buffers are owned (std::vector / std::string) — net thread builds
+// the struct from the decoded blob and the main thread reads it. Vectors
+// move in / out of the queue; no shared mutable state across threads.
+struct PendingMeshRecord {
+    std::string                m_name;
+    std::string                parent_placeholder;
+    std::string                bgsm_path;
+    std::uint16_t              vert_count = 0;
+    std::uint32_t              tri_count  = 0;
+    float                      local_transform[16] = {};
+    std::vector<float>         positions;   // 3 * vert_count floats
+    std::vector<std::uint16_t> indices;     // 3 * tri_count u16s
+};
+
+struct PendingMeshBlob {
+    char                          peer_id[16] = {};   // null-terminated, ASCII
+    std::uint32_t                 item_form_id = 0;   // pairs with EQUIP_BCAST
+    std::uint32_t                 equip_seq    = 0;   // sender's per-equip id
+    std::vector<PendingMeshRecord> meshes;
+};
+
+void enqueue_mesh_blob_apply(PendingMeshBlob op);
+void drain_mesh_blob_apply_queue();
 
 // Wires the HWND of the main FO4 window. Called exactly once from
 // main_menu_hook after SetWindowLongPtr succeeds. Also flushes any ops

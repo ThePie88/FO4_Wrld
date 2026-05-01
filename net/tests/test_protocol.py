@@ -24,6 +24,11 @@ from protocol import (  # noqa: E402
     QuestStateBootPayload, QuestStageStateEntry,
     GlobalVarSetPayload, GlobalVarBroadcastPayload,
     GlobalVarStateBootPayload, GlobalVarStateEntry,
+    ExtractedMesh, MeshBlobPayload,
+    MeshBlobChunkPayload, MeshBlobChunkBroadcastPayload,
+    MAX_MESHES_PER_BLOB, MAX_BLOB_SIZE,
+    MESH_BLOB_OP_CHUNK_DATA_MAX, MESH_BLOB_BCAST_CHUNK_DATA_MAX,
+    chunk_mesh_blob,
     RawMessage,
     encode_header, decode_header, encode_frame, decode_frame,
 )
@@ -343,3 +348,454 @@ class TestFullFrame:
 
 # keep import at bottom so test_max_size uses the correct constant
 from protocol import MAX_CLIENT_ID_LEN  # noqa: E402
+
+# === M9 wedge 4 v8 — witness NIF descriptor tail ============================
+from protocol import (  # noqa: E402
+    EquipOpPayload, EquipBroadcastPayload, EquipModRecord,
+    NifDescriptor, MAX_NIF_DESCRIPTORS, MAX_NIF_PATH_LEN, MAX_NIF_NAME_LEN,
+)
+
+
+class TestWitnessNifDescriptor:
+    """v8 NIF descriptor encode/decode + EquipOp tail integration."""
+
+    def _sample_xform(self, base: float = 0.0) -> tuple:
+        # 16 floats: rotation 3x4 (identity-ish) + translate + scale
+        return tuple(float(i) + base for i in range(16))
+
+    def test_descriptor_roundtrip(self):
+        d = NifDescriptor(
+            nif_path=r"Weapons\10mmPistol\Mods\Barrel_Long.nif",
+            parent_name="BarrelAttachNode",
+            local_transform=self._sample_xform(),
+        )
+        blob = d.encode()
+        decoded, used = NifDescriptor.decode_from(blob, 0)
+        assert used == len(blob)
+        assert decoded.nif_path == d.nif_path
+        assert decoded.parent_name == d.parent_name
+        assert decoded.local_transform == d.local_transform
+
+    def test_empty_strings_descriptor(self):
+        d = NifDescriptor(
+            nif_path="",
+            parent_name="",
+            local_transform=tuple(0.0 for _ in range(16)),
+        )
+        blob = d.encode()
+        decoded, used = NifDescriptor.decode_from(blob, 0)
+        assert used == len(blob)
+        assert decoded.nif_path == ""
+        assert decoded.parent_name == ""
+
+    def test_long_strings_truncated(self):
+        # encode silently truncates per the spec (cap at MAX_NIF_PATH_LEN)
+        long_path = "A" * (MAX_NIF_PATH_LEN + 50)
+        long_name = "B" * (MAX_NIF_NAME_LEN + 50)
+        d = NifDescriptor(long_path, long_name, self._sample_xform())
+        blob = d.encode()
+        decoded, _ = NifDescriptor.decode_from(blob, 0)
+        assert len(decoded.nif_path) == MAX_NIF_PATH_LEN
+        assert len(decoded.parent_name) == MAX_NIF_NAME_LEN
+
+    def test_invalid_xform_length_raises(self):
+        d = NifDescriptor("p", "n", local_transform=tuple(0.0 for _ in range(15)))
+        with pytest.raises(ValueError, match="16 floats"):
+            d.encode()
+
+    def test_truncated_blob_raises(self):
+        d = NifDescriptor("p", "n", self._sample_xform())
+        blob = d.encode()
+        with pytest.raises(ValueError):
+            NifDescriptor.decode_from(blob[:5], 0)
+
+
+class TestEquipOpV8:
+    """EquipOpPayload + EquipBroadcastPayload v8 tail roundtrip."""
+
+    def _make_descs(self, n: int) -> tuple:
+        return tuple(
+            NifDescriptor(
+                nif_path=fr"Weapons\Test\Mod{i}.nif",
+                parent_name=f"AttachNode{i}",
+                local_transform=tuple(float(i) + j for j in range(16)),
+            )
+            for i in range(n)
+        )
+
+    def test_op_roundtrip_with_nifs_no_omods(self):
+        descs = self._make_descs(3)
+        p = EquipOpPayload(
+            item_form_id=0x12345,
+            kind=1, slot_form_id=0x789, count=1,
+            timestamp_ms=12345,
+            mods=(),
+            nif_descs=descs,
+        )
+        blob = p.encode()
+        p2 = EquipOpPayload.decode(blob)
+        assert p2.item_form_id == p.item_form_id
+        assert p2.mods == ()
+        assert len(p2.nif_descs) == 3
+        for orig, dec in zip(descs, p2.nif_descs):
+            assert dec.nif_path == orig.nif_path
+            assert dec.parent_name == orig.parent_name
+            assert dec.local_transform == orig.local_transform
+
+    def test_op_roundtrip_with_omods_and_nifs(self):
+        omods = (
+            EquipModRecord(form_id=0x1, attach_index=0, rank=1, flag=0),
+            EquipModRecord(form_id=0x2, attach_index=0, rank=1, flag=0),
+        )
+        descs = self._make_descs(2)
+        p = EquipOpPayload(
+            item_form_id=0x42, kind=1, slot_form_id=0, count=1,
+            timestamp_ms=99, mods=omods, nif_descs=descs,
+        )
+        blob = p.encode()
+        p2 = EquipOpPayload.decode(blob)
+        assert len(p2.mods) == 2
+        assert p2.mods[0].form_id == 0x1
+        assert len(p2.nif_descs) == 2
+        assert p2.nif_descs[0].nif_path == descs[0].nif_path
+
+    def test_op_back_compat_with_omod_only(self):
+        # A v7-shaped buffer (no v8 NIF tail) must still decode cleanly
+        # with empty nif_descs.
+        omods = (EquipModRecord(0x1, 0, 1, 0),)
+        p = EquipOpPayload(
+            item_form_id=0xABC, kind=1, slot_form_id=0, count=1,
+            timestamp_ms=0, mods=omods, nif_descs=(),
+        )
+        blob = p.encode()
+        # Strip the NIF tail (1 trailing zero byte for nif_count=0)
+        blob_no_nif_tail = blob[:-1]
+        p2 = EquipOpPayload.decode(blob_no_nif_tail)
+        assert len(p2.mods) == 1
+        assert p2.nif_descs == ()
+
+    def test_op_cap_truncates_at_max_nif_descriptors(self):
+        # Encoding more than MAX_NIF_DESCRIPTORS silently truncates.
+        descs = self._make_descs(MAX_NIF_DESCRIPTORS + 5)
+        p = EquipOpPayload(
+            item_form_id=1, kind=1, slot_form_id=0, count=1,
+            timestamp_ms=0, mods=(), nif_descs=descs,
+        )
+        blob = p.encode()
+        p2 = EquipOpPayload.decode(blob)
+        assert len(p2.nif_descs) == MAX_NIF_DESCRIPTORS
+
+    def test_bcast_roundtrip_with_nifs(self):
+        descs = self._make_descs(2)
+        b = EquipBroadcastPayload(
+            peer_id="alice",
+            item_form_id=0x42, kind=1, slot_form_id=0, count=1,
+            timestamp_ms=99, mods=(), nif_descs=descs,
+        )
+        blob = b.encode()
+        b2 = EquipBroadcastPayload.decode(blob)
+        assert b2.peer_id == "alice"
+        assert len(b2.nif_descs) == 2
+        assert b2.nif_descs[0].parent_name == descs[0].parent_name
+
+    def test_op_no_tails(self):
+        # Pure v6-shaped payload (no OMODs, no NIFs) — but our encoder always
+        # writes a count byte. Decoder must tolerate a buffer with just
+        # the fixed payload and no count bytes (back compat with raw v6).
+        p_fixed = EquipOpPayload(
+            item_form_id=0x1, kind=1, slot_form_id=0, count=1,
+            timestamp_ms=0, mods=(), nif_descs=(),
+        )
+        blob = p_fixed.encode()
+        # encode produces fixed (21B) + 0x00 (mod_count) + 0x00 (nif_count) = 23B
+        assert len(blob) == EquipOpPayload._STRUCT.size + 2
+        # Truncate to fixed only (raw v6 simulation)
+        p2 = EquipOpPayload.decode(blob[:EquipOpPayload._STRUCT.size])
+        assert p2.mods == ()
+        assert p2.nif_descs == ()
+
+
+# =============================================================== M9.w4 v9
+#
+# MESH_BLOB chunked replication tests.
+#
+# Coverage:
+#   - ExtractedMesh roundtrip (header + variable-length strings + position
+#     and index arrays)
+#   - MeshBlobPayload roundtrip with multiple meshes
+#   - MeshBlobChunkPayload OP/BCAST roundtrip
+#   - chunk_mesh_blob() splits correctly + concatenation reproduces blob
+#   - Wire-format constants match protocol.h C++ side
+
+class TestExtractedMesh:
+    def _make_simple(self, vc=4, tc=2):
+        positions = tuple(float(i) for i in range(3 * vc))
+        indices = tuple(i % vc for i in range(3 * tc))
+        return ExtractedMesh(
+            m_name="Pistol10mmReceiver:0",
+            parent_placeholder="P-Receiver",
+            bgsm_path="Materials\\Weapons\\10mmPistol\\10mmPistol.BGSM",
+            vert_count=vc,
+            tri_count=tc,
+            local_transform=tuple(0.0 for _ in range(16)),
+            positions=positions,
+            indices=indices,
+        )
+
+    def test_roundtrip(self):
+        m = self._make_simple(vc=10, tc=4)
+        blob = m.encode()
+        # Header (76B) + name + parent + bgsm + 3*10*4 (positions) + 3*4*2 (indices)
+        expected_size = 76 + len(m.m_name) + len(m.parent_placeholder) \
+                        + len(m.bgsm_path) + 3 * 10 * 4 + 3 * 4 * 2
+        assert len(blob) == expected_size
+
+        m2, used = ExtractedMesh.decode_from(blob, 0)
+        assert used == len(blob)
+        assert m2.m_name == m.m_name
+        assert m2.parent_placeholder == m.parent_placeholder
+        assert m2.bgsm_path == m.bgsm_path
+        assert m2.vert_count == m.vert_count
+        assert m2.tri_count == m.tri_count
+        assert m2.positions == m.positions
+        assert m2.indices == m.indices
+
+    def test_decode_truncated_header(self):
+        with pytest.raises(ProtocolError):
+            ExtractedMesh.decode_from(b"\x00\x00", 0)
+
+    def test_decode_truncated_body(self):
+        m = self._make_simple()
+        blob = m.encode()
+        with pytest.raises(ProtocolError):
+            ExtractedMesh.decode_from(blob[:80], 0)  # cut mid-strings
+
+    def test_positions_length_mismatch_raises(self):
+        with pytest.raises(ProtocolError):
+            ExtractedMesh(
+                m_name="x", parent_placeholder="y", bgsm_path="z",
+                vert_count=4, tri_count=2,
+                local_transform=tuple(0.0 for _ in range(16)),
+                positions=(0.0, 0.0, 0.0),  # too short
+                indices=(0, 1, 2, 0, 2, 1),
+            ).encode()
+
+    def test_indices_length_mismatch_raises(self):
+        with pytest.raises(ProtocolError):
+            ExtractedMesh(
+                m_name="x", parent_placeholder="y", bgsm_path="z",
+                vert_count=2, tri_count=2,
+                local_transform=tuple(0.0 for _ in range(16)),
+                positions=tuple(float(i) for i in range(6)),
+                indices=(0, 1, 2),  # too short
+            ).encode()
+
+
+class TestMeshBlobPayload:
+    def _make_mesh(self, name, vc=3, tc=1):
+        return ExtractedMesh(
+            m_name=name,
+            parent_placeholder="P-X",
+            bgsm_path="Materials\\Weapons\\Test.BGSM",
+            vert_count=vc, tri_count=tc,
+            local_transform=tuple(float(i) for i in range(16)),
+            positions=tuple(float(i) for i in range(3 * vc)),
+            indices=tuple(i % vc for i in range(3 * tc)),
+        )
+
+    def test_single_mesh_roundtrip(self):
+        meshes = (self._make_mesh("Mesh0", vc=4, tc=2),)
+        p = MeshBlobPayload(item_form_id=0x1234, equip_seq=42, meshes=meshes)
+        blob = p.encode()
+        p2 = MeshBlobPayload.decode(blob)
+        assert p2.item_form_id == 0x1234
+        assert p2.equip_seq == 42
+        assert len(p2.meshes) == 1
+        assert p2.meshes[0].m_name == "Mesh0"
+        assert p2.meshes[0].vert_count == 4
+        assert p2.meshes[0].tri_count == 2
+
+    def test_multi_mesh_roundtrip(self):
+        meshes = tuple(
+            self._make_mesh(f"Mesh{i}", vc=10 + i, tc=4 + i)
+            for i in range(8)
+        )
+        p = MeshBlobPayload(item_form_id=0xABC, equip_seq=99, meshes=meshes)
+        blob = p.encode()
+        p2 = MeshBlobPayload.decode(blob)
+        assert len(p2.meshes) == 8
+        for i, m in enumerate(p2.meshes):
+            assert m.m_name == f"Mesh{i}"
+            assert m.vert_count == 10 + i
+            assert m.tri_count == 4 + i
+
+    def test_too_many_meshes_raises(self):
+        meshes = tuple(self._make_mesh(f"M{i}") for i in range(MAX_MESHES_PER_BLOB + 1))
+        with pytest.raises(ProtocolError):
+            MeshBlobPayload(item_form_id=1, equip_seq=1, meshes=meshes).encode()
+
+
+class TestMeshBlobChunk:
+    def test_op_roundtrip(self):
+        data = bytes(range(50))
+        c = MeshBlobChunkPayload(
+            equip_seq=7, total_blob_size=1000,
+            chunk_index=2, total_chunks=10, chunk_data=data,
+        )
+        blob = c.encode()
+        c2 = MeshBlobChunkPayload.decode(blob)
+        assert c2.equip_seq == 7
+        assert c2.total_blob_size == 1000
+        assert c2.chunk_index == 2
+        assert c2.total_chunks == 10
+        assert c2.chunk_data == data
+
+    def test_bcast_roundtrip(self):
+        data = bytes(range(50))
+        c = MeshBlobChunkBroadcastPayload(
+            peer_id="alice", equip_seq=7, total_blob_size=1000,
+            chunk_index=2, total_chunks=10, chunk_data=data,
+        )
+        blob = c.encode()
+        c2 = MeshBlobChunkBroadcastPayload.decode(blob)
+        assert c2.peer_id == "alice"
+        assert c2.equip_seq == 7
+        assert c2.total_blob_size == 1000
+        assert c2.chunk_index == 2
+        assert c2.total_chunks == 10
+        assert c2.chunk_data == data
+
+    def test_op_chunk_data_too_large_raises(self):
+        data = b"\x00" * (MESH_BLOB_OP_CHUNK_DATA_MAX + 1)
+        c = MeshBlobChunkPayload(
+            equip_seq=1, total_blob_size=1, chunk_index=0,
+            total_chunks=1, chunk_data=data,
+        )
+        with pytest.raises(ProtocolError):
+            c.encode()
+
+    def test_bcast_chunk_data_too_large_raises(self):
+        data = b"\x00" * (MESH_BLOB_BCAST_CHUNK_DATA_MAX + 1)
+        c = MeshBlobChunkBroadcastPayload(
+            peer_id="x", equip_seq=1, total_blob_size=1, chunk_index=0,
+            total_chunks=1, chunk_data=data,
+        )
+        with pytest.raises(ProtocolError):
+            c.encode()
+
+
+class TestChunkMeshBlob:
+    def test_empty_blob(self):
+        assert chunk_mesh_blob(b"") == []
+
+    def test_single_chunk(self):
+        blob = b"\x00" * 100
+        chunks = chunk_mesh_blob(blob)
+        assert len(chunks) == 1
+        ci, total, data = chunks[0]
+        assert ci == 0
+        assert total == 1
+        assert data == blob
+
+    def test_exact_chunk_boundary(self):
+        # Blob exactly fills one chunk → still 1 chunk, no leftover empty.
+        blob = b"\xAB" * MESH_BLOB_OP_CHUNK_DATA_MAX
+        chunks = chunk_mesh_blob(blob)
+        assert len(chunks) == 1
+        assert chunks[0][2] == blob
+
+    def test_two_chunks(self):
+        # Force a 2-chunk split.
+        blob = b"\xAB" * (MESH_BLOB_OP_CHUNK_DATA_MAX + 100)
+        chunks = chunk_mesh_blob(blob)
+        assert len(chunks) == 2
+        assert chunks[0][0] == 0
+        assert chunks[0][1] == 2
+        assert chunks[1][0] == 1
+        assert chunks[1][1] == 2
+        # Concatenation reproduces blob.
+        assert chunks[0][2] + chunks[1][2] == blob
+
+    def test_concatenation_reproduces_blob(self):
+        # Realistic: 80 KB blob (typical modded weapon) → ~58 chunks.
+        blob = bytes(range(256)) * 320   # 81920 bytes
+        chunks = chunk_mesh_blob(blob)
+        rebuilt = b"".join(d for _, _, d in chunks)
+        assert rebuilt == blob
+
+    def test_blob_too_large_raises(self):
+        with pytest.raises(ProtocolError):
+            chunk_mesh_blob(b"\x00" * (MAX_BLOB_SIZE + 1))
+
+
+class TestMeshBlobE2E:
+    """Integration: MeshBlobPayload → bytes → chunk → reassemble → decode."""
+
+    def test_roundtrip_through_chunks(self):
+        meshes = tuple(
+            ExtractedMesh(
+                m_name=f"Mesh{i}",
+                parent_placeholder=f"P-{i}",
+                bgsm_path=f"Materials\\Test\\m{i}.BGSM",
+                vert_count=20 + i,
+                tri_count=10 + i,
+                local_transform=tuple(float(j + i) for j in range(16)),
+                positions=tuple(float(j) for j in range(3 * (20 + i))),
+                indices=tuple(j % (20 + i) for j in range(3 * (10 + i))),
+            )
+            for i in range(5)
+        )
+        original = MeshBlobPayload(
+            item_form_id=0x42,
+            equip_seq=7,
+            meshes=meshes,
+        )
+        blob_bytes = original.encode()
+
+        # Chunk
+        chunks = chunk_mesh_blob(blob_bytes)
+        assert len(chunks) >= 1
+        # All chunks except the last are full-size.
+        for ci, total, data in chunks[:-1]:
+            assert len(data) == MESH_BLOB_OP_CHUNK_DATA_MAX
+        # Last chunk is partial (or full if blob hits boundary).
+        assert len(chunks[-1][2]) <= MESH_BLOB_OP_CHUNK_DATA_MAX
+
+        # Reassemble
+        rebuilt = b"".join(d for _, _, d in chunks)
+        assert rebuilt == blob_bytes
+
+        # Decode
+        decoded = MeshBlobPayload.decode(rebuilt)
+        assert decoded.item_form_id == 0x42
+        assert decoded.equip_seq == 7
+        assert len(decoded.meshes) == 5
+        for i, m in enumerate(decoded.meshes):
+            assert m.m_name == f"Mesh{i}"
+            assert m.vert_count == 20 + i
+            assert m.tri_count == 10 + i
+
+    def test_message_type_dispatch(self):
+        # Decoder can dispatch by msg_type.
+        c = MeshBlobChunkPayload(
+            equip_seq=1, total_blob_size=10, chunk_index=0,
+            total_chunks=1, chunk_data=b"\x00" * 10,
+        )
+        frame_bytes = encode_frame(MessageType.MESH_BLOB_OP, 1, c)
+        f = decode_frame(frame_bytes)
+        assert f.header.msg_type == MessageType.MESH_BLOB_OP
+        assert isinstance(f.payload, MeshBlobChunkPayload)
+        assert f.payload.equip_seq == 1
+        assert f.payload.chunk_data == b"\x00" * 10
+
+    def test_message_type_dispatch_bcast(self):
+        c = MeshBlobChunkBroadcastPayload(
+            peer_id="alice",
+            equip_seq=1, total_blob_size=10, chunk_index=0,
+            total_chunks=1, chunk_data=b"\x00" * 10,
+        )
+        frame_bytes = encode_frame(MessageType.MESH_BLOB_BCAST, 1, c)
+        f = decode_frame(frame_bytes)
+        assert f.header.msg_type == MessageType.MESH_BLOB_BCAST
+        assert isinstance(f.payload, MeshBlobChunkBroadcastPayload)
+        assert f.payload.peer_id == "alice"

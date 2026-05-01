@@ -10,6 +10,7 @@
 #include "../config.h"
 #include "../engine/engine_calls.h"
 #include "../ghost/actor_hijack.h"
+#include "equip_hook.h"  // M9 w4 v9: FW_MSG_DEFERRED_MESH_TX
 #include "../hook_manager.h"
 #include "../log.h"
 #include "../main_thread_dispatch.h"
@@ -131,6 +132,23 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     // See offsets.h "M9 wedge 2" comment block for layout + flow.
     if (msg == fw::dispatch::FW_MSG_EQUIP_APPLY) {
         fw::dispatch::drain_equip_apply_queue();
+        return 0;
+    }
+    // M9 wedge 4 v9: drain remote mesh-blob events. Each blob carries N
+    // BSGeometry leaves (positions + indices + per-mesh metadata) and the
+    // main thread reconstructs them on the matching ghost weapon root via
+    // the engine's clone factory. Like equip apply, this MUST run on the
+    // main thread (scene graph mutation; allocator TLS cookies).
+    if (msg == fw::dispatch::FW_MSG_MESH_BLOB_APPLY) {
+        fw::dispatch::drain_mesh_blob_apply_queue();
+        return 0;
+    }
+    // M9 w4 v9 deferred mesh-tx: 300ms post-equip walker re-run on the
+    // sender side. Lets the engine's runtime weapon assembly complete
+    // before we capture mesh data → fixes "walker returned 0 meshes"
+    // on rapid/subsequent equips.
+    if (msg == fw::hooks::FW_MSG_DEFERRED_MESH_TX) {
+        fw::hooks::on_deferred_mesh_tx_message();
         return 0;
     }
     // Z.2 (Path B): spawn ghost actor on main thread. PlaceAtMe is

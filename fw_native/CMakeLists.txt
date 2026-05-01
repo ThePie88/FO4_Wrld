@@ -50,6 +50,11 @@ add_library(fw_native SHARED
     src/native/scene_inject.cpp     # Strada B M1: native scene graph injection
     src/native/scene_walker.cpp     # Strada B M2.1: diagnostic scene graph walker
     src/native/skin_rebind.cpp      # M8P3 step 1: BSSkin::Instance diagnostic walker
+    src/native/nif_path_cache.cpp   # M9 w4 witness pattern step 1: NiAVObject*→path cache
+    src/native/weapon_witness.cpp   # M9 w4 witness pattern step 2: walker for player BipedAnim weapon subtree
+    src/native/bsgeo_input_cache.cpp # M9 w4 Path B-alt-1: factory input cache (BSTriShape* → vertex/index)
+    src/native/ni_alloc_tracker.cpp  # M9 w4 Path B-alt-2: pool allocator caller RIP capture
+    src/native/clone_factory_tracker.cpp # M9 w4: BSTriShape clone factory hook + hex dump
 )
 
 target_link_libraries(fw_native PRIVATE minhook)

@@ -39,6 +39,7 @@ from protocol import (  # noqa: E402
     GlobalVarStateBootPayload, GlobalVarStateEntry,
     DoorOpPayload, DoorBroadcastPayload,
     EquipOpPayload, EquipBroadcastPayload, EquipOpKind,
+    MeshBlobChunkPayload, MeshBlobChunkBroadcastPayload,
     encode_frame, decode_frame,
 )
 from server.state import ServerState, PeerSession, SessionState  # noqa: E402
@@ -179,6 +180,9 @@ class ServerProtocol(asyncio.DatagramProtocol):
             return
         if mtype == MessageType.EQUIP_OP:
             self._handle_equip_op(session, payload, now_ms)
+            return
+        if mtype == MessageType.MESH_BLOB_OP:
+            self._handle_mesh_blob_op(session, payload, now_ms)
             return
         if mtype == MessageType.CHAT:
             self._handle_chat(session, payload, now_ms)
@@ -742,6 +746,10 @@ class ServerProtocol(asyncio.DatagramProtocol):
                       session.peer_id)
             return
 
+        # M9.w4: forward the OMOD list AND the v8 witness NIF descriptors
+        # verbatim. Server doesn't interpret either tail — pure relay.
+        # Receiver uses OMOD list for diagnostics + future engine apply,
+        # NIF descriptors for the witness-pattern mod attach.
         broadcast = EquipBroadcastPayload(
             peer_id=session.peer_id,
             item_form_id=payload.item_form_id,
@@ -749,6 +757,8 @@ class ServerProtocol(asyncio.DatagramProtocol):
             slot_form_id=payload.slot_form_id,
             count=payload.count,
             timestamp_ms=payload.timestamp_ms,
+            mods=payload.mods,
+            nif_descs=payload.nif_descs,
         )
         for other in self.state.other_sessions(session.addr):
             raw = other.channel.send_reliable(
@@ -757,9 +767,68 @@ class ServerProtocol(asyncio.DatagramProtocol):
 
         kind_str = "EQUIP" if payload.kind == EquipOpKind.EQUIP else (
             "UNEQUIP" if payload.kind == EquipOpKind.UNEQUIP else f"?{payload.kind}?")
-        log.debug("equip_op %s item=0x%X slot=0x%X count=%d by %s",
-                  kind_str, payload.item_form_id, payload.slot_form_id,
-                  payload.count, session.peer_id)
+        log.debug(
+            "equip_op %s item=0x%X slot=0x%X count=%d mods=%d nifs=%d by %s",
+            kind_str, payload.item_form_id, payload.slot_form_id,
+            payload.count, len(payload.mods), len(payload.nif_descs),
+            session.peer_id)
+
+    def _handle_mesh_blob_op(self, session: PeerSession, payload, now_ms: float) -> None:
+        """M9 wedge 4 v9 — chunked mesh blob fan-out.
+
+        Pure relay, identical pattern to EQUIP_OP. The server doesn't
+        reassemble the blob (that costs RAM × peers and serves no
+        validation purpose for a PoC) — each chunk is forwarded to other
+        peers as MESH_BLOB_BCAST with the originating peer_id attached.
+
+        Receivers buffer chunks per (peer_id, equip_seq) and decode once
+        all arrive. Per-chunk reliable delivery means duplicates +
+        retransmits are handled by the channel layer; receiver de-dupes
+        on its end via chunk_received bitmap.
+
+        Performance note: a typical modded weapon ships ~80 KB across
+        ~60 chunks. With N peers we re-emit N*60 frames per equip event.
+        At 2 peers and one equip-cycle this is ~240 KB total — well within
+        a tick budget. If multi-peer sessions get heavier we'll batch
+        multiple chunks per UDP datagram (currently 1:1) and/or ship a
+        compressed blob via a single dedicated stream. Out of scope for
+        v0.4.0.
+        """
+        if not isinstance(payload, MeshBlobChunkPayload):
+            return
+        # Defensive: cap chunk_data and total_blob_size before re-emitting.
+        # Receiver already enforces these caps; server enforces them too so
+        # malformed senders don't waste fan-out bandwidth.
+        if payload.total_blob_size == 0:
+            log.debug("mesh_blob_op from %s: zero total_blob_size — drop",
+                      session.peer_id)
+            return
+        if payload.total_chunks == 0:
+            log.debug("mesh_blob_op from %s: zero total_chunks — drop",
+                      session.peer_id)
+            return
+
+        broadcast = MeshBlobChunkBroadcastPayload(
+            peer_id=session.peer_id,
+            equip_seq=payload.equip_seq,
+            total_blob_size=payload.total_blob_size,
+            chunk_index=payload.chunk_index,
+            total_chunks=payload.total_chunks,
+            chunk_data=payload.chunk_data,
+        )
+        for other in self.state.other_sessions(session.addr):
+            raw = other.channel.send_reliable(
+                MessageType.MESH_BLOB_BCAST, broadcast, now_ms)
+            self._send(other.addr, raw)
+
+        # Per-chunk logging would be too chatty. Log only the first and
+        # last chunks of each blob.
+        if payload.chunk_index == 0 or payload.chunk_index + 1 == payload.total_chunks:
+            log.debug(
+                "mesh_blob_op equip_seq=%u ci=%u/%u blob=%dB by %s",
+                payload.equip_seq,
+                payload.chunk_index, payload.total_chunks,
+                payload.total_blob_size, session.peer_id)
 
     def _handle_chat(self, session: PeerSession, payload, now_ms: float) -> None:
         if not isinstance(payload, ChatPayload):
