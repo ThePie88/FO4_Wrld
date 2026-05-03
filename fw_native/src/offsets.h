@@ -626,10 +626,89 @@ constexpr std::size_t TESOBJECTARMO_ADDON_COUNT_OFF    = 0x2B8;
 constexpr std::size_t TESOBJECTARMO_ADDON_ENTRY_STRIDE = 0x10;
 constexpr std::size_t TESOBJECTARMO_ADDON_ARMA_PTR_OFF = 0x08;
 
-constexpr std::size_t TESOBJECTARMA_MODEL_M3RD_OFF     = 0xD0;
-constexpr std::size_t TESOBJECTARMA_MODEL_F3RD_OFF     = 0x110;
+// === M9 wedge 2 PROPER — ARMA priority selection (M9_arma_select dossier) ====
+// Settled 2026-05-03 by 2 IDA agents (HIGH×HIGH consensus).
+//
+// Engine selects which ARMA to render via sub_1404626A0 (RVA 0x4626A0,
+// "TESObjectARMO::ForEachAddonInstance"). Algorithm walks the addon
+// array with a priority filter:
+//   - reqPrio source: InstanceData+0x56 (OMOD-modified) OR ARMO+0x2A6 (default)
+//   - per-addon priority: WORD at addon_entry+0 (within each 16-byte entry)
+//   - selection rules:
+//       * priority == 0       → always invoke ("always-on" parts)
+//       * priority == reqPrio → invoke (exact match)
+//       * else                → invoke highest priority value still ≤ reqPrio
+// Combat Armor 0x11D3C3 has 3 addon entries (priorities 1/2/3 = Lite/Mid/Heavy).
+// Heavy upgrade OMOD writes InstanceData+0x56 = 3 → engine renders Heavy.
+//
+// For ghost-side resolver: read ARMO+0x2A6 (default) for now; OMOD-modified
+// priority requires sender-side extraction via engine helper sub_140436820
+// + wire extension. (TODO: phase 3b).
+constexpr std::size_t TESOBJECTARMO_DEFAULT_PRIORITY_OFF        = 0x2A6;  // u16
+constexpr std::size_t TESOBJECTARMO_INSTANCEDATA_PRIORITY_OFF   = 0x56;   // u16 inside InstanceData
+constexpr std::size_t TESOBJECTARMO_ADDON_ENTRY_PRIORITY_OFF    = 0x00;   // u16 at start of each 16-byte addon entry
+
+// Engine helper that builds the [ARMO*, InstanceData*] holder pair given
+// (out, ARMO*, OIE*). Refcounts the InstanceData ptr; caller must Release.
+// See re/M9_arma_select_AGENT_A_r8_dec_140658DF0.txt for the canonical use
+// pattern. This is the API to use on sender to extract OMOD-effective
+// priority from the equipped item.
+constexpr std::uintptr_t OBJINSTANCE_BUILD_HOLDER_RVA           = 0x436820;
+
+// === ARMA TESModel offsets (CORRECTED 2026-05-03) ============================
+// Live data + agent A confirm:
+//   +0x50  = TESModel male   3rd-person  (worn) — what the ghost should render
+//   +0x90  = TESModel female 3rd-person  (worn)
+//   +0x150 = TESModel male   1st-person  (arms-only, FPS)
+//   +0x190 = TESModel female 1st-person
+// TESModel.path BSFixedString is at +0x08 within the TESModel struct.
+//
+// PREVIOUS (WRONG) values 0xD0 / 0x110 were inherited from an older dossier
+// that confused 3rd-person with some other slot. Live test of Vault Suit
+// 0x1EED7 shows `Vault111Suit.nif` at arma+0x50 (M3rd) and
+// `FemaleVault111Suit.nif` at arma+0x90 (F3rd) — see existing armor-resolve
+// log lines. Agent A also independently derived (isFemale<<6)+0x50 from
+// sub_14045F320 disasm.
+constexpr std::size_t TESOBJECTARMA_MODEL_M3RD_OFF     = 0x50;
+constexpr std::size_t TESOBJECTARMA_MODEL_F3RD_OFF     = 0x90;
+constexpr std::size_t TESOBJECTARMA_MODEL_M1ST_OFF     = 0x150;
+constexpr std::size_t TESOBJECTARMA_MODEL_F1ST_OFF     = 0x190;
 
 constexpr std::size_t TESMODEL_PATH_BSFIXEDSTR_OFF     = 0x08;
+
+// === M9 wedge 3 — TESObjectARMO biped slot mask ============================
+// Used for: hide ghost body when peer equips a slot-3 BODY armor (Vault Suit,
+// Power Armor, Synth Armor, etc.) — these REPLACE the entire body geometry,
+// so we set NIAV_FLAG_APP_CULLED on the ghost's BaseMaleBody:0 BSSubIndexTriShape
+// to prevent z-fighting under the armor mesh.
+//
+// LAYOUT:
+//   TESObjectARMO inherits BGSBipedObjectForm sub-component @ +0x1E0:
+//     +0x1E0  vtable BGSBipedObjectForm
+//     +0x1E8  uint32 bipedObjectSlots  (32-bit bitmask, slots 30..61 in xEdit
+//                                       UI = bit 0..31 internal index)
+//
+// VERIFIED 2026-05-02 by 2 independent IDA agents (M9w3_armo_biped_AGENT_A.md
+// and _B.md), HIGH × HIGH consensus. Evidence chains:
+//   - sub_140462370 (FinalizeAfterLoad) calls sub_1402FC780(a1+480, src+480)
+//     where sub_1402FC780 = BGSBipedObjectForm::CopyComponentFrom which reads
+//     *(uint32*)(this+8). So biped slots offset = 480 + 8 = 488 = 0x1E8.
+//   - MSVC RTTI ClassHierarchyDescriptor BCD[19] declares mdisp=0x1E0 for the
+//     BGSBipedObjectForm subobject inside TESObjectARMO.
+//   - sub_1405A4A10 (WornCoversBipedSlot worker) calls vt[7] (TestSlot) on
+//     (armo_ptr + 480), confirming the subobject placement.
+//
+// SLOT MAPPING (xEdit UI label → internal bit index → typical attach):
+//   slot  3 (mask 0x0008) = "33 - BODY"     ← FULL-BODY REPLACEMENT
+//   slot  6 (mask 0x0040) = "36 - [U] Torso"  (underwear-type torso)
+//   slot 11 (mask 0x0800) = "41 - [A] Torso"  (armor-type torso, additive)
+//   slot 30 (mask 0x40000000) = "60 - Pipboy"
+//   ... see M9_equipment_AGENT_B_dossier.txt §DELIVERABLE_2 for full table.
+//
+// For w3 we ONLY act on slot 3 BODY (mask 0x8). Other slots are handled by
+// natural geometry occlusion (additive attach already works).
+constexpr std::size_t   TESOBJECTARMO_BIPED_SLOTS_OFF = 0x1E8;  // u32 bitmask
+constexpr std::uint32_t BIPED_SLOT_BODY_MASK         = 0x00000008;  // bit 3 = "33 - BODY"
 
 // === M9 wedge 7 — TESObjectWEAP layout =====================================
 // Weapons (pistols, melee, rifles) attach to a SINGLE bone (typically the

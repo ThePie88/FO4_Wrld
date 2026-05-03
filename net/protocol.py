@@ -32,7 +32,7 @@ from typing import ClassVar, Union
 # ------------------------------------------------------------------ constants
 
 PROTOCOL_MAGIC: int = 0xFA
-PROTOCOL_VERSION: int = 9
+PROTOCOL_VERSION: int = 10
 # v9 (2026-04-30): M9 wedge 4 — raw mesh replication. New message types
 # MESH_BLOB_OP (client→server) and MESH_BLOB_BCAST (server→peers) carry
 # CHUNKS of a serialized mesh blob extracted from the local player's
@@ -1449,15 +1449,16 @@ class EquipOpPayload:
     slot_form_id: int    # u32 — BGSEquipSlot.formID, 0 = auto
     count: int           # i32 — stack count (always positive in practice)
     timestamp_ms: int    # u64 — sender wall clock for ordering
+    effective_priority: int = 0  # u16 — v10: OMOD-modified priority (or ARMO+0x2A6 default); 0 for non-ARMO
     mods: tuple = ()     # tuple[EquipModRecord, ...] — w4 OMOD list (empty if no mods)
     nif_descs: tuple = ()  # tuple[NifDescriptor, ...] — w4 v8 witness data
 
-    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IBIiQ")  # 4+1+4+4+8 = 21B (fixed)
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IBIiQH")  # v10: 4+1+4+4+8+2 = 23B (fixed)
 
     def encode(self) -> bytes:
         head = self._STRUCT.pack(
             self.item_form_id, self.kind, self.slot_form_id,
-            self.count, self.timestamp_ms,
+            self.count, self.timestamp_ms, self.effective_priority,
         )
         n = min(len(self.mods), MAX_EQUIP_MODS)
         omod_tail = bytes([n]) + b"".join(m.encode() for m in self.mods[:n])
@@ -1469,7 +1470,7 @@ class EquipOpPayload:
         if len(data) < cls._STRUCT.size:
             raise ValueError(
                 f"EquipOpPayload: expected >={cls._STRUCT.size} bytes, got {len(data)}")
-        ifid, kind, sfid, cnt, ts = cls._STRUCT.unpack(data[:cls._STRUCT.size])
+        ifid, kind, sfid, cnt, ts, eff_prio = cls._STRUCT.unpack(data[:cls._STRUCT.size])
         mods: tuple = ()
         omod_size = 0  # bytes consumed by the OMOD tail (incl count byte)
         # v7 OMOD tail (optional — older v6 senders won't include this)
@@ -1492,8 +1493,9 @@ class EquipOpPayload:
         # v8 NIF descriptor tail (after OMOD tail)
         nif_descs = _decode_nif_tail(data, cls._STRUCT.size + omod_size)
         return cls(item_form_id=ifid, kind=kind, slot_form_id=sfid,
-                   count=cnt, timestamp_ms=ts, mods=mods,
-                   nif_descs=nif_descs)
+                   count=cnt, timestamp_ms=ts,
+                   effective_priority=eff_prio,
+                   mods=mods, nif_descs=nif_descs)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1510,17 +1512,18 @@ class EquipBroadcastPayload:
     slot_form_id: int
     count: int
     timestamp_ms: int
+    effective_priority: int = 0  # u16 — v10: see EquipOpPayload
     mods: tuple = ()     # w4 OMOD list, mirror of EquipOpPayload.mods
     nif_descs: tuple = ()  # w4 v8 witness data, mirror of EquipOpPayload.nif_descs
 
-    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IBIiQ")  # 21B fixed
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IBIiQH")  # v10: 23B fixed
 
     def encode(self) -> bytes:
         head = (
             _encode_fixed_string(self.peer_id, MAX_CLIENT_ID_LEN)
             + self._STRUCT.pack(
                 self.item_form_id, self.kind, self.slot_form_id,
-                self.count, self.timestamp_ms,
+                self.count, self.timestamp_ms, self.effective_priority,
             )
         )
         n = min(len(self.mods), MAX_EQUIP_MODS)
@@ -1530,12 +1533,12 @@ class EquipBroadcastPayload:
 
     @classmethod
     def decode(cls, data: bytes) -> "EquipBroadcastPayload":
-        fixed = MAX_CLIENT_ID_LEN + 1 + cls._STRUCT.size  # 16 + 21 = 37
+        fixed = MAX_CLIENT_ID_LEN + 1 + cls._STRUCT.size  # v10: 16 + 23 = 39
         if len(data) < fixed:
             raise ValueError(
                 f"EquipBroadcastPayload: expected >={fixed} bytes, got {len(data)}")
         peer = _decode_fixed_string(data[: MAX_CLIENT_ID_LEN + 1], MAX_CLIENT_ID_LEN)
-        ifid, kind, sfid, cnt, ts = cls._STRUCT.unpack(
+        ifid, kind, sfid, cnt, ts, eff_prio = cls._STRUCT.unpack(
             data[MAX_CLIENT_ID_LEN + 1 : fixed])
         mods: tuple = ()
         omod_size = 0
@@ -1556,8 +1559,9 @@ class EquipBroadcastPayload:
                 omod_size = 1
         nif_descs = _decode_nif_tail(data, fixed + omod_size)
         return cls(peer_id=peer, item_form_id=ifid, kind=kind,
-                   slot_form_id=sfid, count=cnt, timestamp_ms=ts, mods=mods,
-                   nif_descs=nif_descs)
+                   slot_form_id=sfid, count=cnt, timestamp_ms=ts,
+                   effective_priority=eff_prio,
+                   mods=mods, nif_descs=nif_descs)
 
 
 # =================================================================== M9.w4 v9

@@ -141,7 +141,12 @@ void shutdown();
 //
 // Returns true if the operation completed without SEH or null-deref.
 // Logs success/failure details (NIF path, parent node ptr, error code).
-bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id);
+// effective_priority (v10, M9.w2 PROPER): OMOD-modified ARMA priority
+// extracted by sender via sub_140436820. 0 = use form default ARMO+0x2A6
+// (back-compat for non-ARMO or pre-v10 callers). Receiver feeds into
+// resolve_armor_nif_path's PrioritySelect filter.
+bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
+                        std::uint16_t effective_priority = 0);
 bool ghost_detach_armor(const char* peer_id, std::uint32_t item_form_id);
 
 // M9 wedge 2 — flush deferred armor ops accumulated while the ghost

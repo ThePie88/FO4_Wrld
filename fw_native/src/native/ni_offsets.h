@@ -250,6 +250,24 @@ constexpr std::size_t    BSDYNAMICTRISHAPE_SIZEOF     = 0x190;
 // we know the other direction was the mis-label.
 constexpr std::uintptr_t BSDYNAMICTRISHAPE_VTABLE_ALT_RVA = 0x0267F948;
 
+// BSSubIndexTriShape — multi-segment tri shape used for character bodies
+// (MaleBody.nif's BaseMaleBody:0 etc.). Inherits BSGeometry → BSTriShape →
+// BSDynamicTriShape → BSSubIndexTriShape; sizeof = 0x190.
+//
+// Settled 2026-05-02 by 2 independent IDA agents (A+B HIGH×HIGH consensus):
+// see re/M9w3_ssitf_vtable_AGENT_A.md / _B.md. Evidence chain:
+//   1. RTTI TD `BSSubIndexTriShape` @ 0x14309D948 → unique COL @ 0x142AA0170
+//      → vtable @ 0x142697D40 (RVA 0x2697D40). MSVC ClassHierarchyDescriptor
+//      lists the canonical 7-class chain BSSubIndexTriShape → BSTriShape →
+//      BSGeometry → NiAVObject → NiObjectNET → NiObject → NiRefObject.
+//   2. NIF parser `sub_1417F0550` registers "BSSubIndexTriShape" string with
+//      ctor `sub_1417E63A0`; the ctor at +0x82 writes 0x142697D40 as vptr.
+//   3. Reverse search of `.rdata`: only ONE COL anywhere references the
+//      BSSubIndexTriShape TD → the answer is unique.
+// Used by skin_rebind locally too (kBSSubIndexTriShapeVtRva) — single source
+// of truth here.
+constexpr std::uintptr_t BSSUBINDEXTRISHAPE_VTABLE_RVA = 0x02697D40;
+
 // ============================================================================
 // 8. BSGeometry property offsets  (dossier M2 §1-§3 — HIGH confidence)
 // ============================================================================

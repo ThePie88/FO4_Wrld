@@ -172,6 +172,7 @@ public:
                           std::uint32_t slot_form_id,
                           std::int32_t  count,
                           std::uint64_t timestamp_ms,
+                          std::uint16_t effective_priority = 0,  // v10: M9.w2 PROPER
                           const EquipModRecord* mods       = nullptr,
                           std::uint8_t          mod_count  = 0,
                           const NifDescriptor* nif_descs   = nullptr,

@@ -757,6 +757,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
             slot_form_id=payload.slot_form_id,
             count=payload.count,
             timestamp_ms=payload.timestamp_ms,
+            effective_priority=payload.effective_priority,  # v10
             mods=payload.mods,
             nif_descs=payload.nif_descs,
         )

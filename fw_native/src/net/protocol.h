@@ -65,6 +65,14 @@ constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
 //     Cap MAX_NIF_DESCRIPTORS = 8. Vanilla mods per weapon ≤6 typical; cap
 //     also bounded by MAX_PAYLOAD_SIZE (≈ 1100 B available for the NIF tail
 //     after fixed payload + OMOD records, ≈ 8 average descriptors).
+// v10: M9 wedge 2 PROPER (May 3 2026) — extends EQUIP_OP / EQUIP_BCAST
+//     fixed payload with `u16 effective_priority`. Sender extracts via engine
+//     helper sub_140436820 (ARMO_INSTANCE_HOLDER_BUILD): when OMOD InstanceData
+//     exists, reads its +0x56 priority; else falls back to ARMO+0x2A6 default.
+//     Receiver feeds it to PrioritySelect (RE'd from sub_1404626A0 = TES
+//     ObjectARMO::ForEachAddonInstance) to pick the OMOD-modified tier on the
+//     ghost (Combat Armor Heavy upgrade → priority=3 → Heavy ARMA renders
+//     instead of Lite). Sizeof bumped: EquipOpPayload 21→23, EquipBcast 37→39.
 // v7: M9 wedge 4 — extends EQUIP_OP / EQUIP_BCAST with a variable-length
 //     tail of OMOD attachments (BGSMod::Attachment::Mod form_ids). When
 //     a peer equips a modded weapon (e.g. 10mm pistol w/ Long Barrel +
@@ -97,7 +105,7 @@ constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
 //     back in CONTAINER_OP_ACK. Enables sender-side pre-mutation block
 //     (DLL waits on condvar keyed on op_id before letting the engine's
 //     AddObjectToContainer proceed). Closes the container dup race.
-constexpr std::uint8_t  PROTOCOL_VERSION  = 9;
+constexpr std::uint8_t  PROTOCOL_VERSION  = 10;
 constexpr std::size_t   HEADER_SIZE       = 12;
 constexpr std::size_t   MAX_PAYLOAD_SIZE  = 1400;
 constexpr std::size_t   MAX_FRAME_SIZE    = HEADER_SIZE + MAX_PAYLOAD_SIZE;
@@ -449,20 +457,29 @@ static_assert(sizeof(DoorBroadcastPayload) == 36, "DoorBroadcastPayload size");
 // explicit slot was passed), we record 0 and the receiver also lets the
 // engine auto-resolve.
 //
-// Wire layout — Python: I B I i Q  =  4+1+4+4+8 = 21 bytes (pack=1).
+// Wire layout — Python: I B I i Q H  =  4+1+4+4+8+2 = 23 bytes (pack=1).
+//
+// v10 added `effective_priority` (last u16) for M9.w2 PROPER ARMA tier
+// selection on the receiver. Sender extracts via the engine helper at
+// sub_140436820 — for ARMOs with OMOD InstanceData, reads InstanceData+0x56;
+// else falls back to ARMO+0x2A6. Receiver feeds it to PrioritySelect (the
+// algorithm RE'd from sub_1404626A0 / TESObjectARMO::ForEachAddonInstance)
+// so the right ARMA tier (Lite/Mid/Heavy) is picked. For non-ARMO forms
+// (weapons, ammo) the field is set to 0 and ignored.
 struct EquipOpPayload {
     std::uint32_t item_form_id;    // TESForm.formID (e.g. 0x1EED7 = Vault Suit 111)
     std::uint8_t  kind;            // EquipOpKind (1=equip, 2=unequip)
     std::uint32_t slot_form_id;    // BGSEquipSlot.formID, 0 = engine auto-pick
     std::int32_t  count;           // signed; in practice ≥1 (stack size)
     std::uint64_t timestamp_ms;    // sender wall clock for telemetry / ordering
+    std::uint16_t effective_priority; // v10: OMOD-modified priority (or ARMO+0x2A6 fallback)
 };
-static_assert(sizeof(EquipOpPayload) == 21, "EquipOpPayload size");
+static_assert(sizeof(EquipOpPayload) == 23, "EquipOpPayload size (v10)");
 
 // Server → other peers fan-out. Adds peer_id for attribution. Same shape
 // as DoorBroadcastPayload extended-with-peer-id.
 //
-// Wire layout — 16 (FixedClientId) + 21 (op fields) = 37 bytes.
+// Wire layout — 16 (FixedClientId) + 23 (op fields) = 39 bytes (v10).
 struct EquipBroadcastPayload {
     FixedClientId peer_id;         // 16 bytes ASCII + 1 null
     std::uint32_t item_form_id;
@@ -470,8 +487,9 @@ struct EquipBroadcastPayload {
     std::uint32_t slot_form_id;
     std::int32_t  count;
     std::uint64_t timestamp_ms;
+    std::uint16_t effective_priority; // v10: see EquipOpPayload comment
 };
-static_assert(sizeof(EquipBroadcastPayload) == 37, "EquipBroadcastPayload size");
+static_assert(sizeof(EquipBroadcastPayload) == 39, "EquipBroadcastPayload size (v10)");
 
 // === M9 wedge 4 — variable-length OMOD-list tail ============================
 // Protocol v7: appended AFTER the fixed EquipOpPayload (or

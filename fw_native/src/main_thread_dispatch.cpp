@@ -382,8 +382,12 @@ void drain_equip_apply_queue() {
         const bool is_equip = (op.kind == 1);
 
         // Pass 1 — try as ARMOR.
+        // M9.w2 PROPER (v10): pass effective_priority from the wire so
+        // resolve_armor_nif_path's PrioritySelect filter picks the right
+        // ARMA tier (Lite/Mid/Heavy) when OMOD upgrade is attached.
         bool ok = is_equip
-            ? fw::native::ghost_attach_armor(op.peer_id, op.item_form_id)
+            ? fw::native::ghost_attach_armor(op.peer_id, op.item_form_id,
+                                              op.effective_priority)
             : fw::native::ghost_detach_armor(op.peer_id, op.item_form_id);
 
         // Pass 2 — if armor returned false, try as WEAPON. The armor

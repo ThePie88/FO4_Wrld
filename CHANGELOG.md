@@ -5,6 +5,81 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## M9 v0.4.1 — wedge 2 PROPER + wedge 3 body cull (2026-05-03) — STABLE
+
+Two long-standing M9 limitations closed in this patch.
+
+**M9.w3 — Biped slot body cull** (fixes ghost body z-fighting under
+full-body armor like Vault Suit / Power Armor / Synth Armor):
+
+- RE'd `TESObjectARMO+0x1E8` = `bipedObjectSlots` u32 bitmask (HIGH×HIGH
+  consensus from 2 independent IDA agents, see
+  `re/M9w3_armo_biped_AGENT_A.md` / `_B.md`).
+- RE'd `BSSubIndexTriShape` vtable RVA `0x2697D40` (HIGH×HIGH, agents A+B).
+- Walker `find_first_bssitf` populates a cached `g_ghost_body_geom` pointer
+  at body inject time (before any armor attaches → unambiguous body
+  geometry pick). When peer equips a slot-3 BODY armor, `NIAV_FLAG_APP_CULLED`
+  bit is set on the cached node → body hidden under armor mesh.
+- Per-peer contributor set tracking handles concurrent BODY armors and
+  guarantees correct restore on last-detach.
+- Cache invalidated in `detach_debug_cube` together with `g_injected_cube`
+  so cell-change re-injects start from a clean state.
+- `BSSUBINDEXTRISHAPE_VTABLE_RVA` constant added to `ni_offsets.h`.
+
+**M9.w2 PROPER — OMOD-driven ARMA tier selection** (fixes Combat Armor
+Heavy/Mid upgrades rendering as Lite on ghost):
+
+- RE'd engine ARMA selection function `sub_1404626A0`
+  (`TESObjectARMO::ForEachAddonInstance`) at RVA `0x4626A0` — HIGH×HIGH
+  consensus from 2 independent IDA agents
+  (`re/M9_arma_select_AGENT_A.md` / `_B.md`).
+- Algorithm: walk `armo+0x2A8[]` addons (count `armo+0x2B8`, stride 16,
+  `ARMA*` at `entry+8`); per-entry priority WORD at `entry+0`; selection
+  rules — priority 0 always invoked, priority == reqPrio invoked exact,
+  else highest priority ≤ reqPrio.
+- Reimplemented PrioritySelect in `resolve_armor_nif_path` with pass-3
+  fallback (accept all addons when priority filter empty) so forms
+  with non-zero default priority still resolve.
+- Gender-fix: extended `path_is_female_variant` to recognize `F_<X>`
+  filename convention (Combat Armor `F_Torso_Lite.nif` etc.) — previously
+  scored 0 same as `M_Torso_Lite.nif`, resolver picked F arbitrarily.
+- Sender-side priority extraction via TTD-confirmed `object[1]`
+  (= `BGSObjectInstance.extra` field of `EquipObject` arg). Initial v10
+  attempt used `extract_equipped_mods` inventory walk, which returned a
+  DIFFERENT InstanceData pointer (default unmodded, priority=0). TTD
+  trace 2026-05-03 proved engine passes `r8 = object[1]` to the build-
+  holder helper, and that pointer holds the OMOD-applied priority at
+  `+0x56`. Fix is 1-line: `safe_read_item_extra(object)` instead of
+  inventory-derived OIE.
+- Wire protocol bumped v9 → v10. Added `u16 effective_priority` to
+  `EquipOpPayload` (21→23 B) and `EquipBroadcastPayload` (37→39 B).
+  Server pure relay. Receiver feeds priority to PrioritySelect filter.
+
+**Why this was hard**: agents initially mis-identified `sub_140436820` as
+"build [ARMO*, InstanceData*] holder" — actual disasm showed when OIE
+non-null the function leaves `holder[1] = OIE` (no InstanceData allocation).
+The engine maintains MULTIPLE InstanceData allocations per inventory item:
+one default (priority=0) and one OMOD-applied (priority=N). Inventory walk
+returns the default; only `BGSObjectInstance.extra` (the engine's
+explicit context pointer per equip event) routes to the right one. TTD
+side-by-side comparison of engine's `r8` arg vs our extracted OIE
+revealed the discrepancy.
+
+**Known residuals (deferred to next patch)**:
+
+- Texture / material variants (rusty vs clean armor) — same OIE pattern
+  but on shader/material level. M9.w6 wedge.
+- Vault Suit cycle SEH crash persists — engine internal AV during re-equip
+  corrupts state; ghost body / armor visibility breaks post-cycle. Mitigated
+  by anti-rottura auto-cycle at startup. Investigation deferred (needs
+  dedicated TTD trace).
+
+**Files**: `offsets.h`, `ni_offsets.h`, `scene_inject.cpp/h`, `equip_hook.cpp`,
+`main_thread_dispatch.cpp/h`, `protocol.h`, `client.cpp/h`, `protocol.py`,
+`server/main.py`. RE artifacts under `re/M9w3_*.md`, `re/M9_arma_select_*.md`.
+
+---
+
 ## M9 v0.4.0 — wedge 4 foundation: weapon mesh replication on ghost (2026-05-01) — PoC, NEEDS DEEP POLISH
 
 ▶ **[Video coming soon]**

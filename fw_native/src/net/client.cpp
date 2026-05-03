@@ -184,6 +184,7 @@ void Client::enqueue_equip_op(std::uint32_t item_form_id,
                               std::uint32_t slot_form_id,
                               std::int32_t  count,
                               std::uint64_t timestamp_ms,
+                              std::uint16_t effective_priority,
                               const EquipModRecord* mods,
                               std::uint8_t          mod_count,
                               const NifDescriptor*  nif_descs,
@@ -208,11 +209,12 @@ void Client::enqueue_equip_op(std::uint32_t item_form_id,
     if (nif_count > MAX_NIF_DESCRIPTORS) nif_count = MAX_NIF_DESCRIPTORS;
 
     EquipOpPayload p{};
-    p.item_form_id = item_form_id;
-    p.kind         = kind;
-    p.slot_form_id = slot_form_id;
-    p.count        = count;
-    p.timestamp_ms = timestamp_ms;
+    p.item_form_id       = item_form_id;
+    p.kind               = kind;
+    p.slot_form_id       = slot_form_id;
+    p.count              = count;
+    p.timestamp_ms       = timestamp_ms;
+    p.effective_priority = effective_priority;  // v10
 
     // Compute upper bound on payload size:
     //   fixed (21) + u8 mod_count + N×8 + u8 nif_count + sum(per-desc max)
@@ -1030,10 +1032,11 @@ void Client::dispatch(const Delivered& d) {
             (b.kind == static_cast<std::uint8_t>(EquipOpKind::UNEQUIP)) ? "UNEQUIP" :
                                                                           "?";
         FW_LOG("[equip-rx] EQUIP_BCAST peer=%s %s item=0x%X slot=0x%X count=%d "
-               "ts=%llu — enqueueing for main-thread apply",
+               "eff_prio=%u ts=%llu — enqueueing for main-thread apply",
                b.peer_id.get().c_str(),
                kind_str,
                b.item_form_id, b.slot_form_id, b.count,
+               static_cast<unsigned>(b.effective_priority),
                static_cast<unsigned long long>(b.timestamp_ms));
 
         // === Protocol v7 OMOD-list tail (M9.w4) ===
@@ -1120,11 +1123,12 @@ void Client::dispatch(const Delivered& d) {
         const std::size_t pn = peer.size() < 15 ? peer.size() : 15;
         std::memcpy(op.peer_id, peer.data(), pn);
         op.peer_id[pn] = 0;
-        op.item_form_id = b.item_form_id;
-        op.kind         = b.kind;
-        op.slot_form_id = b.slot_form_id;
-        op.count        = b.count;
-        op.nif_count    = nif_count;
+        op.item_form_id       = b.item_form_id;
+        op.kind               = b.kind;
+        op.slot_form_id       = b.slot_form_id;
+        op.count              = b.count;
+        op.effective_priority = b.effective_priority;  // v10
+        op.nif_count          = nif_count;
         if (nif_count > 0) {
             std::memcpy(op.nif_descs, nif_descs,
                         nif_count * sizeof(NifDescriptor));

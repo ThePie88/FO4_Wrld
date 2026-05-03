@@ -92,6 +92,14 @@ struct PendingEquipOp {
     std::uint32_t  slot_form_id;  // BGSEquipSlot.formID, 0 = auto
     std::int32_t   count;
 
+    // M9 w2 PROPER (v10) — OMOD-modified ARMA priority. Sender extracts via
+    // engine helper sub_140436820 from the equipped item's InstanceData+0x56
+    // (or ARMO+0x2A6 default). Receiver feeds it to resolve_armor_nif_path's
+    // PrioritySelect filter (RE'd from sub_1404626A0 = TESObjectARMO::
+    // ForEachAddonInstance) so the right ARMA tier (Lite/Mid/Heavy) is
+    // picked. 0 means "use default" (form has no OMOD or non-ARMO form).
+    std::uint16_t  effective_priority;
+
     // M9 w4 v8 — witness NIF descriptors. Sender walked its own BipedAnim
     // post-equip; each descriptor names a mod .nif file the engine attached,
     // its parent node name, and the local transform. Receiver replays in

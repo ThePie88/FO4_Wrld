@@ -306,6 +306,28 @@ void* safe_read_item_form(void** object) {
     }
 }
 
+// Extract item BGSObjectInstanceExtra* (= the OMOD-applied InstanceData
+// holder) from BGSObjectInstance.extra slot at obj[1]. CONFIRMED via
+// TTD trace 2026-05-03: this matches EXACTLY the OIE pointer the engine
+// passes as 3rd arg of sub_140436820 (BUILD-HOLDER) for the same equip
+// event. Extracting OIE via inventory walk (extract_equipped_mods)
+// returns a DIFFERENT, "default" InstanceData that has priority=0
+// regardless of OMOD upgrades. object[1] is the engine's authoritative
+// pointer with the OMOD-applied priority field at +0x56 ready to read.
+//
+// May be null when engine wants the helper to recompute defaults from
+// the form (rare for equip events where the inventory-resolved instance
+// is always present). Caller should fall back to ARMO+0x2A6 default
+// priority in that case (already handled inside seh_compute_effective_priority).
+void* safe_read_item_extra(void** object) {
+    if (!object) return nullptr;
+    __try {
+        return object[1];
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
 // Is `actor` the local PlayerCharacter? Filter: actor's TESForm.formID
 // must be PLAYER_FORMID (0x14). We only want to broadcast events the
 // LOCAL player triggered — not NPC equip changes (combat AI swaps,
@@ -340,6 +362,69 @@ bool seh_read_qword_w4(void* addr, std::uint64_t* out) {
         *out = 0;
         return false;
     }
+}
+
+// M9.w2 PROPER (May 3 2026) — POD-only helper that calls the engine's
+// sub_140436820(holder, ARMO*, OIE*) to build the [ARMO*, InstanceData*]
+// pair, reads InstanceData+0x56 (OMOD-effective priority) if non-null
+// or ARMO+0x2A6 (form default) if null, then refcount-releases the
+// holder's InstanceData ptr per the engine's own pattern (see decomp of
+// sub_140658DF0 line 28-39 in re/M9_arma_select_AGENT_A_r8_dec_140658DF0.txt).
+//
+// Lives in the SEH POD-only zone (no std::vector / no FW_LOG inside __try)
+// so the OUTER caller (which uses std::vector mods) doesn't trip C2712.
+//
+// Returns 0 on any SEH or null inputs — caller treats 0 as "use default
+// priority" downstream (the receiver's resolve_armor_nif_path falls back
+// to reading ARMO+0x2A6 itself when wire priority is 0).
+std::uint16_t seh_compute_effective_priority(void* item_form,
+                                              void* oie,
+                                              std::uintptr_t module_base) {
+    if (!item_form || module_base == 0) return 0;
+
+    using BuildHolderFn = void (__fastcall*)(void**, void*, void*);
+    auto build_holder = reinterpret_cast<BuildHolderFn>(
+        module_base + fw::offsets::OBJINSTANCE_BUILD_HOLDER_RVA);
+
+    void* holder[2] = {nullptr, nullptr};
+    __try {
+        build_holder(holder, item_form, oie);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        holder[0] = nullptr;
+        holder[1] = nullptr;
+    }
+
+    std::uint16_t prio = 0;
+    __try {
+        if (holder[1]) {
+            prio = *reinterpret_cast<std::uint16_t*>(
+                reinterpret_cast<char*>(holder[1]) +
+                fw::offsets::TESOBJECTARMO_INSTANCEDATA_PRIORITY_OFF);
+        } else {
+            prio = *reinterpret_cast<std::uint16_t*>(
+                reinterpret_cast<char*>(item_form) +
+                fw::offsets::TESOBJECTARMO_DEFAULT_PRIORITY_OFF);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        prio = 0;
+    }
+
+    // Release holder[1] refcount (NiPointer-style; same pattern as the
+    // engine's call site in sub_140658DF0).
+    if (holder[1]) {
+        __try {
+            long* rc = reinterpret_cast<long*>(
+                reinterpret_cast<char*>(holder[1]) + 8);
+            if (_InterlockedDecrement(rc) == 0) {
+                auto vt = *reinterpret_cast<void (__fastcall***)
+                    (void*, char)>(holder[1]);
+                vt[0](holder[1], 1);
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            // Refcount release SEH'd — leak rather than crash.
+        }
+    }
+    return prio;
 }
 
 // SEH-protected dword read.
@@ -506,9 +591,11 @@ struct ExtractedMod {
 bool extract_equipped_mods(void* actor,
                            std::uint32_t weap_form_id,
                            std::uintptr_t module_base,
-                           std::vector<ExtractedMod>& out)
+                           std::vector<ExtractedMod>& out,
+                           void** out_oie = nullptr)
 {
     out.clear();
+    if (out_oie) *out_oie = nullptr;
     if (!actor || weap_form_id == 0) return false;
 
     // 1) Get inventory list ptr at actor + 0xF8 (REFR_INV_LIST_OFF)
@@ -592,6 +679,12 @@ bool extract_equipped_mods(void* actor,
                 offsets::INV_STACK_NEXT_OFF, &next_ptr)) break;
         stack = reinterpret_cast<void*>(next_ptr);
     }
+
+    // M9.w2 PROPER (May 3 2026): expose the OIE pointer to the caller so
+    // it can compute the OMOD-effective ARMA priority via sub_140436820.
+    // We populate this even when the records walk fails — the caller may
+    // still want to call the engine helper to confirm "no priority override".
+    if (out_oie) *out_oie = oie;
 
     if (!oie) {
         // No OIE → weapon is in default config (no mods to ship). Silent.
@@ -703,6 +796,36 @@ char __fastcall detour_equip_object(
     std::vector<ExtractedMod> mods;
     extract_equipped_mods(actor, item_form_id, g_module_base, mods);
 
+    // === M9.w2 PROPER priority extraction (corrected May 3 2026) ===
+    //
+    // Read OIE directly from `object[1]` (= BGSObjectInstance.extra) — this
+    // is the engine's OWN authoritative OMOD-applied InstanceData pointer
+    // for THIS specific equip event. CONFIRMED via TTD trace:
+    //
+    //   ENGINE: sub_140436820 entry r8(OIE) = 0000013b8d76f0d8
+    //   OURS  : object[1]              = 0000013b8d76f0d8  ← MATCH!
+    //
+    // First-attempt v10 used the OIE returned by extract_equipped_mods'
+    // inventory walk, which gave a DIFFERENT pointer (0000013b8b538a78)
+    // pointing to a "default unmodded" InstanceData — priority field at
+    // +0x56 was 0 regardless of attached OMOD upgrades. The engine has
+    // multiple InstanceData allocations per inventory item; only the one
+    // BGSObjectInstance carries (object[1]) holds the post-OMOD priority.
+    //
+    // seh_compute_effective_priority handles null-OIE gracefully by
+    // falling back to ARMO+0x2A6 default priority.
+    void* oie_from_object = safe_read_item_extra(object);
+
+    std::uint16_t effective_prio = 0;
+    if (item_form && g_module_base) {
+        effective_prio = seh_compute_effective_priority(
+            item_form, oie_from_object, g_module_base);
+        FW_DBG("[w2-prio] form=0x%X effective_prio=%u "
+               "(object[1]=%p, source=BGSObjectInstance.extra)",
+               item_form_id, static_cast<unsigned>(effective_prio),
+               oie_from_object);
+    }
+
     // Convert to wire-format records (8 B each, pad zeroed in client::
     // enqueue_equip_op).
     std::vector<fw::net::EquipModRecord> wire_mods;
@@ -758,6 +881,7 @@ char __fastcall detour_equip_object(
         slot_form_id,
         count,
         now_ms(),
+        effective_prio,  // v10 — M9.w2 PROPER OMOD priority
         wire_mods.empty() ? nullptr : wire_mods.data(),
         mod_count,
         /*nif_descs=*/nullptr,
@@ -862,6 +986,7 @@ char __fastcall detour_equip_object(
                 slot_form_id,
                 count,
                 now_ms(),
+                effective_prio,  // v10 — same priority as stage 1
                 wire_mods.empty() ? nullptr : wire_mods.data(),
                 mod_count,
                 wire_nif_descs,

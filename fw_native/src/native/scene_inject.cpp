@@ -33,6 +33,7 @@
 #include <thread>
 #include <deque>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "../log.h"
@@ -368,6 +369,43 @@ std::atomic<void*>      g_injected_cube{nullptr};
 // head gets pitch only. Without this decoupling, remote looking up
 // rotates the entire body like a tree trunk (user report).
 std::atomic<void*>      g_injected_head{nullptr};
+
+// M9 wedge 3 (2026-05-02 / refined 2026-05-03): cached LIST of ghost body
+// BSSubIndexTriShape pointers — one per BSSITF found in the body NIF tree.
+//
+// Why a list: live diagnostic on May 3 revealed MaleBody.nif's loaded tree
+// contains TWO BSSubIndexTriShape nodes (count=2 from `[body-tree-dump] DONE`),
+// not one as initially assumed. Hiding only the FIRST (the previous behavior)
+// left the second one visible, producing the "head + floating hands" effect
+// after equip/unequip cycles — the second BSSITF (likely hands/face geometry
+// that the body NIF carries internally) wasn't culled.
+//
+// Populated ONCE at body inject time (before any armor attaches) by walking
+// the body NIF tree for ALL nodes whose vtable RVA == BSSUBINDEXTRISHAPE_VTABLE_RVA.
+// Cleared at detach_debug_cube together with g_injected_cube.
+//
+// Protected by g_body_cull_mtx (declared just below) — same lock that already
+// guards the body-cull contributor set. Not atomic because we read/write the
+// whole vector together.
+std::vector<void*>      g_ghost_body_geoms;
+
+// M9 wedge 3 — body-cull contributor tracking ===============================
+// Per-peer set of form_ids of currently-attached "slot 3 BODY" armors (Vault
+// Suit, Power Armor, Synth Armor, etc.). When the set transitions empty→non-
+// empty for a peer, we set NIAV_FLAG_APP_CULLED on that ghost's body BSSITF
+// (the cached g_ghost_body_geom). Empty→non-empty triggers cull; non-empty→
+// empty triggers restore. We use a SET rather than a refcount so re-attaching
+// the SAME form (idempotent ghost_attach_armor on duplicate equip-cycle
+// broadcasts) doesn't inflate count and leave body permanently hidden after
+// detach.
+//
+// Lives at fw::native top-level (not in the armor helpers anon namespace at
+// line ~2900) because detach_debug_cube needs to clear this set in lockstep
+// with cube destruction — and detach_debug_cube lives ABOVE the armor helpers
+// namespace block. Use static/anon-ns linkage by being defined in this TU only.
+std::mutex g_body_cull_mtx;
+std::unordered_map<std::string, std::unordered_set<std::uint32_t>>
+    g_body_cull_contributors;
 
 bool resolve_once() {
     if (g_resolved.load(std::memory_order_acquire)) return true;
@@ -2486,6 +2524,173 @@ unsigned int get_attach_count() {
     return g_attach_count.load(std::memory_order_relaxed);
 }
 
+// --- M9 wedge 3 — body geom cache populator ------------------------------
+// Self-contained name reader (the seh_read_node_name_w4 helper lives later
+// in the file in the weapon-helpers anon ns). Reads NIAV_NAME_OFF=+0x10
+// BSFixedString handle, double-derefs to the c_str. Returns true with
+// printable ASCII in `buf` on success.
+static bool seh_read_name_diag(void* node, char* buf, std::size_t bufsz) {
+    if (!node || !buf || bufsz < 2) return false;
+    buf[0] = 0;
+    std::uint64_t handle = 0;
+    __try {
+        handle = *reinterpret_cast<std::uint64_t*>(
+            reinterpret_cast<char*>(node) + NIAV_NAME_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+    if (!handle) return false;
+    // Try double-deref first (BSFixedString stores ptr-to-string in slot).
+    __try {
+        const char* inner = *reinterpret_cast<const char* const*>(handle);
+        if (inner) {
+            std::size_t i = 0;
+            for (; i < bufsz - 1 && inner[i]; ++i) {
+                const char c = inner[i];
+                if (c < 0x20 || c > 0x7E) { i = 0; break; }
+                buf[i] = c;
+            }
+            buf[i] = 0;
+            if (i > 0) return true;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    // Fallback to single-deref (some FixedStrings are inlined).
+    __try {
+        const char* s = reinterpret_cast<const char*>(handle);
+        std::size_t i = 0;
+        for (; i < bufsz - 1 && s[i]; ++i) {
+            const char c = s[i];
+            if (c < 0x20 || c > 0x7E) { i = 0; break; }
+            buf[i] = c;
+        }
+        buf[i] = 0;
+        return i > 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// Recursive walker: returns the FIRST BSSubIndexTriShape (vtable RVA ==
+// BSSUBINDEXTRISHAPE_VTABLE_RVA = 0x2697D40) found in `root`'s subtree.
+// Self-contained (own SEH cages) so it doesn't depend on the seh_read_*_w4
+// helpers defined later in the file (forward-reference would prevent it
+// from being callable from inject_debug_cube here at line 2503+).
+//
+// Used at body inject time (BEFORE any armor attaches, so the tree only
+// contains the body NIF). At that moment the first BSSubIndexTriShape is
+// unambiguously the body's "BaseMaleBody:0" geometry. The result is
+// cached in g_ghost_body_geom; ghost_attach_armor / ghost_detach_armor
+// read it via find_ghost_body_geom() to flip NIAV_FLAG_APP_CULLED on.
+//
+// Why vtable instead of name match: a first iteration (May 2 2026) tried
+// `find_node_by_name_w4(root, "BaseMaleBody:0")` and consistently returned
+// nullptr in production logs (`body=0000000000000000 set-flag failed`).
+// Vtable check at NiAVObject+0 is invariant across runtime — every
+// BSSubIndexTriShape shares the same vptr regardless of its name. Settled
+// by 2 IDA agents (M9w3_ssitf_vtable_AGENT_A.md / _B.md, HIGH×HIGH).
+//
+// Diagnostic mode (May 3 2026): now also logs the NAME of every BSSITF
+// encountered during the walk. Goal: confirm the cached pointer is actually
+// "BaseMaleBody:0" and not some unrelated sub-mesh that happens to share
+// the BSSITF vtable. If we find multiple BSSITFs, we still return the
+// first hit (preserves old behavior) but log all names so we can adjust
+// the heuristic if needed.
+static void* find_first_bssitf(void* root, int depth = 0, int max_depth = 32) {
+    if (!root || depth > max_depth || g_r.base == 0) return nullptr;
+
+    // Vtable check on this node first.
+    std::uintptr_t vt_addr = 0;
+    __try {
+        vt_addr = *reinterpret_cast<std::uintptr_t*>(root);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+
+    if (vt_addr >= g_r.base) {
+        const std::uintptr_t vt_rva = vt_addr - g_r.base;
+        if (vt_rva == BSSUBINDEXTRISHAPE_VTABLE_RVA) {
+            // Diagnostic: log the name of this BSSITF so we know which
+            // node we're caching. Helps debug "body cull hides wrong node"
+            // suspicions when the visible result looks off.
+            char nm[96] = {0};
+            (void)seh_read_name_diag(root, nm, sizeof(nm));
+            FW_LOG("[body-cache] BSSITF found node=%p depth=%d name='%s'",
+                   root, depth, nm);
+            return root;
+        }
+    }
+
+    // Recurse into children. Only valid for NiNode-derived nodes; for
+    // BSGeometry leaves the +0x128 / +0x132 reads return garbage which is
+    // either filtered by the count<=256 cap or yields a recursive walk
+    // that bottoms out via SEH on bad pointers. Either way we tolerate it.
+    void** kids = nullptr;
+    std::uint16_t count = 0;
+    __try {
+        char* nb = reinterpret_cast<char*>(root);
+        kids  = *reinterpret_cast<void***>(nb + NINODE_CHILDREN_PTR_OFF);
+        count = *reinterpret_cast<std::uint16_t*>(
+            nb + NINODE_CHILDREN_CNT_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+
+    if (!kids || count == 0 || count > 256) return nullptr;
+
+    for (std::uint16_t i = 0; i < count; ++i) {
+        void* k = nullptr;
+        __try { k = kids[i]; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { continue; }
+        if (!k) continue;
+        void* hit = find_first_bssitf(k, depth + 1, max_depth);
+        if (hit) return hit;
+    }
+    return nullptr;
+}
+
+// Walk entire body NIF tree and PUSH every BSSubIndexTriShape found into
+// `out` (also logs name+addr+depth for each). Used at body inject time to
+// build the cache list `g_ghost_body_geoms`. Empirically MaleBody.nif's
+// tree contains 2 BSSITFs (May 3 2026 diagnostic dump), and we hide all
+// of them when a slot-3 BODY armor is equipped.
+//
+// Returns total count pushed (caller can also read out->size()).
+static int collect_all_bssitf_recursive(void* root, std::vector<void*>* out,
+                                         int depth = 0, int max_depth = 32) {
+    if (!root || depth > max_depth || g_r.base == 0 || !out) return 0;
+
+    std::uintptr_t vt_addr = 0;
+    __try {
+        vt_addr = *reinterpret_cast<std::uintptr_t*>(root);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+
+    if (vt_addr >= g_r.base) {
+        const std::uintptr_t vt_rva = vt_addr - g_r.base;
+        if (vt_rva == BSSUBINDEXTRISHAPE_VTABLE_RVA) {
+            char nm[96] = {0};
+            (void)seh_read_name_diag(root, nm, sizeof(nm));
+            FW_LOG("[body-tree-dump]   BSSITF #%zu node=%p depth=%d name='%s'",
+                   out->size(), root, depth, nm);
+            out->push_back(root);
+            // Don't recurse INTO BSSITF (it's a leaf geometry, no NiNode children).
+            return 1;
+        }
+    }
+
+    void** kids = nullptr;
+    std::uint16_t count = 0;
+    __try {
+        char* nb = reinterpret_cast<char*>(root);
+        kids  = *reinterpret_cast<void***>(nb + NINODE_CHILDREN_PTR_OFF);
+        count = *reinterpret_cast<std::uint16_t*>(
+            nb + NINODE_CHILDREN_CNT_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+
+    if (!kids || count == 0 || count > 256) return 0;
+
+    int total = 0;
+    for (std::uint16_t i = 0; i < count; ++i) {
+        void* k = nullptr;
+        __try { k = kids[i]; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { continue; }
+        if (!k) continue;
+        total += collect_all_bssitf_recursive(k, out, depth + 1, max_depth);
+    }
+    return total;
+}
+
 // --- M2.2 API --------------------------------------------------------------
 
 bool inject_debug_cube(float x, float y, float z) {
@@ -2514,6 +2719,43 @@ bool inject_debug_cube(float x, float y, float z) {
         FW_LOG("[native] inject_cube (M5 body): SUCCESS body=%p "
                "pos=(%.1f, %.1f, %.1f)", body, x, y, z);
 
+        // M9 wedge 3 (2026-05-02): populate the body geometry cache HERE,
+        // BEFORE flush_pending_armor_ops below. Reason: the flush replays
+        // queued equip events which call ghost_attach_armor → body_cull_*
+        // → find_ghost_body_geom (cache reader). If the cache isn't ready
+        // when the first replayed equip arrives, body cull silently no-ops
+        // (we logged this as `body=0000000000000000 set-flag failed` in
+        // the May 2 first run). The walk is on the body NIF tree at the
+        // moment NO armor is attached → first BSSubIndexTriShape hit is
+        // unambiguously the body geom.
+        // M9 wedge 3 (May 3 2026): walk the body tree and CACHE EVERY
+        // BSSubIndexTriShape found. Live diagnostic showed MaleBody.nif's
+        // loaded form contains 2 BSSITFs (presumably body + hands or
+        // body + face). Caching all of them ensures the body cull set
+        // hides them ALL when a slot-3 BODY armor is equipped — without
+        // this, the unhidden second BSSITF was rendering as floating
+        // hand/face geometry under the suit (visible artifacts post-cycle).
+        FW_LOG("[body-tree-dump] enumerate ALL BSSITF in body tree:");
+        std::vector<void*> body_geoms;
+        body_geoms.reserve(8);
+        const int total_bssitf = collect_all_bssitf_recursive(body, &body_geoms);
+        FW_LOG("[body-tree-dump] DONE — total BSSITF in tree: %d", total_bssitf);
+
+        {
+            std::lock_guard lk(g_body_cull_mtx);
+            g_ghost_body_geoms = std::move(body_geoms);
+        }
+        if (total_bssitf == 0) {
+            FW_WRN("[native] inject_cube: NO BSSubIndexTriShape found in body "
+                   "tree — M9.w3 body cull will no-op (verify "
+                   "BSSUBINDEXTRISHAPE_VTABLE_RVA=0x%llX still matches binary)",
+                   static_cast<unsigned long long>(BSSUBINDEXTRISHAPE_VTABLE_RVA));
+        } else {
+            FW_LOG("[native] inject_cube: cached %d body geom(s) for cull "
+                   "(vt_rva=0x%llX)", total_bssitf,
+                   static_cast<unsigned long long>(BSSUBINDEXTRISHAPE_VTABLE_RVA));
+        }
+
         // M9 wedge 2: drain any equip events that arrived while the
         // ghost wasn't yet ready (boot-time race with peer's B8
         // force-equip-cycle). With g_injected_cube now non-null, the
@@ -2533,6 +2775,16 @@ bool inject_debug_cube(float x, float y, float z) {
 
 void detach_debug_cube() {
     void* cube = g_injected_cube.exchange(nullptr, std::memory_order_acq_rel);
+    // M9 wedge 3: invalidate body geom cache + contributor set in lockstep
+    // with cube destruction. The next inject_debug_cube will repopulate the
+    // body geoms list from the fresh body NIF tree; contributor set must
+    // start empty so the first replayed BODY-armor attach correctly
+    // transitions empty→non-empty and applies the cull flag.
+    {
+        std::lock_guard lk(g_body_cull_mtx);
+        g_ghost_body_geoms.clear();
+        g_body_cull_contributors.clear();
+    }
     if (!cube) return;
     if (!g_resolved.load(std::memory_order_acquire)) return;
     try_detach(cube);
@@ -2627,6 +2879,54 @@ void* seh_read_arma_at(void** addon_array, std::uint32_t index) {
             entry + offsets::TESOBJECTARMO_ADDON_ARMA_PTR_OFF);
     } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
 }
+// SEH-protected ARMO biped-slot bitmask read (M9.w3 — 2026-05-02).
+// ARMO+0x1E8 = uint32 bipedObjectSlots, see offsets.h §M9 wedge 3 for
+// evidence chain (HIGH×HIGH consensus from 2 independent IDA agents).
+// Returns true on success with mask in *out_mask. False if the form is
+// not ARMO / pointer is bad — caller treats as "no slot info, skip hide".
+bool seh_read_armo_biped_slots(void* tes_form, std::uint32_t* out_mask) {
+    __try {
+        *out_mask = *reinterpret_cast<std::uint32_t*>(
+            reinterpret_cast<char*>(tes_form) +
+            offsets::TESOBJECTARMO_BIPED_SLOTS_OFF);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *out_mask = 0;
+        return false;
+    }
+}
+// SEH-protected ARMO default priority read (M9.w2 PROPER, May 3 2026).
+// ARMO+0x2A6 = uint16 default priority. The engine uses this when no
+// OMOD-modified InstanceData is attached. See offsets.h §"M9 wedge 2
+// PROPER — ARMA priority selection" for evidence chain.
+bool seh_read_armo_default_priority(void* tes_form, std::uint16_t* out_prio) {
+    __try {
+        *out_prio = *reinterpret_cast<std::uint16_t*>(
+            reinterpret_cast<char*>(tes_form) +
+            offsets::TESOBJECTARMO_DEFAULT_PRIORITY_OFF);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *out_prio = 0;
+        return false;
+    }
+}
+// SEH-protected per-addon-entry priority read (uint16 at addon_entry+0).
+// addon_array points at ARMO+0x2A8; each entry is 16 bytes; index `i` is
+// at addon_array + i*0x10. Priority is the WORD at start of each entry,
+// ARMA* is at +8 within the entry.
+bool seh_read_addon_entry_priority(void** addon_array, std::uint32_t index,
+                                    std::uint16_t* out_prio) {
+    __try {
+        auto entry = reinterpret_cast<char*>(addon_array) +
+                     index * offsets::TESOBJECTARMO_ADDON_ENTRY_STRIDE;
+        *out_prio = *reinterpret_cast<std::uint16_t*>(
+            entry + offsets::TESOBJECTARMO_ADDON_ENTRY_PRIORITY_OFF);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *out_prio = 0;
+        return false;
+    }
+}
 // SEH-protected TESModel.path BSFixedString handle read at given offset.
 // Generic: caller probes multiple candidate offsets to find which one
 // holds the actual male 3rd-person model. Initial guess (0xD0) was
@@ -2718,15 +3018,26 @@ bool path_is_female_variant(const char* path, std::size_t len) {
     if (seh_path_contains_ci(path, len, "_f.nif")) return true;
     if (seh_path_contains_ci(path, len, "_f.tri")) return true;
 
-    // Pattern 3: basename starts with 'F' followed by ANOTHER uppercase
-    // letter — Bethesda's F<Part> female-mesh convention. Without the
-    // 2nd-char-uppercase requirement we'd false-positive on words like
-    // "Foliage", "FrameMesh", etc.
+    // Pattern 3: basename starts with 'F' followed by:
+    //  - another UPPERCASE letter (FArm, FLeg, FTorso) — old convention
+    //  - or an underscore (F_Torso, F_Helmet, F_Torso_Lite) — new convention
+    //
+    // This used to require 2nd-char uppercase only, which missed ALL the
+    // newer Combat Armor / DLC mesh names like `F_Torso_Lite.nif` →
+    // resolver picked them over `M_Torso_*` of equal score → ghost rendered
+    // a female mesh on a male skeleton → wild deformation. Discovered May 3
+    // 2026 from Combat Armor (form 0x11D3C3) live test where the 6
+    // candidates (F/M × Lite/Mid/Heavy) all scored 0 and the FIRST one
+    // (F_Torso_Lite) won by enumeration order.
+    //
+    // The `F_` extension is safe: no FO4 vanilla armor mesh starts with
+    // `F_` and is intended for males. The convention is well-followed.
     const std::size_t bi = basename_index(path, len);
     if (bi + 1 < len) {
         const char c0 = path[bi];
         const char c1 = path[bi + 1];
-        if ((c0 == 'F' || c0 == 'f') && c1 >= 'A' && c1 <= 'Z') {
+        if ((c0 == 'F' || c0 == 'f') &&
+            ((c1 >= 'A' && c1 <= 'Z') || c1 == '_')) {
             return true;
         }
     }
@@ -2786,6 +3097,10 @@ std::unordered_map<std::string,
                     std::unordered_map<std::uint32_t, void*>>
     g_attached_armor;
 
+// (M9 wedge 3 body-cull state machine moved to top of file alongside
+//  g_ghost_body_geom — needs to be visible to detach_debug_cube which
+//  lives ABOVE this anon namespace.)
+
 // Pending equip ops accumulated while the ghost wasn't yet spawned.
 // At boot time peer A's B8 force-equip-cycle broadcasts UNEQUIP+EQUIP
 // for the Vault Suit before peer B's ghost is injected. Without a
@@ -2822,7 +3137,8 @@ std::unordered_map<std::string, std::deque<PendingArmorOp>>
 // All struct dereferences go through the seh_* POD wrappers above,
 // avoiding MSVC C2712 (FW_LOG / FW_WRN expand to code with C++ unwind
 // objects, so we cannot use __try in this function directly).
-const char* resolve_armor_nif_path(std::uint32_t item_form_id) {
+const char* resolve_armor_nif_path(std::uint32_t item_form_id,
+                                     std::uint16_t effective_priority) {
     if (item_form_id == 0 || g_r.base == 0) return nullptr;
 
     // 1. lookup_by_form_id — same RVA used by container_hook for REFR resolve.
@@ -2858,11 +3174,80 @@ const char* resolve_armor_nif_path(std::uint32_t item_form_id) {
         addon_count = 16;
     }
 
+    // 2.5. M9.w2 PROPER (May 3 2026 v10): apply the engine's PrioritySelect
+    // filter to the addon array. The receiver gets the OMOD-effective priority
+    // from the wire (sender extracted it via sub_140436820 from the equipped
+    // item's InstanceData+0x56, or fell back to ARMO+0x2A6). When the wire
+    // value is 0 (sender skipped extraction or non-ARMO form), we read
+    // ARMO+0x2A6 ourselves for back-compat.
+    //
+    // Selection rules (from sub_1404626A0 RE, HIGH×HIGH agent consensus):
+    //   * priority == 0       → always invoke ("always-on" parts)
+    //   * priority == reqPrio → invoke (exact match)
+    //   * else                → invoke highest priority value still ≤ reqPrio
+    //   * pass 3 fallback     → if pass 1+2 both empty, accept ALL addons
+    //                           (degraded mode — better than rendering nothing)
+    std::uint16_t req_prio = effective_priority;
+    if (req_prio == 0) {
+        // Wire didn't carry priority (pre-v10 sender, or non-ARMO form).
+        // Fall back to reading ARMO+0x2A6 default ourselves.
+        (void)seh_read_armo_default_priority(tes_form, &req_prio);
+        FW_DBG("[armor-resolve] form=0x%X reqPrio=%u (ARMO+0x2A6 default; "
+               "wire priority was 0)", item_form_id, req_prio);
+    } else {
+        FW_DBG("[armor-resolve] form=0x%X reqPrio=%u (from wire — "
+               "OMOD-effective priority extracted by sender)",
+               item_form_id, req_prio);
+    }
+
+    // Pre-pass: compute per-addon priority + decide pass-1 vs pass-2 fallback.
+    // Pass 1 includes: priority==0 OR priority==reqPrio
+    // Pass 2 fallback: highest priority value still ≤ reqPrio (used iff pass 1
+    // matches NOTHING usable — gives us a graceful "fallback to closest tier"
+    // rather than empty result).
+    std::uint16_t addon_prios[16] = {0};
+    bool          has_pass1[16]   = {false};
+    std::uint16_t pass2_best      = 0;     // highest entryPrio s.t. entryPrio ≤ reqPrio
+    bool          any_pass1_match = false;
+    for (std::uint32_t i = 0; i < addon_count; ++i) {
+        std::uint16_t ep = 0;
+        if (seh_read_addon_entry_priority(addon_array, i, &ep)) {
+            addon_prios[i] = ep;
+            // Pass-1 rule: priority 0 (always-on) or exact match.
+            if (ep == 0 || ep == req_prio) {
+                has_pass1[i] = true;
+                any_pass1_match = true;
+            }
+            // Pass-2 best tracker: highest entryPrio still ≤ reqPrio
+            if (ep <= req_prio && ep > pass2_best) pass2_best = ep;
+        }
+    }
+    // PASS 3 fallback (May 3 2026 v6): if neither pass-1 nor pass-2 found
+    // anything, the engine would render nothing (Combat Armor with reqPrio=0
+    // and addon priorities 1/2/3 produces empty result — the engine relies on
+    // OMOD InstanceData+0x56 to override reqPrio to 1/2/3). To avoid the
+    // ghost showing NOTHING at all on the receiver (since we don't have OMOD
+    // priority yet — phase 3b), we fall through to "include all addons" so
+    // existing path scoring picks the best M3rd path. This is a degraded
+    // state ("render the form-default tier instead of the OMOD-modified one")
+    // but better than rendering nothing.
+    const bool priority_filter_disabled =
+        !any_pass1_match && pass2_best == 0;
+    FW_DBG("[armor-resolve] form=0x%X addon priorities: pass1_any=%d "
+           "pass2_best=%u filter_disabled=%d",
+           item_form_id, any_pass1_match ? 1 : 0, pass2_best,
+           priority_filter_disabled ? 1 : 0);
+
     // 3. Walk addons. For each ARMA, probe multiple candidate offsets
     // for the TESModel(male 3rd) — the exact layout in FO4 1.11.191
     // next-gen wasn't pinned by the dossier (initial guess 0xD0 was
     // wrong per live test 2026-04-29). Probe in order of likelihood
     // based on TESObjectARMA component layout patterns.
+    //
+    // M9.w2 PROPER: addons NOT matching the priority filter are skipped.
+    // For Combat Armor 0x11D3C3 (3 ARMAs: Lite/Mid/Heavy with priorities
+    // 1/2/3), only the priority-matching addon's path candidates are
+    // probed and scored. Saves work + isolates the right tier.
     static const std::size_t kCandidateModelOffsets[] = {
         0xD0, 0x90, 0x110, 0x150, 0x50, 0x190,  // model 3rd-person candidates
         0x80, 0xC0, 0x100, 0x140, 0x180,         // alt offsets if the
@@ -2892,6 +3277,26 @@ const char* resolve_armor_nif_path(std::uint32_t item_form_id) {
     for (std::uint32_t i = 0; i < addon_count; ++i) {
         void* arma = seh_read_arma_at(addon_array, i);
         if (!arma) continue;
+
+        // M9.w2 PROPER priority filter (May 3 2026):
+        // Skip addons that don't match the PrioritySelect rules. Pass 1
+        // accepts (prio==0 OR prio==reqPrio); pass 2 fallback uses prio==best
+        // (highest ≤ reqPrio); pass 3 fallback (priority_filter_disabled)
+        // accepts EVERYTHING when neither pass 1 nor pass 2 found anything —
+        // typically Combat Armor with reqPrio=0 and addon priorities 1/2/3.
+        const std::uint16_t this_prio = addon_prios[i];
+        const bool include_pass1 = has_pass1[i];
+        const bool include_pass2 = !any_pass1_match
+                                && this_prio == pass2_best
+                                && pass2_best != 0;
+        const bool include_pass3 = priority_filter_disabled;
+        if (!include_pass1 && !include_pass2 && !include_pass3) {
+            FW_DBG("[armor-resolve] form=0x%X addon[%u] prio=%u skipped "
+                   "(reqPrio=%u, pass1=%d pass2_best=%u)",
+                   item_form_id, i, this_prio, req_prio,
+                   any_pass1_match ? 1 : 0, pass2_best);
+            continue;
+        }
 
         for (std::size_t ci = 0; ci < kNumCandidates; ++ci) {
             if (found_count >= sizeof(found)/sizeof(found[0])) break;
@@ -3245,6 +3650,95 @@ static void* find_node_by_name_w4(void* root, const char* target,
     return nullptr;
 }
 
+// === M9 wedge 3 — body cull helpers (slot-3 BODY armor → hide body NIF) =====
+// SEH-cage NiAVObject m_uiFlags toggle. Sets or clears `mask` bits at
+// node+NIAV_FLAGS_OFF (=0x108). Returns true if the write succeeded.
+// Used to flip NIAV_FLAG_APP_CULLED on the ghost's BaseMaleBody:0
+// BSSubIndexTriShape when peer equips a slot-3 BODY armor.
+static bool seh_niav_set_flag(void* node, std::uint64_t mask, bool set) {
+    if (!node) return false;
+    __try {
+        auto* flags = reinterpret_cast<std::uint64_t*>(
+            reinterpret_cast<char*>(node) + NIAV_FLAGS_OFF);
+        if (set) *flags |= mask;
+        else     *flags &= ~mask;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// Apply / clear NIAV_FLAG_APP_CULLED on the FIRST cached ghost body
+// BSSubIndexTriShape (slot 0 of `g_ghost_body_geoms`).
+//
+// Slot 0 (depth=1) is the body proper "BaseMaleBody:0".
+// Slot 1 (depth=2) is hands "BaseMaleHands3rd:0" (loaded from MaleHands.nif
+// and attached as child of body) — verified by cross-referencing the
+// body-tree-dump address against the existing skin-rebind log:
+//   [skin] swap: geom=000001D9DFB73130 name='BaseMaleHands3rd:0'  ← hands!
+//   [body-tree-dump]   BSSITF #1 node=000001D9DFB73130 depth=2   ← same addr
+// Hiding slot 1 in v4 broke hands rendering everywhere (including under
+// armor that should cover them) — apparently the hands BSSITF is referenced
+// by armor ARMA NIFs too, so we leave it alone.
+//
+// === DRY RUN MODE (v6 May 3 2026) ===
+// User reports player's own body disappears on equip/unequip cycle, even
+// though body cull is per-peer-ghost only. Hypothesis: the engine's NIF
+// cache shares NiAVObject pointers between successive MaleBody.nif loads,
+// so the BSSITF cached for the GHOST aliases with the PLAYER's body BSSITF.
+// Setting NIAV_FLAG_APP_CULLED would then propagate.
+//
+// To verify: BODY_CULL_DRY_RUN=true causes apply_body_cull to LOG the
+// intended action but NOT flip the flag. If the player-body-disappears
+// symptom persists with dry-run on, our code is innocent (different bug).
+// If symptom goes away with dry-run, NIF cache sharing is confirmed and
+// we need a different visibility mechanism.
+//
+// FLIP TO false TO RE-ENABLE body cull (after diagnosis is complete).
+constexpr bool BODY_CULL_DRY_RUN = false;
+
+static int apply_body_cull(bool culled) {
+    void* primary = nullptr;
+    {
+        std::lock_guard lk(g_body_cull_mtx);
+        if (!g_ghost_body_geoms.empty()) primary = g_ghost_body_geoms[0];
+    }
+    if (!primary) return 0;
+    if constexpr (BODY_CULL_DRY_RUN) {
+        FW_LOG("[body-cull-dryrun] WOULD %s NIAV_FLAG_APP_CULLED on body=%p "
+               "(NIF-cache-sharing diagnosis — flag NOT actually flipped)",
+               culled ? "set" : "clear", primary);
+        return 1;  // pretend success so call-site logs ACQUIRED/RELEASED
+    } else {
+        return seh_niav_set_flag(primary, NIAV_FLAG_APP_CULLED, culled) ? 1 : 0;
+    }
+}
+
+// Register a slot-3 BODY armor as a body-cull contributor for `peer_id`.
+// Returns true ONLY if this is the FIRST contributor for the peer (i.e.
+// the set transitioned empty→non-empty, so caller should now apply the
+// NIAV_FLAG_APP_CULLED flag on the body geometry). Idempotent: re-adding
+// the same form_id leaves the set unchanged and returns false.
+static bool body_cull_register(const char* peer_id, std::uint32_t form_id) {
+    if (!peer_id || form_id == 0) return false;
+    std::lock_guard lk(g_body_cull_mtx);
+    auto& set = g_body_cull_contributors[peer_id];
+    const bool was_empty = set.empty();
+    auto [_it, inserted] = set.insert(form_id);
+    return was_empty && inserted;
+}
+
+// Unregister a body-cull contributor. Returns true ONLY if this was the
+// LAST contributor for the peer (set transitioned non-empty→empty, so
+// caller should clear NIAV_FLAG_APP_CULLED). Idempotent: removing a
+// form_id not in the set returns false.
+static bool body_cull_unregister(const char* peer_id, std::uint32_t form_id) {
+    if (!peer_id || form_id == 0) return false;
+    std::lock_guard lk(g_body_cull_mtx);
+    auto it = g_body_cull_contributors.find(peer_id);
+    if (it == g_body_cull_contributors.end()) return false;
+    if (it->second.erase(form_id) == 0) return false;  // wasn't a contributor
+    return it->second.empty();
+}
+
 // Apply one witness NIF descriptor to an already-loaded weapon root.
 //   weapon_root: the loaded base weapon NIF (root of the receiver-side
 //                assembled weapon, attached to the WEAPON bone).
@@ -3338,7 +3832,8 @@ bool is_weapon_form(std::uint32_t item_form_id) {
     return resolve_weapon_nif_path(item_form_id) != nullptr;
 }
 
-bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id) {
+bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
+                        std::uint16_t effective_priority) {
     if (!peer_id || item_form_id == 0) return false;
 
     void* ghost = g_injected_cube.load(std::memory_order_acquire);
@@ -3381,7 +3876,7 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id) {
         }
     }
 
-    const char* path = resolve_armor_nif_path(item_form_id);
+    const char* path = resolve_armor_nif_path(item_form_id, effective_priority);
     if (!path) return false;  // resolve_armor_nif_path already logged the issue
 
     // Pool init guard — same as inject_body_nif. The NIF loader allocates
@@ -3486,6 +3981,52 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id) {
         g_attached_armor[peer_id][item_form_id] = armor_node;
     }
 
+    // === M9 wedge 3 — body cull on slot-3 BODY armor (2026-05-02) ============
+    // If this armor has bit 3 (slot "33 - BODY") set in its bipedObjectSlots
+    // mask, it's a full-body replacement (Vault Suit, Power Armor, Synth
+    // Armor, etc.). Set NIAV_FLAG_APP_CULLED on the ghost's BaseMaleBody:0
+    // BSSubIndexTriShape to hide the underlying body geometry — prevents the
+    // body skin from poking through / z-fighting under the armor mesh.
+    //
+    // We register the form_id as a body-cull contributor for this peer; only
+    // the FIRST contributor triggers the actual flag flip (cheap idempotency
+    // for the rare case of two BODY armors arriving in racy order before
+    // the unequip of the prior). Detach-side mirror clears the flag when
+    // the last contributor is removed.
+    //
+    // Order: cull AFTER successful armor attach so we never have a frame
+    // where both body AND armor are absent (briefly invisible ghost). One
+    // frame of body+armor overlap (z-fight) is preferable to one frame of
+    // nothing visible.
+    {
+        using LookupFn = void* (__fastcall*)(std::uint32_t);
+        auto lookup = reinterpret_cast<LookupFn>(
+            g_r.base + offsets::LOOKUP_BY_FORMID_RVA);
+        void* tes_form = seh_lookup_form(lookup, item_form_id);
+        std::uint32_t mask = 0;
+        if (tes_form && seh_read_armo_biped_slots(tes_form, &mask)
+            && (mask & offsets::BIPED_SLOT_BODY_MASK) != 0)
+        {
+            if (body_cull_register(peer_id, item_form_id)) {
+                const int n = apply_body_cull(true);
+                if (n > 0) {
+                    FW_LOG("[body-cull] peer=%s form=0x%X mask=0x%08X ACQUIRED "
+                           "— %d body geom(s) hidden under BODY-slot armor",
+                           peer_id, item_form_id, mask, n);
+                } else {
+                    FW_WRN("[body-cull] peer=%s form=0x%X: register OK but "
+                           "0 body geoms flipped (cache empty? all SEH-faulted?) "
+                           "— z-fight may persist",
+                           peer_id, item_form_id);
+                }
+            } else {
+                FW_DBG("[body-cull] peer=%s form=0x%X mask=0x%08X: not first "
+                       "BODY contributor (set non-empty) — flag already set",
+                       peer_id, item_form_id, mask);
+            }
+        }
+    }
+
     FW_LOG("[armor-attach] peer=%s form=0x%X path='%s' node=%p ghost=%p OK",
            peer_id, item_form_id, path, armor_node, ghost);
     return true;
@@ -3580,6 +4121,30 @@ bool ghost_detach_armor(const char* peer_id, std::uint32_t item_form_id) {
     } else {
         FW_DBG("[armor-detach] refcount after dec = %ld (0 means freed by engine)",
                after);
+    }
+
+    // === M9 wedge 3 — body cull release ====================================
+    // Mirror of attach-side: if THIS form was a slot-3 BODY contributor for
+    // this peer, unregister it. If it was the LAST contributor (set went
+    // non-empty→empty), clear NIAV_FLAG_APP_CULLED on the body geometry so
+    // the ghost's body becomes visible again. Idempotent for non-BODY forms
+    // (helmets, [A] Torso pieces, weapons): unregister returns false, this
+    // block is a no-op.
+    //
+    // Order: clear cull AFTER engine detach so we never have a frame with
+    // armor still attached but body restored (z-fight). One frame of "armor
+    // gone, body still hidden" is preferable to one frame of overlap.
+    if (body_cull_unregister(peer_id, item_form_id)) {
+        const int n = apply_body_cull(false);
+        if (n > 0) {
+            FW_LOG("[body-cull] peer=%s form=0x%X RELEASED — %d body geom(s) "
+                   "visible again (last BODY contributor removed)",
+                   peer_id, item_form_id, n);
+        } else {
+            FW_DBG("[body-cull] peer=%s form=0x%X: unregister OK but 0 body "
+                   "geoms flipped (cache empty after cell change?) — state "
+                   "cleared anyway", peer_id, item_form_id);
+        }
     }
 
     FW_LOG("[armor-detach] peer=%s form=0x%X armor=%p ghost=%p OK",
