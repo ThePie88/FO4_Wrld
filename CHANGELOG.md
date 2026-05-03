@@ -5,6 +5,115 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## M9 v0.4.2 — Vault Suit cycle stability via path-routed deep clone (2026-05-04) — STABLE
+
+Closes four long-standing equip-cycle bugs on Vault Suit and unifies the
+fix with yesterday's v0.4.1 universal armor pipeline. M9 itself is not yet
+100% (w4 PROPER weapon mods, w6 material variants, Power Armor still open),
+which is why this is a 0.4.2 patch rather than a 0.5 milestone bump.
+
+**Bugs closed (screenshot list):**
+
+- **#1 VS cycle SEH crash** — engine call faulted on spam unequip/equip
+  of Vault Suit after a few iterations. Root cause: ghost's
+  `bones_pri[i]` array contained raw `+0x70` pointers into the local
+  player's `BSFlattenedBoneTree`. When the local engine rebuilt its
+  `BipedAnim` on each cycle, the FBT was freed → ghost's pointers became
+  stale → AV at next render through `vt[4]` dispatch on freed memory.
+  Previously papered over by the B8 boot-time force-equip-cycle (which
+  warmed up `BipedAnim` allocator state on the LOCAL player only, not a
+  real fix for the cross-actor sharing).
+- **#2 Post-cycle body invisible** — local player's body sometimes
+  disappeared on its own client after a Vault Suit re-equip. Root
+  cause: the cached `MaleBody.nif` BSFadeNode is shared between local
+  player and ghost. The body-cull `NIAV_FLAG_APP_CULLED` bit we set on
+  the ghost's body BSSubIndexTriShape was visible to the local player
+  too because both pointed to the same `BaseMaleBody:0` node.
+- **#3 Post-cycle ghost VS disappears** — receiver client saw the peer's
+  Vault Suit vanish from the ghost after the peer cycled their suit.
+  Same shared-cache class as #2: the engine's cleanup pass on the local
+  cycle invalidated the cached NIF tree the ghost was rendering from.
+- **#4 Post-cycle T-pose statica** — ghost VS frozen in T-pose despite
+  ghost moving (pose-rx still flowing). Root cause: shared BSFadeNode
+  → shared `BSSkin::Instance.bones_pri[]` head pointer at `+0x28`. Our
+  `swap_skin_bones_to_skeleton` rebound the ghost's skin to ghost
+  skel.nif, but engine's per-cycle re-bind on the LOCAL actor wrote
+  the local skeleton's bones back into the same array head → ghost's
+  swap got immediately overwritten back to local-player skel pointers.
+- **#5 OIE-driven ARMA tier** — already addressed by v0.4.1 PROPER, kept
+  intact in this patch.
+
+**Pipeline (path-whitelist routing in `ghost_attach_armor`):**
+
+- **Vault Suit family** (any path containing `"Vault111Suit"` —
+  case-sensitive against canonical resolver output, plus lowercase
+  fallback) → DEEP-CLONE path. Manual NIF subtree walker covering
+  `BSFadeNode` / `BSLeafAnimNode` / `NiNode` / `BSSubIndexTriShape` with
+  manual `BSSkin::Instance` deep-copy (engine's `sub_1416D7B30` copy
+  ctor AV'd in our context — replaced with explicit memcpy + bone-array
+  alloc + per-bone refbump). Ghost owns an independent skin instance
+  and an independent `skel_root`, so engine cleanup of the local
+  player's cached `BSFadeNode` no longer dangles ghost pointers.
+- **Everything else** (combat light/heavy, RusticUnderArmor jacket,
+  Atom Cats, Raider Underarmor, helmets, sub-pieces, …) → SHARED path
+  = v0.4.1 yesterday's pipeline. `nif_load_by_path` + apply_materials +
+  `attach_child_direct` + `swap_skin_bones_to_skeleton` + body cull +
+  M9.w2 snapshot/restore on detach. Combat heavy and winter coat
+  verified visually on ghost; nothing about yesterday's render pipeline
+  was touched.
+
+**Body inject (`try_inject_body_nif`):** deep-clones `MaleBody.nif`
+unconditionally on every ghost spawn. Same rationale as the VS clone —
+ghost body owns an independent BSSITF, body-cull `APP_CULLED` bit no
+longer bleeds across actors, body-cull contributor set tracking
+(per-peer, M9.w3) is preserved.
+
+**Periodic re-apply (4Hz in `on_bone_tick_message`):** walks all
+attached armors and re-runs `swap_skin_bones_to_skeleton` with a silent
+flag to suppress per-tick log spam. Neutralizes engine's local-actor
+re-bind drift on the SHARED-path armors that don't get the clone
+isolation. Covers combat + atomic + sub-pieces during local
+unequip/equip churn.
+
+**Why path-whitelist instead of geometry-type detection:**
+
+The first attempt was `tree_has_bssitf() && !tree_has_bstrishape()` —
+"homogeneous BSSITF" — on the assumption that the manual clone walker
+worked for BSSITF and broke for BSTriShape. Empirically wrong: combat
+heavy and RusticUnderArmor jacket are also homogeneous BSSITF (no
+BSTriShape children) but their clones render invisible. Vault Suit is
+the *only* mesh that survives our memcpy-based clone — likely because
+its specific vertex layout and absence of certain D3D-resource
+dependencies happen to tolerate a missing call to engine clone factory
+helper `sub_1416D5600` (NiSkinPartition / D3D resource binding setup).
+Combat / RusticUnderArmor / etc. require that helper and render
+invisible without it. Path-whitelist is conservative: explicit list of
+known-cloneable meshes, everything else stays on the proven shared
+pipeline. To enable clone for a future custom mesh, add a `strstr()`
+match in the routing block.
+
+**Files:** `scene_inject.cpp/h` (clone walker, path routing, body
+clone), `skin_rebind.cpp/h` (silent flag for periodic re-apply),
+`ni_offsets.h` (BSFadeNode / BSLeafAnimNode / BSSITF / BSSkin::Instance
+/ BSDynamicTriShape ALT vtables + sizes).
+
+**Tag:** `v0.4.2-vs-cycle-stable`.
+
+**Known residuals (deferred to next patches):**
+
+- M9.w4 PROPER (mod parts on weapons) — `BSVertexDesc` RE blocker,
+  same as v0.4.0 changelog.
+- M9.w6 material variants (rusty/clean) — same OIE pattern at
+  shader/material level.
+- Power Armor — separate equip pipeline (`ActorEquipManager`
+  alternate path), not exercised by current tests.
+- B8 boot-time force-equip-cycle is now redundant for the VS crash but
+  kept enabled (no harm) until M9 closes fully — provides defense in
+  depth for the few remaining engine state-warmup edge cases on first
+  spawn.
+
+---
+
 ## M9 v0.4.1 — wedge 2 PROPER + wedge 3 body cull (2026-05-03) — STABLE
 
 Two long-standing M9 limitations closed in this patch.

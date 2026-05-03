@@ -178,6 +178,12 @@ static void populate_canonical_from_skel_native(void* skel_root) {
            kept, all_nodes.size());
 }
 
+// M9.5 — Forward declaration for clone_nif_subtree. Definition lives much
+// further down (~line 2960) outside any anonymous namespace, so it can be
+// called both from try_inject_body_nif and ghost_attach_armor without
+// scope-shadow ambiguity.
+void* clone_nif_subtree(void* source);
+
 namespace {
 
 // Function pointer types (all __fastcall on x64 Windows).
@@ -255,6 +261,23 @@ using MatBindFn    = void* (*)(void* mat, void* geom, char flag);
 using NifLoadByPathFn = std::uint32_t (*)(const char* path,
                                           void**      out_node,
                                           void*       opts);
+
+// Worker NIF loader (sub_1417B3480). 5-arg form. Used for ghost geometry
+// to BYPASS the cache resolver (sub_1416A6D00) and get a FRESH tree per
+// call — avoids cache-share with the local player's NIF instances which
+// caused state corruption on equip/unequip cycles. Per dossier
+// stradaB_nif_loader_api.txt §11 OPEN-E: "Two NPCs sharing MaleBody.nif
+// get the same BSFadeNode... If bugs: use Path-B (direct sub_1417B3480,
+// fresh tree, no sharing)."
+//
+// Returns a TLS scratch DWORD* that the caller ignores; real output is
+// *out_node (refcount already incremented). user_ctx is passed to the
+// BSModelProcessor callback if opts.flag_0x08 is set.
+using NifLoadWorkerFn = std::uint32_t* (*)(std::int64_t      stream_ctx,
+                                            const char*       path_cstr,
+                                            void*             opts,
+                                            void**            out_node,
+                                            std::int64_t      user_ctx);
 
 // 16-byte opts struct. zero-init and write flags byte at +0x8.
 // Keep plain aggregate — the loader touches only +0x4 (stream key
@@ -337,6 +360,10 @@ struct Resolved {
 
     // M5 NIF loader (public API sub_1417B3E90 — path + out slot + flags).
     NifLoadByPathFn  nif_load_by_path  = nullptr; // sub_1417B3E90
+    // M9.5 cache-bypass loader (sub_1417B3480 — fresh tree per call).
+    // Used by ghost_attach_armor + inject_body_nif to avoid cache-share
+    // with local player's NIF instances. See dossier OPEN-E note.
+    NifLoadWorkerFn  nif_load_worker   = nullptr; // sub_1417B3480
     void**           res_mgr_slot      = nullptr; // qword_1430DD618 — diagnostic only
 
     // M6.2 apply-materials walker — fixes pink textures post-NIF-load.
@@ -454,6 +481,13 @@ bool resolve_once() {
     // sub_14026E1C0 (legacy wrapper) kept as constant for documentation
     // only — it hangs if called with a user-allocated NiNode holder.
     g_r.nif_load_by_path      = reinterpret_cast<NifLoadByPathFn> (base + NIF_LOAD_BY_PATH_RVA);
+    // M9.5 cache-bypass: resolve worker (sub_1417B3480, NIF_LOAD_WORKER_RVA).
+    // Used by ghost_attach_armor + inject_body_nif so ghosts get a FRESH
+    // NIF tree per call instead of the cached instance shared with the
+    // local player. Without this, attaching/detaching the ghost's armor
+    // mutated the local player's armor state and vice-versa, causing
+    // "ghost B unequips when local A equips" + cycle crash bugs.
+    g_r.nif_load_worker       = reinterpret_cast<NifLoadWorkerFn> (base + NIF_LOAD_WORKER_RVA);
     g_r.res_mgr_slot          = reinterpret_cast<void**>          (base + NIF_LOAD_RESMGR_SLOT_RVA);
 
     // M6.2: apply-materials walker — the missing post-NIF-load step.
@@ -1894,28 +1928,64 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
         const std::uint8_t saved_ks = *killswitch;
         *killswitch = 1;
 
+        // M9.5 — Load via public API (which goes through the cache and may
+        // return a BSFadeNode shared with the local player's MaleBody.nif),
+        // then DEEP-CLONE the subtree so the ghost owns an independent body.
+        // Without the clone the body BSSITF is shared: our skin_swap on the
+        // ghost mutates local A's body bones, our body-cull writes APP_CULLED
+        // visible to local A, and engine cleanup of either side breaks the
+        // other. Same fix-pattern as ghost_attach_armor.
+        //
+        // ROLLBACK NOTE (2026-05-04 PM): tried `nif_load_worker` direct call
+        // for "fresh tree" — failed because the worker requires streamCtx
+        // populated by cache resolver sub_1416A6D00 (per dossier line 531:
+        // "cache miss → caller calls sub_1417B3480 with `handle`"). Calling
+        // worker with streamCtx=0 → AV. Reverted to shared+clone path.
         FW_LOG("[native] inject_body_nif: calling nif_load_by_path "
                "path='%s' out=%p opts=%p opts.flags=0x%02X "
-               "(killswitch was=%u forced=1)",
+               "(killswitch was=%u forced=1, will deep-clone)",
                kBodyPath, static_cast<void*>(&body),
                static_cast<void*>(&opts),
                static_cast<unsigned>(opts.flags),
                saved_ks);
+        void* shared_body = nullptr;
         const std::uint32_t rc = g_r.nif_load_by_path(
-            kBodyPath, &body, &opts);
-        FW_LOG("[native] inject_body_nif: loader returned rc=%u body=%p "
-               "(rc=0 + body!=null = success)",
-               rc, body);
+            kBodyPath, &shared_body, &opts);
+        FW_LOG("[native] inject_body_nif: loader returned rc=%u shared_body=%p",
+               rc, shared_body);
 
         // Restore killswitch — never leave the byte mutated across
         // the call (avoids side-effects on vanilla texture loads
         // happening concurrently on the render thread).
         *killswitch = saved_ks;
 
-        if (rc != 0 || !body) {
+        if (rc != 0 || !shared_body) {
             FW_ERR("[native] inject_body_nif: load failed — missing BA2, "
-                   "wrong path, or corrupted mesh. rc=%u body=%p", rc, body);
+                   "wrong path, or corrupted mesh. rc=%u shared_body=%p",
+                   rc, shared_body);
             return false;
+        }
+
+        // Deep-clone the body subtree so it's independent from local player's
+        // body. The walker handles NiNode/BSFadeNode/BSTriShape/BSSITF +
+        // BSSkin::Instance with a manual deep copy (engine's copy ctor AV'd).
+        body = clone_nif_subtree(shared_body);
+        if (body == shared_body) {
+            FW_WRN("[native] inject_body_nif: deep-clone returned shared "
+                   "instance (root vt unknown?) — falling back to shared "
+                   "body, cache-share bug may re-manifest for body");
+        } else {
+            FW_LOG("[native] inject_body_nif: deep-cloned body: shared=%p "
+                   "clone=%p — independent skin instance, won't mutate "
+                   "local player's body NIF", shared_body, body);
+            // Drop our +1 ref on the shared instance — engine cache still
+            // owns its slot ref so the shared node stays alive for the
+            // local player to use.
+            __try {
+                auto* rcp = reinterpret_cast<long*>(
+                    reinterpret_cast<char*>(shared_body) + NIAV_REFCOUNT_OFF);
+                _InterlockedDecrement(rcp);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {}
         }
 
         // 4. Sanity check vtable.
@@ -2691,6 +2761,517 @@ static int collect_all_bssitf_recursive(void* root, std::vector<void*>* out,
     return total;
 }
 
+// =====================================================================
+// M9.5 — Deep clone of a loaded NIF subtree (cache-share break)
+// =====================================================================
+//
+// PROBLEM: g_r.nif_load_by_path goes through sub_1416A6D00 (cache resolver).
+// On a hit, the engine returns the SAME BSFadeNode pointer that the local
+// player is using. Sharing means:
+//   - skin_swap on the ghost mutates local player's skin too
+//   - engine post-equip skin re-bind on local mutates ghost's skin
+//   - either side's NIF cleanup may invalidate the other's references
+// User-visible effects (procedure tested 2026-05-03):
+//   - Local body invisible after local unequip
+//   - Ghost armor "detaches" when local equips/unequips
+//   - Cycle crash from accumulated state corruption
+//
+// SOLUTION: after load, walk the tree and produce a deep clone. The clone:
+//   - allocates fresh NiNode/BSFadeNode/BSGeometry instances (engine pool)
+//   - copies state via memcpy (vtable, transforms, flags, name handle)
+//   - resets refcount to 1, parent to NULL
+//   - recursively clones children
+//   - clones the BSSkin::Instance (via engine's copy ctor sub_1416D7B30)
+//     and replaces *(geom + 0x140) so the clone has its own bone bindings
+//   - SHARES read-only resources (shaders, materials, textures, vertex
+//     buffers in BSGeometry+0x148 — d3d-mapped, expensive to clone).
+//
+// WHY SHARED RESOURCES ARE OK: shaders/materials/textures are stateless
+// from a per-actor perspective. They get bound at draw time but don't
+// change between actors. Only the SKIN (bones[] arrays + skel_root)
+// gets mutated per-actor; that's what we clone.
+//
+// LIMITATIONS:
+//   - Unknown NiAVObject derivatives are SHARED (logged as warning).
+//     If MaleBody.nif contains exotic types, those bones won't be
+//     independent — fallback to shared behavior for that subtree.
+//   - BSDynamicTriShape / BSEffectShape / etc. fall through to shared.
+//   - We don't clone NiTimeController chains (animation controllers);
+//     ghost reads pose via direct bone matrix writes, not controllers.
+//
+// External linkage on clone_nif_subtree is intentional — it's also called
+// from try_inject_body_nif (much earlier in this TU); a forward decl in
+// the fw::native namespace points at the definitions below.
+
+// Allocate a NiAVObject-pool block of `size` bytes via the engine's
+// resolved allocator. Returns nullptr if alloc fails or g_r isn't ready.
+static void* engine_pool_alloc(std::size_t size) {
+    if (!g_r.allocate || !g_r.pool) return nullptr;
+    return g_r.allocate(g_r.pool, size, NINODE_ALIGN, true);
+}
+
+// Manual deep clone of a BSSkin::Instance. Layout from M8P3_skin_instance_dossier.txt:
+//   +0x00  vtable                                         (share)
+//   +0x08  refcount                                       (set to 1)
+//   +0x10  bones_fb head ptr (BSTArray)                   (deep clone array)
+//   +0x18  bones_fb capacity                              (copy)
+//   +0x20  bones_fb count                                 (copy)
+//   +0x28  bones_pri head ptr                             (deep clone array)
+//   +0x30  bones_pri capacity                             (copy)
+//   +0x38  bones_pri count                                (copy)
+//   +0x40  boneData ptr (NiPointer<BSSkin::BoneData>)     (share + refbump)
+//   +0x48  skel_root ptr (NiPointer<NiAVObject>)          (share + refbump)
+//   +0x50..+0xBF  remaining state                         (raw memcpy)
+//
+// Why MANUAL not engine's copy ctor (sub_1416D7B30): live test 2026-05-03
+// showed the engine's copy ctor SEH-AVs in our context — likely because it
+// expects the destination to be in a default-initialized state (post default
+// ctor sub_1416D7640) and we're handing it raw allocation memory. The manual
+// path gives us deterministic control without depending on engine internal
+// initialization invariants.
+//
+// REFCOUNT POLICY: bones_fb / bones_pri entries are NiPointer-style strong
+// refs in the engine's intent. We bump each bone's refcount when copying so
+// the clone owns its own +1 ref. boneData and skel_root similarly bumped.
+// Vertex/index buffers are NOT in the skin instance — they're on BSGeometry,
+// shared and OK to keep shared.
+void* clone_skin_instance(void* source) {
+    if (!source || !g_r.base) return nullptr;
+    void* clone = engine_pool_alloc(BSSKIN_INSTANCE_SIZEOF);
+    if (!clone) {
+        FW_WRN("[clone-skin] alloc 0x%zX failed", BSSKIN_INSTANCE_SIZEOF);
+        return nullptr;
+    }
+
+    // Step 1: byte-copy the whole struct (vtable + transform matrix +
+    // unknown trailing slots). Most fields are POD or vtable pointers
+    // that are safe to share/duplicate-point-at.
+    __try {
+        std::memcpy(clone, source, BSSKIN_INSTANCE_SIZEOF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_ERR("[clone-skin] memcpy SEH source=%p clone=%p", source, clone);
+        return nullptr;
+    }
+
+    // Step 2: refcount = 1 (this is OUR exclusive reference).
+    __try {
+        *reinterpret_cast<std::uint32_t*>(
+            reinterpret_cast<char*>(clone) + 0x08) = 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+
+    // Step 3: deep-copy bones_fallback array (+0x10 head, +0x20 count).
+    // Each entry is a NiAVObject* (the bone the skin reads world matrix
+    // from). With shared array, our skin_swap mutations would propagate
+    // to source — independence requires a fresh array.
+    {
+        void**        src_head  = nullptr;
+        std::uint32_t src_count = 0;
+        __try {
+            src_head  = *reinterpret_cast<void***>(
+                reinterpret_cast<char*>(source) + 0x10);
+            src_count = *reinterpret_cast<std::uint32_t*>(
+                reinterpret_cast<char*>(source) + 0x20);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+
+        if (src_head && src_count > 0 && src_count < 1024) {
+            void** new_arr = reinterpret_cast<void**>(
+                engine_pool_alloc(static_cast<std::size_t>(src_count) * 8));
+            if (new_arr) {
+                __try {
+                    for (std::uint32_t i = 0; i < src_count; ++i) {
+                        void* bone = src_head[i];
+                        new_arr[i] = bone;
+                        if (bone) {
+                            // Refcount-bump: the clone holds a strong ref.
+                            _InterlockedIncrement(reinterpret_cast<long*>(
+                                reinterpret_cast<char*>(bone) + 0x08));
+                        }
+                    }
+                    *reinterpret_cast<void***>(
+                        reinterpret_cast<char*>(clone) + 0x10) = new_arr;
+                    // Update BSTArray capacity field at +0x18 to match our
+                    // allocation. memcpy left this as source's capacity (which
+                    // was for source's larger / differently-sized array). If
+                    // the engine reads capacity for any operation it'd walk
+                    // off the end of our alloc.
+                    *reinterpret_cast<std::uint64_t*>(
+                        reinterpret_cast<char*>(clone) + 0x18) = src_count;
+                } __except (EXCEPTION_EXECUTE_HANDLER) {}
+            }
+        }
+    }
+
+    // Step 4: deep-copy bones_primary array (+0x28 head, +0x38 count).
+    // Per M8P3 §1: bones_pri[i] holds a pointer DIRECTLY to bone+0x70
+    // (the world matrix slot), NOT to the bone NiAVObject itself. So we
+    // do NOT refcount-bump these (they're not strong refs in our sense
+    // either; they're cached read-points that the GPU consumes). But we
+    // DO need a private array so our skin_swap rebinds don't cross over.
+    {
+        void**        src_head  = nullptr;
+        std::uint32_t src_count = 0;
+        __try {
+            src_head  = *reinterpret_cast<void***>(
+                reinterpret_cast<char*>(source) + 0x28);
+            src_count = *reinterpret_cast<std::uint32_t*>(
+                reinterpret_cast<char*>(source) + 0x38);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+
+        if (src_head && src_count > 0 && src_count < 1024) {
+            void** new_arr = reinterpret_cast<void**>(
+                engine_pool_alloc(static_cast<std::size_t>(src_count) * 8));
+            if (new_arr) {
+                __try {
+                    for (std::uint32_t i = 0; i < src_count; ++i) {
+                        new_arr[i] = src_head[i];  // raw copy, no refbump
+                    }
+                    *reinterpret_cast<void***>(
+                        reinterpret_cast<char*>(clone) + 0x28) = new_arr;
+                    // Update BSTArray capacity at +0x30 (parallel to the +0x18
+                    // for bones_fallback; sister field for bones_primary).
+                    *reinterpret_cast<std::uint64_t*>(
+                        reinterpret_cast<char*>(clone) + 0x30) = src_count;
+                } __except (EXCEPTION_EXECUTE_HANDLER) {}
+            }
+        }
+    }
+
+    // Step 5: refbump shared-pointer slots (+0x40 boneData, +0x48 skel_root).
+    // memcpy already duplicated the pointer values; we must add to refcount
+    // so the engine doesn't free them when source's owner releases.
+    for (std::size_t off : { static_cast<std::size_t>(0x40),
+                             static_cast<std::size_t>(0x48) }) {
+        __try {
+            void* sp = *reinterpret_cast<void**>(
+                reinterpret_cast<char*>(clone) + off);
+            if (sp) {
+                _InterlockedIncrement(reinterpret_cast<long*>(
+                    reinterpret_cast<char*>(sp) + 0x08));
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
+
+    return clone;
+}
+
+// Recursively deep-clone a NIF subtree starting at `source`. Returns the
+// clone of source, or `source` itself for unknown vtables (shared
+// fallback). Children, geometry skin instances are also cloned.
+//
+// Refcount semantics:
+//   - Clone's refcount initialized to 1 (caller owns the ref).
+//   - Children: clone's children list points to OUR clones, each refcount 1.
+//   - Skin instance: cloned via copy ctor (handles inner refcount bumps).
+//   - Shared fields (vtable ptr, name BSFixedString handle, m_kLocal,
+//     m_kWorld, etc.) are byte-identical copies — these are POD or
+//     interned, so sharing is safe.
+//
+// max_depth guards against infinite recursion (cyclic graphs shouldn't
+// exist in NIF trees but defense-in-depth). Default 32 is generous.
+void* clone_nif_subtree_recursive(void* source, int depth, int max_depth);
+
+// Forward-declare alias used by walker.
+void* clone_nif_subtree(void* source) {
+    return clone_nif_subtree_recursive(source, 0, 32);
+}
+
+// M9.5 — Detect whether a NIF subtree contains any BSSubIndexTriShape (BSSITF)
+// geometry. Used to route armor between CLONE path (VS-style, BSSITF) and
+// SHARED+snapshot/restore path (combat / regular armor, BSTriShape only).
+//
+// Why BSSITF as the discriminator: empirically the deep clone walker
+// (memcpy + manual skin clone) works for BSSITF geom (VS attaches and
+// renders correctly when cloned), but breaks for BSTriShape geom (combat
+// armor renders invisible when cloned — likely the +0x148 NiSkinPartition
+// / D3D resource ref needs engine's clone factory sub_1416D5600 which we
+// don't replicate). The split keeps each armor type on its working path.
+//
+// SEH-caged. Returns true on first BSSITF found.
+bool tree_has_bssitf(void* root, int depth = 0, int max_depth = 32) {
+    if (!root || depth > max_depth || g_r.base == 0) return false;
+
+    std::uintptr_t vt_addr = 0;
+    __try {
+        vt_addr = *reinterpret_cast<std::uintptr_t*>(root);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+
+    if (vt_addr >= g_r.base) {
+        const std::uintptr_t vt_rva = vt_addr - g_r.base;
+        if (vt_rva == BSSUBINDEXTRISHAPE_VTABLE_RVA) {
+            return true;
+        }
+    }
+
+    // Recurse into children (NiNode-derived only; geometry leaves don't have).
+    void** kids = nullptr;
+    std::uint16_t count = 0;
+    __try {
+        char* nb = reinterpret_cast<char*>(root);
+        kids  = *reinterpret_cast<void***>(nb + NINODE_CHILDREN_PTR_OFF);
+        count = *reinterpret_cast<std::uint16_t*>(nb + NINODE_CHILDREN_CNT_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+
+    if (!kids || count == 0 || count > 256) return false;
+
+    for (std::uint16_t i = 0; i < count; ++i) {
+        void* k = nullptr;
+        __try { k = kids[i]; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { continue; }
+        if (!k) continue;
+        if (tree_has_bssitf(k, depth + 1, max_depth)) return true;
+    }
+    return false;
+}
+
+// Legacy detector — kept for reference, not used in current routing logic
+// (BSDynamicTriShape detection wasn't reliable for combat armor — it uses
+// BSTriShape, not BSDynamicTriShape).
+bool tree_has_bsdynamictrishape(void* root, int depth = 0, int max_depth = 32) {
+    (void)root; (void)depth; (void)max_depth;
+    return false;
+}
+
+// M9.5 (2026-05-04 PM) — Detect ANY non-cloneable geometry in subtree:
+// BSTriShape, BSDynamicTriShape (both alt vtables). These vtables fall
+// through to the walker's "share" branch (clone_nif_subtree_recursive line
+// 3079+) because their +0x148 NiSkinPartition / D3D resource reference
+// requires engine clone factory sub_1416D5600 to set up correctly — plain
+// memcpy duplicates the pointer but engine D3D bindings stay tied to source.
+//
+// COMBAT ARMOR is the discovered case: contains BSSITF (would route to
+// CLONE path via tree_has_bssitf) PLUS BSTriShape decals/sub-pieces
+// (which fall through to share inside the walker → invisible render).
+// VAULT SUIT is homogeneous BSSITF — no BSTriShape — so clone path is safe.
+//
+// SEH-caged. Returns true on first non-cloneable geom found.
+bool tree_has_bstrishape(void* root, int depth = 0, int max_depth = 32) {
+    if (!root || depth > max_depth || g_r.base == 0) return false;
+
+    std::uintptr_t vt_addr = 0;
+    __try {
+        vt_addr = *reinterpret_cast<std::uintptr_t*>(root);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+
+    if (vt_addr >= g_r.base) {
+        const std::uintptr_t vt_rva = vt_addr - g_r.base;
+        if (vt_rva == BSTRISHAPE_VTABLE_RVA           ||
+            vt_rva == BSDYNAMICTRISHAPE_VTABLE_RVA    ||
+            vt_rva == BSDYNAMICTRISHAPE_VTABLE_ALT_RVA)
+        {
+            return true;
+        }
+    }
+
+    // Recurse into children.
+    void** kids = nullptr;
+    std::uint16_t count = 0;
+    __try {
+        char* nb = reinterpret_cast<char*>(root);
+        kids  = *reinterpret_cast<void***>(nb + NINODE_CHILDREN_PTR_OFF);
+        count = *reinterpret_cast<std::uint16_t*>(nb + NINODE_CHILDREN_CNT_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+
+    if (!kids || count == 0 || count > 256) return false;
+
+    for (std::uint16_t i = 0; i < count; ++i) {
+        void* k = nullptr;
+        __try { k = kids[i]; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { continue; }
+        if (!k) continue;
+        if (tree_has_bstrishape(k, depth + 1, max_depth)) return true;
+    }
+    return false;
+}
+
+void* clone_nif_subtree_recursive(void* source, int depth, int max_depth) {
+    if (!source || depth > max_depth || !g_r.base) return source;
+
+    // Read source vtable to identify class.
+    std::uintptr_t vt = 0;
+    __try {
+        vt = *reinterpret_cast<std::uintptr_t*>(source);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return source; }
+    if (vt < g_r.base) return source;
+    const std::uintptr_t vt_rva = vt - g_r.base;
+
+    std::size_t alloc_size = 0;
+    bool is_node = false;
+    bool is_geom = false;
+    switch (vt_rva) {
+        case BSFADENODE_VTABLE_RVA:
+            alloc_size = BSFADENODE_SIZEOF; is_node = true; break;
+        case BSLEAFANIMNODE_VTABLE_RVA:
+            alloc_size = BSFADENODE_SIZEOF; is_node = true; break;
+        case NINODE_VTABLE_RVA:
+            alloc_size = NINODE_SIZEOF;     is_node = true; break;
+        // BSTriShape NOT cloned — its +0x148 NiSkinPartition / D3D
+        // resource ref is set up by engine's clone factory
+        // sub_1416D99E0 via sub_1416D5600 which we don't replicate.
+        // Plain memcpy duplicates the pointer but engine-side D3D
+        // bindings stay tied to source → cloned BSTriShape renders
+        // invisible. Falling through to "share" lets the engine
+        // continue managing source's BSTriShape via NiNode parent
+        // clone's children list. The periodic re-apply in
+        // on_bone_tick_message forces ghost-skel binding on the
+        // shared skin every ~250ms — covers combat armor / weapon
+        // mods / hairstyles / atomic armor pieces.
+        // case BSTRISHAPE_VTABLE_RVA:
+        //     alloc_size = BSTRISHAPE_SIZEOF; is_geom = true; break;
+        case BSSUBINDEXTRISHAPE_VTABLE_RVA:
+            alloc_size = BSSUBINDEXTRISHAPE_SIZEOF;
+            is_geom = true; break;
+        // BSDynamicTriShape intentionally NOT in switch. Cloning it via
+        // raw memcpy duplicates pointer to dynamic vertex CPU/GPU buffer
+        // — engine writes per-frame skinned vertices to that buffer, so
+        // sharing it would mean the ghost armor renders local-actor's
+        // skinning data instead of its own. The hybrid path in
+        // ghost_attach_armor detects BSDynamicTriShape via
+        // tree_has_bsdynamictrishape() and routes to shared+snapshot
+        // (M9.w2 path) instead of clone. If walker reaches a stray
+        // BSDynamicTriShape during recursion (shouldn't happen if the
+        // detector worked at root, but defensive), it'll fall through
+        // to "share" below — the parent NiNode is cloned and points
+        // at the source's BSDynamicTriShape, which is acceptable
+        // because the M9.w2 snapshot/restore on the parent armor root
+        // protects it.
+        default:
+            // Unknown vtable — share. Logs at DBG to avoid spam.
+            FW_DBG("[clone] depth=%d unknown vt_rva=0x%llX node=%p — share",
+                   depth,
+                   static_cast<unsigned long long>(vt_rva), source);
+            return source;
+    }
+
+    // Allocate clone block.
+    void* clone = engine_pool_alloc(alloc_size);
+    if (!clone) {
+        FW_WRN("[clone] depth=%d alloc 0x%zX failed for vt_rva=0x%llX",
+               depth, alloc_size,
+               static_cast<unsigned long long>(vt_rva));
+        return source;
+    }
+
+    // Byte-copy (SEH in case the source has unmapped pages — unlikely but
+    // defensive). All fields including vtable, refcount, name, transforms,
+    // flags are copied as-is. We override refcount + parent below.
+    __try {
+        std::memcpy(clone, source, alloc_size);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_ERR("[clone] memcpy SEH source=%p clone=%p size=0x%zX",
+               source, clone, alloc_size);
+        return source;
+    }
+
+    // Reset refcount to 1 (we own this ref).
+    __try {
+        *reinterpret_cast<std::uint32_t*>(
+            reinterpret_cast<char*>(clone) + NIAV_REFCOUNT_OFF) = 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+
+    // Clear parent — the caller (e.g. attach_child) will set this when
+    // attaching the clone tree to its new parent (ghost root or sub-NiNode).
+    __try {
+        *reinterpret_cast<void**>(
+            reinterpret_cast<char*>(clone) + NIAV_PARENT_OFF) = nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+
+    if (is_node) {
+        // Read source's children array head + count.
+        void** src_kids = nullptr;
+        std::uint16_t count = 0;
+        __try {
+            src_kids = *reinterpret_cast<void***>(
+                reinterpret_cast<char*>(source) + NINODE_CHILDREN_PTR_OFF);
+            count = *reinterpret_cast<std::uint16_t*>(
+                reinterpret_cast<char*>(source) + NINODE_CHILDREN_CNT_OFF);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+
+        if (src_kids && count > 0 && count <= 256) {
+            // Engine subsequently calls attach_child to add MORE children
+            // (skeleton root, head, hands etc. attached after body load).
+            // Each attach grows the array if capacity is exceeded. To avoid
+            // buffer overflow on grow, allocate with HEADROOM and set the
+            // capacity field at +0x130 to match. 16 extra slots covers
+            // every observed attach pattern (max 5-6 extra in practice).
+            const std::uint16_t cap_with_headroom =
+                static_cast<std::uint16_t>(count + 16);
+            void** new_kids = reinterpret_cast<void**>(
+                engine_pool_alloc(static_cast<std::size_t>(cap_with_headroom)
+                                  * 8));
+            if (new_kids) {
+                // Zero out the trailing slots so engine's count-based
+                // iteration doesn't wander off the end if it ever does
+                // capacity-bound walks (unlikely but defensive).
+                for (std::uint16_t i = count; i < cap_with_headroom; ++i) {
+                    new_kids[i] = nullptr;
+                }
+                for (std::uint16_t i = 0; i < count; ++i) {
+                    void* src_child = nullptr;
+                    __try { src_child = src_kids[i]; }
+                    __except (EXCEPTION_EXECUTE_HANDLER) { continue; }
+
+                    void* cloned_child =
+                        clone_nif_subtree_recursive(src_child,
+                                                     depth + 1, max_depth);
+                    new_kids[i] = cloned_child;
+
+                    if (cloned_child && cloned_child != src_child) {
+                        // Set clone-child's parent to OUR clone.
+                        __try {
+                            *reinterpret_cast<void**>(
+                                reinterpret_cast<char*>(cloned_child)
+                                + NIAV_PARENT_OFF) = clone;
+                        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+                    }
+                }
+                // Replace clone's children pointer with our array AND
+                // update the capacity field. Without the capacity update,
+                // engine's attach_child writes past the end of our smaller
+                // array (we observed this as `[ERR] inject_body_nif: SEH
+                // attaching skel to body` on cloned body).
+                __try {
+                    *reinterpret_cast<void***>(
+                        reinterpret_cast<char*>(clone)
+                        + NINODE_CHILDREN_PTR_OFF) = new_kids;
+                    *reinterpret_cast<std::uint16_t*>(
+                        reinterpret_cast<char*>(clone)
+                        + NINODE_CHILDREN_CAP_OFF) = cap_with_headroom;
+                    // count stays as `count` (already memcpy'd from source
+                    // earlier; we don't want to change live count here).
+                } __except (EXCEPTION_EXECUTE_HANDLER) {}
+            }
+        }
+    }
+
+    if (is_geom) {
+        // Clone the BSSkin::Instance so this geometry has independent
+        // bone bindings. Without this, modifying clone's bones[] would
+        // also modify source's bones[] (skin instance is the cache-shared
+        // mutable state per the bug analysis).
+        void* src_skin = nullptr;
+        __try {
+            src_skin = *reinterpret_cast<void**>(
+                reinterpret_cast<char*>(source)
+                + BSGEOMETRY_SKIN_INSTANCE_OFF);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+
+        if (src_skin) {
+            void* skin_clone = clone_skin_instance(src_skin);
+            if (skin_clone) {
+                __try {
+                    *reinterpret_cast<void**>(
+                        reinterpret_cast<char*>(clone)
+                        + BSGEOMETRY_SKIN_INSTANCE_OFF) = skin_clone;
+                } __except (EXCEPTION_EXECUTE_HANDLER) {}
+            }
+            // If skin_clone failed, the geom clone keeps the source's skin
+            // pointer (shared) — degraded but not broken.
+        }
+    }
+
+    return clone;
+}
+
 // --- M2.2 API --------------------------------------------------------------
 
 bool inject_debug_cube(float x, float y, float z) {
@@ -2825,6 +3406,23 @@ std::uint32_t seh_nif_load_armor(NifLoadByPathFn fn,
         return fn(path, out_node, opts);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return 0xDEADBEEFu;
+    }
+}
+// M9.5 — Cache-bypass NIF load via worker (sub_1417B3480). Returns
+// true if the call completed without AV (whether *out_node is non-null
+// is up to caller to check). Worker returns DWORD* TLS scratch that we
+// ignore; the actual result lives in *out_node with refcount already
+// incremented. Per stradaB_nif_loader_api.txt §10 worker signature.
+bool seh_nif_load_worker_fresh(NifLoadWorkerFn fn,
+                                const char*     path,
+                                NifLoadOpts*    opts,
+                                void**          out_node) {
+    *out_node = nullptr;
+    __try {
+        (void)fn(/*stream_ctx*/ 0, path, opts, out_node, /*user_ctx*/ 0);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
     }
 }
 void seh_apply_materials_armor(ApplyMaterialsWalkerFn fn, void* node) {
@@ -3096,6 +3694,12 @@ std::mutex g_armor_map_mtx;
 std::unordered_map<std::string,
                     std::unordered_map<std::uint32_t, void*>>
     g_attached_armor;
+
+// M9.5 — per-armor-node flag: was this attached via deep-clone (true) or
+// SHARED + snapshot/restore path (false). Detach-side reads to skip
+// restore_skin_from_snapshot for clone-path armors (clone is destroyed on
+// dec_refcount; restore would write to dying memory).
+std::unordered_map<void*, bool> g_armor_was_cloned;
 
 // (M9 wedge 3 body-cull state machine moved to top of file alongside
 //  g_ghost_body_geom — needs to be visible to detach_debug_cube which
@@ -3693,6 +4297,24 @@ static bool seh_niav_set_flag(void* node, std::uint64_t mask, bool set) {
 // we need a different visibility mechanism.
 //
 // FLIP TO false TO RE-ENABLE body cull (after diagnosis is complete).
+//
+// 2026-05-03 UPDATE: TTD investigation (37GB trace) confirmed STALE CACHE bug:
+// `g_ghost_body_geoms[0]` becomes invalid within seconds of caching (engine
+// destroys the body BSSITF when armor partition replaces it; memory pool
+// reuses the address for unrelated BSSITF named "obj"). All apply_body_cull
+// writes go to FREED memory.
+//
+// HOWEVER user testing with DRY_RUN=true showed the visible bugs (local body
+// invisible, ghost mismatch, cycle crash) PERSIST — so stale cache is NOT
+// the SOLE root cause. The cache-share bug needed deep-clone (M9.5).
+//
+// Now that BOTH body and armor are deep-cloned in inject_body_nif and
+// ghost_attach_armor, the cache `g_ghost_body_geoms` points at our OWN
+// cloned body BSSITF. That clone is owned by us, never touched by engine,
+// and stays alive across the ghost's lifetime — so the cached pointer is
+// VALID and writes go to OUR body, not random pool memory. Re-enabling
+// the actual flag flip so the ghost body is hidden under armor (otherwise
+// we get the user-reported "body compenetra con vault suit").
 constexpr bool BODY_CULL_DRY_RUN = false;
 
 static int apply_body_cull(bool culled) {
@@ -3890,7 +4512,6 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
     // Load the NIF. Same opts as body load: FADE_WRAP | POSTPROC (0x18).
     // POSTPROC triggers BSModelProcessor → resolves .bgsm → DDS textures
     // (without it, materials render pink/purple as we discovered in M6.1).
-    void* armor_node = nullptr;
     NifLoadOpts opts{};
     opts.flags = NIF_OPT_FADE_WRAP | NIF_OPT_POSTPROC;
 
@@ -3903,18 +4524,100 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
     const std::uint8_t saved_ks = *killswitch_byte;
     *killswitch_byte = 1;
 
+    // M9.5 (2026-05-04) — TYPE-ROUTED armor path:
+    //   * If armor NIF tree contains BSSITF (= VS-style armor): DEEP CLONE.
+    //     Independent skin instance prevents shared-instance ping-pong
+    //     between local player and ghost (the "VS appears on ghost B too"
+    //     bug). Clone walker handles BSSITF correctly.
+    //   * Otherwise (BSTriShape geom, e.g. combat armor / regular pieces):
+    //     SHARED + yesterday's M9.w2 snapshot/restore. BSTriShape clone via
+    //     memcpy doesn't replicate engine's +0x148 D3D resource binding
+    //     (sub_1416D5600), causing invisible-armor; sharing lets the engine
+    //     manage rendering, with periodic re-apply (4Hz in on_bone_tick_*)
+    //     forcing ghost-skel binding to neutralize engine's local-actor
+    //     re-bind during equip cycles.
+    //
+    // ROLLBACK NOTE (2026-05-04 PM): tried `nif_load_worker` direct call
+    // for "fresh tree per armor" — same AV as the body inject (worker
+    // requires streamCtx from cache resolver, can't be called standalone
+    // with streamCtx=0). Reverted to type-routed clone vs shared.
+    void* shared_armor = nullptr;
     const std::uint32_t rc = seh_nif_load_armor(g_r.nif_load_by_path,
-                                                  path, &armor_node, &opts);
+                                                  path, &shared_armor, &opts);
     if (rc == 0xDEADBEEFu) {
         *killswitch_byte = saved_ks;
         FW_ERR("[armor-attach] SEH in nif_load_by_path('%s')", path);
         return false;
     }
-    if (rc != 0 || !armor_node) {
+    if (rc != 0 || !shared_armor) {
         *killswitch_byte = saved_ks;
         FW_ERR("[armor-attach] nif_load_by_path('%s') failed rc=%u node=%p",
-               path, rc, armor_node);
+               path, rc, shared_armor);
         return false;
+    }
+
+    // Decide path based on PATH WHITELIST.
+    //
+    // M9.5 (2026-05-04 PM, FINAL) — PATH-BASED ROUTING:
+    // Empirically the manual deep-clone walker produces a RENDERABLE clone
+    // ONLY for the Vault111Suit family. Combat heavy and RusticUnderArmor
+    // (winter coat) are also "homogeneous BSSITF" by detector but their
+    // clones render invisible — the +0x148 NiSkinPartition / D3D-resource
+    // setup the engine performs in its clone factory sub_1416D5600 isn't
+    // replicated by our memcpy walker, and only VS happens to survive the
+    // missing setup (likely due to its specific vertex layout).
+    //
+    // Conservative routing: ONLY the Vault Suit path goes through CLONE.
+    // Everything else uses yesterday's M9.w2 SHARED pipeline (commit
+    // dd7910c, which had universal armor rendering). This unifies:
+    //   - today's fix for VS cycle bugs (#1 SEH, #2 body invisible,
+    //     #3 ghost armor disappears, #4 T-pose) — via clone
+    //   - yesterday's universal armor render fix — via shared path
+    //     for combat / winter coat / Atom Cats / any future armor
+    //
+    // To extend the whitelist for future custom armors that need clone
+    // behavior, add a strstr() match below. Diagnostic detectors
+    // (tree_has_bssitf / tree_has_bstrishape) kept as logged metadata.
+    void* armor_node = nullptr;
+    bool was_cloned = false;
+    const bool has_bssitf     = tree_has_bssitf(shared_armor);
+    const bool has_bstrishape = tree_has_bstrishape(shared_armor);
+    const bool is_vault_suit_path = path && (
+        std::strstr(path, "Vault111Suit") != nullptr ||
+        std::strstr(path, "vault111suit") != nullptr);
+    if (is_vault_suit_path) {
+        // CLONE path — only for Vault Suit family.
+        armor_node = clone_nif_subtree(shared_armor);
+        if (armor_node != shared_armor) {
+            was_cloned = true;
+            FW_LOG("[armor-attach] CLONE path (VS whitelist): shared=%p "
+                   "clone=%p (form=0x%X path='%s') — independent skin "
+                   "instance, fixes VS cycle bugs #1-#4",
+                   shared_armor, armor_node, item_form_id, path);
+            // Drop our +1 caller-owned ref on shared; engine cache keeps it.
+            const long after = seh_refcount_dec_armor(shared_armor);
+            if (after == -999) {
+                FW_WRN("[armor-attach] SEH dec on shared (benign)");
+            }
+        } else {
+            FW_WRN("[armor-attach] VS clone walker returned shared for "
+                   "form=0x%X — degrading to SHARED path", item_form_id);
+            armor_node = shared_armor;  // already loaded with +1 ref, keep
+        }
+    } else {
+        // SHARED path = yesterday's commit dd7910c pipeline (universal armor
+        // render: combat, winter coat, Atom Cats, etc. all renderable).
+        armor_node = shared_armor;
+        FW_LOG("[armor-attach] SHARED path (yesterday's M9.w2): node=%p "
+               "(form=0x%X path='%s') has_bssitf=%d has_bstrishape=%d "
+               "— snapshot/restore + periodic re-apply",
+               armor_node, item_form_id, path,
+               static_cast<int>(has_bssitf),
+               static_cast<int>(has_bstrishape));
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_armor_map_mtx);
+        g_armor_was_cloned[armor_node] = was_cloned;
     }
 
     // apply_materials — runs BSModelProcessor's texture+shader bind so
@@ -3953,17 +4656,15 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
     // skinning becomes synchronized with body animation automatically.
     void* cached_skel = fw::native::skin_rebind::get_cached_skeleton();
     if (cached_skel) {
-        // M9 wedge 2 vault-suit-cycle fix (2026-05-01): take a snapshot
-        // of the armor's bones_fb[] / bones_pri[] / skel_root BEFORE the
-        // swap. ghost_detach_armor will restore from this snapshot so
-        // the next attach (which gets the SAME armor pointer back from
-        // the engine's NIF cache) starts from a clean state pointing at
-        // the original "_skin" stub bones (kept alive by niptr_swap's
-        // increment-only leak). Without this restore, the 2nd attach
-        // tries to swap bones already pointing at potentially-freed skel
-        // bones from the previous attach → corrupted bone table → ghost
-        // disappears / crashes after a few cycles.
-        fw::native::skin_rebind::take_skin_snapshot(armor_node);
+        // M9.w2 snapshot/restore — only for SHARED path. Clone has its
+        // own skin instance (independent of engine cache) so snapshotting
+        // the clone's pre-swap state and restoring on detach is pointless
+        // (clone is destroyed on dec_refcount anyway, restore writes to
+        // dying memory). Conditional here keeps clone path "lean" and
+        // shared path protected.
+        if (!was_cloned) {
+            fw::native::skin_rebind::take_skin_snapshot(armor_node);
+        }
 
         const int swapped = fw::native::skin_rebind::swap_skin_bones_to_skeleton(
             armor_node, cached_skel);
@@ -4084,23 +4785,24 @@ bool ghost_detach_armor(const char* peer_id, std::uint32_t item_form_id) {
     }
     if (!armor_node) return false;
 
-    // M9 wedge 2 vault-suit-cycle fix (2026-05-01): restore the armor's
-    // bones_fb[] / bones_pri[] / skel_root from the snapshot taken at
-    // attach time. This MUST happen BEFORE detach_child + refcount dec
-    // because:
-    //   1. The engine's NIF cache may keep this armor pointer alive
-    //      across detach/re-attach (refcount stays > 0). On re-attach
-    //      we get the SAME pointer back; if its bones point to garbage,
-    //      skin rebind only partially fixes it and render crashes /
-    //      shows broken geometry.
-    //   2. By writing back the original "_skin" stub pointers (kept
-    //      alive by niptr_swap's increment-only leak — see comment at
-    //      line ~464 of skin_rebind.cpp), the cached NIF returns to a
-    //      clean post-NIF-load state. Next attach can do a full clean
-    //      swap from stubs to skel.
-    // Idempotent — if no snapshot exists for this armor (e.g. attach
-    // happened without snapshot for some reason) restore is a no-op.
-    fw::native::skin_rebind::restore_skin_from_snapshot(armor_node);
+    // M9 wedge 2 + M9.5 — restore_skin_from_snapshot is necessary for
+    // SHARED-path armor (yesterday's mechanism keeps cache pristine across
+    // cycles). For CLONE-path armor (today's), the clone owns its skin
+    // and is destroyed on dec_refcount, so restoring is pointless and
+    // potentially writes to dying memory. Look up the routing flag to
+    // decide.
+    bool was_cloned = false;
+    {
+        std::lock_guard<std::mutex> lk(g_armor_map_mtx);
+        auto it = g_armor_was_cloned.find(armor_node);
+        if (it != g_armor_was_cloned.end()) {
+            was_cloned = it->second;
+            g_armor_was_cloned.erase(it);
+        }
+    }
+    if (!was_cloned) {
+        fw::native::skin_rebind::restore_skin_from_snapshot(armor_node);
+    }
 
     // Remove from ghost subtree. detach_child returns the pointer in
     // `removed` (which is just armor_node — sanity check); we're holding
@@ -4184,6 +4886,69 @@ void flush_pending_armor_ops() {
     }
     FW_LOG("[armor-pending] flush: replayed %zu/%zu ops across %zu peers",
            ok, total, local.size());
+}
+
+// M9.5 — re-apply skin swap on every currently-attached ghost armor.
+// Called from equip_hook AFTER chaining through g_orig_equip /
+// g_orig_unequip so the engine's post-equip skin re-bind on the SHARED
+// NIF instance (cache-share with our ghost armor) gets reversed back
+// to the ghost skel for ghost rendering.
+//
+// Implementation:
+//  - Snapshot g_attached_armor under mutex (so we don't hold the lock
+//    while doing skin work which can SEH and is potentially slow).
+//  - Get cached ghost skel.
+//  - For each (peer, form, armor_node), call swap_skin_bones_to_skeleton
+//    which is idempotent (niptr_swap is idempotent on identical writes).
+//
+// Logging: one summary line at INF, per-armor at DBG.
+//
+// Threading: MAIN THREAD only (engine calls our equip-tx hook from main).
+void reapply_ghost_skin_swaps(const char* trigger_label) {
+    if (!trigger_label) trigger_label = "<unknown>";
+
+    // Snapshot the map so we don't hold the mutex during skin work.
+    std::vector<std::pair<std::string, void*>> snapshot;
+    {
+        std::lock_guard<std::mutex> lk(g_armor_map_mtx);
+        for (const auto& peer_kv : g_attached_armor) {
+            for (const auto& form_kv : peer_kv.second) {
+                if (form_kv.second) {
+                    snapshot.emplace_back(peer_kv.first, form_kv.second);
+                }
+            }
+        }
+    }
+    if (snapshot.empty()) {
+        FW_DBG("[skin-reapply] trigger=%s: no ghost armors attached — "
+               "no-op", trigger_label);
+        return;
+    }
+
+    void* cached_skel = fw::native::skin_rebind::get_cached_skeleton();
+    if (!cached_skel) {
+        FW_WRN("[skin-reapply] trigger=%s: no cached skel — skipping "
+               "%zu ghost armor(s)", trigger_label, snapshot.size());
+        return;
+    }
+
+    std::size_t reapplied = 0;
+    int total_swapped = 0;
+    for (const auto& kv : snapshot) {
+        const int swapped =
+            fw::native::skin_rebind::swap_skin_bones_to_skeleton(
+                kv.second, cached_skel);
+        if (swapped >= 0) {
+            ++reapplied;
+            total_swapped += swapped;
+            FW_DBG("[skin-reapply]   peer=%s armor=%p swapped=%d bones",
+                   kv.first.c_str(), kv.second, swapped);
+        }
+    }
+    FW_LOG("[skin-reapply] trigger=%s: re-bound %zu/%zu ghost armor(s) "
+           "(%d total bone slots restored to ghost skel) — counters engine "
+           "EquipObject post-attach skin re-bind on shared NIF instances",
+           trigger_label, reapplied, snapshot.size(), total_swapped);
 }
 
 // === M9 wedge 7 — public weapon attach/detach/flush ========================
@@ -6760,6 +7525,53 @@ void on_bone_tick_message() {
     if (!body) {
         if (log_now) FW_LOG("[bone-test] no ghost body");
         return;
+    }
+
+    // M9.5 — periodic ghost armor skin re-bind. The engine's per-frame
+    // pipeline rewrites BSGeometry skin GPU palette state from the skin
+    // instance's bones[] array. For SHARED-mesh armors (combat armor,
+    // weapon mods, hairstyles, atomic armor pieces ...) the local actor's
+    // engine-side binding overwrites bones[] back to the local skel each
+    // time the local actor renders, so the ghost armor loses its ghost-
+    // skel binding between attach and the next render → ghost armor
+    // renders bound to the local skel, off-position, effectively invisible
+    // at the ghost's location.
+    //
+    // Universal fix: every N ticks, walk our attached-armor map and re-
+    // run swap_skin_bones_to_skeleton on each. niptr_swap is idempotent
+    // (skips writes that would be no-ops), so this is cheap when nothing
+    // changed. Decimated to ~4Hz to balance correctness with cost; engine's
+    // bind operations happen on equip events (not every frame), so 4Hz
+    // catches them with minimal worst-case latency. Silent flag suppresses
+    // the otherwise-flooding per-bone FW_LOG.
+    //
+    // For CLONE-path armors (VS today), the skin is independent — the re-
+    // apply is an idempotent no-op every tick. Same code path covers both.
+    // Future weapon mods / hairstyles / atomic armor get this protection
+    // for free as long as they go through ghost_attach_armor's tracking.
+    {
+        static int s_armor_decim = 0;
+        if (++s_armor_decim >= 5) {
+            s_armor_decim = 0;
+            void* skel = fw::native::skin_rebind::get_cached_skeleton();
+            if (skel) {
+                std::vector<void*> armors_snapshot;
+                {
+                    std::lock_guard<std::mutex> lk(g_armor_map_mtx);
+                    for (const auto& peer_kv : g_attached_armor) {
+                        for (const auto& form_kv : peer_kv.second) {
+                            if (form_kv.second) {
+                                armors_snapshot.push_back(form_kv.second);
+                            }
+                        }
+                    }
+                }
+                for (void* armor : armors_snapshot) {
+                    (void)fw::native::skin_rebind::swap_skin_bones_to_skeleton(
+                        armor, skel, /*silent=*/true);
+                }
+            }
+        }
     }
 
     // === LEGACY test cycle (DISABLED in M8P3.15 — replaced by net pose) ==

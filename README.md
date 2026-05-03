@@ -32,10 +32,11 @@ Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 > skin to the shared skel.nif so animation propagates. Path scoring picks
 > male 3rd-person variant over 1st-person/female fallbacks. Per-peer
 > pending queue handles the boot-time race when ghost spawns after the
-> peer's force-equip-cycle. Limitations: armor pieces ON TOP of outfits
-> z-fight (no biped slot masking), some NIFs have bind-pose mismatch
-> clipping (Vault Suit), Object Modifications (BGSMod) like shoulder
-> pads/weapon mods not covered. See [CHANGELOG.md](CHANGELOG.md).
+> peer's force-equip-cycle. Combat / outfit z-fight closed by M9.w3 body
+> cull (v0.4.1, 2026-05-03). Vault Suit equip-cycle SEH crash + post-cycle
+> body invisible / ghost armor disappears / T-pose closed by M9 v0.4.2
+> (2026-05-04, this patch) via path-routed deep clone of the VS NIF
+> subtree. See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -107,7 +108,7 @@ in real time).
 | **B5** D3D11 custom render | 🗿 not needed — Strada B native injection replaced |
 | **B6** World-state sync expansion *(composite — 12 wedges, multi-month epic)* | 🟡 1/12 done |
 | ↳ **B6.1** Door open/close sync | ✅ done — `sub_140514180` Activate worker hook + dual-agent RE convergence, [30s demo](https://youtu.be/T8wLZmCqjxw), see [CHANGELOG.md](CHANGELOG.md) |
-| **M9** Equipment sync between peers *(clothing + armor visual replication)* | 🟡 4/6 wedges done + w4 foundation — clothing + body cull + OMOD-driven ARMA tier work end-to-end, weapon visibility on ghost in PoC quality, true BGSMod weapon mods + material variants pending |
+| **M9** Equipment sync between peers *(clothing + armor visual replication)* | 🟡 4/6 wedges done + w4 foundation — clothing + body cull + OMOD-driven ARMA tier work end-to-end, Vault Suit equip-cycle stable (v0.4.2 path-routed deep clone — no more SEH crash / body invisible / T-pose), weapon visibility on ghost in PoC quality, true BGSMod weapon mods + material variants pending |
 | ↳ **M9.w1** Equip event detection + broadcast (sender hook OBSERVE-only) | ✅ done — `ActorEquipManager::EquipObject/UnequipObject` detour, EQUIP_OP/EQUIP_BCAST opcodes (protocol v6), [video coming soon] |
 | ↳ **M9.w2** Receiver-side NIF resolution + ghost attach + animation | ✅ done — TESObjectARMO struct walk, gender-aware path scoring (M3rd preferred over F/1stP), OMOD-driven priority extracted from `BGSObjectInstance.extra+0x56` and shipped via wire (proto v10) so ghost picks the correct ARMA tier (Lite/Mid/Heavy). Engine helper `sub_1404626A0` PrioritySelect algorithm reimplemented receiver-side. TTD-confirmed 2026-05-03. |
 | ↳ **M9.w3** Biped slot masking (hide ghost body parts under armor) | ✅ done — `TESObjectARMO+0x1E8` bipedSlots bitmask, slot-3 BODY mask flips `NIAV_FLAG_APP_CULLED` on ghost's `BaseMaleBody:0` BSSubIndexTriShape (cached at body inject via vtable RVA `0x2697D40` walker). Body hidden under Vault Suit / Power Armor / Synth Armor — no more z-fight. |
@@ -152,6 +153,64 @@ in real time).
 Latest 3 patches summarized below. **Full version history in
 [CHANGELOG.md](CHANGELOG.md).**
 
+### M9 v0.4.2 (2026-05-04) — Vault Suit cycle stability via path-routed deep clone — STABLE
+
+- Closes four equip-cycle bugs on Vault Suit: SEH crash on spam
+  unequip/equip, post-cycle local body invisible, ghost VS disappears
+  after re-equip, ghost VS frozen in T-pose. Single root cause across
+  all four: ghost shared the same cached `MaleBody.nif` / Vault Suit
+  BSFadeNode with the local player; engine cleanup on each cycle freed
+  state the ghost was still pointing at (`bones_pri[i]` raw `+0x70`
+  pointers into freed `BSFlattenedBoneTree`, plus shared `APP_CULLED`
+  bits leaking across actors).
+- Path-whitelist routing in `ghost_attach_armor`: NIF paths containing
+  `Vault111Suit` go through a manual deep-clone walker
+  (`BSFadeNode`/`BSLeafAnimNode`/`NiNode`/`BSSubIndexTriShape` +
+  manual `BSSkin::Instance` deep copy). Everything else
+  (combat light/heavy, RusticUnderArmor jacket, regular outfits)
+  stays on yesterday's v0.4.1 SHARED + snapshot/restore pipeline,
+  which already had universal armor render.
+- Body inject (`try_inject_body_nif`) deep-clones `MaleBody.nif`
+  unconditionally so the ghost body has its own independent BSSITF;
+  body cull `APP_CULLED` no longer bleeds across actors.
+- Periodic 4Hz skin re-apply in `on_bone_tick_message` with silent flag
+  refreshes ghost-skel binding on SHARED-path armors, neutralizing
+  engine's local-actor re-bind drift during local equip churn.
+- Whitelist instead of geometry-type detection because empirically
+  combat heavy + RusticUnderArmor are also homogeneous BSSITF (no
+  BSTriShape children) but their clones render invisible — the
+  manual clone walker only survives for VS, likely due to its
+  specific vertex layout tolerating a missing call to engine
+  helper `sub_1416D5600` (NiSkinPartition / D3D resource binding
+  setup).
+- M9 still 4/6 wedges; w4 PROPER (weapon mod parts), w6 (material
+  variants), Power Armor pending. B8 boot-time force-equip-cycle
+  workaround kept enabled — defense in depth, no harm. Tag
+  `v0.4.2-vs-cycle-stable`.
+
+### M9 v0.4.1 (2026-05-03) — wedge 2 PROPER + wedge 3 body cull — STABLE
+
+- M9.w3 — biped slot body cull. `TESObjectARMO+0x1E8` `bipedSlots`
+  bitmask drives `NIAV_FLAG_APP_CULLED` on the cached
+  `BaseMaleBody:0` BSSubIndexTriShape (vtable RVA `0x2697D40`).
+  When peer equips a slot-3 BODY armor (Vault Suit, Power Armor,
+  Synth Armor) the ghost body is hidden under the armor mesh.
+  Per-peer contributor set tracking handles concurrent BODY armors
+  and guarantees correct restore on last-detach.
+- M9.w2 PROPER — OMOD-driven ARMA tier selection. RE'd engine
+  selector `sub_1404626A0` (`TESObjectARMO::ForEachAddonInstance`,
+  RVA `0x4626A0`) and reimplemented its PrioritySelect algorithm
+  receiver-side. Sender extracts effective priority from
+  `BGSObjectInstance.extra+0x56`, TTD-confirmed against engine's
+  r8 argument to the build-holder helper. Ships via wire (proto v10)
+  so the ghost picks the same ARMA tier (Lite/Mid/Heavy) the player
+  wears. Gender-fix in path scoring catches the `F_<X>` filename
+  convention used by Combat Armor and DLC meshes.
+- Both wedges settled by HIGH×HIGH consensus from independent IDA
+  agents plus TTD ground-truth verification. Texture/material
+  variants (rusty vs clean) deferred to M9.w6 — same OIE pattern at
+  shader/material level.
+
 ### M9 v0.4.0 (2026-05-01) — wedge 4 foundation: weapon mesh on ghost (PoC, needs heavy polish) [Video coming soon]
 
 - New protocol v9 message types `MESH_BLOB_OP/BCAST` (chunked mesh
@@ -183,42 +242,6 @@ Latest 3 patches summarized below. **Full version history in
   no static NIF, async assembly walker race, donor shader vd
   mismatch crashes, server fan-out chunk-overflow, downgrade races,
   cross-form mesh contamination, ...). Tag: `v0.4.0-w4-foundation`.
-
-### M9 wedge 1+2 (2026-04-29) — clothing sync between peers [Video coming soon]
-
-- Sender hooks `ActorEquipManager::EquipObject/UnequipObject` (`sub_140CE5900`
-  / `sub_140CE5DA0`), filters local-player only, broadcasts `EQUIP_OP`
-  with `{item_form_id, kind, slot_form_id, count}`. Protocol bumped to v6.
-- Receiver walks `TESObjectARMO+0x2A8` addon array → `TESObjectARMA`
-  → embedded `TESModel` → BSFixedString path. Score-based offset probing
-  picks male 3rd-person variant over `_F.nif` female / `1stPerson` arms-only.
-- Loads NIF via `g_r.nif_load_by_path` + POSTPROC for material/texture
-  resolution → `attach_child_direct` to ghost root → `skin_rebind::
-  swap_skin_bones_to_skeleton` re-binds armor's `bones_fb[i]` from inert
-  NIF stub bones to ghost's animated `skel.nif` joints → animation
-  propagates from `pose-rx` to armor mesh.
-- Per-peer FIFO pending queue handles boot-time race: when peer's force-
-  equip-cycle broadcast arrives before ghost is spawned, ops are queued
-  and drained on next `inject_debug_cube` success.
-- Live-tested: peer A equips Vault Suit (`0x1EED7`) / Raider Underarmor
-  (`0x18E3F7`) → peer B's ghost-of-A wears + animates with same outfit.
-  Bidirectional. PoC; armor pieces over outfits z-fight (no biped slot
-  masking yet), BGSMod attachments not covered, A-first-B-later case
-  open. See [CHANGELOG.md](CHANGELOG.md).
-
-### B8 (2026-04-28) — force-equip-cycle on game start ⚠️ workaround
-
-- Three days of equip-related crashes resolved by exercising the player's
-  `BipedAnim` through `ActorEquipManager` once before any peer connects.
-  Worker fires 10s post-`LoadGame`: posts `WM_APP+0x4A` to unequip
-  Vault Suit, waits 2s for biped rebuild to settle, posts `WM_APP+0x4B`
-  to re-equip → `BipedAnim` allocator state normalizes from semi-allocated
-  pool refs to fully heap-owned → M8P3 ghost binding latches onto stable
-  pointers and equip changes post-peer-connect no longer dangle.
-- Tag: `v0.2.1-equip-stable`.
-- ⚠️ Band-aid, not architectural fix. Hardcoded to Vault Suit `0x1EED7`;
-  saves without it silently no-op. Proper fix is independent ghost
-  `skeleton.nif` (Option C). See [CHANGELOG.md](CHANGELOG.md).
 
 ## Why this exists
 

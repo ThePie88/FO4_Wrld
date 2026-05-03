@@ -52,7 +52,7 @@ namespace fw::native::skin_rebind {
 // calls return 0.
 //
 // Threading: main thread (WndProc) only. Holds no scene-graph locks.
-int swap_skin_bones_to_skeleton(void* body_root, void* skel_root);
+// (forward decl; full decl with `silent` default param below at line ~98)
 
 // Walk the body's BSGeometry tree and collect all unique skin
 // instances. Useful for debugging — log the names of stub bones the
@@ -91,7 +91,12 @@ void* get_cached_skeleton();
 // Refcount-safe (matches engine niptr-swap pattern).
 //
 // Returns the count of bone entries swapped, or -1 on error.
-int swap_skin_bones_to_skeleton(void* body_root, void* skel_root);
+//
+// `silent` (default false): when true, suppress per-call FW_LOG output.
+// Used by the periodic re-apply pass in on_bone_tick_message which would
+// otherwise spam ~20 lines × 20Hz × N armors / sec.
+int swap_skin_bones_to_skeleton(void* body_root, void* skel_root,
+                                bool silent = false);
 
 // ---- M9 wedge 2 vault-suit-cycle regression fix (2026-05-01) -----------
 //

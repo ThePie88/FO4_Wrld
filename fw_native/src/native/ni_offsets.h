@@ -62,6 +62,24 @@ constexpr std::uintptr_t NINODE_CTOR_RVA       = 0x016BDFE0; // sub_1416BDFE0
 constexpr std::size_t    NINODE_SIZEOF         = 0x140;      // 320 bytes
 constexpr std::size_t    NINODE_ALIGN          = 0x10;       // 16-byte
 
+// M9.5 — BSFadeNode + BSLeafAnimNode (NIF root types).
+// Sizes from stradaB_nif_loader_api.txt §1: loader allocates 0x1C0 for
+// BSFadeNode wrap path. BSLeafAnimNode shares the layout (extends BSFadeNode).
+constexpr std::uintptr_t BSFADENODE_VTABLE_RVA     = 0x028FA3E8;
+constexpr std::uintptr_t BSLEAFANIMNODE_VTABLE_RVA = 0x028FA690;
+constexpr std::size_t    BSFADENODE_SIZEOF        = 0x1C0;      // 448 bytes
+
+// BSSubIndexTriShape size (per M9w3 RE).
+constexpr std::size_t    BSSUBINDEXTRISHAPE_SIZEOF = 0x190;
+// BSSkin::Instance size (per M8P3_skin_instance_dossier.txt §1).
+constexpr std::size_t    BSSKIN_INSTANCE_SIZEOF = 0x0C0;
+constexpr std::uintptr_t BSSKIN_INSTANCE_VTABLE_RVA = 0x0267E5C8;
+// BSSkin::Instance copy ctor (clones from another instance) — per M8P3 §11.
+constexpr std::uintptr_t BSSKIN_INSTANCE_COPY_CTOR_RVA = 0x016D7B30;
+// Geometry skin slot.
+constexpr std::size_t    BSGEOMETRY_SKIN_INSTANCE_OFF = 0x140;
+// (BSTRISHAPE_SIZEOF already defined below at section 5 for M2 ctor work.)
+
 // NiAVObject (base of NiNode) — not allocated directly in M1, but member
 // offsets are inherited and matter for setting the cube's position.
 constexpr std::uintptr_t NIAVOBJECT_VTABLE_RVA = 0x0267D0C0;

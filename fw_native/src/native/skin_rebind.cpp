@@ -529,6 +529,12 @@ void* find_node_by_name(void* root, const char* target_name,
     return nullptr;
 }
 
+// Per-call thread-local toggle: when true, FW_LOG calls inside
+// swap_for_geometry / walk_for_swap and helpers are suppressed.
+// Used by the periodic re-apply in on_bone_tick_message to avoid log flood
+// (would be ~20 lines × N bones × 20Hz = thousands/sec otherwise).
+thread_local bool tls_skin_swap_silent = false;
+
 // Per-geometry swap: walk skin->bones_fb, rebind each entry to the
 // matching named NiNode in skel_root tree. Then rebind skin->skel_root.
 void swap_for_geometry(void* geom, void* skel_root,
@@ -557,8 +563,10 @@ void swap_for_geometry(void* geom, void* skel_root,
     char gname[96];
     if (try_read_ni_name(geom, gname, sizeof(gname)) <= 0)
         std::strncpy(gname, "<?>", sizeof(gname) - 1);
-    FW_LOG("[skin] swap: geom=%p name='%s' bones=%u",
-           geom, gname, bones_fb_count);
+    if (!tls_skin_swap_silent) {
+        FW_LOG("[skin] swap: geom=%p name='%s' bones=%u",
+               geom, gname, bones_fb_count);
+    }
 
     for (std::uint32_t i = 0; i < bones_fb_count; ++i) {
         void* current = nullptr;
@@ -573,8 +581,10 @@ void swap_for_geometry(void* geom, void* skel_root,
         int visited = 0;
         void* match = find_node_by_name(skel_root, bname, 0, visited, 1000);
         if (!match) {
-            FW_LOG("[skin] swap:   [%u] '%s' NO MATCH in skel "
-                   "(visited=%d)", i, bname, visited);
+            if (!tls_skin_swap_silent) {
+                FW_LOG("[skin] swap:   [%u] '%s' NO MATCH in skel "
+                       "(visited=%d)", i, bname, visited);
+            }
             failed++;
             continue;
         }
@@ -584,8 +594,10 @@ void swap_for_geometry(void* geom, void* skel_root,
         }
 
         niptr_swap(&bones_fb_head[i], match);
-        FW_LOG("[skin] swap:   [%u] '%s' %p -> %p OK",
-               i, bname, current, match);
+        if (!tls_skin_swap_silent) {
+            FW_LOG("[skin] swap:   [%u] '%s' %p -> %p OK",
+                   i, bname, current, match);
+        }
         swapped++;
     }
 
@@ -626,8 +638,10 @@ void swap_for_geometry(void* geom, void* skel_root,
             __except (EXCEPTION_EXECUTE_HANDLER) { break; }
             pri_updated++;
         }
-        FW_LOG("[skin] swap: bones_pri re-cache %d/%u entries (point at "
-               "post-swap fb[i]+0x70)", pri_updated, bones_fb_count);
+        if (!tls_skin_swap_silent) {
+            FW_LOG("[skin] swap: bones_pri re-cache %d/%u entries (point at "
+                   "post-swap fb[i]+0x70)", pri_updated, bones_fb_count);
+        }
     } else if (bones_pri_head) {
         FW_WRN("[skin] swap: bones_pri count mismatch (pri=%u fb=%u) — "
                "skip re-cache", bones_pri_count, bones_fb_count);
@@ -643,8 +657,10 @@ void swap_for_geometry(void* geom, void* skel_root,
     __except (EXCEPTION_EXECUTE_HANDLER) { return; }
     if (old_skel != skel_root) {
         niptr_swap(skel_slot, skel_root);
-        FW_LOG("[skin] swap: skin=%p skel_root rebind %p -> %p",
-               skin, old_skel, skel_root);
+        if (!tls_skin_swap_silent) {
+            FW_LOG("[skin] swap: skin=%p skel_root rebind %p -> %p",
+                   skin, old_skel, skel_root);
+        }
     }
 }
 
@@ -702,17 +718,24 @@ void* get_cached_skeleton() {
     return g_skel_root_cached.load(std::memory_order_acquire);
 }
 
-int swap_skin_bones_to_skeleton(void* body_root, void* skel_root) {
+int swap_skin_bones_to_skeleton(void* body_root, void* skel_root, bool silent) {
     ensure_base();
     if (!body_root || !skel_root) {
         FW_ERR("[skin] swap: NULL input body=%p skel=%p", body_root, skel_root);
         return -1;
     }
-    FW_LOG("[skin] swap START body=%p skel=%p", body_root, skel_root);
+    const bool prev_silent = tls_skin_swap_silent;
+    tls_skin_swap_silent = silent;
+    if (!silent) {
+        FW_LOG("[skin] swap START body=%p skel=%p", body_root, skel_root);
+    }
     int swapped = 0, failed = 0, already = 0;
     walk_for_swap(body_root, 0, skel_root, swapped, failed, already);
-    FW_LOG("[skin] swap END  swapped=%d failed=%d already_correct=%d",
-           swapped, failed, already);
+    if (!silent) {
+        FW_LOG("[skin] swap END  swapped=%d failed=%d already_correct=%d",
+               swapped, failed, already);
+    }
+    tls_skin_swap_silent = prev_silent;
     return swapped;
 }
 

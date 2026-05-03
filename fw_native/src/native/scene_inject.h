@@ -168,6 +168,29 @@ bool ghost_detach_armor(const char* peer_id, std::uint32_t item_form_id);
 // Main thread only.
 void flush_pending_armor_ops();
 
+// M9.5 — re-apply skin swap on every currently-attached ghost armor.
+// Rationale: when local player equips an armor whose NIF is in the engine's
+// resource cache (the same instance also used by ghost_attach_armor), the
+// engine's EquipObject post-attach skin re-bind walks the SHARED instance
+// and points its skin's bones[] at the LOCAL player's skel. Ghost armors
+// (sharing that NIF) silently lose their bone bindings to the ghost skel
+// — visually the ghost's suit "detaches" / floats / appears unequipped
+// even though our internal map still records it as attached.
+//
+// Calling this AFTER chain-through of g_orig_equip / g_orig_unequip
+// reverses the engine's re-bind by re-running swap_skin_bones_to_skeleton
+// on every ghost armor. niptr_swap is idempotent so this is safe: if the
+// armor wasn't actually mutated by the engine, the swap is a 0-write
+// no-op. If it was, our writes restore ghost-skel binding.
+//
+// Side effect: the local player's armor (same shared instance) will have
+// its bones briefly pointing to the ghost skel after our swap. The engine
+// re-binds again on the next animation frame so the local player sees a
+// 1-frame mis-render at most — acceptable cost vs persistent ghost bug.
+//
+// Main thread only.
+void reapply_ghost_skin_swaps(const char* trigger_label);
+
 // === M9 wedge 7 — weapon visual sync on the ghost body ====================
 //
 // Mirror of ghost_attach_armor / ghost_detach_armor for TESObjectWEAP forms.
