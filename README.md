@@ -106,15 +106,14 @@ in real time).
 | **M8P2** RE BSGeometry skin instance offsets | ✅ done — `+0x140` confirmed |
 | **M8P3** Skin pipeline RE + per-bone pose replication | ✅ M8P3.23 — body+head+hands animated, see [CHANGELOG.md](CHANGELOG.md) |
 | **B5** D3D11 custom render | 🗿 not needed — Strada B native injection replaced |
-| **B6** World-state sync expansion *(composite — 12 wedges, multi-month epic)* | 🟡 1/12 done |
+| **B6** World-state sync expansion *(composite — 13 wedges, multi-month epic)* | 🟡 1/13 done |
 | ↳ **B6.1** Door open/close sync | ✅ done — `sub_140514180` Activate worker hook + dual-agent RE convergence, [30s demo](https://youtu.be/T8wLZmCqjxw), see [CHANGELOG.md](CHANGELOG.md) |
-| **M9** Equipment sync between peers *(clothing + armor visual replication)* | 🟡 4/6 wedges done + w4 foundation — clothing + body cull + OMOD-driven ARMA tier work end-to-end, Vault Suit equip-cycle stable (v0.4.2 path-routed deep clone — no more SEH crash / body invisible / T-pose), weapon visibility on ghost in PoC quality, true BGSMod weapon mods + material variants pending |
+| **M9** Equipment sync between peers *(clothing + armor visual replication)* | 🟡 4/5 wedges done + w4 foundation — clothing + body cull + OMOD-driven ARMA tier work end-to-end, Vault Suit equip-cycle stable (v0.4.2 path-routed deep clone — no more SEH crash / body invisible / T-pose), weapon visibility on ghost in PoC quality, true BGSMod weapon mods pending (w4 PROPER) |
 | ↳ **M9.w1** Equip event detection + broadcast (sender hook OBSERVE-only) | ✅ done — `ActorEquipManager::EquipObject/UnequipObject` detour, EQUIP_OP/EQUIP_BCAST opcodes (protocol v6), [video coming soon] |
 | ↳ **M9.w2** Receiver-side NIF resolution + ghost attach + animation | ✅ done — TESObjectARMO struct walk, gender-aware path scoring (M3rd preferred over F/1stP), OMOD-driven priority extracted from `BGSObjectInstance.extra+0x56` and shipped via wire (proto v10) so ghost picks the correct ARMA tier (Lite/Mid/Heavy). Engine helper `sub_1404626A0` PrioritySelect algorithm reimplemented receiver-side. TTD-confirmed 2026-05-03. |
 | ↳ **M9.w3** Biped slot masking (hide ghost body parts under armor) | ✅ done — `TESObjectARMO+0x1E8` bipedSlots bitmask, slot-3 BODY mask flips `NIAV_FLAG_APP_CULLED` on ghost's `BaseMaleBody:0` BSSubIndexTriShape (cached at body inject via vtable RVA `0x2697D40` walker). Body hidden under Vault Suit / Power Armor / Synth Armor — no more z-fight. |
 | ↳ **M9.w4** Object Modification (BGSMod) sync — shoulder pads, weapon mods, paint variants | 🟡 foundation done in v0.4.0 — wire protocol v9 + mesh-blob pipeline + ghost-weapon state machine + smart NIF resolution. Pistols/melee/launchers visible on ghost as STOCK base. Modded firearms still render as base (no compensator/scope/etc. visible); heavily-modded rifles show one sub-component only. True mod replication blocked on full BSVertexDesc RE — deferred to v0.5+ |
 | ↳ **M9.w5** Peer rejoin equipment-state push | ✅ done in v0.3.1 — PEER_JOIN trigger re-arms equip cycle (DONE→ARMED state transition), 1500ms delay, current outfit re-broadcast to newly-joined peer |
-| ↳ **M9.w6** Material swap variants (rusty/clean raider, paint jobs) | ⏳ — RE BSMaterialDB swap path used by `nsInventory3DManager::*MaterialSwap*Task` |
 | ↳ **B6.2** Lights toggle sync (lamps, lanterns, generators) | ⏳ — same Activate worker pattern as doors, formType filter on `0x20` LIGH |
 | ↳ **B6.3** Locks state sync (lockpicked → unlocked cross-client) | ⏳ — REFR lock extra-data + `OnLockedClick` callback hook |
 | ↳ **B6.4** Terminals state sync (hacked / unlocked) | ⏳ — TerminalMenu activation event + persisted "hacked" flag |
@@ -126,6 +125,7 @@ in real time).
 | ↳ **B6.10** One-shot loot pickups (bobbleheads, magazines, holotapes, skill books) | ⏳ — single-pickup persistence, partially covered by container `kill` events |
 | ↳ **B6.11** Time of day + weather sync | ⏳ — GlobalVar `GameHour` + Sky weather state |
 | ↳ **B6.12** Workshop / settlement build state sync | ⏳ — major epic; build/scrap/move workshop refs + furniture |
+| ↳ **B6.13** Power Armor frame + worn-state sync | ⏳ — chassis is a REFR with its own state (location, per-piece HP, fusion core); player-in-PA = chassis attached to player. Both visibilities require sync. Re-scoped from M9 to B6 (2026-05-04) — fundamentally world-state, not an equip event |
 | **B7** Rust server port | ⏳ |
 
 ## Major RE achievements
@@ -183,10 +183,9 @@ Latest 3 patches summarized below. **Full version history in
   specific vertex layout tolerating a missing call to engine
   helper `sub_1416D5600` (NiSkinPartition / D3D resource binding
   setup).
-- M9 still 4/6 wedges; w4 PROPER (weapon mod parts), w6 (material
-  variants), Power Armor pending. B8 boot-time force-equip-cycle
-  workaround kept enabled — defense in depth, no harm. Tag
-  `v0.4.2-vs-cycle-stable`.
+- M9 still 4/5 wedges; w4 PROPER (weapon mod parts) is the remaining
+  in-scope work. B8 boot-time force-equip-cycle workaround kept enabled
+  — defense in depth, no harm. Tag `v0.4.2-vs-cycle-stable`.
 
 ### M9 v0.4.1 (2026-05-03) — wedge 2 PROPER + wedge 3 body cull — STABLE
 
@@ -207,9 +206,7 @@ Latest 3 patches summarized below. **Full version history in
   wears. Gender-fix in path scoring catches the `F_<X>` filename
   convention used by Combat Armor and DLC meshes.
 - Both wedges settled by HIGH×HIGH consensus from independent IDA
-  agents plus TTD ground-truth verification. Texture/material
-  variants (rusty vs clean) deferred to M9.w6 — same OIE pattern at
-  shader/material level.
+  agents plus TTD ground-truth verification.
 
 ### M9 v0.4.0 (2026-05-01) — wedge 4 foundation: weapon mesh on ghost (PoC, needs heavy polish) [Video coming soon]
 

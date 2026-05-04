@@ -9,8 +9,8 @@ older lives here. Format: newest first, milestones / patches inline.
 
 Closes four long-standing equip-cycle bugs on Vault Suit and unifies the
 fix with yesterday's v0.4.1 universal armor pipeline. M9 itself is not yet
-100% (w4 PROPER weapon mods, w6 material variants, Power Armor still open),
-which is why this is a 0.4.2 patch rather than a 0.5 milestone bump.
+100% (w4 PROPER weapon mods is the remaining in-scope wedge), which is why
+this is a 0.4.2 patch rather than a 0.5 milestone bump.
 
 **Bugs closed (screenshot list):**
 
@@ -102,15 +102,27 @@ clone), `skin_rebind.cpp/h` (silent flag for periodic re-apply),
 **Known residuals (deferred to next patches):**
 
 - M9.w4 PROPER (mod parts on weapons) — `BSVertexDesc` RE blocker,
-  same as v0.4.0 changelog.
-- M9.w6 material variants (rusty/clean) — same OIE pattern at
-  shader/material level.
-- Power Armor — separate equip pipeline (`ActorEquipManager`
-  alternate path), not exercised by current tests.
+  same as v0.4.0 changelog. Last in-scope wedge before M9 close.
 - B8 boot-time force-equip-cycle is now redundant for the VS crash but
   kept enabled (no harm) until M9 closes fully — provides defense in
   depth for the few remaining engine state-warmup edge cases on first
   spawn.
+
+**Out of M9 scope (post-project):**
+
+- Material swap variants (rusty/clean raider, paint jobs) — same OIE
+  pattern at shader/material level, addressable via `BSMaterialDB` swap
+  path used by `nsInventory3DManager::*MaterialSwap*Task`. Removed from
+  active roadmap 2026-05-04 — deferred until project complete.
+
+**Re-scoped (not M9, belongs to world sync B6):**
+
+- Power Armor — fundamentally world-state, not an equip event. The PA
+  chassis is a REFR sitting in the world with its own state (location,
+  per-piece HP, fusion core); the player-in-PA state is the chassis
+  attached to a player. Both visibilities require sync in both clients.
+  Moved to B6 as a new wedge 2026-05-04. Will be addressed inside the
+  B6 world-sync milestone, not as an M9 residual.
 
 ---
 
