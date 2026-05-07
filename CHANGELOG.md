@@ -17,6 +17,10 @@ As far as I can tell this is the first time it has been done in the
 FO4 multiplayer modding scene; previous attempts (Fallout Together,
 F4MP) never reached this point.
 
+**Demo:** https://youtu.be/r34D4IL7wAk — clothes, armor, and modded
+firearms (10mm pistol, assault rifle, hunting rifle) replicated on
+both clients side-by-side.
+
 ### What was hard
 
 The engine's weapon-mod assembly is not driven by any user-callable

@@ -47,8 +47,9 @@ Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 > to the base via the BSConnectPoint extra-data system baked into the
 > NIF files. Sender fires a tiny re-equip cycle 50 ms after each user
 > equip to work around a first-equip render lag I couldn't fix on the
-> receiver alone. Rifles next session to close M9 fully. See
-> [CHANGELOG.md](CHANGELOG.md).
+> receiver alone. Rifles next session to close M9 fully.
+> [Demo (clothes + armor + modded firearms)](https://youtu.be/r34D4IL7wAk).
+> See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -124,7 +125,7 @@ in real time).
 | ↳ **M9.w1** Equip event detection + broadcast (sender hook OBSERVE-only) | ✅ done — `ActorEquipManager::EquipObject/UnequipObject` detour, EQUIP_OP/EQUIP_BCAST opcodes (protocol v6), [video coming soon] |
 | ↳ **M9.w2** Receiver-side NIF resolution + ghost attach + animation | ✅ done — TESObjectARMO struct walk, gender-aware path scoring (M3rd preferred over F/1stP), OMOD-driven priority extracted from `BGSObjectInstance.extra+0x56` and shipped via wire (proto v10) so ghost picks the correct ARMA tier (Lite/Mid/Heavy). Engine helper `sub_1404626A0` PrioritySelect algorithm reimplemented receiver-side. TTD-confirmed 2026-05-03. |
 | ↳ **M9.w3** Biped slot masking (hide ghost body parts under armor) | ✅ done — `TESObjectARMO+0x1E8` bipedSlots bitmask, slot-3 BODY mask flips `NIAV_FLAG_APP_CULLED` on ghost's `BaseMaleBody:0` BSSubIndexTriShape (cached at body inject via vtable RVA `0x2697D40` walker). Body hidden under Vault Suit / Power Armor / Synth Armor — no more z-fight. |
-| ↳ **M9.w4** Object Modification (BGSMod) sync — shoulder pads, weapon mods, paint variants | 🟢 modded **pistols** end-to-end (v0.5.0, 2026-05-07) — engine OMOD attacher `sub_140434DA0` + BSConnectPoint pairing, sender-side 50ms auto re-equip cycle for off-by-one render lag. Modded 10mm/handmade pistol receivers/scopes/suppressors/mags all visible on the ghost. Rifles (sniper/assault/hunting) next session to fully close M9. |
+| ↳ **M9.w4** Object Modification (BGSMod) sync — shoulder pads, weapon mods, paint variants | 🟢 modded **pistols** end-to-end (v0.5.0, 2026-05-07) — engine OMOD attacher `sub_140434DA0` + BSConnectPoint pairing, sender-side 50ms auto re-equip cycle for off-by-one render lag. Modded 10mm/handmade pistol receivers/scopes/suppressors/mags all visible on the ghost, [demo](https://youtu.be/r34D4IL7wAk). Rifles (sniper/assault/hunting) next session to fully close M9. |
 | ↳ **M9.w5** Peer rejoin equipment-state push | ✅ done in v0.3.1 — PEER_JOIN trigger re-arms equip cycle (DONE→ARMED state transition), 1500ms delay, current outfit re-broadcast to newly-joined peer |
 | ↳ **B6.2** Lights toggle sync (lamps, lanterns, generators) | ⏳ — same Activate worker pattern as doors, formType filter on `0x20` LIGH |
 | ↳ **B6.3** Locks state sync (lockpicked → unlocked cross-client) | ⏳ — REFR lock extra-data + `OnLockedClick` callback hook |
@@ -173,6 +174,7 @@ Latest 3 patches summarized below. **Full version history in
   hand, animated with A's pose. As far as I can tell this is the first
   time it has been done in the FO4 multiplayer modding scene — previous
   attempts (Fallout Together, F4MP) never reached this point.
+  [Demo on YouTube](https://youtu.be/r34D4IL7wAk).
 - **Per-OMOD attach is `sub_140434DA0(omod_form, base_BSFadeNode,
   placeholder_or_NULL, flags)`** (RVA `+0x00434DA0`). It reads the
   OMOD's `TESModel.modelPath` at `OMOD+0x50`, loads the sub-NIF,
