@@ -92,7 +92,13 @@ private:
     std::unordered_map<std::uint32_t, InFlight> in_flight_;
     bool dead_ = false;
 
-    static constexpr std::uint32_t MAX_RETRANSMITS = 8;
+    // 2026-05-07: bumped 8 → 32 after live test showed channel-dead with
+    // bursty modded-equip traffic. With exponential backoff capping at
+    // MAX_TIMEOUT_MS, 32 retransmits ≈ 60+ seconds tolerance — survives
+    // a P2P relay hiccup or temporary server stall during heavy equip
+    // events. The MESH_BLOB_OP path that drove most of the burst has
+    // also been disabled (see weapon_capture.cpp).
+    static constexpr std::uint32_t MAX_RETRANSMITS = 32;
     static constexpr std::uint32_t INITIAL_TIMEOUT_MS = 300;
     static constexpr std::uint32_t MAX_TIMEOUT_MS = 2000;
 

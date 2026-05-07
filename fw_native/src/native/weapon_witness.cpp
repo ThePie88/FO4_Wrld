@@ -14,6 +14,8 @@
 #include "nif_path_cache.h" // lookup for cache hits
 #include "bsgeo_input_cache.h" // M9 w4 Path B-alt-1: factory input lookup
 #include "ni_alloc_tracker.h"  // M9 w4 Path B-alt-2: alloc caller-RIP lookup
+#include "skin_rebind.h"       // get_bone_by_name (WEAPON bone lookup)
+#include <cmath>               // std::fabs in xform_inverse
 
 namespace fw::native::weapon_witness {
 
@@ -102,6 +104,117 @@ bool seh_read_local_transform(void* node, float out[16]) {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+}
+
+// Read world NiTransform (16 floats from node+0x70 to node+0xB0). Same
+// layout as m_local but at the m_world offset. The engine maintains
+// m_world each frame as parent.m_world * m_local, so reading m_world
+// gives the leaf's current absolute world position.
+bool seh_read_world_transform(void* node, float out[16]) {
+    if (!node) return false;
+    __try {
+        const char* base = reinterpret_cast<const char*>(node)
+                         + NIAV_WORLD_ROTATE_OFF;
+        std::memcpy(out, base, sizeof(float) * 16);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Compose two NiTransforms in 16-float layout (matches engine's NiMatrix3
+// + NiPoint3 + scale layout at offsets [0..2] [4..6] [8..10] (rotation),
+// [12..14] (translate), [15] (scale); offsets 3, 7, 11 are NiPoint4
+// padding and are zeroed on output).
+//
+// Apply A then B (i.e. result = B ∘ A as transforms acting on points):
+//   p' = R_B (s_B (R_A (s_A p) + T_A)) + T_B
+//   s_combined = s_A * s_B
+//   R_combined = R_B * R_A
+//   T_combined = R_B * (s_B * T_A) + T_B
+void xform_compose(const float A[16], const float B[16], float out[16]) {
+    // Local accessors (row*4 + col gives the right NiPoint4 layout
+    // because each row of NiMatrix3 is padded to 4 floats).
+    auto rA = [&](int r, int c) { return A[r*4 + c]; };
+    auto rB = [&](int r, int c) { return B[r*4 + c]; };
+    const float sA = A[15];
+    const float sB = B[15];
+    const float* tA = &A[12];
+    const float* tB = &B[12];
+
+    float Rout[3][3];
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            float sum = 0;
+            for (int k = 0; k < 3; ++k) sum += rB(i, k) * rA(k, j);
+            Rout[i][j] = sum;
+        }
+    }
+    float Tout[3];
+    for (int i = 0; i < 3; ++i) {
+        float sum = tB[i];
+        for (int k = 0; k < 3; ++k) sum += rB(i, k) * (sB * tA[k]);
+        Tout[i] = sum;
+    }
+
+    // Pack into output (clear all 16, then fill).
+    for (int i = 0; i < 16; ++i) out[i] = 0.0f;
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            out[i*4 + j] = Rout[i][j];
+        }
+    }
+    out[12] = Tout[0];
+    out[13] = Tout[1];
+    out[14] = Tout[2];
+    out[15] = sA * sB;
+}
+
+// Invert a NiTransform.
+//   T = (R, t, s) acts: p' = sRp + t
+//   T^-1 = (R^T, -(1/s) R^T t, 1/s)  (R is orthogonal so R^-1 = R^T).
+void xform_inverse(const float A[16], float out[16]) {
+    auto rA = [&](int r, int c) { return A[r*4 + c]; };
+    const float sA = A[15];
+    const float s_inv = (std::fabs(sA) > 1e-9f) ? (1.0f / sA) : 1.0f;
+    const float* tA = &A[12];
+
+    // R^T
+    float Rinv[3][3];
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            Rinv[i][j] = rA(j, i);
+
+    // T_inv = -(1/s) R^T t
+    float Tinv[3];
+    for (int i = 0; i < 3; ++i) {
+        float sum = 0;
+        for (int k = 0; k < 3; ++k) sum += Rinv[i][k] * tA[k];
+        Tinv[i] = -s_inv * sum;
+    }
+
+    for (int i = 0; i < 16; ++i) out[i] = 0.0f;
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            out[i*4 + j] = Rinv[i][j];
+    out[12] = Tinv[0];
+    out[13] = Tinv[1];
+    out[14] = Tinv[2];
+    out[15] = s_inv;
+}
+
+// Compute leaf's world transform RELATIVE to weapon_bone's frame.
+// Result = inverse(weapon_bone.m_world) ∘ leaf.m_world.
+// Caller passes pre-read 16-float buffers for both. Returns true on
+// success, false if math fails (degenerate scale).
+bool xform_relative_to_weapon(const float leaf_world[16],
+                                const float weapon_world[16],
+                                float out[16]) {
+    if (!leaf_world || !weapon_world || !out) return false;
+    float w_inv[16];
+    xform_inverse(weapon_world, w_inv);
+    xform_compose(leaf_world, w_inv, out);
+    return true;
 }
 
 // Read children pointer + count from a NiNode-derived object. Returns
@@ -1014,17 +1127,85 @@ bool extract_one_mesh(void* geom, ExtractedMesh& m) {
         m.positions[3*i + 2] = half_to_float(hz);
     }
 
-    // Local transform (16 floats from node +0x30).
-    float xf[16];
-    if (seh_read_local_transform(geom, xf)) {
-        std::memcpy(m.local_transform, xf, sizeof(m.local_transform));
-    } else {
-        // Identity fallback.
-        std::memset(m.local_transform, 0, sizeof(m.local_transform));
-        m.local_transform[0]  = 1.0f;
-        m.local_transform[5]  = 1.0f;
-        m.local_transform[10] = 1.0f;
-        m.local_transform[15] = 1.0f;
+    // 2026-05-06 LATE evening (M9 closure, FLAT-REBUILD ARCHITECTURE) —
+    // capture the MOD NIF ROOT'S transform RELATIVE TO THE WEAPON BONE.
+    // The "mod NIF root" is the first BSFadeNode ancestor when walking
+    // up from the leaf. This decouples the receiver from the sender's
+    // complex placeholder structure:
+    //
+    // Receiver attaches the cached mod NIF (looked up by
+    // parent_placeholder name) DIRECTLY as a child of its own WEAPON
+    // bone with m_local = received transform. The engine recomputes
+    // m_world = receiver_WEAPON.m_world * received_transform → mod
+    // appears at the same position relative to ghost's hand as on
+    // sender's hand. The mod's internal NiNode structure handles its
+    // own leaf positions (via the mod's internal m_local chain), so
+    // even though we attach at WEAPON instead of base placeholder,
+    // visual fidelity is preserved.
+    //
+    // Math: sender_relative = inv(sender_WEAPON.m_world) ∘ sender_mod_root.m_world
+    // The engine maintains m_world each frame; we just read both and
+    // compose. If the leaf is at the SAME m_local relative to mod_root
+    // as before, this is invariant.
+    //
+    // Multiple leaves under the same mod NIF root will all carry the
+    // same mod_root-relative transform (deduped by parent_placeholder
+    // on receiver, so attached once per unique mod NIF).
+    {
+        void* weapon_bone = fw::native::skin_rebind::get_bone_by_name(
+            "WEAPON");
+        if (!weapon_bone) {
+            weapon_bone = fw::native::skin_rebind::get_bone_by_name("Weapon");
+        }
+        // Find mod NIF root = first BSFadeNode ancestor of the leaf.
+        const HMODULE game = GetModuleHandleW(L"Fallout4.exe");
+        const auto module_base = game
+            ? reinterpret_cast<std::uintptr_t>(game)
+            : 0;
+        void* mod_root = nullptr;
+        {
+            constexpr int kMaxWalk = 8;
+            void* cur = seh_read_parent(geom);
+            for (int i = 0; i < kMaxWalk && cur && module_base; ++i) {
+                const std::uintptr_t vt_rva =
+                    seh_read_vtable_rva(cur, module_base);
+                if (vt_rva == BSFADENODE_VTABLE_RVA) {
+                    mod_root = cur;
+                    break;
+                }
+                cur = seh_read_parent(cur);
+            }
+        }
+
+        float mod_w[16] = {0}, weapon_w[16] = {0};
+        bool ok = false;
+        if (mod_root && weapon_bone
+            && seh_read_world_transform(mod_root, mod_w)
+            && seh_read_world_transform(weapon_bone, weapon_w)) {
+            float relative[16];
+            if (xform_relative_to_weapon(mod_w, weapon_w, relative)) {
+                std::memcpy(m.local_transform, relative,
+                            sizeof(m.local_transform));
+                ok = true;
+            }
+        }
+        if (!ok) {
+            // Fallback to leaf's m_local (old behaviour). Used when no
+            // BSFadeNode ancestor / WEAPON bone — receiver's old paths
+            // still understand this and attach to placeholder.
+            float xf[16];
+            if (seh_read_local_transform(geom, xf)) {
+                std::memcpy(m.local_transform, xf,
+                            sizeof(m.local_transform));
+            } else {
+                std::memset(m.local_transform, 0,
+                            sizeof(m.local_transform));
+                m.local_transform[0]  = 1.0f;
+                m.local_transform[5]  = 1.0f;
+                m.local_transform[10] = 1.0f;
+                m.local_transform[15] = 1.0f;
+            }
+        }
     }
 
     // m_name from the geometry leaf (e.g. "10mmHeavyPortedBarrel002:0").
@@ -1033,11 +1214,70 @@ bool extract_one_mesh(void* geom, ExtractedMesh& m) {
         m.m_name.assign(buf);
     }
 
-    // Parent placeholder name (NiAVObject +0x28 → parent NiNode → m_name).
+    // 2026-05-06 LATE evening (ATTEMPT #7 v2) — keep parent_placeholder
+    // as the IMMEDIATE parent's m_name (= cache lookup key for receiver,
+    // unchanged from old behaviour). Change ONLY slot_name: walk up to
+    // the FIRST BSFadeNode ancestor (= mod NIF root) and use its
+    // PARENT's m_name as slot_name (= base placeholder where engine
+    // attached this mod).
+    //
+    // ATTEMPT #7 v1 (just reverted) changed both, broke the resmgr
+    // lookup because parent_placeholder='P-Receiver' (BSFadeNode root
+    // name from mod's .nif file) doesn't match anything in the cache —
+    // the cache is keyed on the .nif file's INNER root NiNode name
+    // (the file root is wrapped in a BSFadeNode by the engine on load,
+    // and the cache m_name index uses the inner). Live test:
+    // share=0 bgsm=4 (everything fell to disk-load) with all mods
+    // attached at base_root → user reported "armi stock oppure con il
+    // suppressor sotto la canna, comunque con mancanza di mod".
+    //
+    // Reverted parent_placeholder. Keep slot_name walk-up (the original
+    // intent of this fix).
     void* parent = seh_read_parent(geom);
     if (parent) {
+        // parent_placeholder = immediate parent's m_name (UNCHANGED from
+        // pre-fix behaviour — this is the resmgr cache lookup key).
         if (seh_read_node_name(parent, buf, sizeof(buf))) {
             m.parent_placeholder.assign(buf);
+        }
+    }
+
+    // slot_name = base placeholder name. Walk UP from leaf looking for
+    // the FIRST BSFadeNode (= mod NIF root). Its parent is the base
+    // placeholder where the engine attached this mod.
+    {
+        const HMODULE game = GetModuleHandleW(L"Fallout4.exe");
+        const auto module_base = game
+            ? reinterpret_cast<std::uintptr_t>(game)
+            : 0;
+        constexpr int kMaxWalk = 8;
+        void* cur = parent;
+        void* mod_root = nullptr;
+        for (int i = 0; i < kMaxWalk && cur && module_base; ++i) {
+            const std::uintptr_t vt_rva =
+                seh_read_vtable_rva(cur, module_base);
+            if (vt_rva == BSFADENODE_VTABLE_RVA) {
+                mod_root = cur;
+                break;
+            }
+            cur = seh_read_parent(cur);
+        }
+        if (mod_root) {
+            void* base_placeholder = seh_read_parent(mod_root);
+            if (base_placeholder) {
+                if (seh_read_node_name(base_placeholder, buf, sizeof(buf))) {
+                    m.slot_name.assign(buf);
+                }
+            }
+        } else if (parent) {
+            // No BSFadeNode ancestor within walk depth — fall back to
+            // grandparent (old N=2 behaviour).
+            void* grandparent = seh_read_parent(parent);
+            if (grandparent) {
+                if (seh_read_node_name(grandparent, buf, sizeof(buf))) {
+                    m.slot_name.assign(buf);
+                }
+            }
         }
     }
 
@@ -1146,6 +1386,96 @@ void mesh_stats(const ExtractedMesh& m,
 }
 
 } // namespace
+
+// M9.w4 PROPER (v0.4.2+) — public wrapper around the anon-namespace
+// `extract_one_mesh`. Allows the clone-factory-driven capture pipeline
+// (weapon_capture::record_clone) to use the same proven extraction
+// helpers without duplicating SEH/decode logic. See header for contract.
+//
+// Implementation is a thin pass-through; the heavy lifting (helper struct
+// follow, BSVertexDesc decode, SEH reads, transform extraction) lives in
+// the static `extract_one_mesh` above.
+bool extract_mesh_for_capture(void* geom, ExtractedMesh& m) {
+    return extract_one_mesh(geom, m);
+}
+
+// Public wrappers around the anon-ns primitives (see header).
+void* read_parent_pub(void* node) {
+    return seh_read_parent(node);
+}
+bool read_node_name_pub(void* node, char* buf, std::size_t bufsz) {
+    return seh_read_node_name(node, buf, bufsz);
+}
+
+void* find_mod_nif_root_pub(void* leaf, int max_walk) {
+    if (!leaf) return nullptr;
+    if (max_walk <= 0) max_walk = 8;
+    const HMODULE game = GetModuleHandleW(L"Fallout4.exe");
+    if (!game) return nullptr;
+    const auto base = reinterpret_cast<std::uintptr_t>(game);
+
+    // Walk UP from leaf, checking each ancestor's vtable.
+    void* cur = seh_read_parent(leaf);
+    for (int i = 0; i < max_walk && cur; ++i) {
+        const std::uintptr_t vt_rva = seh_read_vtable_rva(cur, base);
+        if (vt_rva == BSFADENODE_VTABLE_RVA) {
+            return cur;
+        }
+        cur = seh_read_parent(cur);
+    }
+    return nullptr;
+}
+
+// 2026-05-06 LATE evening (M9 closure, PLAN B). Mirror of the lookup in
+// snapshot_player_weapon_meshes — same WEAPON candidates list, same
+// "first named child" rule, but exposed as a single primitive for the
+// PLAN B serialize-and-ship path.
+void* find_player_assembled_weapon_root_pub() {
+    const HMODULE game = GetModuleHandleW(L"Fallout4.exe");
+    if (!game) return nullptr;
+    const auto base = reinterpret_cast<std::uintptr_t>(game);
+
+    void* loaded3d = seh_read_player_loaded3d(base);
+    if (!loaded3d) {
+        FW_DBG("[plan-b] player loaded3D null — no equipped weapon");
+        return nullptr;
+    }
+
+    static const char* kCandidates[] = {
+        "WEAPON", "Weapon", "WeaponBone", "RArm_Hand"
+    };
+    WalkStats stats;
+    void* attach_node = find_node_by_candidate_names(
+        loaded3d, kCandidates,
+        sizeof(kCandidates) / sizeof(kCandidates[0]), stats);
+    if (!attach_node) {
+        FW_DBG("[plan-b] no WEAPON/Weapon/WeaponBone/RArm_Hand under "
+               "loaded3D=%p", loaded3d);
+        return nullptr;
+    }
+
+    // First named child of WEAPON bone = assembled weapon root.
+    void**         kids = nullptr;
+    std::uint16_t  count = 0;
+    if (!seh_read_children(attach_node, kids, count) || !kids
+        || count == 0) {
+        FW_DBG("[plan-b] WEAPON bone %p has no children", attach_node);
+        return nullptr;
+    }
+    for (std::uint16_t i = 0; i < count; ++i) {
+        void* k = seh_index_child(kids, i);
+        if (!k) continue;
+        char wname[128];
+        if (seh_read_node_name(k, wname, sizeof(wname)) && wname[0]) {
+            FW_DBG("[plan-b] assembled weapon root: %p name='%s' under "
+                   "attach=%p", k, wname, attach_node);
+            return k;
+        }
+    }
+    FW_DBG("[plan-b] WEAPON bone %p has %u children but none named",
+           attach_node, count);
+    return nullptr;
+}
 
 MeshSnapshot snapshot_player_weapon_meshes() {
     MeshSnapshot snap;

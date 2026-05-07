@@ -697,7 +697,21 @@ static_assert(sizeof(MeshBlobHeader) == 10, "MeshBlobHeader size");
 
 // Per-mesh record header (76 B fixed prefix). Followed by:
 //   m_name_len bytes (UTF-8/ASCII)
-//   parent_placeholder_len bytes
+//   parent_placeholder_len bytes  — m_name of immediate parent of the
+//                                   BSGeometry leaf; in practice this is
+//                                   the mod NIF root's m_name (e.g.
+//                                   "Pistol10mmReceiver"). Used as KEY
+//                                   for resmgr-share lookup on receiver.
+//   slot_name_len bytes           — m_name of the grand-parent of the
+//                                   BSGeometry leaf; in practice this is
+//                                   the slot placeholder INSIDE the base
+//                                   weapon NIF (e.g. "PistolReceiver").
+//                                   Used by receiver to position the mod
+//                                   under the correct slot in the loaded
+//                                   base weapon NIF. (Was `reserved` u16
+//                                   before 2026-05-05; old blobs that
+//                                   wrote 0 are still decodable and
+//                                   simply skip the slot-aware attach.)
 //   bgsm_path_len bytes
 //   3*vert_count × f32 positions   (12 * vc bytes)
 //   3*tri_count × u16 indices       (6 * tc bytes)
@@ -706,7 +720,7 @@ struct MeshRecordHeader {
     std::uint8_t  parent_placeholder_len;
     std::uint16_t bgsm_path_len;
     std::uint16_t vert_count;
-    std::uint16_t reserved;         // = 0; align
+    std::uint16_t slot_name_len;    // (was `reserved`; see comment above)
     std::uint32_t tri_count;        // index_count = 3 * tri_count
     float         local_transform[16];
 };

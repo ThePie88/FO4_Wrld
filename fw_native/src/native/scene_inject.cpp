@@ -21,6 +21,8 @@
 #include "ni_offsets.h"
 #include "scene_walker.h"
 #include "skin_rebind.h"
+#include "weapon_witness.h"  // read_parent_pub for detach-via-parent helper
+#include "synthetic_refr.h"  // M9 closure (2026-05-07): synthetic REFR weapon assembly
 
 #include <windows.h>
 #include <atomic>
@@ -184,6 +186,25 @@ static void populate_canonical_from_skel_native(void* skel_root) {
 // scope-shadow ambiguity.
 void* clone_nif_subtree(void* source);
 
+// 2026-05-06 LATE evening (M9 closure, PLAN B — NiStream serialization) —
+// engine-native serialize/deserialize of any NiObject subtree to/from a
+// byte buffer. Format = byte-identical to a .nif file on disk. RVAs +
+// recipe verified by re/nistream_memory_serialize_AGENT.md (HIGH conf).
+//
+// SENDER:  init NiStream → AddTopLevelObject(root) → SaveToMemory(&buf, &size)
+//          → ship buf over wire → free buf via BSScrapHeap.
+// RECEIVER: init NiStream → LoadFromMemory(buf, size) → read root from
+//          stream+864 → bump refcount → destroy stream → attach root.
+//
+// Returns true/non-null on success.
+struct SerializedNif {
+    void*       buf;   // BSScrapHeap-allocated. Caller must free via nistream_free.
+    std::size_t size;
+};
+bool nistream_serialize_subtree(void* root, SerializedNif* out);
+void* nistream_deserialize_subtree(const void* buf, std::size_t size);
+void nistream_free(void* buf);
+
 namespace {
 
 // Function pointer types (all __fastcall on x64 Windows).
@@ -279,6 +300,32 @@ using NifLoadWorkerFn = std::uint32_t* (*)(std::int64_t      stream_ctx,
                                             void**            out_node,
                                             std::int64_t      user_ctx);
 
+// M9.w4 PROPER (v0.4.2+) — BSGeometry factory `sub_14182FFD0`. Builds a
+// BSTriShape from raw vertex/index arrays. 16-arg __cdecl — the engine's
+// own asset loader uses this same signature for weapon NIF assembly.
+// See ni_offsets.h `WEAPON_GEO_FACTORY_RVA` block for full RE notes.
+//
+// Args 5-15 are stream pointers (UVs, normals, etc.). For our use case
+// — captured weapon-mod meshes from the sender — we have positions +
+// indices only; pass nullptr for all optional streams.
+using WeaponGeoFactoryFn = void* (*)(
+    int          tri_count,
+    const void*  indices_u16,
+    unsigned int vert_count,
+    const void*  positions_vec3,
+    const void*  uvs_vec2,
+    const void*  tangents_vec4,
+    const void*  pos_alt,
+    const void*  normals_vec3,
+    const void*  colors_vec4f,
+    const void*  skin_weights,
+    const void*  skin_indices_dw,
+    const void*  tangent_ex,
+    const void*  eye_data,
+    const void*  normals_alt,
+    const void*  remap_u16,
+    char         build_mesh_extra);
+
 // 16-byte opts struct. zero-init and write flags byte at +0x8.
 // Keep plain aggregate — the loader touches only +0x4 (stream key
 // dword) and +0x8 (flag byte); everything else is slack.
@@ -365,6 +412,10 @@ struct Resolved {
     // with local player's NIF instances. See dossier OPEN-E note.
     NifLoadWorkerFn  nif_load_worker   = nullptr; // sub_1417B3480
     void**           res_mgr_slot      = nullptr; // qword_1430DD618 — diagnostic only
+
+    // M9.w4 PROPER (v0.4.2+) — BSGeometry factory for receiver-side mesh
+    // reconstruction from captured weapon-mod data. See typedef block.
+    WeaponGeoFactoryFn weapon_geo_factory = nullptr; // sub_14182FFD0
 
     // M6.2 apply-materials walker — fixes pink textures post-NIF-load.
     ApplyMaterialsWalkerFn apply_materials = nullptr; // sub_140255BA0
@@ -489,6 +540,7 @@ bool resolve_once() {
     // "ghost B unequips when local A equips" + cycle crash bugs.
     g_r.nif_load_worker       = reinterpret_cast<NifLoadWorkerFn> (base + NIF_LOAD_WORKER_RVA);
     g_r.res_mgr_slot          = reinterpret_cast<void**>          (base + NIF_LOAD_RESMGR_SLOT_RVA);
+    g_r.weapon_geo_factory    = reinterpret_cast<WeaponGeoFactoryFn>(base + WEAPON_GEO_FACTORY_RVA);
 
     // M6.2: apply-materials walker — the missing post-NIF-load step.
     g_r.apply_materials       = reinterpret_cast<ApplyMaterialsWalkerFn>(base + APPLY_MATERIALS_WALKER_RVA);
@@ -2970,9 +3022,344 @@ void* clone_skin_instance(void* source) {
 // exist in NIF trees but defense-in-depth). Default 32 is generous.
 void* clone_nif_subtree_recursive(void* source, int depth, int max_depth);
 
-// Forward-declare alias used by walker.
+// 2026-05-06 PM — REPLACED with engine vt[26] dispatch.
+//
+// Per six independent RE agents (B/C/E/F all converged + D for wrapper
+// alloc and A confirming bypass impossible) the NetImmerse Clone slot
+// at vtable offset +0xD0 = slot 26 is what FO4's own engine uses
+// every time it needs a per-instance copy of a loaded NIF (e.g.
+// `sub_140359870` biped rebuilder calls `sub_1416BA8E0(cached, ctx)`
+// on the result of `nif_load_by_path` for every actor that equips a
+// weapon). Each subclass implements its own clone:
+//   - NiNode::CreateClone     = sub_1416BDA20 (alloc 0x140, recurse children)
+//   - BSFadeNode::CreateClone = sub_142174C80 (alloc 0x1C0, recurse via sub_1416BDB90)
+//   - BSTriShape::CreateClone = sub_1416D99E0 (alloc 0x170, AddRef GPU buffer
+//                                              via MEMORY[0x1434380A8] vt[6])
+//
+// Polymorphic dispatch via vt[26] handles the per-class behaviour
+// (including the GPU buffer AddRef on BSTriShape that our previous
+// hand-rolled memcpy clone was missing — the symptom we documented as
+// "clone walker breaks for BSTriShape — combat armor renders invisible
+// when cloned" in the codebase comments was caused by NOT going through
+// vt[26]).
+//
+// The OLD implementation (`clone_nif_subtree_recursive`) is kept as
+// dead code below for reference — do not call it any more, it has
+// known issues with BSTriShape D3D refs.
+//
+// Returns the cloned root with refcount=1 (we own one reference).
+// On failure (null source / vtable AV / Clone fn null) returns the
+// source unchanged — caller MUST be ready for that and not refbump
+// blindly. Caller-side: after `nif_load_by_path`'s bumped ref,
+// `clone == source` only happens on failure → just keep using source
+// 2026-05-06 evening (M9 closure, ATTEMPT #5) — global tracker for every
+// base clone we've ever produced. The per-call cleanup paths
+// (release_weapon_node, ghost_clear_weapon, ghost_set_weapon Phase 3)
+// ALL had the broken `detach_child(known_parent, child)` pattern that
+// silently no-op'd when the actual parent ptr had drifted (e.g., engine
+// re-parented the clone, or weapon attach point changed). Logs showed
+// "detached" successfully but visual accumulation persisted across
+// equips — there were stale clones still attached SOMEWHERE in the
+// scene graph that our cleanup missed.
+//
+// Brutal solution: global g_owned_clones set, populated by
+// clone_nif_subtree on every successful clone, swept aggressively on
+// every set/clear-weapon. The sweep reads each clone's actual parent
+// via +0x28 and detaches from there (the only thing that's
+// authoritative). Anything not in slot.nif_node gets nuked.
+namespace {
+
+std::mutex                     g_owned_clones_mtx;
+std::unordered_set<void*>      g_owned_clones;
+
+void track_owned_clone(void* clone) {
+    if (!clone) return;
+    std::lock_guard lk(g_owned_clones_mtx);
+    g_owned_clones.insert(clone);
+}
+
+// Remove a clone from the global tracker. Call this BEFORE the per-call
+// path refdecs the node, so the tracker doesn't end up with a dangling
+// pointer that the next purge would crash on.
+void untrack_owned_clone(void* clone) {
+    if (!clone) return;
+    std::lock_guard lk(g_owned_clones_mtx);
+    g_owned_clones.erase(clone);
+}
+
+}  // anon namespace
+
+// Forward declarations — definitions are LATER in the file, after
+// seh_refcount_dec_armor (~line 3686) and g_ghost_weapon_slot_mtx
+// (~line 6519) are available. Calls happen later still
+// (release_weapon_node, ghost_set_weapon, ghost_clear_weapon).
+void purge_orphan_weapon_clones();
+
+// 2026-05-06 LATE evening (M9 closure, PLAN B) — NiStream serialization
+// implementations. See forward declarations + comment block near top of
+// file. Recipe from re/nistream_memory_serialize_AGENT.md.
+
+bool nistream_serialize_subtree(void* root, SerializedNif* out) {
+    if (!root || !out || g_r.base == 0) return false;
+    out->buf = nullptr;
+    out->size = 0;
+
+    using ctorFn = void (__fastcall*)(void*);
+    using addFn  = void (__fastcall*)(void*, void*);
+    using saveFn = bool (__fastcall*)(void*, void**, std::size_t*);
+    using dtorFn = void (__fastcall*)(void*);
+
+    constexpr std::uintptr_t NISTREAM_CTOR_RVA = 0x016DCB50;
+    constexpr std::uintptr_t NISTREAM_ADD_RVA  = 0x016DCEB0;
+    constexpr std::uintptr_t NISTREAM_SAVE_RVA = 0x016DD3B0;
+    constexpr std::uintptr_t NISTREAM_DTOR_RVA = 0x016DCD80;
+    // Bump from dossier's 1644 to 4096 for safety margin (alignment +
+    // any version drift). NiStream can't realistically be larger.
+    constexpr std::size_t    NISTREAM_SIZE     = 4096;
+
+    auto NiStream_ctor = reinterpret_cast<ctorFn>(g_r.base + NISTREAM_CTOR_RVA);
+    auto NiStream_add  = reinterpret_cast<addFn>(g_r.base + NISTREAM_ADD_RVA);
+    auto NiStream_save = reinterpret_cast<saveFn>(g_r.base + NISTREAM_SAVE_RVA);
+    auto NiStream_dtor = reinterpret_cast<dtorFn>(g_r.base + NISTREAM_DTOR_RVA);
+
+    alignas(16) std::uint8_t storage[NISTREAM_SIZE];
+    std::memset(storage, 0, NISTREAM_SIZE);  // zero-init: ctor may not touch all fields
+
+    FW_DBG("[nistream] entry root=%p storage=%p size=%zu",
+           root, static_cast<void*>(storage), NISTREAM_SIZE);
+
+    void*       buf  = nullptr;
+    std::size_t size = 0;
+    bool ok = false;
+
+    // Granular SEH per step — narrow down which engine call faults.
+    bool ctor_ok = false;
+    __try {
+        NiStream_ctor(storage);
+        // 2026-05-06 NIGHT (M9 closure, PLAN B v3) — SWAP vtable to
+        // DeepCopyStream after ctor. The agent dossier said "do NOT
+        // swap" — that was wrong: engine's own deep-clone helper
+        // sub_1416BAA10 SWAPS via `v7[0] = DeepCopyStream::vftable`
+        // (verified in funcs_0480.md line 8196 + raw bytes 48 8D 05 81
+        // 1A FC 00 at 0x1416BAA30 → vtable RVA 0x02C7C4B8). Without
+        // the swap, base NiStream's Load returns 0 (live test confirmed:
+        // sender saves OK 185025 B, receiver Load returned ok=0).
+        constexpr std::uintptr_t DEEPCOPY_VTABLE_RVA = 0x0267C4B8;
+        *reinterpret_cast<void**>(storage) =
+            reinterpret_cast<void*>(g_r.base + DEEPCOPY_VTABLE_RVA);
+        ctor_ok = true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("[nistream] SEH in NiStream_ctor / vtable swap");
+    }
+    if (!ctor_ok) return false;
+    FW_DBG("[nistream] ctor + DeepCopyStream vtable swap OK");
+
+    bool add_ok = false;
+    __try {
+        NiStream_add(storage, root);
+        add_ok = true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("[nistream] SEH in NiStream_add root=%p", root);
+    }
+    if (!add_ok) {
+        __try { NiStream_dtor(storage); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+        return false;
+    }
+    FW_DBG("[nistream] add OK");
+
+    __try {
+        ok = NiStream_save(storage, &buf, &size);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("[nistream] SEH in NiStream_save");
+        ok = false;
+    }
+    FW_DBG("[nistream] save returned ok=%d buf=%p size=%zu",
+           ok ? 1 : 0, buf, size);
+
+    __try {
+        NiStream_dtor(storage);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("[nistream] SEH in NiStream_dtor");
+    }
+    FW_DBG("[nistream] dtor OK");
+
+    if (!ok || !buf || size == 0) {
+        return false;
+    }
+    out->buf  = buf;
+    out->size = size;
+    return true;
+}
+
+void* nistream_deserialize_subtree(const void* buf, std::size_t size) {
+    if (!buf || size == 0 || g_r.base == 0) return nullptr;
+
+    using ctorFn = void (__fastcall*)(void*);
+    using loadFn = bool (__fastcall*)(void*, const void*, std::size_t);
+    using dtorFn = void (__fastcall*)(void*);
+
+    constexpr std::uintptr_t NISTREAM_CTOR_RVA = 0x016DCB50;
+    constexpr std::uintptr_t NISTREAM_LOAD_RVA = 0x016DD370;
+    constexpr std::uintptr_t NISTREAM_DTOR_RVA = 0x016DCD80;
+    constexpr std::size_t    NISTREAM_SIZE     = 4096;
+    constexpr std::size_t    ROOTS_DATA_OFF    = 864;
+    constexpr std::size_t    ROOTS_COUNT_OFF   = 876;
+
+    auto NiStream_ctor = reinterpret_cast<ctorFn>(g_r.base + NISTREAM_CTOR_RVA);
+    auto NiStream_load = reinterpret_cast<loadFn>(g_r.base + NISTREAM_LOAD_RVA);
+    auto NiStream_dtor = reinterpret_cast<dtorFn>(g_r.base + NISTREAM_DTOR_RVA);
+
+    alignas(16) std::uint8_t storage[NISTREAM_SIZE];
+    std::memset(storage, 0, NISTREAM_SIZE);  // zero-init
+
+    FW_DBG("[nistream] deserialize entry buf=%p size=%zu storage=%p",
+           buf, size, static_cast<void*>(storage));
+
+    bool ctor_ok = false;
+    __try {
+        NiStream_ctor(storage);
+        // PLAN B v3 — swap vtable to DeepCopyStream (see serialize side
+        // for rationale).
+        constexpr std::uintptr_t DEEPCOPY_VTABLE_RVA = 0x0267C4B8;
+        *reinterpret_cast<void**>(storage) =
+            reinterpret_cast<void*>(g_r.base + DEEPCOPY_VTABLE_RVA);
+        ctor_ok = true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("[nistream] SEH in NiStream_ctor / vtable swap (deserialize)");
+    }
+    if (!ctor_ok) return nullptr;
+    FW_DBG("[nistream] deserialize ctor + DeepCopyStream vtable swap OK");
+
+    bool load_ok = false;
+    __try {
+        load_ok = NiStream_load(storage, buf, size);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("[nistream] SEH in NiStream_load buf=%p size=%zu", buf, size);
+        load_ok = false;
+    }
+    FW_DBG("[nistream] deserialize load returned ok=%d", load_ok ? 1 : 0);
+
+    void* root = nullptr;
+    if (load_ok) {
+        __try {
+            void** roots_data = *reinterpret_cast<void***>(storage + ROOTS_DATA_OFF);
+            std::uint32_t count = *reinterpret_cast<std::uint32_t*>(storage + ROOTS_COUNT_OFF);
+            FW_DBG("[nistream] deserialize roots_data=%p count=%u",
+                   static_cast<void*>(roots_data), count);
+            if (count > 0 && roots_data && roots_data[0]) {
+                root = roots_data[0];
+                _InterlockedIncrement(reinterpret_cast<volatile LONG*>(
+                    reinterpret_cast<char*>(root) + 8));
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            FW_WRN("[nistream] SEH reading roots from stream");
+            root = nullptr;
+        }
+    }
+    FW_DBG("[nistream] deserialize root=%p", root);
+
+    __try {
+        NiStream_dtor(storage);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("[nistream] SEH in NiStream_dtor (deserialize)");
+    }
+    FW_DBG("[nistream] deserialize dtor OK");
+    return root;
+}
+
+void nistream_free(void* buf) {
+    if (!buf || g_r.base == 0) return;
+    using freeFn = void (__fastcall*)(void*);
+    auto bsScrapFree = reinterpret_cast<freeFn>(g_r.base + 0x01677D20);
+    __try {
+        bsScrapFree(buf);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("[nistream] SEH freeing buf=%p", buf);
+    }
+}
+
 void* clone_nif_subtree(void* source) {
-    return clone_nif_subtree_recursive(source, 0, 32);
+    if (!source || g_r.base == 0) return source;
+    // 2026-05-06 evening — THIRD attempt. Triple-agent cross-confirmation
+    // (re/vt26_crash_AGENT_A.md + re/niCloneProcess_AGENT_C.md +
+    // re/unequip_cleanup_AGENT_B.md). Prior fixes failed because:
+    //
+    // ATTEMPT #1 (manual memcpy): broke BSTriShape D3D refs.
+    // ATTEMPT #2 (vt[26] one-arg): RDX undefined → garbage forwarded
+    //   into recursion → deep deref crash.
+    // ATTEMPT #3 (vt[26] two-arg `(this, nullptr)`): STILL crashed,
+    //   because ctx IS dereferenced at depth 6 (NiTPointerMap::Insert
+    //   sub_1416BABF0 reads `*(ctx+8+0x20)` = `*(0x28)` → AV). My prior
+    //   "ctx is just forwarded never deref'd" claim was a hallucination
+    //   I propagated from incomplete agent input.
+    //
+    // ROOT CAUSE: vt[26] requires a valid 116-byte (0x74) NiCloneProcess
+    // ctx with two embedded NiTPointerHashMap structs (src→clone dedup
+    // for shared sub-objects, name dedup) that get LAZILY ALLOCATED
+    // during clone — but the function reads ctx fields immediately at
+    // entry (e.g., sub_1416BC860 line 9962 reads *(ctx+0x60)).
+    //
+    // FIX: call the engine helper sub_1416BA800 (RVA 0x16BA800) — a
+    // single-arg `(NiObject** ppSrc)` "DeepClone" front-end the engine
+    // uses in ~30 places (e.g., sub_14024B610, sub_140453F70). It:
+    //   1. Allocates NiCloneProcess on its own stack with engine defaults
+    //      (sentinels at +0x18/+0x48, name_mode=-1, suffix='$',
+    //       scale=(1,1,1)).
+    //   2. Calls vt[26](this, &ctx) → produces clone, refcount +1.
+    //   3. Calls vt[32](this, &ctx) → post-clone callback chain
+    //      (controller fix-ups, child→parent backlinks via the maps).
+    //   4. Calls sub_14033E670 + sub_14033E5C0 → frees the bucket arrays
+    //      that the maps allocated during recursion (≈12 KiB per clone
+    //      otherwise leaks).
+    //   5. Returns the clone, refcount=1, caller owns one ref.
+    //
+    // 2026-05-06 evening, ATTEMPT #4 — agents A & C BOTH had the
+    // calling convention wrong. They claimed `sub_1416BA800` takes
+    // `NiObject**` (pointer-to-pointer), but the decomp at
+    // funcs_0480.md:8113-8117 reads:
+    //     v2 = *a1;                                    // *a1 = vtable
+    //     v3 = (*(...)(v2 + 208))(a1, v5);             // call vt[26]
+    // For `*a1` to BE the vtable (so `v2+208` points at vt[26]), `a1`
+    // must be `NiObject*` directly. The vtable lives at offset 0 of
+    // every NiObject. Hex-Rays types `a1` as `__int64*` because of the
+    // dereference — but semantically it's `NiObject*`.
+    // Confirmed by caller at funcs_0123.md:7462 (`sub_1416BA800(v3)`
+    // where v3 is an object pointer, not its address). Live test #3
+    // crashed with `&src` because `*(source + 208)` was reading 8 bytes
+    // INSIDE the NiObject (at offset 0xD0, which is just data fields),
+    // interpreting as a function pointer → wild call → AV.
+    using DeepCloneFn = void* (__fastcall*)(void* self);
+    constexpr std::uintptr_t SUB_DEEPCLONE_RVA = 0x016BA800ULL;
+
+    DeepCloneFn fn = reinterpret_cast<DeepCloneFn>(g_r.base + SUB_DEEPCLONE_RVA);
+    void* clone = nullptr;
+    __try {
+        clone = fn(source);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("[clone-deep] SEH cloning source=%p — falling back to share",
+               source);
+        return source;
+    }
+    if (!clone) {
+        FW_WRN("[clone-vt26] vt[26] returned null for source=%p — share",
+               source);
+        return source;
+    }
+    if (clone == source) {
+        // Defensive: shouldn't happen but if vt[26] returned the same
+        // pointer (some "shared template" override?), don't pretend
+        // we got an independent instance.
+        return source;
+    }
+    FW_DBG("[clone-vt26] source=%p -> clone=%p (engine deep-clone)",
+           source, clone);
+    // 2026-05-06 LATE evening — DO NOT auto-track here. clone_nif_subtree
+    // is called from MANY paths beyond ghost weapons (body, armor, etc.).
+    // Auto-tracking caused the purge to nuke ghost body + armor whenever
+    // a weapon equip event fired — both clients lost their ghost entirely
+    // ("entrambi i ghost scompaiono nel nulla"). Tracking is now opt-in
+    // by weapon-specific callers via explicit track_owned_clone(clone).
+    return clone;
 }
 
 // M9.5 — Detect whether a NIF subtree contains any BSSubIndexTriShape (BSSITF)
@@ -4161,31 +4548,26 @@ static bool seh_read_node_name_w4(void* node, char* buf, std::size_t bufsz) {
         if (bufsz) buf[0] = 0;
         return false;
     }
-    std::uint64_t handle = 0;
+    // 2026-05-06 FIX — was reading at *(pool_entry + 0x00) which is the
+    // pool entry's first qword (refcount / inline metadata), NOT the
+    // c-string. FO4 NG inline BSFixedString layout has the c-string at
+    // pool_entry + 0x18 (matches the existing seh_read_node_name_ptr
+    // helper at scene_inject.cpp:6602). The wrong offset caused EVERY
+    // node to read as unnamed, which silently broke find_node_by_name_w4
+    // for placeholder lookups and produced the "slot 'X' not found"
+    // FALLBACKs we've been seeing for every mod attach since 2026-05-05.
+    const char* cstr = nullptr;
     __try {
-        handle = *reinterpret_cast<std::uint64_t*>(
-            reinterpret_cast<char*>(node) + NIAV_NAME_OFF);
+        const char* pool_entry = *reinterpret_cast<const char* const*>(
+            reinterpret_cast<const char*>(node) + NIAV_NAME_OFF);
+        if (!pool_entry) { buf[0] = 0; return false; }
+        cstr = pool_entry + 0x18;
     } __except (EXCEPTION_EXECUTE_HANDLER) { buf[0] = 0; return false; }
-    if (!handle) { buf[0] = 0; return false; }
-    // Try double-deref then single-deref (matches scene_walker pattern).
+    if (!cstr) { buf[0] = 0; return false; }
     __try {
-        const char* inner = *reinterpret_cast<const char* const*>(handle);
-        if (inner) {
-            std::size_t i = 0;
-            for (; i < bufsz - 1 && inner[i]; ++i) {
-                const char c = inner[i];
-                if (c < 0x20 || c > 0x7E) { i = 0; break; }
-                buf[i] = c;
-            }
-            buf[i] = 0;
-            if (i > 0) return true;
-        }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {}
-    __try {
-        const char* s = reinterpret_cast<const char*>(handle);
         std::size_t i = 0;
-        for (; i < bufsz - 1 && s[i]; ++i) {
-            const char c = s[i];
+        for (; i < bufsz - 1 && cstr[i]; ++i) {
+            const char c = cstr[i];
             if (c < 0x20 || c > 0x7E) { i = 0; break; }
             buf[i] = c;
         }
@@ -4252,6 +4634,143 @@ static void* find_node_by_name_w4(void* root, const char* target,
         if (hit) return hit;
     }
     return nullptr;
+}
+
+// 2026-05-06 (M9 closure, ATTEMPT #8) — case-insensitive substring search
+// for a placeholder node. `needle` is matched as a contiguous substring
+// of each node's m_name. Used as Tier-2 fallback when exact-name lookup
+// (find_node_by_name_w4) misses.
+static bool ci_contains(const char* haystack, const char* needle) {
+    if (!haystack || !needle || !needle[0]) return false;
+    auto tolow = [](char c) -> char {
+        if (c >= 'A' && c <= 'Z') return static_cast<char>(c - 'A' + 'a');
+        return c;
+    };
+    const std::size_t hlen = std::strlen(haystack);
+    const std::size_t nlen = std::strlen(needle);
+    if (nlen == 0 || nlen > hlen) return false;
+    for (std::size_t i = 0; i + nlen <= hlen; ++i) {
+        bool ok = true;
+        for (std::size_t j = 0; j < nlen; ++j) {
+            if (tolow(haystack[i + j]) != tolow(needle[j])) { ok = false; break; }
+        }
+        if (ok) return true;
+    }
+    return false;
+}
+
+static void* find_node_by_substring_w4(void* root, const char* needle,
+                                         int depth = 0, int max_depth = 16) {
+    if (!root || !needle || !needle[0] || depth > max_depth) return nullptr;
+    char nm[128];
+    if (seh_read_node_name_w4(root, nm, sizeof(nm)) && nm[0]
+        && ci_contains(nm, needle)) {
+        return root;
+    }
+    void** kids = nullptr;
+    std::uint16_t count = 0;
+    if (!seh_read_children_w4(root, kids, count)) return nullptr;
+    if (!kids || count == 0 || count > 256) return nullptr;
+    for (std::uint16_t i = 0; i < count; ++i) {
+        void* k = seh_kid_at_w4(kids, i);
+        if (!k) continue;
+        void* hit = find_node_by_substring_w4(k, needle, depth + 1, max_depth);
+        if (hit) return hit;
+    }
+    return nullptr;
+}
+
+// 2026-05-06 evening (M9 closure, ATTEMPT #8) — multi-tier placeholder
+// resolver. Replaces direct `find_node_by_name_w4` for slot_name lookup
+// in mod-attach paths. Handles three classes of slot_name failures
+// observed in live tests:
+//
+//   1. `P-*` mod-internal wrapper names (P-Barrel, P-Receiver, P-Mag,
+//      P-Sight, etc.) — mod authors named NiNodes inside their .nif
+//      assets following a "Placeholder anchor" convention. These are
+//      not engine constants and have no corresponding base placeholder.
+//      → strip the "P-" prefix, alias by category to a known base
+//        placeholder substring (e.g. "P-Barrel" → look for "Receiver"
+//        in pistols since pistols don't have a barrel placeholder).
+//
+//   2. `Weapon (form_id)` engine-runtime names — sender's walk-up went
+//      too far and hit the WEAPON bone whose runtime m_name includes
+//      the form id. → treat as catch-all, route to first placeholder
+//      whose name contains "Receiver".
+//
+//   3. Sender-captured slot from non-pistol weapon families — substring
+//      search handles "Mag" → "WeaponMagazine", "Sight" → "Optics", etc.
+//
+// Returns the matched node or `nullptr` (caller falls back to base_root).
+// `slot_name_out` (optional) gets the final matched name for logging.
+void* resolve_placeholder_for_slot(void* base_root,
+                                     const char* slot_name,
+                                     const char** match_kind_out) {
+    if (match_kind_out) *match_kind_out = "miss";
+    if (!base_root) return nullptr;
+    if (!slot_name || !slot_name[0]) return nullptr;
+
+    // Tier 0: exact match.
+    if (void* hit = find_node_by_name_w4(base_root, slot_name)) {
+        if (match_kind_out) *match_kind_out = "exact";
+        return hit;
+    }
+
+    // Tier 1: alias map for "P-*" prefixes.
+    // Each entry maps a known "P-*" name to a substring to search for
+    // in base placeholder names. First match wins.
+    struct Alias { const char* pattern; const char* substring; };
+    static constexpr Alias kAliases[] = {
+        // Receiver-class (catch-all for pistol body parts).
+        { "P-Receiver",  "Receiver"  },
+        { "P-Barrel",    "Receiver"  },  // pistols have no Barrel slot
+        { "P-Muzzle",    "Receiver"  },
+        { "P-Grip",      "Receiver"  },
+        { "P-Stock",     "Receiver"  },
+        // Magazine.
+        { "P-Mag",       "Magazine"  },
+        { "P-Magazine",  "Magazine"  },
+        // Sights / scopes — try Optics first (pistol uses WeaponOptics1/2).
+        { "P-Sight",     "Optics"    },
+        { "P-Scope",     "Optics"    },
+    };
+    for (const auto& a : kAliases) {
+        if (std::strcmp(slot_name, a.pattern) == 0) {
+            if (void* hit = find_node_by_substring_w4(base_root, a.substring)) {
+                if (match_kind_out) *match_kind_out = "alias";
+                return hit;
+            }
+            break;  // alias matched but no node found in base; skip to fallback
+        }
+    }
+
+    // Tier 2: strip "P-" prefix and try as substring directly.
+    if (slot_name[0] == 'P' && slot_name[1] == '-' && slot_name[2]) {
+        const char* needle = slot_name + 2;
+        if (void* hit = find_node_by_substring_w4(base_root, needle)) {
+            if (match_kind_out) *match_kind_out = "stripped-substring";
+            return hit;
+        }
+    }
+
+    // Tier 3: catch-all for "Weapon (form_id)" pattern (sender walked
+    // past the placeholder and hit the WEAPON bone).
+    if (std::strncmp(slot_name, "Weapon (", 8) == 0
+        || std::strncmp(slot_name, "Weapon  (", 9) == 0) {
+        if (void* hit = find_node_by_substring_w4(base_root, "Receiver")) {
+            if (match_kind_out) *match_kind_out = "weapon-formid-catchall";
+            return hit;
+        }
+    }
+
+    // Tier 4: try slot_name as a direct substring (covers cases like
+    // sender shipping "Mag" or "Optics" without "P-" prefix).
+    if (void* hit = find_node_by_substring_w4(base_root, slot_name)) {
+        if (match_kind_out) *match_kind_out = "raw-substring";
+        return hit;
+    }
+
+    return nullptr;  // miss — caller falls back to base_root.
 }
 
 // === M9 wedge 3 — body cull helpers (slot-3 BODY armor → hide body NIF) =====
@@ -4442,6 +4961,170 @@ static bool attach_witness_mod(void* weapon_root,
 }
 
 } // anon namespace (weapon helpers)
+
+// === M9 closure (Phase 1, 2026-05-06) — OMOD form → NIF path resolver ====
+//
+// Per re/OMOD_assembly_AGENT_A.md (deep RE done 2026-05-06):
+//
+//   - OMOD form is `BGSMod::Attachment::Mod` (form-type 0x6E / 110).
+//   - Form-tag byte at form +0x1A is 0x90 for OMOD records (filter key
+//     used by the engine itself in sub_140248F40).
+//   - TESModel sub-object lives at form +0x48 (vtable bank 3).
+//   - TESModel.modelPath BSFixedString handle is at form +0x50.
+//
+// We use the SAME helpers (seh_lookup_form, seh_read_arma_path_handle_at,
+// seh_bsfs_cstr) that resolve_weapon_nif_path / resolve_armor_nif_path
+// already use — TESModel layout is uniform across form types.
+//
+// On a fresh ghost equip, the receiver gets the omod_form_id list from
+// the EQUIP_BCAST wire tail (already decoded at client.cpp:~L1063).
+// For each, we resolve here to the actual NIF file path. This replaces
+// the bgsm-derive heuristic + 18-pattern fallback that produced the
+// "10mmReflexDot vs 10mmReflexSight.nif" mismatches.
+const char* resolve_omod_model_path(std::uint32_t omod_form_id) {
+    if (omod_form_id == 0 || g_r.base == 0) return nullptr;
+
+    using LookupFn = void* (__fastcall*)(std::uint32_t);
+    auto lookup = reinterpret_cast<LookupFn>(
+        g_r.base + offsets::LOOKUP_BY_FORMID_RVA);
+
+    void* form = seh_lookup_form(lookup, omod_form_id);
+    if (!form) {
+        FW_DBG("[omod-resolve] lookup_by_form_id(0x%X) returned null/SEH",
+               omod_form_id);
+        return nullptr;
+    }
+
+    // Confirm this is actually an OMOD via the form-tag byte. Without
+    // this we'd happily pull a "modelPath" out of any form whose +0x50
+    // bytes happen to look like a BSFixedString — bad path collisions.
+    std::uint8_t tag = 0;
+    __try {
+        tag = *(reinterpret_cast<const std::uint8_t*>(form) + 0x1A);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_DBG("[omod-resolve] SEH reading form-tag byte for 0x%X",
+               omod_form_id);
+        return nullptr;
+    }
+    if (tag != 0x90) {
+        FW_DBG("[omod-resolve] form 0x%X tag=0x%X != 0x90 — not an OMOD, "
+               "skipping",
+               omod_form_id, static_cast<unsigned>(tag));
+        return nullptr;
+    }
+
+    // 2026-05-06 v2 — the dossier's +0x50 inference was wrong. Live
+    // probe shows reading at +0x50 yields garbage ending in "dds"
+    // (probably part of the MODT texture swap blob). Scan a range of
+    // 8-byte offsets within the OMOD form and pick the FIRST handle
+    // whose dereferenced C-string looks like a NIF path:
+    //   - case-insensitive ".nif" suffix
+    //   - non-empty, < 240 chars
+    //   - first byte is an ASCII letter (ruling out garbage)
+    // We do NOT require "Weapons\\" prefix because OMOD NIFs can also
+    // live under "DLC04\\Weapons\\..." or other folders.
+    auto path_looks_like_nif = [](const char* p, std::size_t len) -> bool {
+        if (len < 5 || len > 240) return false;
+        const char c0 = p[0];
+        if (!((c0 >= 'A' && c0 <= 'Z') || (c0 >= 'a' && c0 <= 'z')))
+            return false;
+        // Case-insensitive ".nif" suffix.
+        if (len < 4) return false;
+        const char a = p[len-4], b = p[len-3], c = p[len-2], d = p[len-1];
+        auto lo = [](char x) -> char {
+            return (x >= 'A' && x <= 'Z') ? (char)(x - 'A' + 'a') : x;
+        };
+        return lo(a) == '.' && lo(b) == 'n' && lo(c) == 'i' && lo(d) == 'f';
+    };
+
+    // 2026-05-06 v3 — constrain scan to OMOD sizeof (0xC8 = 200 bytes
+    // per the dossier). Reading past 0xC0 would leak into adjacent
+    // heap allocations and produce wildly wrong results — observed
+    // live: OMOD 0x1601D6 returned 'Weapons\JunkJet\ShortBarrel.nif'
+    // at offset +0x110 (= adjacent form's data). The result was a
+    // valid-looking NIF path that crashed the receiver when attached
+    // to a 10mm pistol base (ref=mod cycle in scene graph).
+    //
+    // The stride here is +0x08 because every BSFixedString slot is
+    // qword-aligned. Reading via seh_read_arma_path_handle_at(form,
+    // off) actually accesses form+off+0x08 because the helper adds
+    // TESMODEL_PATH_BSFIXEDSTR_OFF (=0x08) internally — so off=0x48
+    // means we're reading at form+0x50 (= TESModel.modelPath per
+    // dossier section 2). Range 0x40..0xC0 covers the sub-object
+    // banks without bleeding past the form.
+    for (std::size_t off = 0x40; off <= 0xC0; off += 8) {
+        void* bsfs = seh_read_arma_path_handle_at(form, off);
+        if (!bsfs) continue;
+        const char* path = seh_bsfs_cstr(bsfs);
+        if (!path) continue;
+        const std::size_t len = seh_strnlen_armor(path, 256);
+        if (path_looks_like_nif(path, len)) {
+            FW_DBG("[omod-resolve] OMOD 0x%X path='%s' (offset +0x%zX)",
+                   omod_form_id, path, off);
+            return path;
+        }
+    }
+
+    FW_DBG("[omod-resolve] OMOD 0x%X — no valid NIF path found in scan range",
+           omod_form_id);
+    return nullptr;
+}
+
+// === Per-peer OMOD form-id stash (M9 Phase 1) =============================
+//
+// Populated from net-thread EQUIP_BCAST decode (where the OMOD list is
+// already parsed and printed via [equip-rx] mod[N] log lines). Consumed
+// from main-thread drain_mesh_blob_apply_queue when we're choosing
+// which mod NIFs to attach to the ghost weapon.
+//
+// Storage is bounded (MAX_PEERS × MAX_EQUIP_MODS) — at most ~32 forms
+// per peer, ~16 peers max in any realistic FoM session. Mutex
+// protects against the inevitable net-thread vs main-thread races.
+
+namespace {
+constexpr std::size_t kMaxOmodFormsPerPeer = 32;
+
+struct PeerOmodList {
+    std::uint32_t forms[kMaxOmodFormsPerPeer] = {};
+    std::uint8_t  count = 0;
+};
+
+std::mutex g_peer_omod_mtx;
+std::unordered_map<std::string, PeerOmodList> g_peer_omod;
+}  // namespace
+
+void set_peer_omod_forms(const char* peer_id,
+                          const std::uint32_t* forms,
+                          std::uint8_t form_count) {
+    if (!peer_id) return;
+    if (form_count > kMaxOmodFormsPerPeer) {
+        form_count = static_cast<std::uint8_t>(kMaxOmodFormsPerPeer);
+    }
+
+    std::lock_guard lk(g_peer_omod_mtx);
+    auto& slot = g_peer_omod[peer_id];
+    slot.count = form_count;
+    if (form_count > 0 && forms) {
+        std::memcpy(slot.forms, forms,
+                    sizeof(std::uint32_t) * form_count);
+    }
+    FW_DBG("[omod-stash] peer=%s set %u forms",
+           peer_id, static_cast<unsigned>(form_count));
+}
+
+std::uint8_t snapshot_peer_omod_forms_public(const char* peer_id,
+                                              std::uint32_t* out_buf,
+                                              std::size_t out_cap) {
+    if (!peer_id || !out_buf || out_cap == 0) return 0;
+    std::lock_guard lk(g_peer_omod_mtx);
+    auto it = g_peer_omod.find(peer_id);
+    if (it == g_peer_omod.end()) return 0;
+    const std::uint8_t n = it->second.count;
+    const std::size_t copy_n = (n < out_cap) ? n : out_cap;
+    std::memcpy(out_buf, it->second.forms,
+                sizeof(std::uint32_t) * copy_n);
+    return static_cast<std::uint8_t>(copy_n);
+}
 
 // === M9 wedge 4 v9 — form-type probe (public API) =========================
 //
@@ -6092,10 +6775,119 @@ struct GhostWeaponSlot {
     std::uint32_t form_id   = 0;
     void*         nif_node  = nullptr;
     std::string   nif_path;
+    // 2026-05-05 — list of cached mod nodes we've attached to this base
+    // via attach_extra_node_to_ghost_weapon. Tracked so the next equip
+    // can detach + refdec all of them BEFORE attaching new ones —
+    // otherwise the cached BSFadeNode (shared across equip cycles via
+    // the resmgr) accumulates child references and their geometry
+    // shows up duplicated / floating on the ghost.
+    //
+    // Stored as opaque void* (NiAVObject*); refbump is balanced 1-to-1
+    // with attach (we refbump pre-attach, refdec on detach below).
+    std::vector<void*> extra_mods;
+    // Whether we've already run cull_geometry_leaves on this base node.
+    // The cull walker recurses into all BSGeometry-derived leaves in
+    // the subtree — if we ran it on every equip, after the first one
+    // the walker would also descend into our `extra_mods` and cull
+    // their geometry too (the cached base persists with the mods we
+    // attached on the previous equip). Once-per-base is sufficient
+    // because the stock leaves stay culled.
+    bool          base_culled = false;
 };
 
 std::mutex g_ghost_weapon_slot_mtx;
 std::unordered_map<std::string, GhostWeaponSlot> g_ghost_weapon_slot;
+
+}  // close enclosing anon namespace temporarily so the orphan-sweep
+   // helpers below can reference g_ghost_weapon_slot{,_mtx} (which were
+   // declared inside it) without nested anon-namespace gymnastics.
+
+// 2026-05-06 evening (M9 closure, ATTEMPT #5) — orphan clone sweep
+// implementation. Forward-declared near clone_nif_subtree. See the big
+// comment block there for rationale. This lives down here because it
+// references both seh_refcount_dec_armor (~line 3686) and the slot
+// map (declared just above this block).
+namespace {
+
+// SEH-only helper — pure POD args, no C++ object destruction, so MSVC
+// allows __try here. Returns true iff engine reported `removed != null`.
+bool seh_purge_detach(void* parent, void* child) {
+    if (!parent || !child || !g_r.detach_child) return false;
+    void* removed = nullptr;
+    __try {
+        g_r.detach_child(parent, child, &removed);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return removed != nullptr;
+}
+
+// Detach + refdec every tracked clone EXCEPT those in `keep_set`.
+// Returns count of clones swept (detached or already-orphaned).
+int purge_owned_clones_except(const std::unordered_set<void*>& keep_set) {
+    std::vector<void*> to_check;
+    {
+        std::lock_guard lk(g_owned_clones_mtx);
+        to_check.reserve(g_owned_clones.size());
+        for (void* c : g_owned_clones) {
+            if (keep_set.count(c) == 0) {
+                to_check.push_back(c);
+            }
+        }
+        // Remove non-keep entries from the global set NOW so we don't
+        // re-sweep them on a later call (refdec below may free them).
+        for (void* c : to_check) {
+            g_owned_clones.erase(c);
+        }
+    }
+
+    int detached = 0;
+    int orphaned = 0;
+    for (void* c : to_check) {
+        if (!c) continue;
+        void* parent = weapon_witness::read_parent_pub(c);
+        if (parent) {
+            if (seh_purge_detach(parent, c)) ++detached;
+        } else {
+            ++orphaned;
+        }
+        // Drop our +1 refbump regardless.
+        seh_refcount_dec_armor(c);
+    }
+    if (!to_check.empty()) {
+        std::size_t remaining = 0;
+        {
+            std::lock_guard lk(g_owned_clones_mtx);
+            remaining = g_owned_clones.size();
+        }
+        FW_LOG("[orphan-purge] swept=%zu detached=%d orphaned=%d "
+               "(remaining_tracked=%zu)",
+               to_check.size(), detached, orphaned, remaining);
+    }
+    return static_cast<int>(to_check.size());
+}
+
+}  // anon namespace
+
+// Public — see forward decl. Builds the keep-set from the live slot map.
+void purge_orphan_weapon_clones() {
+    std::unordered_set<void*> keep;
+    {
+        std::lock_guard lk(g_ghost_weapon_slot_mtx);
+        for (auto& [pid, slot] : g_ghost_weapon_slot) {
+            (void)pid;
+            if (slot.nif_node) keep.insert(slot.nif_node);
+            for (void* m : slot.extra_mods) {
+                if (m) keep.insert(m);
+            }
+        }
+    }
+    purge_owned_clones_except(keep);
+}
+
+// Re-open the original anon namespace so subsequent helpers
+// (is_placeholder_nif_path, load_one_weapon_nif, etc.) compile as before.
+namespace {
 
 // Returns true iff the given path looks like a placeholder/dummy NIF.
 // Mirrors the filter in resolve_weapon_nif_path. Used here for downgrade
@@ -6148,16 +6940,44 @@ void* load_one_weapon_nif(const char* path) {
     return node;
 }
 
-// Detach a weapon NIF from the WEAPON attach node and drop our +1 ref.
-// SEH-wrapped. Safe even if the attach parent has changed (refcount
-// dec is independent of scene parentage).
+// Detach a weapon NIF from its actual scene-graph parent and drop our +1
+// ref. SEH-wrapped.
+//
+// 2026-05-06 evening — was: `detach_child(find_weapon_attach_node(), node)`
+// which silently no-op'd when `node`'s actual parent wasn't the live
+// WEAPON pointer (e.g., engine swapped BipedAnim → WEAPON ptr changed,
+// clone's +0x28 still points at the OLD WEAPON which is no longer
+// returned by find_weapon_attach_node). Symptom: pistols accumulated
+// on the local PC's hand across ghost-peer equips because every "old"
+// clone failed to detach. Fix: read clone's actual parent via +0x28
+// (NiAVObject::m_pkParent) and detach from THERE — same primitive as
+// Agent D's clear_ghost_extra_mods fix.
 void release_weapon_node(void* node) {
     if (!node) return;
-    void* attach_node = find_weapon_attach_node();
-    if (attach_node && g_r.detach_child) {
-        void* removed = nullptr;
-        seh_detach_child_armor(g_r.detach_child, attach_node, node, &removed);
+    if (!g_r.detach_child) {
+        seh_refcount_dec_armor(node);
+        return;
     }
+
+    void* parent = weapon_witness::read_parent_pub(node);
+    if (parent) {
+        void* removed = nullptr;
+        __try {
+            g_r.detach_child(parent, node, &removed);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            FW_WRN("[release-weapon] SEH detach node=%p parent=%p", node,
+                   parent);
+        }
+        FW_DBG("[release-weapon] node=%p detached from parent=%p (removed=%p)",
+               node, parent, removed);
+    } else {
+        FW_DBG("[release-weapon] node=%p has no parent (already orphaned)",
+               node);
+    }
+    // Remove from the global clone tracker BEFORE the refdec so the
+    // next purge_orphan_weapon_clones doesn't see a dangling pointer
+    // (the refdec below may free `node` if refcount hits 0).
+    untrack_owned_clone(node);
     seh_refcount_dec_armor(node);
 }
 
@@ -6168,6 +6988,22 @@ bool ghost_set_weapon(const char* peer_id,
                        const char* const* candidate_paths,
                        std::size_t num_candidates) {
     if (!peer_id || item_form_id == 0) return false;
+
+    // 2026-05-06 evening (M9 closure) — UNCONDITIONALLY clear any
+    // tracked extra mods from the PREVIOUS equip cycle BEFORE any
+    // other work. Was: extras only cleared inside the lock when the
+    // base node pointer changed (`old_node != new_node`). With cache-
+    // share (clone failure path), old_node == new_node, so extras
+    // never got cleared, and the IDEMPOTENT branch (same form_id +
+    // same path) didn't clear them either. Result: each equip
+    // accumulated mods on top of previous equip's mods. User
+    // reported: "cambio arma senza silenziatore ma il silenziatore
+    // ora permane".
+    //
+    // clear_ghost_extra_mods now does proper detach-via-parent-ptr
+    // (Agent D fix) so the cached BSFadeNode actually loses our mod
+    // children — not just our refbump.
+    clear_ghost_extra_mods(peer_id);
 
     void* ghost = g_injected_cube.load(std::memory_order_acquire);
     if (!ghost) {
@@ -6186,6 +7022,16 @@ bool ghost_set_weapon(const char* peer_id,
     }
 
     // ---- Phase 1: try caller candidates, fall back to legacy resolve.
+    //
+    // 2026-05-06 PM (M9 closure) — load returns a cached BSFadeNode shared
+    // across every actor that ever loaded the same path (incl. the local
+    // PC and every other ghost). Mutating it (apply_materials, attach
+    // child mods, write transforms) corrupts every other consumer.
+    // Six independent RE agents on the full FO4 decomp converged on
+    // vt[26] (NetImmerse Clone slot) as the engine's own per-actor
+    // instance mechanism — `sub_140359870` (biped rebuilder) calls
+    // `sub_1416BA8E0` which dispatches to vt[26] for every equip on
+    // every actor. We replicate that here: load → clone → release source.
     std::string winning_path;
     void* new_node = nullptr;
     for (std::size_t i = 0; i < num_candidates && !new_node; ++i) {
@@ -6193,11 +7039,30 @@ bool ghost_set_weapon(const char* peer_id,
         if (!p || !p[0]) continue;
         FW_DBG("[set-weapon] peer=%s form=0x%X try candidate[%zu]='%s'",
                peer_id, item_form_id, i, p);
-        new_node = load_one_weapon_nif(p);
-        if (new_node) {
-            winning_path = p;
-            FW_LOG("[set-weapon] peer=%s form=0x%X loaded candidate[%zu]='%s'",
-                   peer_id, item_form_id, i, p);
+        void* source = load_one_weapon_nif(p);
+        if (source) {
+            void* clone = clone_nif_subtree(source);
+            if (clone && clone != source) {
+                // Engine deep-clone succeeded — release the cached source
+                // ref we held. The clone is ours alone, refcount=1.
+                seh_refcount_dec_armor(source);
+                new_node = clone;
+                winning_path = p;
+                // Track for the orphan-purge sweep (weapon clones only).
+                track_owned_clone(clone);
+                FW_LOG("[set-weapon] peer=%s form=0x%X loaded candidate[%zu]='%s' "
+                       "source=%p clone=%p (engine deep-clone)",
+                       peer_id, item_form_id, i, p, source, clone);
+            } else {
+                // Clone failed — fall back to using the cached source.
+                // Worst case: cache-share contamination across peers
+                // (= prior behaviour). Better than no weapon.
+                FW_WRN("[set-weapon] peer=%s clone failed for '%s' source=%p — "
+                       "using cached source (cache-share fallback)",
+                       peer_id, p, source);
+                new_node = source;
+                winning_path = p;
+            }
         }
     }
     if (!new_node) {
@@ -6205,11 +7070,24 @@ bool ghost_set_weapon(const char* peer_id,
         if (legacy) {
             FW_DBG("[set-weapon] peer=%s form=0x%X try legacy='%s'",
                    peer_id, item_form_id, legacy);
-            new_node = load_one_weapon_nif(legacy);
-            if (new_node) {
-                winning_path = legacy;
-                FW_LOG("[set-weapon] peer=%s form=0x%X loaded legacy='%s'",
-                       peer_id, item_form_id, legacy);
+            void* source = load_one_weapon_nif(legacy);
+            if (source) {
+                void* clone = clone_nif_subtree(source);
+                if (clone && clone != source) {
+                    seh_refcount_dec_armor(source);
+                    new_node = clone;
+                    winning_path = legacy;
+                    track_owned_clone(clone);
+                    FW_LOG("[set-weapon] peer=%s form=0x%X loaded legacy='%s' "
+                           "source=%p clone=%p (engine deep-clone)",
+                           peer_id, item_form_id, legacy, source, clone);
+                } else {
+                    FW_WRN("[set-weapon] peer=%s clone failed for legacy='%s' "
+                           "source=%p — using cached source",
+                           peer_id, legacy, source);
+                    new_node = source;
+                    winning_path = legacy;
+                }
             }
         }
     }
@@ -6219,7 +7097,10 @@ bool ghost_set_weapon(const char* peer_id,
         return false;
     }
 
-    // ---- Phase 2: examine current slot.
+    // ---- Phase 2: examine current slot. Wrapped in a scope so the
+    // lock releases before we call purge_orphan_weapon_clones (which
+    // re-acquires the slot mutex internally to build its keep-set).
+    {
     std::lock_guard lk(g_ghost_weapon_slot_mtx);
     auto& slot = g_ghost_weapon_slot[peer_id];
 
@@ -6270,9 +7151,35 @@ bool ghost_set_weapon(const char* peer_id,
     slot.form_id = item_form_id;
     slot.nif_node = new_node;
     slot.nif_path = std::move(winning_path);
+    // 2026-05-05 — base node may be the SAME cached BSFadeNode as before
+    // (engine resmgr returns shared instance for repeated path loads).
+    // If the node pointer changed, treat as a fresh base: reset
+    // base_culled flag so the new base's stock leaves get culled, and
+    // clear any stale extra_mods pointers (they belonged to the OLD
+    // base; the engine's release detached them as part of teardown).
+    if (old_node != new_node) {
+        slot.base_culled = false;
+        // 2026-05-06 evening — extra_mods detach + refdec already done
+        // at function entry by clear_ghost_extra_mods(peer_id), which
+        // detaches via each mod's actual parent ptr (+0x28) — not just
+        // refdec. slot.extra_mods is already empty here.
+    }
     FW_LOG("[set-weapon] peer=%s SLOT UPDATED form=0x%X path='%s' node=%p "
-           "(was form=0x%X)",
-           peer_id, item_form_id, slot.nif_path.c_str(), new_node, old_form);
+           "(was form=0x%X, base_culled=%d, extras=%zu)",
+           peer_id, item_form_id, slot.nif_path.c_str(), new_node, old_form,
+           slot.base_culled ? 1 : 0, slot.extra_mods.size());
+    }  // end Phase 2 lock scope
+
+    // 2026-05-06 evening (M9 closure, ATTEMPT #5) — global orphan sweep.
+    // Force-detach + refdec every previously-tracked clone that's NOT
+    // referenced by any live slot (slot.nif_node + slot.extra_mods).
+    // Defends against accumulation when the per-call cleanup paths fail
+    // silently (which they did for 4 prior fix attempts).
+    purge_orphan_weapon_clones();
+
+    // ATTEMPT #6 diagnostic — dump complete WEAPON attach state so we
+    // can diff "what we attached" vs "what the engine actually sees".
+    dump_weapon_attach_state("post-set-weapon");
     return true;
 }
 
@@ -6280,26 +7187,2394 @@ bool ghost_clear_weapon(const char* peer_id,
                          std::uint32_t expected_form_id) {
     if (!peer_id) return false;
 
+    // Phase 1 (no lock): pre-validate that the slot exists and matches
+    // the expected form_id. If it doesn't match, bail without doing the
+    // heavy detach work below.
+    {
+        std::lock_guard lk(g_ghost_weapon_slot_mtx);
+        auto it = g_ghost_weapon_slot.find(peer_id);
+        if (it == g_ghost_weapon_slot.end()) {
+            FW_DBG("[clear-weapon] peer=%s no slot — no-op", peer_id);
+            return true;
+        }
+        if (expected_form_id != 0 &&
+            it->second.form_id != expected_form_id) {
+            FW_DBG("[clear-weapon] peer=%s expected form=0x%X but slot has "
+                   "form=0x%X — no-op (peer already switched)",
+                   peer_id, expected_form_id, it->second.form_id);
+            return true;
+        }
+    }
+
+    // Phase 2 (no lock): detach+refdec all tracked extra mods via their
+    // ACTUAL parent pointers (not base_root), so the cached BSFadeNode
+    // doesn't carry our mods forward to the next equip cycle.
+    // 2026-05-06 evening — was: just refdec'd extras. Bug: cached
+    // BSFadeNode kept all attached mod children, so next equip of same
+    // path (engine resmgr returns the same cached instance) re-rendered
+    // last equip's mods on top of new equip's mods. User reported:
+    // "cambio arma senza silenziatore ma il silenziatore ora permane".
+    clear_ghost_extra_mods(peer_id);
+
+    // Phase 3 (lock again): release base node + erase slot. We re-find
+    // the iterator since the previous lock was dropped.
+    {
     std::lock_guard lk(g_ghost_weapon_slot_mtx);
     auto it = g_ghost_weapon_slot.find(peer_id);
     if (it == g_ghost_weapon_slot.end()) {
-        FW_DBG("[clear-weapon] peer=%s no slot — no-op", peer_id);
+        // Lost a race with another clear — already gone.
         return true;
     }
-
-    if (expected_form_id != 0 && it->second.form_id != expected_form_id) {
-        FW_DBG("[clear-weapon] peer=%s expected form=0x%X but slot has form="
-               "0x%X — no-op (peer already switched)",
-               peer_id, expected_form_id, it->second.form_id);
-        return true;
-    }
-
     if (it->second.nif_node) {
         release_weapon_node(it->second.nif_node);
     }
     FW_LOG("[clear-weapon] peer=%s cleared form=0x%X path='%s'",
            peer_id, it->second.form_id, it->second.nif_path.c_str());
     g_ghost_weapon_slot.erase(it);
+    }  // end Phase 3 lock scope
+
+    // ATTEMPT #5 — global orphan sweep after the slot is gone. Same
+    // rationale as ghost_set_weapon's tail call.
+    purge_orphan_weapon_clones();
+
+    // ATTEMPT #6 diagnostic — see ghost_set_weapon tail.
+    dump_weapon_attach_state("post-clear-weapon");
+    return true;
+}
+
+// === M9.w4 PROPER (v0.4.2+) — captured-mesh reconstruction =================
+//
+// Receiver-side: build BSTriShape from sender's captured raw vertex/index
+// data and attach to placeholder NiNodes inside the loaded base weapon NIF.
+//
+// All helpers SEH-caged. Per-mesh failures don't poison the whole batch —
+// we keep going and return final count of successes.
+
+namespace {
+
+// SEH-safe BSGeometry factory call. Returns the freshly-allocated
+// BSTriShape* or nullptr on AV. Caller owns +1 ref bump if attaching.
+void* seh_call_weapon_geo_factory(WeaponGeoFactoryFn fn,
+                                    int          tri_count,
+                                    const void*  indices_u16,
+                                    unsigned int vert_count,
+                                    const void*  positions_vec3,
+                                    char         build_mesh_extra) {
+    if (!fn) return nullptr;
+    __try {
+        // 11 nullptr stream pointers — we only have positions + indices.
+        return fn(tri_count, indices_u16, vert_count, positions_vec3,
+                   nullptr, nullptr, nullptr, nullptr, nullptr,
+                   nullptr, nullptr, nullptr, nullptr, nullptr,
+                   nullptr,
+                   build_mesh_extra);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
+// (seh_write_local_transform lives at scene_inject.cpp:~4255 already —
+// reuse rather than redefine. Same signature: bool(void*, const float[16]).)
+
+// SEH-safe write of 16-float local transform into BSGeometry +0x30..+0x6F.
+// Local helper (different name) for our reconstruction path so we don't
+// collide with the existing one.
+bool seh_write_local_transform_geom(void* geom, const float xf[16]) {
+    if (!geom || !xf) return false;
+    __try {
+        std::memcpy(reinterpret_cast<char*>(geom) + 0x30, xf, 64);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// SEH-safe read of NiObjectNET name pool entry at node+0x10 (BSFixedString
+// handle). Returns char* into pool storage (read-only, do not modify).
+//
+// FO4 NEXT-GEN LAYOUT (verified via weapon_witness::seh_read_node_name
+// which has worked across M5/M6/M9): pool_entry's INLINE ASCII string
+// starts at pool_entry+0x18, NOT at *pool_entry. Earlier versions of
+// this helper used *pool_entry (first qword as char*) which produces
+// garbage on FO4 NG — that bug silently broke find_node_by_name_dfs
+// lookups (placeholder bones never matched). Fixed 2026-05-04 PM.
+const char* seh_read_node_name_ptr(void* node) {
+    if (!node) return nullptr;
+    __try {
+        const char* pool_entry = *reinterpret_cast<const char* const*>(
+            reinterpret_cast<const char*>(node) + 0x10);
+        if (!pool_entry) return nullptr;
+        // ASCII string starts at pool_entry+0x18 (FO4 NG inline layout).
+        return pool_entry + 0x18;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
+// Compare a node's name against a target string. SEH-safe.
+bool seh_node_name_eq(void* node, const char* target) {
+    if (!node || !target || !target[0]) return false;
+    const char* name = seh_read_node_name_ptr(node);
+    if (!name) return false;
+    __try {
+        // Bounded strcmp.
+        for (std::size_t i = 0; i < 256; ++i) {
+            const char a = name[i];
+            const char b = target[i];
+            if (a != b) return false;
+            if (a == 0) return true;
+        }
+        return false;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// SEH-safe attach_child_direct invocation. POD-only signature (no
+// std:: types in the same scope) so it can use __try. Returns true on
+// successful invocation, false on AV.
+bool seh_attach_child_geom(AttachChildFn fn, void* parent, void* child) {
+    if (!fn || !parent || !child) return false;
+    __try {
+        fn(parent, child, 0);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// SEH-safe refcount inc/dec on NiAVObject (refcount @ +0x08).
+// POD-only so callers with std:: types can use them.
+bool seh_node_refbump(void* node) {
+    if (!node) return false;
+    __try {
+        auto* rcp = reinterpret_cast<long*>(
+            reinterpret_cast<char*>(node) + NIAV_REFCOUNT_OFF);
+        _InterlockedIncrement(rcp);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+bool seh_node_refdec(void* node) {
+    if (!node) return false;
+    __try {
+        auto* rcp = reinterpret_cast<long*>(
+            reinterpret_cast<char*>(node) + NIAV_REFCOUNT_OFF);
+        _InterlockedDecrement(rcp);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// SEH-safe read of vtable RVA (relative to image base). Returns 0 on AV
+// or null vtable. Used to discriminate BSGeometry-derived (BSTriShape,
+// BSSITF, BSDynamicTriShape — known to have valid +0x138 shader) from
+// plain NiNode (where +0x138 is past size, heap garbage).
+std::uintptr_t seh_read_vtable_rva_geom(void* node, std::uintptr_t base) {
+    if (!node || !base) return 0;
+    __try {
+        void* vt = *reinterpret_cast<void**>(node);
+        if (!vt) return 0;
+        const auto vt_addr = reinterpret_cast<std::uintptr_t>(vt);
+        if (vt_addr < base) return 0;
+        return vt_addr - base;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
+// True iff the vtable RVA matches a known BSGeometry-derived class.
+bool is_bsgeometry_vt_rva(std::uintptr_t rva) {
+    return rva == BSTRISHAPE_VTABLE_RVA
+        || rva == BSSUBINDEXTRISHAPE_VTABLE_RVA
+        || rva == BSDYNAMICTRISHAPE_VTABLE_RVA
+        || rva == BSDYNAMICTRISHAPE_VTABLE_ALT_RVA;
+}
+
+// SEH-safe read of two pointers: shader at geom+0x138 and alpha at +0x130.
+// Both written through out params. Returns true if at least the shader
+// was readable (alpha may be null even on success).
+bool seh_read_shader_alpha(void* geom, void** out_shader, void** out_alpha) {
+    if (!geom || !out_shader || !out_alpha) return false;
+    *out_shader = nullptr;
+    *out_alpha  = nullptr;
+    __try {
+        char* gb = reinterpret_cast<char*>(geom);
+        *out_shader = *reinterpret_cast<void**>(gb + BSGEOM_SHADERPROP_OFF);
+        *out_alpha  = *reinterpret_cast<void**>(gb + BSGEOM_ALPHAPROP_OFF);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// SEH-safe write of shader/alpha pointers + refcount-bump on each.
+// Refcount lives at NIAV_REFCOUNT_OFF (0x08) for both
+// BSLightingShaderProperty and NiAlphaProperty (NiRefObject base).
+bool seh_write_shader_alpha_with_bump(void* geom,
+                                       void* shader,
+                                       void* alpha) {
+    if (!geom) return false;
+    __try {
+        if (shader) {
+            auto* rc = reinterpret_cast<long*>(
+                reinterpret_cast<char*>(shader) + NIAV_REFCOUNT_OFF);
+            _InterlockedIncrement(rc);
+        }
+        if (alpha) {
+            auto* rc = reinterpret_cast<long*>(
+                reinterpret_cast<char*>(alpha) + NIAV_REFCOUNT_OFF);
+            _InterlockedIncrement(rc);
+        }
+        char* gb = reinterpret_cast<char*>(geom);
+        *reinterpret_cast<void**>(gb + BSGEOM_SHADERPROP_OFF) = shader;
+        *reinterpret_cast<void**>(gb + BSGEOM_ALPHAPROP_OFF)  = alpha;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// DFS walk: find first BSGeometry-derived leaf in `root`'s subtree that
+// has a non-null shader pointer at +0x138. Used as donor for shader/alpha
+// cloning when reconstructing captured weapon-mod meshes (Phase 3.1).
+//
+// Returns the donor BSGeometry node, or nullptr if none found.
+// SEH-caged. Capped at 4096 visits.
+void* find_donor_geometry_with_shader(void* root, std::uintptr_t base,
+                                        int max_visits = 4096) {
+    if (!root || !base) return nullptr;
+    void* stack[64];
+    int top = 0;
+    stack[top++] = root;
+    int visits = 0;
+    while (top > 0 && visits < max_visits) {
+        void* node = stack[--top];
+        if (!node) continue;
+        ++visits;
+
+        // Only consider BSGeometry-derived nodes for shader cloning.
+        const auto vt_rva = seh_read_vtable_rva_geom(node, base);
+        if (is_bsgeometry_vt_rva(vt_rva)) {
+            void* shader = nullptr;
+            void* alpha  = nullptr;
+            if (seh_read_shader_alpha(node, &shader, &alpha) && shader) {
+                return node;
+            }
+        }
+
+        // Recurse into children.
+        void** kids = nullptr;
+        std::uint16_t count = 0;
+        __try {
+            char* nb = reinterpret_cast<char*>(node);
+            kids  = *reinterpret_cast<void***>(nb + NINODE_CHILDREN_PTR_OFF);
+            count = *reinterpret_cast<std::uint16_t*>(nb + NINODE_CHILDREN_CNT_OFF);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            continue;
+        }
+        if (!kids || count == 0 || count > 256) continue;
+        for (std::uint16_t i = 0; i < count && top < 63; ++i) {
+            void* k = nullptr;
+            __try { k = kids[i]; }
+            __except (EXCEPTION_EXECUTE_HANDLER) { continue; }
+            if (k) stack[top++] = k;
+        }
+    }
+    return nullptr;
+}
+
+// DFS walk: find first node in tree whose name matches `target`.
+// SEH-safe per-step. Capped at 4096 visits to bound runtime.
+void* find_node_by_name_dfs(void* root, const char* target,
+                              int max_visits = 4096) {
+    if (!root || !target || !target[0]) return nullptr;
+    void* stack[64];
+    int top = 0;
+    stack[top++] = root;
+    int visits = 0;
+    while (top > 0 && visits < max_visits) {
+        void* node = stack[--top];
+        if (!node) continue;
+        ++visits;
+        if (seh_node_name_eq(node, target)) return node;
+
+        // Push children. NiNode children at NINODE_CHILDREN_PTR_OFF (0x128),
+        // count u16 at NINODE_CHILDREN_CNT_OFF (0x132).
+        void** kids = nullptr;
+        std::uint16_t count = 0;
+        __try {
+            char* nb = reinterpret_cast<char*>(node);
+            kids  = *reinterpret_cast<void***>(nb + NINODE_CHILDREN_PTR_OFF);
+            count = *reinterpret_cast<std::uint16_t*>(nb + NINODE_CHILDREN_CNT_OFF);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            continue;
+        }
+        if (!kids || count == 0 || count > 256) continue;
+        for (std::uint16_t i = 0; i < count && top < 63; ++i) {
+            void* k = nullptr;
+            __try { k = kids[i]; }
+            __except (EXCEPTION_EXECUTE_HANDLER) { continue; }
+            if (k) stack[top++] = k;
+        }
+    }
+    return nullptr;
+}
+
+} // namespace
+
+int attach_captured_meshes_to_ghost_weapon(
+    const char*               peer_id,
+    std::uint32_t             item_form_id,
+    const CapturedMeshView*   meshes,
+    std::size_t               mesh_count)
+{
+    if (!peer_id || !meshes || mesh_count == 0) return 0;
+
+    if (!g_resolved.load(std::memory_order_acquire)) {
+        FW_DBG("[mesh-rebuild] resolver not ready — skip");
+        return -1;
+    }
+    if (!g_r.weapon_geo_factory) {
+        FW_WRN("[mesh-rebuild] weapon_geo_factory not resolved — skip");
+        return -1;
+    }
+    if (!g_r.attach_child_direct) {
+        FW_WRN("[mesh-rebuild] attach_child_direct not resolved — skip");
+        return -1;
+    }
+
+    // Look up the ghost's loaded base weapon NIF root (set by
+    // ghost_set_weapon prior to this call).
+    void* base_root = nullptr;
+    {
+        std::lock_guard lk(g_ghost_weapon_slot_mtx);
+        auto it = g_ghost_weapon_slot.find(peer_id);
+        if (it == g_ghost_weapon_slot.end() || !it->second.nif_node) {
+            FW_DBG("[mesh-rebuild] peer=%s no ghost weapon slot — skip "
+                   "(MESH_BLOB arrived before EQUIP_BCAST set up base?)",
+                   peer_id);
+            return 0;
+        }
+        base_root = it->second.nif_node;
+    }
+
+    // Phase 3.1 (2026-05-04 PM): donor shader for visibility.
+    // Without shader+alpha, factory-built BSTriShape renders invisible
+    // (engine renderer skips it during the BSShader walk). Walk base_root
+    // tree to find a BSGeometry leaf with a valid shader, clone its
+    // shader+alpha pointers (refcount-bumped) into each newly-built geom.
+    //
+    // Material won't match perfectly (suppressor will use pistol body's
+    // shader → metallic instead of matte black), but at least geometry
+    // becomes visible. Per-mesh material binding via bgsm_path is a
+    // future enhancement.
+    void* donor_geom = find_donor_geometry_with_shader(base_root, g_r.base);
+    void* donor_shader = nullptr;
+    void* donor_alpha  = nullptr;
+    if (donor_geom) {
+        seh_read_shader_alpha(donor_geom, &donor_shader, &donor_alpha);
+        FW_LOG("[mesh-rebuild] donor geom=%p shader=%p alpha=%p "
+               "(cloned to all reconstructed meshes for visibility)",
+               donor_geom, donor_shader, donor_alpha);
+    } else {
+        FW_WRN("[mesh-rebuild] no donor geometry with shader in base tree "
+               "— reconstructed meshes will render invisible");
+    }
+
+    FW_LOG("[mesh-rebuild] peer=%s form=0x%X base_root=%p meshes=%zu",
+           peer_id, item_form_id, base_root, mesh_count);
+
+    // Dedup by m_name — engine clones some pieces twice (TTD 2026-05-04
+    // showed each mesh appears 2x in burst 1; first occurrence wins).
+    std::unordered_set<std::string> seen_names;
+    seen_names.reserve(mesh_count);
+
+    int attached = 0;
+    int factory_fail = 0;
+    int parent_missing = 0;
+    int duped = 0;
+    int shader_bound = 0;
+
+    for (std::size_t i = 0; i < mesh_count; ++i) {
+        const CapturedMeshView& m = meshes[i];
+        if (!m.m_name || !m.m_name[0]) continue;
+        if (m.vert_count == 0 || m.tri_count == 0) continue;
+        if (!m.positions || !m.indices) continue;
+
+        // Dedup.
+        const std::string key(m.m_name);
+        if (!seen_names.insert(key).second) {
+            ++duped;
+            continue;
+        }
+
+        // Build BSTriShape via factory. build_mesh_extra=1 attaches a
+        // BSPositionData ExtraData entry — required for engine's bound
+        // recompute / picking, harmless if unused.
+        void* geom = seh_call_weapon_geo_factory(
+            g_r.weapon_geo_factory,
+            static_cast<int>(m.tri_count),
+            m.indices,
+            static_cast<unsigned int>(m.vert_count),
+            m.positions,
+            /*build_mesh_extra=*/1);
+        if (!geom) {
+            ++factory_fail;
+            FW_WRN("[mesh-rebuild]   factory FAILED for '%s' "
+                   "(vc=%u tc=%u)",
+                   m.m_name,
+                   static_cast<unsigned>(m.vert_count), m.tri_count);
+            continue;
+        }
+
+        // Set local transform if provided (else factory's default identity).
+        if (m.local_transform) {
+            (void)seh_write_local_transform_geom(geom, m.local_transform);
+        }
+
+        // ROLLBACK 2026-05-04: Phase 3.1 donor shader binding caused
+        // crash in render walk (next frame after attach). Same root
+        // cause documented in CHANGELOG v0.4.0 §"Why this was extremely
+        // hard" item 3 — donor's shader is compiled for the donor's
+        // BSVertexDesc; our factory-built geom has a different vertex
+        // format → GPU vertex shader reads attributes at wrong offsets
+        // → AV in render. Disabled until proper bgsm-load per-geom is
+        // implemented (Phase 3.2). Keep counters and donor lookup so
+        // diagnostics still log what WOULD have been bound.
+        (void)donor_shader; (void)donor_alpha;
+        // if (donor_shader || donor_alpha) {
+        //     if (seh_write_shader_alpha_with_bump(geom, donor_shader, donor_alpha)) {
+        //         ++shader_bound;
+        //     }
+        // }
+
+        // Find parent placeholder in the base NIF tree.
+        void* parent = nullptr;
+        if (m.parent_placeholder && m.parent_placeholder[0]) {
+            parent = find_node_by_name_dfs(base_root, m.parent_placeholder);
+        }
+        if (!parent) {
+            ++parent_missing;
+            // Fallback: attach directly to base_root. The mesh will be at
+            // the weapon's origin — visible but possibly mis-positioned.
+            parent = base_root;
+            FW_DBG("[mesh-rebuild]   '%s' parent='%s' NOT FOUND in base "
+                   "tree — falling back to base_root",
+                   m.m_name,
+                   m.parent_placeholder ? m.parent_placeholder : "<null>");
+        }
+
+        // Attach. attach_child_direct internally does the refcount bump
+        // for the parent's slot. We do not pre-bump.
+        const bool ok =
+            seh_attach_child_geom(g_r.attach_child_direct, parent, geom);
+        if (!ok) {
+            FW_WRN("[mesh-rebuild]   attach_child_direct SEH for '%s' "
+                   "parent=%p geom=%p", m.m_name, parent, geom);
+            // geom is leaked here — it has refcount=0 and no parent.
+            // Engine GC won't free it. Acceptable for now (rare path).
+            continue;
+        }
+
+        ++attached;
+        FW_LOG("[mesh-rebuild]   [%zu] '%s' vc=%u tc=%u parent='%s' "
+               "geom=%p ATTACHED",
+               i, m.m_name,
+               static_cast<unsigned>(m.vert_count), m.tri_count,
+               m.parent_placeholder ? m.parent_placeholder : "",
+               geom);
+    }
+
+    FW_LOG("[mesh-rebuild] peer=%s form=0x%X DONE attached=%d "
+           "duped=%d factory_fail=%d parent_missing=%d shader_bound=%d",
+           peer_id, item_form_id,
+           attached, duped, factory_fail, parent_missing, shader_bound);
+
+    return attached;
+}
+
+// === M9.w4 PROPER (v0.4.2+, Path Y) — disk-loaded mod NIFs =================
+//
+// See header for design. Implementation reuses load_one_weapon_nif (which
+// runs nif_load_by_path + apply_materials) and attach_child_direct.
+
+namespace {
+
+// Walk a NiNode tree, append every BSGeometry leaf's m_name to `out`.
+// Used to detect stock parts (already in base NIF).
+void collect_geometry_names_dfs(void* root, std::uintptr_t base,
+                                  std::unordered_set<std::string>& out,
+                                  int max_visits = 4096) {
+    if (!root || !base) return;
+    void* stack[64];
+    int top = 0;
+    stack[top++] = root;
+    int visits = 0;
+    while (top > 0 && visits < max_visits) {
+        void* node = stack[--top];
+        if (!node) continue;
+        ++visits;
+
+        // If BSGeometry leaf, capture its m_name.
+        const auto vt_rva = seh_read_vtable_rva_geom(node, base);
+        if (is_bsgeometry_vt_rva(vt_rva)) {
+            const char* nm = seh_read_node_name_ptr(node);
+            if (nm && nm[0]) {
+                out.emplace(nm);
+            }
+            continue;  // leaves don't have children to recurse into
+        }
+
+        // Recurse into children.
+        void** kids = nullptr;
+        std::uint16_t count = 0;
+        __try {
+            char* nb = reinterpret_cast<char*>(node);
+            kids  = *reinterpret_cast<void***>(nb + NINODE_CHILDREN_PTR_OFF);
+            count = *reinterpret_cast<std::uint16_t*>(nb + NINODE_CHILDREN_CNT_OFF);
+        } __except (EXCEPTION_EXECUTE_HANDLER) { continue; }
+        if (!kids || count == 0 || count > 256) continue;
+        for (std::uint16_t i = 0; i < count && top < 63; ++i) {
+            void* k = nullptr;
+            __try { k = kids[i]; }
+            __except (EXCEPTION_EXECUTE_HANDLER) { continue; }
+            if (k) stack[top++] = k;
+        }
+    }
+}
+
+// Convert "Materials\Weapons\10mmPistol\10mmSuppressor.BGSM" →
+// "Weapons\10mmPistol" (the parent folder of the .bgsm file, sans the
+// "Materials\" prefix).
+//
+// Empty result on parse failure / empty input.
+std::string base_folder_from_bgsm(const std::string& bgsm) {
+    if (bgsm.empty()) return {};
+    std::string s = bgsm;
+    static const char kPrefix[]    = "Materials\\";
+    static const char kPrefixLow[] = "materials\\";
+    const std::size_t plen = sizeof(kPrefix) - 1;
+    if (s.size() >= plen &&
+        (std::strncmp(s.c_str(), kPrefix,    plen) == 0 ||
+         std::strncmp(s.c_str(), kPrefixLow, plen) == 0)) {
+        s = s.substr(plen);
+    }
+    const std::size_t bs = s.find_last_of('\\');
+    if (bs == std::string::npos) return {};
+    return s.substr(0, bs);
+}
+
+} // namespace
+
+int attach_mod_nifs_via_disk(
+    const char*               peer_id,
+    std::uint32_t             item_form_id,
+    const CapturedMeshView*   meshes,
+    std::size_t               mesh_count)
+{
+    if (!peer_id || !meshes || mesh_count == 0) return 0;
+
+    if (!g_resolved.load(std::memory_order_acquire)) {
+        FW_DBG("[mod-nif] resolver not ready — skip");
+        return -1;
+    }
+    if (!g_r.nif_load_by_path || !g_r.attach_child_direct) {
+        FW_WRN("[mod-nif] engine refs not resolved — skip");
+        return -1;
+    }
+
+    // Look up the ghost's loaded base weapon NIF root.
+    void* base_root = nullptr;
+    {
+        std::lock_guard lk(g_ghost_weapon_slot_mtx);
+        auto it = g_ghost_weapon_slot.find(peer_id);
+        if (it == g_ghost_weapon_slot.end() || !it->second.nif_node) {
+            FW_DBG("[mod-nif] peer=%s no ghost weapon slot — skip", peer_id);
+            return 0;
+        }
+        base_root = it->second.nif_node;
+    }
+
+    // Collect stock part names from base NIF tree (= names of BSGeometry
+    // leaves already loaded as part of the base weapon). Captured meshes
+    // whose m_name matches any of these are STOCK and shouldn't trigger
+    // a mod-NIF load (would result in duplicate geometry).
+    std::unordered_set<std::string> stock_names;
+    collect_geometry_names_dfs(base_root, g_r.base, stock_names);
+
+    FW_LOG("[mod-nif] peer=%s form=0x%X base_root=%p stock_parts=%zu "
+           "captured_meshes=%zu",
+           peer_id, item_form_id, base_root, stock_names.size(), mesh_count);
+
+    // Group captured meshes by parent_placeholder (mod root name).
+    // Each unique parent name corresponds to one mod sub-NIF on disk.
+    struct ModGroup {
+        std::vector<std::string> child_names;  // diagnostic only
+    };
+    std::unordered_map<std::string, ModGroup> mod_groups;
+    std::size_t skipped_stock = 0;
+    std::size_t skipped_no_parent = 0;
+    for (std::size_t i = 0; i < mesh_count; ++i) {
+        const CapturedMeshView& m = meshes[i];
+        if (!m.m_name || !m.m_name[0]) continue;
+        if (stock_names.count(m.m_name) > 0) {
+            ++skipped_stock;
+            continue;
+        }
+        if (!m.parent_placeholder || !m.parent_placeholder[0]) {
+            ++skipped_no_parent;
+            continue;
+        }
+        mod_groups[m.parent_placeholder].child_names.emplace_back(m.m_name);
+    }
+
+    FW_DBG("[mod-nif] groups=%zu skipped_stock=%zu skipped_no_parent=%zu",
+           mod_groups.size(), skipped_stock, skipped_no_parent);
+
+    // Use the ghost's loaded base nif_path to derive the base folder.
+    // (Cleaner than threading bgsm through each captured mesh.)
+    std::string base_folder;
+    {
+        std::lock_guard lk(g_ghost_weapon_slot_mtx);
+        auto it = g_ghost_weapon_slot.find(peer_id);
+        if (it != g_ghost_weapon_slot.end()) {
+            const std::string& base_path = it->second.nif_path;
+            const std::size_t bs = base_path.find_last_of('\\');
+            if (bs != std::string::npos) {
+                base_folder = base_path.substr(0, bs);
+            }
+        }
+    }
+    if (base_folder.empty()) {
+        FW_WRN("[mod-nif] could not derive base folder from slot path "
+               "— skip");
+        return 0;
+    }
+
+    FW_LOG("[mod-nif] base_folder='%s' mod_groups=%zu",
+           base_folder.c_str(), mod_groups.size());
+
+    int loaded = 0;
+    int load_fail = 0;
+    int attach_fail = 0;
+    for (const auto& [placeholder, info] : mod_groups) {
+        // Build candidate paths.
+        const std::string c1 = base_folder + "\\" + placeholder + ".nif";
+        const std::string c2 = base_folder + "\\Mods\\" + placeholder + ".nif";
+        const std::string c3 = base_folder + "\\Mods\\Barrels\\" + placeholder + ".nif";
+        const std::string c4 = base_folder + "\\Mods\\Sights\\" + placeholder + ".nif";
+        const std::string c5 = base_folder + "\\Mods\\Grips\\" + placeholder + ".nif";
+        const char* candidates[] = {
+            c1.c_str(), c2.c_str(), c3.c_str(), c4.c_str(), c5.c_str(),
+        };
+
+        void* mod_root = nullptr;
+        const char* winning_path = nullptr;
+        for (const char* p : candidates) {
+            void* n = load_one_weapon_nif(p);
+            if (n) {
+                mod_root = n;
+                winning_path = p;
+                break;
+            }
+        }
+        if (!mod_root) {
+            ++load_fail;
+            FW_DBG("[mod-nif] '%s' no NIF loadable from %zu candidates "
+                   "(child_count=%zu)",
+                   placeholder.c_str(),
+                   sizeof(candidates) / sizeof(candidates[0]),
+                   info.child_names.size());
+            continue;
+        }
+
+        // Attach to ghost's base weapon root. Positioning may be wrong
+        // (mod NIF root's local_transform is identity; the engine
+        // normally attaches to a placeholder bone with non-identity
+        // transform). Phase 3.3 will resolve placeholder lookup.
+        const bool ok = seh_attach_child_geom(g_r.attach_child_direct,
+                                                base_root, mod_root);
+        if (!ok) {
+            ++attach_fail;
+            seh_refcount_dec_armor(mod_root);  // drop our +1 ref
+            FW_WRN("[mod-nif] attach SEH for '%s' path='%s'",
+                   placeholder.c_str(), winning_path);
+            continue;
+        }
+
+        ++loaded;
+        FW_LOG("[mod-nif] LOADED+ATTACHED '%s' from '%s' (child_count=%zu) "
+               "to base_root=%p",
+               placeholder.c_str(), winning_path,
+               info.child_names.size(), base_root);
+    }
+
+    FW_LOG("[mod-nif] peer=%s form=0x%X DONE loaded=%d load_fail=%d "
+           "attach_fail=%d (groups=%zu skipped_stock=%zu skipped_no_parent=%zu)",
+           peer_id, item_form_id,
+           loaded, load_fail, attach_fail,
+           mod_groups.size(), skipped_stock, skipped_no_parent);
+
+    return loaded;
+}
+
+// === M9.w4 PROPER (v0.4.2+) — BSResource::EntryDB live probe ==============
+//
+// Dumps the first N non-null entries from the NIF resource manager singleton
+// to fw_native.log. Used to settle the 4-agent disagreement on Entry layout
+// (specifically: is +0x10 a BSFixedString path, a refcount, or something
+// else?). See ni_offsets.h `BSRES_ENTRY_DB_*` block for the consensus
+// layout claims.
+//
+// SEH-caged at every memory access so a torn read or unmapped page logs
+// instead of crashing.
+
+namespace {
+
+// Read up to `n_qwords` qwords from `addr` into out. Returns count
+// successfully read.
+int seh_read_qwords(const void* addr, std::uint64_t* out, int n_qwords) {
+    if (!addr || !out || n_qwords <= 0) return 0;
+    int read = 0;
+    for (int i = 0; i < n_qwords; ++i) {
+        __try {
+            out[i] = *reinterpret_cast<const std::uint64_t*>(
+                reinterpret_cast<const char*>(addr) + i * 8);
+            ++read;
+        } __except (EXCEPTION_EXECUTE_HANDLER) { return read; }
+    }
+    return read;
+}
+
+// Try to read a C string (max len) from a candidate pointer.
+// Returns true if at least 4 printable ASCII chars before null/AV.
+// Used to test if a qword looks like a char* path pointer.
+bool seh_looks_like_cstring(const void* addr, char* dst, std::size_t cap) {
+    if (!addr || !dst || cap < 8) return false;
+    int printable = 0;
+    __try {
+        for (std::size_t i = 0; i < cap - 1; ++i) {
+            const char c =
+                *(reinterpret_cast<const char*>(addr) + i);
+            if (c == 0) {
+                dst[i] = 0;
+                return printable >= 4;
+            }
+            if ((c >= 0x20 && c < 0x7F) || c == '\\' || c == '/') {
+                ++printable;
+            } else {
+                dst[i] = 0;
+                return false;
+            }
+            dst[i] = c;
+        }
+        dst[cap - 1] = 0;
+        return printable >= 4;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+} // namespace
+
+void dump_resmgr_first_entries(int count_max) {
+    if (!g_r.base) {
+        FW_LOG("[resmgr-probe] g_r.base not resolved — skip");
+        return;
+    }
+
+    // 1. Read singleton pointer from qword_1430DD618.
+    void* singleton = nullptr;
+    __try {
+        void** slot = reinterpret_cast<void**>(
+            g_r.base + NIF_LOAD_RESMGR_SLOT_RVA);
+        singleton = *slot;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_ERR("[resmgr-probe] SEH reading singleton slot");
+        return;
+    }
+    if (!singleton) {
+        FW_LOG("[resmgr-probe] singleton ptr null — engine not initialized");
+        return;
+    }
+
+    // 2. Read vtable RVA (sanity check class identity).
+    std::uintptr_t vt_rva = 0;
+    __try {
+        const auto vt_addr = *reinterpret_cast<std::uintptr_t*>(singleton);
+        if (vt_addr >= g_r.base) vt_rva = vt_addr - g_r.base;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+
+    // 3. Read bucket array head + capacity + count.
+    void**        buckets = nullptr;
+    std::uint32_t capacity = 0;
+    std::uint32_t live_count = 0;
+    __try {
+        char* sb = reinterpret_cast<char*>(singleton);
+        buckets = *reinterpret_cast<void***>(
+            sb + BSRES_ENTRY_DB_BUCKETS_OFF);
+        capacity = *reinterpret_cast<std::uint32_t*>(
+            sb + BSRES_ENTRY_DB_CAPACITY_OFF);
+        live_count = *reinterpret_cast<std::uint32_t*>(
+            sb + BSRES_ENTRY_DB_COUNT_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_ERR("[resmgr-probe] SEH reading bucket header from singleton=%p",
+               singleton);
+        return;
+    }
+
+    FW_LOG("[resmgr-probe] singleton=%p vtable_rva=0x%llX (expected "
+           "0x%llX BSResource::EntryDB<BSModelDB>) buckets=%p cap=%u "
+           "live=%u",
+           singleton,
+           static_cast<unsigned long long>(vt_rva),
+           static_cast<unsigned long long>(BSRES_ENTRYDB_VTABLE_RVA),
+           buckets, capacity, live_count);
+
+    if (!buckets || capacity == 0 || capacity > 0x100000) {
+        FW_WRN("[resmgr-probe] bucket array invalid — skip");
+        return;
+    }
+
+    const void* tombstone = reinterpret_cast<const void*>(
+        g_r.base + BSRES_ENTRY_DB_TOMBSTONE_RVA);
+
+    // 4. Walk first N non-null/non-tombstone entries, dump 0x30 raw bytes
+    // + per-field interpretation.
+    int dumped = 0;
+    for (std::uint32_t i = 0; i < capacity && dumped < count_max; ++i) {
+        void* entry = nullptr;
+        __try { entry = buckets[i]; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { continue; }
+        if (!entry || entry == tombstone) continue;
+
+        // Read 6 qwords (= 0x30 bytes = full Entry per A/C/D consensus).
+        std::uint64_t q[6] = {0};
+        const int n = seh_read_qwords(entry, q, 6);
+        if (n == 0) continue;
+
+        // Extract extension bytes at entry+0x04..+0x07 (per live data 2026-05-04
+        // PM, ".nif" entries have these 4 bytes = 'n','i','f','\0').
+        char ext[8] = {0};
+        ext[0] = static_cast<char>((q[0] >> 32) & 0xFF);
+        ext[1] = static_cast<char>((q[0] >> 40) & 0xFF);
+        ext[2] = static_cast<char>((q[0] >> 48) & 0xFF);
+        ext[3] = static_cast<char>((q[0] >> 56) & 0xFF);
+        // Sanitize non-printables for log (replace with '.').
+        for (int k = 0; k < 4; ++k) {
+            if (ext[k] != 0 && (ext[k] < 0x20 || ext[k] >= 0x7F)) ext[k] = '.';
+        }
+
+        FW_LOG("[resmgr-probe] === Entry #%d (bucket[%u] @ %p) ext='%s' ===",
+               dumped, i, entry, ext);
+        FW_LOG("[resmgr-probe]   +0x00 = 0x%016llX (12B hash key candidate; "
+               "low12: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X)",
+               static_cast<unsigned long long>(q[0]),
+               static_cast<unsigned>(q[0] & 0xFF),
+               static_cast<unsigned>((q[0] >> 8) & 0xFF),
+               static_cast<unsigned>((q[0] >> 16) & 0xFF),
+               static_cast<unsigned>((q[0] >> 24) & 0xFF),
+               static_cast<unsigned>((q[0] >> 32) & 0xFF),
+               static_cast<unsigned>((q[0] >> 40) & 0xFF),
+               static_cast<unsigned>((q[0] >> 48) & 0xFF),
+               static_cast<unsigned>((q[0] >> 56) & 0xFF),
+               static_cast<unsigned>(q[1] & 0xFF),
+               static_cast<unsigned>((q[1] >> 8) & 0xFF),
+               static_cast<unsigned>((q[1] >> 16) & 0xFF),
+               static_cast<unsigned>((q[1] >> 24) & 0xFF));
+        FW_LOG("[resmgr-probe]   +0x08 = 0x%016llX",
+               static_cast<unsigned long long>(q[1]));
+        FW_LOG("[resmgr-probe]   +0x10 = 0x%016llX (DISAGREEMENT POINT)",
+               static_cast<unsigned long long>(q[2]));
+
+        // Test if +0x10 is a BSFixedString-ish handle (ptr to ptr-to-cstring).
+        // BSFixedString in FO4: handle is a ptr to a pool entry; the c-string
+        // lives at handle[0] (or handle+0x18 in some layouts).
+        if (q[2] != 0) {
+            const void* p = reinterpret_cast<const void*>(q[2]);
+            char buf[256] = {0};
+
+            // Test 1: dereference once, see if THAT is a c-string ptr.
+            std::uint64_t deref0 = 0;
+            int n0 = seh_read_qwords(p, &deref0, 1);
+            if (n0 == 1 && deref0 != 0) {
+                const void* cs = reinterpret_cast<const void*>(deref0);
+                if (seh_looks_like_cstring(cs, buf, sizeof(buf))) {
+                    FW_LOG("[resmgr-probe]     → +0x10 deref → cstring "
+                           "='%s' (BSFixedString-like 1-level)", buf);
+                }
+            }
+
+            // Test 2: treat +0x10 itself as ptr-to-cstring directly.
+            if (seh_looks_like_cstring(p, buf, sizeof(buf))) {
+                FW_LOG("[resmgr-probe]     → +0x10 raw → cstring "
+                       "='%s' (raw char* path)", buf);
+            }
+
+            // Test 3: BSFixedString FO4 layout — pool entry at handle,
+            // c-string at handle+0x18.
+            char buf18[256] = {0};
+            const void* p18 = reinterpret_cast<const char*>(p) + 0x18;
+            if (seh_looks_like_cstring(p18, buf18, sizeof(buf18))) {
+                FW_LOG("[resmgr-probe]     → +0x10 + 0x18 → cstring "
+                       "='%s' (BSFixedString +0x18 layout)", buf18);
+            }
+        }
+
+        FW_LOG("[resmgr-probe]   +0x18 = 0x%016llX",
+               static_cast<unsigned long long>(q[3]));
+        FW_LOG("[resmgr-probe]   +0x20 = 0x%016llX (NODE candidate)",
+               static_cast<unsigned long long>(q[4]));
+
+        // Verify +0x20 is a NiAVObject by reading its vtable + m_name.
+        if (q[4] != 0) {
+            void* node = reinterpret_cast<void*>(q[4]);
+            std::uint64_t node_vt = 0;
+            int nn = seh_read_qwords(node, &node_vt, 1);
+            if (nn == 1 && node_vt >= g_r.base) {
+                const auto node_vt_rva = node_vt - g_r.base;
+                FW_LOG("[resmgr-probe]     → +0x20 node vtable_rva=0x%llX "
+                       "(BSFadeNode=0x28FA3E8, NiNode=0x267C888, "
+                       "BSTriShape=0x267E948)",
+                       static_cast<unsigned long long>(node_vt_rva));
+            }
+            // Read BSFadeNode->m_name (BSFixedString @ node+0x10).
+            // For NIFs loaded from disk, m_name typically contains the
+            // file basename or root NiNode name — ENOUGH for matching
+            // captured parent_placeholder strings from sender.
+            const char* nm = seh_read_node_name_ptr(node);
+            if (nm) {
+                // Bounded copy via string-test helper to avoid AV on garbage ptr.
+                char nbuf[128] = {0};
+                if (seh_looks_like_cstring(nm, nbuf, sizeof(nbuf))) {
+                    FW_LOG("[resmgr-probe]     → +0x20 node m_name='%s' "
+                           "(MATCHING KEY for sender's parent_placeholder)",
+                           nbuf);
+                }
+            }
+        }
+
+        FW_LOG("[resmgr-probe]   +0x28 = 0x%016llX",
+               static_cast<unsigned long long>(q[5]));
+
+        ++dumped;
+    }
+
+    FW_LOG("[resmgr-probe] done — dumped %d / %d requested entries "
+           "(scanned %u buckets)",
+           dumped, count_max, capacity);
+}
+
+// Worker thread: sleeps `delay_ms` then dumps. Spawned from
+// arm_injection_after_boot path so the engine has time to populate
+// the resmgr with weapon NIFs (player needs to have walked into a cell,
+// pickup pistol, equip it).
+namespace {
+void resmgr_probe_worker(unsigned int delay_ms) {
+    Sleep(delay_ms);
+    dump_resmgr_first_entries(32);
+}
+} // namespace
+
+void arm_resmgr_probe(unsigned int delay_ms) {
+    std::thread(&resmgr_probe_worker, delay_ms).detach();
+    FW_LOG("[resmgr-probe] armed: will dump in %u ms", delay_ms);
+}
+
+// === M9.w4 PROPER (v0.4.2+, RESMGR-LOOKUP) — find cached NIF by name =====
+//
+// Walks the BSResource::EntryDB<BSModelDB> bucket array and returns the
+// first BSFadeNode whose m_name matches `target_name`. Matches the
+// captured `parent_placeholder` strings from sender (e.g. "10mmSuppressor",
+// "10mmReflexCircle", "10mmWoodenGrip001", "Pistol10mmReceiver", etc.).
+//
+// The 4-agent RE + live probe v2 (2026-05-04) confirmed:
+//   - Singleton @ *qword_1430DD618 with vtable RVA 0x2694C70
+//   - Bucket array @ singleton+0x188, capacity @ +0x190
+//   - Each entry's BSFadeNode at +0x20
+//   - BSFadeNode m_name readable via pool_entry @ node+0x10 deref + 0x18
+//   - Weapon mods ARE cached: live probe found `10mmWoodenGrip001` etc.
+//
+// Returns the BSFadeNode pointer (caller MUST refbump before attaching),
+// or nullptr if no match found / engine not initialized.
+//
+// SEH-caged at every memory access. Linear scan of capacity-sized array
+// — for capacity=2048, ~1167 live entries, this is ~microseconds.
+//
+// Threading: MAIN THREAD (caller's responsibility — internal mutex acquired
+// by engine on map mutation, but read-only walk should be safe between
+// frames).
+void* find_loaded_nif_by_m_name(const char* target_name) {
+    if (!target_name || !target_name[0]) return nullptr;
+    if (!g_r.base) return nullptr;
+
+    // 1. Read singleton ptr.
+    void* singleton = nullptr;
+    __try {
+        void** slot = reinterpret_cast<void**>(
+            g_r.base + NIF_LOAD_RESMGR_SLOT_RVA);
+        singleton = *slot;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+    if (!singleton) return nullptr;
+
+    // 2. Read bucket array head + capacity.
+    void**        buckets = nullptr;
+    std::uint32_t capacity = 0;
+    __try {
+        char* sb = reinterpret_cast<char*>(singleton);
+        buckets = *reinterpret_cast<void***>(
+            sb + BSRES_ENTRY_DB_BUCKETS_OFF);
+        capacity = *reinterpret_cast<std::uint32_t*>(
+            sb + BSRES_ENTRY_DB_CAPACITY_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+    if (!buckets || capacity == 0 || capacity > 0x100000) return nullptr;
+
+    const void* tombstone = reinterpret_cast<const void*>(
+        g_r.base + BSRES_ENTRY_DB_TOMBSTONE_RVA);
+
+    // 3. Linear scan. Every non-null/non-tombstone bucket → read node →
+    // read m_name → strcmp.
+    int scanned = 0;
+    int with_node = 0;
+    for (std::uint32_t i = 0; i < capacity; ++i) {
+        void* entry = nullptr;
+        __try { entry = buckets[i]; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { continue; }
+        if (!entry || entry == tombstone) continue;
+        ++scanned;
+
+        // Read node @ entry+0x20.
+        void* node = nullptr;
+        __try {
+            node = *reinterpret_cast<void**>(
+                reinterpret_cast<char*>(entry) + BSRES_ENTRY_NODE_OFF);
+        } __except (EXCEPTION_EXECUTE_HANDLER) { continue; }
+        if (!node) continue;
+        ++with_node;
+
+        // Read m_name (BSFixedString @ node+0x10 → pool_entry+0x18).
+        const char* nm = seh_read_node_name_ptr(node);
+        if (!nm) continue;
+
+        // Bounded strcmp (256 chars max — m_name typically short).
+        bool match = true;
+        __try {
+            for (std::size_t k = 0; k < 256; ++k) {
+                const char a = nm[k];
+                const char b = target_name[k];
+                if (a != b) { match = false; break; }
+                if (a == 0) break;
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            match = false;
+        }
+
+        if (match) {
+            FW_LOG("[resmgr-lookup] HIT '%s' → entry=%p node=%p "
+                   "(scanned=%d/with_node=%d/%u buckets)",
+                   target_name, entry, node, scanned, with_node, capacity);
+            return node;
+        }
+    }
+
+    FW_DBG("[resmgr-lookup] MISS '%s' (scanned=%d entries, with_node=%d, "
+           "%u buckets)", target_name, scanned, with_node, capacity);
+    return nullptr;
+}
+
+// Forward declaration — defined later in the file (anon namespace).
+namespace {
+int cull_geometry_leaves_w4(void* node, std::uintptr_t module_base,
+                              int depth, int max_depth);
+}
+
+// Path NIF-CAPTURE — load `path` via the engine, attach to the ghost's
+// loaded base weapon NIF. See header.
+bool attach_extra_nif_to_ghost_weapon(const char* peer_id,
+                                       const char* path,
+                                       const char* slot_name) {
+    if (!peer_id || !path || !path[0]) return false;
+    if (!g_resolved.load(std::memory_order_acquire)) return false;
+    if (!g_r.attach_child_direct) return false;
+
+    // Look up ghost weapon slot's loaded base NIF root.
+    void* base_root = nullptr;
+    {
+        std::lock_guard lk(g_ghost_weapon_slot_mtx);
+        auto it = g_ghost_weapon_slot.find(peer_id);
+        if (it == g_ghost_weapon_slot.end() || !it->second.nif_node) {
+            FW_DBG("[extra-nif] peer=%s no slot — skip path='%s'",
+                   peer_id, path);
+            return false;
+        }
+        base_root = it->second.nif_node;
+    }
+
+    // 2026-05-06 evening (ATTEMPT #8) — resolve placeholder via the
+    // multi-tier resolver (same as resmgr-share path). If slot_name is
+    // empty/nullptr or resolution fails, attach falls back to base_root
+    // (legacy behaviour — visually wrong but stable).
+    void* attach_parent = base_root;
+    bool used_placeholder = false;
+    const char* match_kind = "no-slot";
+    if (slot_name && slot_name[0]) {
+        void* hit = resolve_placeholder_for_slot(
+            base_root, slot_name, &match_kind);
+        if (hit && hit != base_root) {
+            attach_parent = hit;
+            used_placeholder = true;
+        }
+    }
+
+    // Load via standard engine path (does apply_materials internally
+    // via load_one_weapon_nif). Engine binds shader/material correctly
+    // because it's a real NIF file — no vertex format mismatch issue.
+    void* source = load_one_weapon_nif(path);
+    if (!source) {
+        FW_DBG("[extra-nif] nif_load FAILED path='%s'", path);
+        return false;
+    }
+
+    // 2026-05-06 PM (M9 closure) — clone via vt[26] before attach. Same
+    // rationale as ghost_set_weapon and attach_extra_node_to_ghost_weapon:
+    // load_one_weapon_nif returns a cached BSFadeNode shared across all
+    // actors. Attaching the cached pointer as a child of N different
+    // bases mutates the same node's `+0x28 parent` field N times, last
+    // writer wins, render walk corruption. Clone first → independent
+    // instance per peer → cache stays clean.
+    void* mod_node = clone_nif_subtree(source);
+    if (mod_node && mod_node != source) {
+        // Independent clone — release the cached source ref we held.
+        seh_refcount_dec_armor(source);
+        // Track for orphan-purge (weapon clones only, not body/armor).
+        track_owned_clone(mod_node);
+        FW_DBG("[extra-nif] cloned source=%p -> mod_node=%p path='%s'",
+               source, mod_node, path);
+    } else {
+        // Clone failed — fall back to using the cached source. Same
+        // tradeoff as ghost_set_weapon's fallback.
+        FW_WRN("[extra-nif] clone failed for '%s' source=%p — using cached",
+               path, source);
+        mod_node = source;
+    }
+
+    // 2026-05-06 evening — cull placeholder's stock leaves before attach
+    // (same as resmgr-share path). Only when we actually resolved to a
+    // real placeholder, NOT when falling back to base_root (would kill
+    // the body).
+    if (used_placeholder) {
+        const int culled = cull_geometry_leaves_w4(
+            attach_parent, g_r.base, 0, 16);
+        if (culled > 0) {
+            FW_DBG("[extra-nif] CULLED %d default leaves inside "
+                   "placeholder '%s'=%p before attaching '%s'",
+                   culled, slot_name, attach_parent, path);
+        }
+    }
+
+    // Attach to placeholder (or base_root fallback).
+    const bool ok = seh_attach_child_geom(g_r.attach_child_direct,
+                                            attach_parent, mod_node);
+    if (!ok) {
+        FW_WRN("[extra-nif] attach SEH path='%s' base=%p mod=%p",
+               path, base_root, mod_node);
+        // mod_node might be a clone (tracked) or the shared source
+        // (untracked). untrack_owned_clone is a no-op if not present.
+        untrack_owned_clone(mod_node);
+        seh_refcount_dec_armor(mod_node);
+        return false;
+    }
+
+    // 2026-05-06 (M9 closure) — also track this disk-loaded mod in
+    // extra_mods so clear_ghost_extra_mods cleans it up on the next
+    // equip cycle. The tracked node is the CLONE we own, not the
+    // shared cached source.
+    {
+        std::lock_guard lk(g_ghost_weapon_slot_mtx);
+        auto it = g_ghost_weapon_slot.find(peer_id);
+        if (it != g_ghost_weapon_slot.end()) {
+            it->second.extra_mods.push_back(mod_node);
+        }
+    }
+
+    if (used_placeholder) {
+        FW_LOG("[extra-nif] LOADED+ATTACHED '%s' → slot='%s' (match=%s) "
+               "placeholder=%p (in base=%p, mod=%p)",
+               path, slot_name, match_kind, attach_parent,
+               base_root, mod_node);
+    } else {
+        FW_LOG("[extra-nif] LOADED+ATTACHED '%s' → base=%p (no/unresolved "
+               "slot='%s', mod=%p)",
+               path, base_root,
+               (slot_name && slot_name[0]) ? slot_name : "<empty>",
+               mod_node);
+    }
+    return true;
+}
+
+// 2026-05-05 — see header. Walks `base_root`'s subtree DFS and APP_CULLs
+// every BSGeometry-derived leaf encountered. Implementation parallels
+// find_node_by_name_w4 (same SEH-caged child reads); we just don't
+// match by name and do the cull instead of returning the first hit.
+//
+// Bounded depth + child-count caps to avoid runaway loops if the engine
+// ever hands us a corrupted subtree.
+namespace {
+int cull_geometry_leaves_w4(void* node,
+                              std::uintptr_t module_base,
+                              int depth = 0,
+                              int max_depth = 16) {
+    if (!node || depth > max_depth) return 0;
+
+    int culled = 0;
+    const std::uintptr_t vt_rva =
+        seh_read_vtable_rva_geom(node, module_base);
+    if (is_bsgeometry_vt_rva(vt_rva)) {
+        if (seh_niav_set_flag(node, NIAV_FLAG_APP_CULLED, true)) {
+            ++culled;
+        }
+        // BSGeometry-derived nodes are leaves — no children to recurse.
+        return culled;
+    }
+
+    // 2026-05-06 PM — STOP at BSFadeNode (and BSLeafAnimNode) when not
+    // at the root. These mark loaded-NIF subtrees — i.e. external mods
+    // attached on top of the base by the engine's own assembly OR by
+    // our resmgr-share path on prior equips. Their internal geometry
+    // is "their business", not stock content of THIS base. Recursing
+    // into them was the cause of the growing-cull-count bug:
+    //   1st equip: cull 6  (stock leaves only)
+    //   2nd equip: cull 14 (stock + mods from prior equip)
+    //   3rd equip: cull 16, 4th: cull 28 etc.
+    // → mods we attached for the previous equip got their geometry
+    // APP_CULLED on the next equip, leaving the user with floating
+    // partial weapons or invisible weapons. Limiting recursion to
+    // PURE NiNode subtrees fixes this — placeholders inside the base
+    // are NiNode (vt 0x267C888), mods are BSFadeNode (vt 0x28FA3E8).
+    if (depth > 0 && (vt_rva == BSFADENODE_VTABLE_RVA ||
+                       vt_rva == BSLEAFANIMNODE_VTABLE_RVA)) {
+        return culled;
+    }
+
+    void** kids = nullptr;
+    std::uint16_t count = 0;
+    if (!seh_read_children_w4(node, kids, count)) return culled;
+    if (!kids || count == 0 || count > 256) return culled;
+    for (std::uint16_t i = 0; i < count; ++i) {
+        void* k = seh_kid_at_w4(kids, i);
+        if (!k) continue;
+        culled += cull_geometry_leaves_w4(k, module_base,
+                                            depth + 1, max_depth);
+    }
+    return culled;
+}
+}  // anon namespace
+
+// 2026-05-06 — diagnostic subtree dumper. Recursively walks a NiNode
+// tree and logs each named child with depth + vtable RVA. SEH-caged
+// (per-node, so a corrupt subtree caps the dump rather than killing
+// us). Bounded by max_depth and a hard child-count guard.
+namespace {
+void dump_subtree_recursive(void* node, std::uintptr_t module_base,
+                              int depth, int max_depth,
+                              const char* tag) {
+    if (!node || depth > max_depth) return;
+
+    char nm[128] = {};
+    const bool has_name = seh_read_node_name_w4(node, nm, sizeof(nm));
+    const std::uintptr_t vt_rva =
+        seh_read_vtable_rva_geom(node, module_base);
+
+    // Indent with two-space stride.
+    char indent[64] = {};
+    int  ip = 0;
+    for (int d = 0; d < depth && ip < 60; ++d) {
+        indent[ip++] = ' ';
+        indent[ip++] = ' ';
+    }
+    indent[ip] = 0;
+
+    // Decode the most common vtable RVAs we know about.
+    const char* vt_kind = "?";
+    if      (vt_rva == BSFADENODE_VTABLE_RVA)             vt_kind = "BSFadeNode";
+    else if (vt_rva == NINODE_VTABLE_RVA)                 vt_kind = "NiNode";
+    else if (vt_rva == BSTRISHAPE_VTABLE_RVA)             vt_kind = "BSTriShape";
+    else if (vt_rva == BSSUBINDEXTRISHAPE_VTABLE_RVA)     vt_kind = "BSSITF";
+    else if (vt_rva == BSDYNAMICTRISHAPE_VTABLE_RVA)      vt_kind = "BSDynamicTriShape";
+    else if (vt_rva == BSDYNAMICTRISHAPE_VTABLE_ALT_RVA)  vt_kind = "BSDynamicTriShape(alt)";
+    else if (vt_rva == BSLEAFANIMNODE_VTABLE_RVA)         vt_kind = "BSLeafAnimNode";
+    else if (vt_rva == BSGEOMETRY_VTABLE_RVA)             vt_kind = "BSGeometry";
+
+    FW_LOG("%s%s'%s' vt_rva=0x%llX (%s) ptr=%p",
+           tag, indent, has_name ? nm : "<unnamed>",
+           static_cast<unsigned long long>(vt_rva), vt_kind, node);
+
+    // Recurse into children unless we hit a geometry leaf (those
+    // typically have no children but reading +0x100 is unsafe).
+    if (is_bsgeometry_vt_rva(vt_rva)) return;
+
+    void** kids = nullptr;
+    std::uint16_t count = 0;
+    if (!seh_read_children_w4(node, kids, count)) return;
+    if (!kids || count == 0 || count > 256) return;
+
+    for (std::uint16_t i = 0; i < count; ++i) {
+        void* k = seh_kid_at_w4(kids, i);
+        if (!k) continue;
+        dump_subtree_recursive(k, module_base, depth + 1, max_depth, tag);
+    }
+}
+}  // anon namespace
+
+// 2026-05-06 LATE evening — RICH diagnostic dumper. Per-node logs:
+// vtable kind, m_name, ptr, +0x28 parent, NIAV_FLAG_APP_CULLED state,
+// children count. SEH-caged per-node.
+namespace {
+void dump_node_rich(void* node, int depth, int max_depth, const char* tag) {
+    if (!node || depth > max_depth) return;
+
+    // Vtable + name
+    char nm[128] = {};
+    seh_read_node_name_w4(node, nm, sizeof(nm));
+    const std::uintptr_t vt_rva =
+        seh_read_vtable_rva_geom(node, g_r.base);
+
+    // Parent ptr (+0x28).
+    void* parent = weapon_witness::read_parent_pub(node);
+
+    // APP_CULLED flag (NIAV +0x6C, mask NIAV_FLAG_APP_CULLED).
+    bool app_culled = false;
+    __try {
+        const std::uint64_t flags = *reinterpret_cast<std::uint64_t*>(
+            reinterpret_cast<char*>(node) + NIAV_FLAGS_OFF);
+        app_culled = (flags & NIAV_FLAG_APP_CULLED) != 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+
+    const char* vt_kind = "?";
+    if      (vt_rva == BSFADENODE_VTABLE_RVA)             vt_kind = "BSFadeNode";
+    else if (vt_rva == NINODE_VTABLE_RVA)                 vt_kind = "NiNode";
+    else if (vt_rva == BSTRISHAPE_VTABLE_RVA)             vt_kind = "BSTriShape";
+    else if (vt_rva == BSSUBINDEXTRISHAPE_VTABLE_RVA)     vt_kind = "BSSITF";
+    else if (vt_rva == BSDYNAMICTRISHAPE_VTABLE_RVA)      vt_kind = "BSDynamicTriShape";
+    else if (vt_rva == BSDYNAMICTRISHAPE_VTABLE_ALT_RVA)  vt_kind = "BSDynamicTriShape(alt)";
+    else if (vt_rva == BSLEAFANIMNODE_VTABLE_RVA)         vt_kind = "BSLeafAnimNode";
+    else if (vt_rva == BSGEOMETRY_VTABLE_RVA)             vt_kind = "BSGeometry";
+
+    char indent[64] = {};
+    int  ip = 0;
+    for (int d = 0; d < depth && ip < 60; ++d) {
+        indent[ip++] = ' ';
+        indent[ip++] = ' ';
+    }
+    indent[ip] = 0;
+
+    // Children count (only meaningful for non-geom).
+    std::uint16_t child_count = 0;
+    if (!is_bsgeometry_vt_rva(vt_rva)) {
+        void** kids = nullptr;
+        seh_read_children_w4(node, kids, child_count);
+    }
+
+    FW_LOG("%s%sptr=%p name='%s' vt=%s(0x%llX) parent=%p culled=%d kids=%u",
+           tag, indent, node, nm[0] ? nm : "<unnamed>",
+           vt_kind, static_cast<unsigned long long>(vt_rva),
+           parent, app_culled ? 1 : 0,
+           static_cast<unsigned>(child_count));
+
+    if (is_bsgeometry_vt_rva(vt_rva)) return;
+
+    void** kids = nullptr;
+    std::uint16_t count = 0;
+    if (!seh_read_children_w4(node, kids, count)) return;
+    if (!kids || count == 0 || count > 256) return;
+    for (std::uint16_t i = 0; i < count; ++i) {
+        void* k = seh_kid_at_w4(kids, i);
+        if (!k) continue;
+        dump_node_rich(k, depth + 1, max_depth, tag);
+    }
+}
+}  // anon namespace
+
+// Public diagnostic — call at strategic moments to dump the COMPLETE
+// state of WEAPON's subtree + the parent chain from WEAPON up to scene
+// root. This is the canonical "what does the engine actually see"
+// snapshot. If the cleanup logs say `cleared 6/6 detached` but you still
+// visually see 6 stale weapons, the discrepancy lives somewhere this
+// dump will show.
+void dump_weapon_attach_state(const char* event_tag) {
+    if (!g_resolved.load(std::memory_order_acquire)) return;
+    if (!event_tag) event_tag = "<no-tag>";
+
+    void* weapon = find_weapon_attach_node();
+    if (!weapon) {
+        FW_LOG("[scene-dump] %s NO WEAPON ATTACH NODE", event_tag);
+        return;
+    }
+
+    FW_LOG("[scene-dump] ============================================ "
+           "tag='%s' WEAPON=%p ============================================",
+           event_tag, weapon);
+
+    // Parent chain UP from WEAPON.
+    {
+        FW_LOG("[scene-dump] %s parent-chain (WEAPON → scene root):",
+               event_tag);
+        void* cur = weapon;
+        int depth = 0;
+        std::uintptr_t prev_addr = reinterpret_cast<std::uintptr_t>(cur);
+        while (cur && depth < 24) {
+            char nm[128] = {};
+            seh_read_node_name_w4(cur, nm, sizeof(nm));
+            const std::uintptr_t vt_rva =
+                seh_read_vtable_rva_geom(cur, g_r.base);
+            FW_LOG("[scene-dump] %s   [%d] ptr=%p name='%s' vt_rva=0x%llX",
+                   event_tag, depth, cur, nm[0] ? nm : "<unnamed>",
+                   static_cast<unsigned long long>(vt_rva));
+            void* parent = weapon_witness::read_parent_pub(cur);
+            if (!parent) break;
+            if (reinterpret_cast<std::uintptr_t>(parent) == prev_addr) {
+                FW_LOG("[scene-dump] %s   [self-loop, stop]", event_tag);
+                break;
+            }
+            prev_addr = reinterpret_cast<std::uintptr_t>(parent);
+            cur = parent;
+            ++depth;
+        }
+    }
+
+    // Subtree DOWN from WEAPON.
+    FW_LOG("[scene-dump] %s WEAPON subtree (DFS, max_depth=8):",
+           event_tag);
+    dump_node_rich(weapon, 0, 8, "[scene-dump]   ");
+
+    // Tracker stats.
+    {
+        std::lock_guard lk(g_owned_clones_mtx);
+        FW_LOG("[scene-dump] %s g_owned_clones tracker size=%zu",
+               event_tag, g_owned_clones.size());
+    }
+    // Slot-map summary.
+    {
+        std::lock_guard lk(g_ghost_weapon_slot_mtx);
+        FW_LOG("[scene-dump] %s g_ghost_weapon_slot peers=%zu",
+               event_tag, g_ghost_weapon_slot.size());
+        for (auto& [pid, slot] : g_ghost_weapon_slot) {
+            FW_LOG("[scene-dump] %s   peer='%s' form=0x%X path='%s' "
+                   "nif_node=%p extras=%zu",
+                   event_tag, pid.c_str(), slot.form_id,
+                   slot.nif_path.c_str(), slot.nif_node,
+                   slot.extra_mods.size());
+        }
+    }
+
+    FW_LOG("[scene-dump] ============================================ "
+           "tag='%s' END ============================================",
+           event_tag);
+}
+
+void dump_ghost_weapon_subtree(const char* peer_id, int max_depth) {
+    if (!peer_id) return;
+    if (!g_resolved.load(std::memory_order_acquire)) return;
+    if (max_depth < 1) max_depth = 1;
+    if (max_depth > 12) max_depth = 12;
+
+    void* base_root = nullptr;
+    std::string base_path;
+    {
+        std::lock_guard lk(g_ghost_weapon_slot_mtx);
+        auto it = g_ghost_weapon_slot.find(peer_id);
+        if (it == g_ghost_weapon_slot.end() || !it->second.nif_node) {
+            FW_DBG("[base-tree-dump] peer=%s no slot — skip", peer_id);
+            return;
+        }
+        base_root = it->second.nif_node;
+        base_path = it->second.nif_path;
+    }
+
+    FW_LOG("[base-tree-dump] === peer=%s base='%s' root=%p (max_depth=%d) ===",
+           peer_id, base_path.c_str(), base_root, max_depth);
+    dump_subtree_recursive(base_root, g_r.base, 0, max_depth,
+                           "[base-tree-dump] ");
+    FW_LOG("[base-tree-dump] === END peer=%s ===", peer_id);
+}
+
+int cull_base_geometry_for_modded_weapon(const char* peer_id) {
+    if (!peer_id) return -1;
+    if (!g_resolved.load(std::memory_order_acquire)) return -1;
+
+    void* base_root = nullptr;
+    {
+        std::lock_guard lk(g_ghost_weapon_slot_mtx);
+        auto it = g_ghost_weapon_slot.find(peer_id);
+        if (it == g_ghost_weapon_slot.end() || !it->second.nif_node) {
+            return -1;
+        }
+        // Already culled this base — skip. The cached BSFadeNode is
+        // shared across equip cycles, so the APP_CULLED bits we wrote
+        // on the stock leaves persist between calls. Re-walking the
+        // subtree on the next equip would also descend into our
+        // attached mod nodes (children of base) and cull THEIR
+        // geometry, making the mods invisible.
+        if (it->second.base_culled) {
+            return 0;
+        }
+        base_root = it->second.nif_node;
+    }
+
+    const int culled = cull_geometry_leaves_w4(base_root, g_r.base);
+
+    // Mark slot as culled. Do this AFTER the walk so a partial AV
+    // doesn't mark a half-culled base as "done".
+    {
+        std::lock_guard lk(g_ghost_weapon_slot_mtx);
+        auto it = g_ghost_weapon_slot.find(peer_id);
+        if (it != g_ghost_weapon_slot.end() &&
+            it->second.nif_node == base_root) {
+            it->second.base_culled = true;
+        }
+    }
+    return culled;
+}
+
+// 2026-05-06 evening (Agent D RE finding, 99% confidence) — detach-via-
+// parent helpers. Replaces the broken `detach_child(base_root, mod)`
+// loop that silently no-op'd whenever `mod` wasn't a direct child of
+// `base_root` (most of our mods are attached to placeholder NiNodes
+// INSIDE base_root via `attach_extra_node_to_ghost_weapon`'s
+// `find_node_by_name_w4` lookup, NOT to base_root directly). The
+// engine's `sub_1416BE390` walks DIRECT children only and returns
+// `removed = nullptr` (no SEH) when it doesn't find the child — our
+// `seh_detach_child_armor` was reporting `ok=true` on these silent
+// misses, so the cleanup looked successful but the cached BSFadeNode
+// kept accumulating mod children across equips → "weapon shows old
+// + new mods stacked" symptom.
+//
+// Fix: read child's actual parent via NiAVObject::m_pkParent (+0x28),
+// detach from THAT parent. Triple-confirmed offset (per Agent D dossier
+// `re/detach_primitives_AGENT_D.md`):
+//   • SetParent (sub_1416C8B60)   writes *(child+0x28)=parent
+//   • ClearParent (sub_1416C8CC0) writes *(child+0x28)=0
+//   • Parent-chain walker (sub_1416C8C40) reads *(node+0x28)
+namespace {
+
+// DFS through subtree looking for the NiNode whose children array
+// contains `target`. Returns first parent NiNode that owns target as a
+// direct child, or nullptr. Bounded depth defends against pathological
+// graphs (cycles shouldn't exist in NIF trees but seen in skeletons).
+void* find_parent_in_subtree_w4(void* root, void* target,
+                                  int depth = 0, int max_depth = 32) {
+    if (!root || !target || depth > max_depth) return nullptr;
+
+    void**         children = nullptr;
+    std::uint16_t  count    = 0;
+    __try {
+        children = *reinterpret_cast<void***>(
+            reinterpret_cast<char*>(root) + NINODE_CHILDREN_PTR_OFF);
+        count    = *reinterpret_cast<std::uint16_t*>(
+            reinterpret_cast<char*>(root) + NINODE_CHILDREN_CNT_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+
+    if (!children || count == 0 || count > 4096) return nullptr;
+
+    // Direct match?
+    for (std::uint16_t i = 0; i < count; ++i) {
+        void* c = nullptr;
+        __try { c = children[i]; }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+        if (c == target) return root;
+    }
+    // Recurse.
+    for (std::uint16_t i = 0; i < count; ++i) {
+        void* c = nullptr;
+        __try { c = children[i]; }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+        if (!c) continue;
+        void* hit = find_parent_in_subtree_w4(c, target, depth + 1, max_depth);
+        if (hit) return hit;
+    }
+    return nullptr;
+}
+
+struct DetachResult {
+    bool  ok;       // engine call did not SEH AND removed != nullptr
+    bool  seh;      // SEH fired
+    void* parent;   // parent we detached from (may be != base_root)
+};
+
+DetachResult seh_detach_via_parent_ptr(void* child, void** removed_out) {
+    DetachResult r{false, false, nullptr};
+    if (!child || !g_r.detach_child) return r;
+
+    void* parent = weapon_witness::read_parent_pub(child);
+    if (!parent) {
+        // Already orphaned — nothing to detach. Treat as success so
+        // caller doesn't overcount failures.
+        r.ok = true;
+        return r;
+    }
+    r.parent = parent;
+
+    void* removed = nullptr;
+    __try {
+        g_r.detach_child(parent, child, &removed);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        r.seh = true;
+        return r;
+    }
+    if (removed_out) *removed_out = removed;
+    r.ok = (removed != nullptr);
+    return r;
+}
+
+// Detach every mod in `mods` from its actual parent, with a
+// subtree-search fallback if the parent ptr is stale. Returns count
+// successfully detached. Does NOT touch refcounts — caller balances
+// refbumps separately.
+int seh_detach_mods_via_parent(void* base_root,
+                                 const std::vector<void*>& mods) {
+    int detached = 0;
+    for (void* mod : mods) {
+        if (!mod) continue;
+
+        void* removed = nullptr;
+        DetachResult r = seh_detach_via_parent_ptr(mod, &removed);
+
+        if (r.ok && removed) {
+            ++detached;
+            FW_DBG("[detach-via-parent] mod=%p detached from parent=%p "
+                   "(removed=%p)", mod, r.parent, removed);
+            continue;
+        }
+        if (r.seh) {
+            FW_WRN("[detach-via-parent] SEH for mod=%p parent=%p", mod,
+                   r.parent);
+            continue;
+        }
+
+        // Fallback: walk base_root recursively to find the actual parent.
+        // Handles stale +0x28 ptrs (engine swapped parent under us).
+        if (base_root) {
+            void* fallback_parent = find_parent_in_subtree_w4(base_root, mod);
+            if (fallback_parent) {
+                __try {
+                    g_r.detach_child(fallback_parent, mod, &removed);
+                    if (removed) {
+                        ++detached;
+                        FW_DBG("[detach-via-parent] mod=%p FALLBACK "
+                               "detached from parent=%p",
+                               mod, fallback_parent);
+                        continue;
+                    }
+                } __except (EXCEPTION_EXECUTE_HANDLER) {}
+            }
+        }
+        FW_WRN("[detach-via-parent] mod=%p NOT FOUND in scene graph "
+               "(parent_ptr=%p, base_root=%p) — already detached or "
+               "stale", mod, r.parent, base_root);
+    }
+    return detached;
+}
+
+}  // anon namespace
+
+void clear_ghost_extra_mods(const char* peer_id) {
+    if (!peer_id) return;
+    if (!g_resolved.load(std::memory_order_acquire)) return;
+    if (!g_r.detach_child) return;
+
+    // Snapshot the (base_root, mod_nodes) tuple under the lock so the
+    // detach loop below operates on stable values; then clear the
+    // tracked vector. We DO NOT hold the slot mutex during the engine
+    // detach call (engine takes its own scene-graph locks that we
+    // don't want nested under our app mutex).
+    void*               base_root = nullptr;
+    std::vector<void*>  victims;
+    {
+        std::lock_guard lk(g_ghost_weapon_slot_mtx);
+        auto it = g_ghost_weapon_slot.find(peer_id);
+        if (it == g_ghost_weapon_slot.end() || !it->second.nif_node) return;
+        base_root = it->second.nif_node;
+        victims   = std::move(it->second.extra_mods);
+        it->second.extra_mods.clear();
+    }
+
+    if (victims.empty()) return;
+
+    // 2026-05-06 evening — was: detach_child(base_root, node) — silently
+    // failed for mods attached to placeholder sub-nodes (the common
+    // case). Now: read each mod's actual parent via +0x28 and detach
+    // from THAT, with subtree-search fallback.
+    const int detached = seh_detach_mods_via_parent(base_root, victims);
+    const int detach_failed =
+        static_cast<int>(victims.size()) - detached;
+
+    // Drop our +1 refbump on every tracked node — even ones we
+    // couldn't detach (engine's eventual NIF unload handles their final
+    // destruction; we just balance our outstanding refbump). Untrack
+    // from g_owned_clones first so the global purge sweep doesn't see
+    // dangling pointers post-refdec.
+    for (void* node : victims) {
+        if (node) {
+            untrack_owned_clone(node);
+            seh_refcount_dec_armor(node);
+        }
+    }
+
+    FW_LOG("[ghost-extras] peer=%s cleared %d mods (detached=%d "
+           "detach_failed=%d) from base=%p",
+           peer_id, static_cast<int>(victims.size()),
+           detached, detach_failed, base_root);
+}
+
+// M9.w4 PROPER (v0.4.2+, RESMGR-SHARE) — see header.
+//
+// 2026-05-05 fix — placeholder-aware attach. Previous version attached
+// every mod as a direct child of base_root; visually all mods stacked
+// at the same point (transform inheritance from base) producing the
+// "weapon-soup monster" that user reported. Real Bethesda behaviour:
+// the base weapon NIF contains placeholder NiNodes (e.g. "PistolReceiver",
+// "SightMount"); the engine attaches each loaded mod NIF as a child of
+// the placeholder named in its OMOD INNT record. We replicate this by
+// having the sender capture the slot placeholder name (= grand-parent
+// of the BSGeometry leaf in its own assembled tree) and the receiver
+// then walks the loaded base weapon for that exact name. We also write
+// the sender's captured local_transform onto the mod node so it lands
+// at the same offset within the placeholder that the sender had.
+bool attach_extra_node_to_ghost_weapon(const char* peer_id,
+                                        void* node,
+                                        const char* display_name,
+                                        const char* slot_name,
+                                        const float local_transform[16]) {
+    if (!peer_id || !node) return false;
+    if (!g_resolved.load(std::memory_order_acquire)) return false;
+    if (!g_r.attach_child_direct) return false;
+
+    void* base_root = nullptr;
+    GhostWeaponSlot* slot_ptr = nullptr;  // for tracking extra_mods (set under lock below)
+    {
+        std::lock_guard lk(g_ghost_weapon_slot_mtx);
+        auto it = g_ghost_weapon_slot.find(peer_id);
+        if (it == g_ghost_weapon_slot.end() || !it->second.nif_node) {
+            FW_DBG("[resmgr-share] peer=%s no slot — skip '%s'",
+                   peer_id, display_name ? display_name : "<null>");
+            return false;
+        }
+        base_root = it->second.nif_node;
+        slot_ptr  = &it->second;  // lifetime OK: map only mutated on main thread
+    }
+
+    // 2026-05-06 LATE evening (M9 closure, FLAT-REBUILD) — attach mods
+    // DIRECTLY to the ghost's WEAPON bone (not to a placeholder inside
+    // the base weapon NIF). The sender now ships local_transform as the
+    // mod NIF root's rigid offset relative to the WEAPON bone (see
+    // weapon_witness.cpp extract_one_mesh). When we set
+    // mod_clone.m_local = received_relative, the engine recomputes
+    // mod_clone.m_world = WEAPON.m_world * received_relative → mod
+    // appears at the same offset from ghost's hand as on sender's
+    // hand.
+    //
+    // This sidesteps ALL placeholder lookup machinery (exact match,
+    // P-* alias, substring search, FALLBACK). slot_name is now unused
+    // for placement (kept in signature for log clarity).
+    //
+    // The ghost's loaded base_root is kept attached to WEAPON as a
+    // sibling of the mods. It provides body parts (receiver/slide/
+    // frame) the user expects to see. Default content inside base
+    // placeholders may overlap with mods — separate concern, can
+    // address later via APP_CULL of base_root entirely if user
+    // prefers "mods only" rendering.
+    void* attach_parent = find_weapon_attach_node();
+    bool used_placeholder = (attach_parent != nullptr
+                              && attach_parent != base_root);
+    const char* match_kind = "weapon-bone-direct";
+    if (!attach_parent) {
+        attach_parent = base_root;
+        match_kind = "no-weapon-fallback";
+        used_placeholder = false;
+    }
+    (void)slot_name;  // unused in flat-rebuild architecture
+
+    // 2026-05-06 PM — CLONE via vt[26] BEFORE attach. Was: refbump the
+    // shared cached node and attach. That made every peer's ghost
+    // weapon mutate the SAME cached BSFadeNode (the cached `node`'s
+    // `+0x28 parent` field was overwritten by whichever peer attached
+    // last → first peer's children list pointed to a node whose parent
+    // pointer no longer pointed back at it → render walk corruption →
+    // user reported "le pistole sono tutte uguali e troppo moddate").
+    // Six independent RE agents converged on the fix: invoke vt[26]
+    // (NetImmerse Clone slot) on the cached node to get a per-peer
+    // deep-clone with its own parent pointer + GPU buffer AddRef'd.
+    // Cache stays clean.
+    void* clone = clone_nif_subtree(node);
+    if (!clone || clone == node) {
+        FW_WRN("[resmgr-share] clone failed for '%s' node=%p — skip "
+               "(would otherwise share-mutate cache)",
+               display_name ? display_name : "<null>", node);
+        return false;
+    }
+    // Track for orphan-purge (weapon clones only, not body/armor).
+    track_owned_clone(clone);
+
+    // 2026-05-06 LATE evening (FLAT-REBUILD) — selective cull DISABLED.
+    // We're now attaching directly to WEAPON (not to a placeholder),
+    // so there's no placeholder-default-content to hide on this path.
+    // The default content inside base_root's placeholders will still
+    // render alongside the mods — visual overlap is the cost of
+    // bypassing the placeholder system entirely. If overlap is bad,
+    // a follow-up can find each mod's matching base placeholder by
+    // parent_placeholder name and cull its leaves separately.
+    // The clone's refcount comes back as 1 (we own it). attach_child_direct
+    // will bump to 2 when the parent slot takes its child reference.
+    // No explicit refbump on the clone needed — that was for the SHARED
+    // path; the clone is OURS exclusively.
+
+    const bool ok = seh_attach_child_geom(g_r.attach_child_direct,
+                                            attach_parent, clone);
+    if (!ok) {
+        // Drop our 1 ref so the clone deallocates instead of leaking.
+        // Untrack from g_owned_clones first (clone is tracked from
+        // clone_nif_subtree return).
+        untrack_owned_clone(clone);
+        seh_node_refdec(clone);
+        FW_WRN("[resmgr-share] attach SEH for '%s' parent=%p clone=%p "
+               "(source=%p)",
+               display_name ? display_name : "<null>",
+               attach_parent, clone, node);
+        return false;
+    }
+
+    // Apply the sender's captured local_transform on the CLONE (not
+    // the cached source — that would still be cache-share contamination).
+    if (local_transform) {
+        if (!seh_write_local_transform(clone, local_transform)) {
+            FW_WRN("[resmgr-share] SEH writing local_transform for '%s' "
+                   "clone=%p — proceeding (mod will use identity)",
+                   display_name ? display_name : "<null>", clone);
+        }
+    }
+
+    // Track the CLONE in extra_mods so next equip's clear pass detaches
+    // it. Each peer has its own clones, no cross-peer contamination.
+    {
+        std::lock_guard lk(g_ghost_weapon_slot_mtx);
+        auto it = g_ghost_weapon_slot.find(peer_id);
+        if (it != g_ghost_weapon_slot.end()) {
+            it->second.extra_mods.push_back(clone);
+        }
+    }
+
+    // The 'node' arg is unused in the success path now — kept in signature
+    // for log clarity (display_name comes from same call site). Avoid
+    // unused-var warning by referencing it in the trace below.
+    (void)node;
+
+    if (used_placeholder) {
+        FW_LOG("[resmgr-share] SHARED+ATTACHED '%s' node=%p → "
+               "slot='%s' (match=%s) placeholder=%p (in base=%p, "
+               "peer=%s, xf=%s)",
+               display_name ? display_name : "<null>",
+               node,
+               slot_name ? slot_name : "",
+               match_kind,
+               attach_parent, base_root, peer_id,
+               local_transform ? "yes" : "no");
+    } else {
+        FW_LOG("[resmgr-share] SHARED+ATTACHED '%s' node=%p → base=%p "
+               "FALLBACK (slot '%s' not resolved, peer=%s, xf=%s)",
+               display_name ? display_name : "<null>",
+               node, base_root,
+               (slot_name && slot_name[0]) ? slot_name : "<empty>",
+               peer_id,
+               local_transform ? "yes" : "no");
+    }
+    return true;
+}
+
+// === M9 closure (PLAN B — NiStream serialization) =========================
+
+namespace {
+// Get the first non-null child of a NiNode-derived `parent`. The
+// "assembled weapon" tree on the local PC sits as a child of the
+// WEAPON bone; this finds it.
+void* first_child_w4(void* parent) {
+    if (!parent) return nullptr;
+    void**         kids = nullptr;
+    std::uint16_t  count = 0;
+    if (!seh_read_children_w4(parent, kids, count)) return nullptr;
+    if (!kids || count == 0 || count > 256) return nullptr;
+    for (std::uint16_t i = 0; i < count; ++i) {
+        void* k = seh_kid_at_w4(kids, i);
+        if (k) return k;
+    }
+    return nullptr;
+}
+}  // anon namespace
+
+// 2026-05-06 NIGHT — diagnostic helper. Attempts a full
+// serialize→deserialize round-trip in the SAME process. Returns
+// true if both sides succeed and the deserialized root is non-null.
+// If this fails, the engine NiStream Save/Load primitives don't
+// roundtrip cleanly — the network layer can't be at fault. If this
+// succeeds but cross-process Load fails, the wire layer is suspect.
+static bool nistream_self_test(void* root) {
+    if (!root) return false;
+    SerializedNif blob{};
+    if (!nistream_serialize_subtree(root, &blob)) {
+        FW_WRN("[nistream-self] serialize FAILED (sender side)");
+        return false;
+    }
+    FW_LOG("[nistream-self] serialized OK size=%zu — testing deserialize...",
+           blob.size);
+    // Dump first 32 bytes for visual inspection.
+    {
+        const std::uint8_t* p = static_cast<const std::uint8_t*>(blob.buf);
+        char hex[100] = {0};
+        int hp = 0;
+        const std::size_t lim = blob.size < 32 ? blob.size : 32;
+        for (std::size_t i = 0; i < lim && hp + 4 < (int)sizeof(hex); ++i) {
+            hp += std::snprintf(hex + hp, sizeof(hex) - hp, "%02X ",
+                                static_cast<unsigned>(p[i]));
+        }
+        FW_LOG("[nistream-self] buf head: %s", hex);
+    }
+
+    void* deser_root = nistream_deserialize_subtree(blob.buf, blob.size);
+    nistream_free(blob.buf);
+    if (!deser_root) {
+        FW_WRN("[nistream-self] deserialize FAILED — engine roundtrip "
+               "broken, NOT a network issue");
+        return false;
+    }
+    FW_LOG("[nistream-self] deserialize OK root=%p — engine roundtrip "
+           "works, dropping ref", deser_root);
+    seh_refcount_dec_armor(deser_root);
+    return true;
+}
+
+std::size_t serialize_and_ship_player_weapon(std::uint32_t item_form_id) {
+    if (item_form_id == 0) return 0;
+    if (!g_resolved.load(std::memory_order_acquire)) return 0;
+    if (g_r.base == 0) return 0;
+
+    // 2026-05-06 LATE evening — was: `find_weapon_attach_node()` which
+    // walks `g_skel_root_cached` (= the GHOST's skeleton, populated by
+    // inject_body_nif). On the SENDER, the ghost skeleton's WEAPON bone
+    // has no children (we don't render the local PC as their own ghost).
+    // The LOCAL player's actual assembled weapon lives under the engine's
+    // own player loaded3D tree, NOT under the ghost. Use the witness
+    // helper that walks player loaded3D → WEAPON bone → first named child.
+    void* assembled_root =
+        weapon_witness::find_player_assembled_weapon_root_pub();
+    if (!assembled_root) {
+        FW_DBG("[nistream-tx] no LOCAL player assembled weapon root "
+               "(player not loaded? no equipped weapon?) — skip serialize");
+        return 0;
+    }
+
+    // Self-test: serialize+deserialize in same process. If this fails,
+    // the network is innocent — engine NiStream roundtrip is broken.
+    nistream_self_test(assembled_root);
+
+    SerializedNif blob{};
+    if (!nistream_serialize_subtree(assembled_root, &blob)) {
+        FW_WRN("[nistream-tx] serialize failed for root=%p (form=0x%X)",
+               assembled_root, item_form_id);
+        return 0;
+    }
+
+    FW_LOG("[nistream-tx] serialized assembled weapon root=%p form=0x%X "
+           "into %zu bytes", assembled_root, item_form_id, blob.size);
+
+    const std::size_t chunks = fw::net::client().enqueue_nif_blob_for_equip(
+        item_form_id, blob.buf, blob.size);
+
+    nistream_free(blob.buf);
+
+    return chunks;
+}
+
+bool deserialize_and_attach_nif_blob(const char* peer_id,
+                                       std::uint32_t item_form_id,
+                                       const void* nif_buf,
+                                       std::size_t nif_size) {
+    if (!peer_id || !nif_buf || nif_size == 0) return false;
+    if (!g_resolved.load(std::memory_order_acquire)) return false;
+    if (g_r.base == 0) return false;
+    if (!g_r.attach_child_direct) return false;
+
+    void* weapon_bone = find_weapon_attach_node();
+    if (!weapon_bone) {
+        FW_WRN("[nistream-rx] no ghost WEAPON bone available — drop "
+               "blob (peer=%s form=0x%X size=%zu)",
+               peer_id, item_form_id, nif_size);
+        return false;
+    }
+
+    void* root = nistream_deserialize_subtree(nif_buf, nif_size);
+    if (!root) {
+        FW_WRN("[nistream-rx] deserialize FAILED peer=%s form=0x%X "
+               "size=%zu", peer_id, item_form_id, nif_size);
+        return false;
+    }
+
+    // Track for the orphan-purge sweep so a subsequent equip auto-
+    // releases this root if our explicit cleanup misses it.
+    track_owned_clone(root);
+
+    // Attach root as a child of WEAPON bone. Engine's attach_child_direct
+    // takes its own +1 ref, so after this call: refcount = 2 (our +1
+    // from deserialize + engine's +1 for parent slot).
+    const bool ok = seh_attach_child_geom(g_r.attach_child_direct,
+                                            weapon_bone, root);
+    if (!ok) {
+        FW_WRN("[nistream-rx] attach SEH peer=%s form=0x%X root=%p",
+               peer_id, item_form_id, root);
+        // Drop our +1 ref → engine destroys root.
+        untrack_owned_clone(root);
+        seh_refcount_dec_armor(root);
+        return false;
+    }
+
+    // Track in slot.extra_mods so next ghost_set_weapon / clear_ghost_extra
+    // detaches the deserialized tree.
+    {
+        std::lock_guard lk(g_ghost_weapon_slot_mtx);
+        auto& slot = g_ghost_weapon_slot[peer_id];
+        slot.form_id = item_form_id;
+        slot.extra_mods.push_back(root);
+    }
+
+    FW_LOG("[nistream-rx] ATTACHED nif_blob peer=%s form=0x%X root=%p "
+           "(blob=%zu B) → WEAPON=%p",
+           peer_id, item_form_id, root, nif_size, weapon_bone);
+    return true;
+}
+
+// === M9 closure (2026-05-07) — name-match weapon assembly ==================
+//
+// LIVE TEST FINDING (06:18 session, see analysis in chat history):
+// The engine's runtime weapon-mod assembly is dramatically simpler than
+// any of the static decomp dossiers (ALPHA/GAMMA/DELTA + 4 follow-ups)
+// suggested. There is NO BSModelProcessor OMOD-apply branch firing —
+// the post-hook (sub_1402FC0E0) walks every weapon NIF parse but the
+// `(v9 = sub_141730390(node))` lookup returns null because the loaded
+// node carries no BGSObjectInstanceExtra. We confirmed this by dumping
+// the extra-data chain of every loaded weapon NIF post-call: type
+// bytes were always 0x00 (NiAVObject visit-state), never 0x35 (OIE).
+//
+// What ACTUALLY happens:
+//   1. Engine loads base weapon NIF (e.g. 10mmPistol.nif).
+//      Root m_name = "Weapon", sub-children include placeholder NiNodes
+//      named like "10mmReceiverParentObject", "Magazine", "10mmGrip".
+//   2. Engine separately loads each mod sub-NIF (e.g. 10mmReceiverDummy.nif).
+//      The sub-NIF's NiHeader.RootNodeName is hardcoded by Bethesda to
+//      MATCH the placeholder name in the base — e.g. the receiver mod
+//      file 10mmReceiverDummy.nif loads with root m_name =
+//      "10mmReceiverParentObject".
+//   3. Engine calls find_child_by_name(base_root, sub_nif_root.m_name)
+//      to locate the placeholder, then attaches the sub-NIF as child.
+//
+// That's it. No OIE, no synthetic REFR, no BSModelProcessor magic.
+// Pure m_name string-match between the file's RootNodeName and the
+// placeholder NiNode name in the base weapon.
+//
+// IMPLEMENTATION
+// ==============
+// 1. Resolve weapon TESForm → modelPath → load via nif_load_by_path.
+// 2. Clone via vt[26] for per-peer instance independence.
+// 3. For each omod_form_id:
+//    a. Resolve TESForm → modelPath via resolve_omod_model_path.
+//    b. nif_load_by_path → sub-NIF BSFadeNode.
+//    c. Clone via vt[26].
+//    d. Read clone root m_name.
+//    e. find_node_by_name_w4(base_clone, m_name) → placeholder.
+//    f. Attach clone as child of placeholder.
+// 4. Attach base_clone under ghost WEAPON bone.
+//
+// Per-omod failure (load fail, m_name unreadable, no placeholder match)
+// is NON-FATAL — we log and continue. Worst case the user sees the
+// vanilla weapon with some mods missing.
+namespace {
+
+// SEH-safe lookup_form. POD-only so callers using C++ objects can use it
+// without tripping C2712.
+void* seh_lookup_form_local(std::uint32_t form_id) {
+    if (form_id == 0 || g_r.base == 0) return nullptr;
+    using LookupFn = void* (__fastcall*)(std::uint32_t);
+    auto fn = reinterpret_cast<LookupFn>(
+        g_r.base + offsets::LOOKUP_BY_FORMID_RVA);
+    __try { return fn(form_id); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+
+// SEH-safe formType byte read at form+0x1A.
+std::uint8_t seh_read_form_type(void* form) {
+    if (!form) return 0;
+    __try {
+        return *(static_cast<std::uint8_t*>(form) + 0x1A);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
+// SEH-safe call to sub_140434DA0 (engine OMOD attach via BSConnectPoint
+// pairing). Returns engine rc or -1 on SEH. POD-only.
+int seh_call_omod_attach(void* omod_form, void* base_node,
+                          const char* placeholder, int flags) {
+    if (g_r.base == 0 || !omod_form || !base_node) return -1;
+    using OmodAttachFn = int (__fastcall*)(void*, void*, const char*, int);
+    constexpr std::uintptr_t OMOD_ATTACH_RVA = 0x00434DA0;
+    auto fn = reinterpret_cast<OmodAttachFn>(g_r.base + OMOD_ATTACH_RVA);
+    __try {
+        return fn(omod_form, base_node, placeholder, flags);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return -2; }
+}
+
+// Verified by live test 06:18: all weapon-NIF parses use the same NIF
+// loader the project already wraps via g_r.nif_load_by_path. The opts
+// flag we want is the same combination armor/body uses (FADE_WRAP |
+// POSTPROC = 0x18). The post-hook fires either way; we don't depend on
+// it for OMOD apply (the runtime doesn't either — see header note).
+void* seh_load_nif_path_local(const char* path) {
+    if (!path || !*path || !g_r.nif_load_by_path) return nullptr;
+    NifLoadOpts opts{};
+    opts.flags = NIF_OPT_FADE_WRAP | NIF_OPT_POSTPROC;
+    void* node = nullptr;
+    const std::uint32_t rc = seh_nif_load_armor(
+        g_r.nif_load_by_path, path, &node, &opts);
+    if (rc != 0 || !node) return nullptr;
+    if (g_r.apply_materials) {
+        seh_apply_materials_armor(g_r.apply_materials, node);
+    }
+    return node;
+}
+
+}  // anon namespace
+
+bool ghost_attach_assembled_weapon(const char* peer_id,
+                                     std::uint32_t weapon_form_id,
+                                     const std::uint32_t* omod_form_ids,
+                                     std::size_t num_omods) {
+    if (!peer_id || weapon_form_id == 0) return false;
+    if (!g_resolved.load(std::memory_order_acquire)) return false;
+    if (!g_r.nif_load_by_path || !g_r.attach_child_direct) return false;
+
+    // ----- 1. Resolve + load the BASE weapon NIF ---------------------------
+    const char* probed_path = resolve_weapon_nif_path(weapon_form_id);
+    if (!probed_path || !*probed_path) {
+        FW_WRN("[name-match] peer=%s form=0x%X — could not resolve base "
+               "modelPath", peer_id, weapon_form_id);
+        return false;
+    }
+
+    // 2026-05-07 — Bethesda canonical fallback. resolve_weapon_nif_path
+    // often returns a "*Dummy*" placeholder (e.g. 10mmRecieverDummy.nif)
+    // because the form's TESModel field is set to the "stock receiver"
+    // sub-NIF, NOT the base weapon. The convention is
+    //   Weapons\<X>\<X>.nif
+    // where <X> is the parent folder name. We try that first; if it
+    // doesn't load, fall back to whatever the probe returned.
+    auto build_canonical_path = [](const char* p) -> std::string {
+        if (!p || !*p) return {};
+        std::string s = p;
+        const auto last_bs = s.find_last_of('\\');
+        if (last_bs == std::string::npos) return {};
+        const auto prev_bs = s.find_last_of('\\', last_bs - 1);
+        const std::string folder = (prev_bs == std::string::npos)
+            ? s.substr(0, last_bs)
+            : s.substr(prev_bs + 1, last_bs - prev_bs - 1);
+        if (folder.empty()) return {};
+        return s.substr(0, last_bs + 1) + folder + ".nif";
+    };
+
+    std::string canonical = build_canonical_path(probed_path);
+    std::string base_path_str;
+    void* base_source = nullptr;
+    if (!canonical.empty() && canonical != probed_path) {
+        base_source = seh_load_nif_path_local(canonical.c_str());
+        if (base_source) {
+            base_path_str = std::move(canonical);
+            FW_DBG("[name-match] peer=%s form=0x%X using canonical base "
+                   "'%s' (probed='%s')",
+                   peer_id, weapon_form_id,
+                   base_path_str.c_str(), probed_path);
+        }
+    }
+    if (!base_source) {
+        base_source = seh_load_nif_path_local(probed_path);
+        if (!base_source) {
+            FW_WRN("[name-match] peer=%s form=0x%X base load FAILED "
+                   "(canonical='%s', probed='%s')",
+                   peer_id, weapon_form_id, canonical.c_str(), probed_path);
+            return false;
+        }
+        base_path_str = probed_path;
+    }
+    const char* base_path = base_path_str.c_str();
+
+    void* base_clone = clone_nif_subtree(base_source);
+    if (!base_clone || base_clone == base_source) {
+        FW_WRN("[name-match] peer=%s base CLONE FAILED — falling back to "
+               "shared cached node (cache-share contamination risk)",
+               peer_id);
+        base_clone = base_source;
+    } else {
+        seh_refcount_dec_armor(base_source);
+        track_owned_clone(base_clone);
+    }
+
+    // DIAGNOSTIC 2026-05-07 — dump the base clone subtree so we can SEE
+    // which placeholder NiNodes actually exist. Live test showed every
+    // OMOD's mod_root name failed to match — either the base is empty
+    // (vt[26] clone shallow?) or names diverge (mod naming convention).
+    {
+        FW_LOG("[name-match][diag] === base subtree dump peer=%s "
+               "form=0x%X path='%s' root=%p ===",
+               peer_id, weapon_form_id, base_path, base_clone);
+        dump_subtree_recursive(base_clone, g_r.base, 0, 6, "[name-match][diag]");
+    }
+
+    // ----- 2. Attach NEW base to WEAPON bone FIRST (so BSConnectPoint
+    //          recursive walker resolves against an in-scene base) ---------
+    void* attach_node = find_weapon_attach_node();
+    if (!attach_node) {
+        FW_WRN("[bsconnect] peer=%s no WEAPON bone — drop assembled base",
+               peer_id);
+        untrack_owned_clone(base_clone);
+        seh_refcount_dec_armor(base_clone);
+        return false;
+    }
+
+    clear_ghost_extra_mods(peer_id);
+    void* old_node = nullptr;
+    {
+        std::lock_guard lk(g_ghost_weapon_slot_mtx);
+        auto& slot = g_ghost_weapon_slot[peer_id];
+        old_node          = slot.nif_node;
+        slot.form_id      = weapon_form_id;
+        slot.nif_node     = base_clone;
+        slot.nif_path     = base_path;
+        slot.base_culled  = false;
+    }
+    if (old_node) release_weapon_node(old_node);
+
+    if (!seh_attach_child_armor(g_r.attach_child_direct,
+                                  attach_node, base_clone)) {
+        FW_ERR("[bsconnect] peer=%s form=0x%X SEH attaching base — "
+               "rolling back slot", peer_id, weapon_form_id);
+        std::lock_guard lk(g_ghost_weapon_slot_mtx);
+        auto it = g_ghost_weapon_slot.find(peer_id);
+        if (it != g_ghost_weapon_slot.end() &&
+            it->second.nif_node == base_clone) {
+            it->second.nif_node = nullptr;
+        }
+        untrack_owned_clone(base_clone);
+        seh_refcount_dec_armor(base_clone);
+        return false;
+    }
+
+    // ----- 3. NOW apply OMODs via engine BSConnectPoint pipeline -----------
+    int mods_attached  = 0;
+    int mods_resolve_fail = 0;
+    int mods_type_fail = 0;
+    int mods_seh = 0;
+
+    for (std::size_t i = 0; i < num_omods; ++i) {
+        const std::uint32_t omod_id = omod_form_ids[i];
+        if (omod_id == 0) continue;
+
+        void* omod_form = seh_lookup_form_local(omod_id);
+        if (!omod_form) {
+            ++mods_resolve_fail;
+            FW_DBG("[bsconnect] peer=%s OMOD 0x%X lookup FAILED",
+                   peer_id, omod_id);
+            continue;
+        }
+
+        const std::uint8_t form_type = seh_read_form_type(omod_form);
+        if (form_type != 0x90) {
+            ++mods_type_fail;
+            FW_DBG("[bsconnect] peer=%s OMOD 0x%X formType=0x%X (expected "
+                   "0x90) — skip", peer_id, omod_id,
+                   static_cast<unsigned>(form_type));
+            continue;
+        }
+
+        const int rc = seh_call_omod_attach(omod_form, base_clone,
+                                              /*placeholder=*/nullptr,
+                                              /*flags=*/0);
+        if (rc == -2) {
+            ++mods_seh;
+            FW_WRN("[bsconnect] peer=%s OMOD 0x%X SEH inside sub_140434DA0",
+                   peer_id, omod_id);
+            continue;
+        }
+        if (rc != 0) {
+            FW_DBG("[bsconnect] peer=%s OMOD 0x%X sub_140434DA0 returned "
+                   "rc=%d", peer_id, omod_id, rc);
+        }
+        ++mods_attached;
+        FW_LOG("[bsconnect] peer=%s OMOD 0x%X attached via "
+               "sub_140434DA0 (rc=%d)", peer_id, omod_id, rc);
+    }
+
+    purge_orphan_weapon_clones();
+
+    FW_LOG("[bsconnect] peer=%s form=0x%X DONE base='%s' attached=%d/%zu "
+           "(resolve_fail=%d type_fail=%d seh=%d)",
+           peer_id, weapon_form_id, base_path, mods_attached, num_omods,
+           mods_resolve_fail, mods_type_fail, mods_seh);
+    return true;
+}
+
+// SPAI Tier 1 force-prewarm — see header. Composes the same load
+// sequence as inject_body_nif's lambda but routed through the existing
+// POD-only SEH helpers so we can call this from a function that uses
+// no C++ destructors locally (avoids C2712 SEH-in-unwind).
+//
+// Note we silently DROP the loader's out-pointer ref. The engine's
+// resmgr already holds 1 ref against the entry; the second ref the
+// loader hands to us would just leak this NIF forever if we kept it
+// (we never plan to release it from prewarm). Letting the local `node`
+// var go out of scope without refdec is intentional — the engine's
+// per-frame ref-equalization sweep is what trims this back to 1.
+//
+// (If empirical testing shows ref-leak symptoms — e.g. growing refcount
+// each prewarm — we'd switch to seh_node_refdec(node) at the end.
+// First-pass: keep it simple and observe.)
+bool spai_force_load_path(const char* path) {
+    if (!path || !*path) return false;
+    if (!g_resolved.load(std::memory_order_acquire)) return false;
+    if (!g_r.nif_load_by_path || !g_r.apply_materials) return false;
+
+    NifLoadOpts opts{};
+    opts.flags = NIF_OPT_FADE_WRAP | NIF_OPT_POSTPROC;  // 0x18 — same as body
+
+    std::uint8_t* killswitch_byte = reinterpret_cast<std::uint8_t*>(
+        g_r.base + BSLSP_BIND_KILLSWITCH_BYTE_RVA);
+    const std::uint8_t saved_ks = *killswitch_byte;
+    *killswitch_byte = 1;
+
+    void* node = nullptr;
+    const std::uint32_t rc = seh_nif_load_armor(g_r.nif_load_by_path,
+                                                  path, &node, &opts);
+
+    *killswitch_byte = saved_ks;
+
+    if (rc == 0xDEADBEEFu) {
+        FW_WRN("[spai] SEH in nif_load_by_path('%s')", path);
+        return false;
+    }
+    if (rc != 0 || !node) {
+        // Path doesn't exist on disk OR engine refused — both common in a
+        // 1257-path catalog (some BA2 entries reference DLC-only assets
+        // when only the base game DLCs are installed, etc.). Quiet log.
+        FW_DBG("[spai] load FAIL rc=%u node=%p path='%s'", rc, node, path);
+        return false;
+    }
+
+    // apply_materials walks the freshly-loaded subtree resolving .bgsm
+    // → DDS so the cached entry has fully bound shaders/textures by the
+    // time a later resmgr-lookup hands it back to attach_extra_node.
+    const std::uint8_t saved_ks2 = *killswitch_byte;
+    *killswitch_byte = 1;
+    seh_apply_materials_armor(g_r.apply_materials, node);
+    *killswitch_byte = saved_ks2;
+
     return true;
 }
 
@@ -6665,6 +9940,13 @@ void arm_injection_after_boot(unsigned int delay_ms) {
         return;
     }
     g_arm_thread = std::thread(arm_worker, delay_ms);
+
+    // M9.w4 PROPER (v0.4.2+) — live probe on resmgr to settle 4-agent
+    // disagreement on Entry+0x10. Fire 90s post-DLL-init: gives player
+    // time to (a) finish all auto-loads, (b) walk into a cell with
+    // weapons, (c) equip something so the resmgr has weapon entries
+    // worth inspecting.
+    arm_resmgr_probe(/*delay_ms=*/ 90000);
 }
 
 // M3: per-frame positioning update handler. Runs on the main thread
@@ -7970,6 +11252,10 @@ void shutdown() {
     if (g_bone_tick_thread.joinable()) {
         g_bone_tick_thread.join();
     }
+    // Cancel any in-flight synthetic-REFR assembly jobs (M9 closure).
+    // Must precede detach_debug_cube — pending callbacks would try to
+    // attach to the ghost which is about to be torn down.
+    synthetic_refr::shutdown();
     detach_debug_cube();   // M2.2 — detach cube first (no dependencies)
     detach_debug_node();   // M1   — detach canary NiNode
 }

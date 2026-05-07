@@ -11,6 +11,9 @@
 #include "../engine/engine_calls.h"
 #include "../ghost/actor_hijack.h"
 #include "equip_hook.h"  // M9 w4 v9: FW_MSG_DEFERRED_MESH_TX
+#include "../native/weapon_capture.h"  // M9.w4 PROPER (v0.4.2+): FW_MSG_WEAPON_CAPTURE_FINALIZE
+#include "../native/spai_prewarm.h"    // SPAI Tier 1: FW_MSG_SPAI_PREWARM
+// (synthetic_refr's earlier WM_APP message has been removed; the API is sync)
 #include "../hook_manager.h"
 #include "../log.h"
 #include "../main_thread_dispatch.h"
@@ -151,6 +154,36 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         fw::hooks::on_deferred_mesh_tx_message();
         return 0;
     }
+    // 2026-05-07 — auto re-equip cycle (sender-side workaround for the
+    // off-by-one render bug on the ghost). See equip_hook.cpp on_auto_re_
+    // equip_message comment block.
+    if (msg == fw::hooks::FW_MSG_AUTO_RE_EQUIP) {
+        fw::hooks::on_auto_re_equip_message(wp);
+        return 0;
+    }
+    // SPAI Tier 1: force-prewarm one weapon NIF into the engine resmgr.
+    // Posted by spai::prewarm_worker (background thread, throttled 1
+    // post per ~10–15 ms) for each entry in the offline-generated weapon
+    // catalog. Drives a single internal cursor — past the end is a
+    // no-op modulo a one-shot summary log line.
+    if (msg == fw::dispatch::FW_MSG_SPAI_PREWARM) {
+        fw::native::spai::on_prewarm_message();
+        return 0;
+    }
+    // M9.w4 PROPER (v0.4.2+, 2026-05-04): TTL expiration of a weapon capture
+    // window. Worker thread spawned by weapon_capture::arm() posts this msg
+    // after `ttl_ms` so finalize_and_ship() runs on the engine main thread
+    // (where extraction + wire ship are safe). Phase 1: log-only finalize.
+    if (msg == fw::native::weapon_capture::FW_MSG_WEAPON_CAPTURE_FINALIZE) {
+        fw::native::weapon_capture::on_finalize_message();
+        return 0;
+    }
+    // M9 closure (2026-05-07) note: an earlier iteration used a
+    // FW_MSG_REFR_POLL pump for an async synthetic-REFR design. That
+    // design was retired (see re/COLLAB_FOLLOWUP_vt170.md — vt[170]
+    // was a flag-setter, not a loader). The current path is fully
+    // synchronous (synthetic_refr::assemble_modded_weapon returns
+    // BSFadeNode* directly), so no pump is needed here.
     // Z.2 (Path B): spawn ghost actor on main thread. PlaceAtMe is
     // TLS-sensitive and takes the REFR cell-attach lock — must run
     // here, not on the net thread where request_spawn is issued.

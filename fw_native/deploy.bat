@@ -15,9 +15,11 @@ if not exist "%DLL%" (
 set "STEAM_DIR=C:\Program Files (x86)\Steam\steamapps\common\Fallout 4"
 set "FO4B_DIR=%~dp0..\FO4_b"
 set "ASSETS_SRC=%~dp0assets\compiled"
+set "SPAI_MANIFEST=%~dp0..\assets\weapon_nif_catalog.manifest"
 
-echo [deploy] source DLL:    %DLL%
-echo [deploy] source assets: %ASSETS_SRC%
+echo [deploy] source DLL:      %DLL%
+echo [deploy] source assets:   %ASSETS_SRC%
+echo [deploy] SPAI manifest:   %SPAI_MANIFEST%
 echo.
 
 REM --- Side A: Steam install
@@ -40,6 +42,17 @@ if not exist "%STEAM_DIR%" (
             echo [deploy]   FWN  OK
         )
     )
+    if exist "%SPAI_MANIFEST%" (
+        if not exist "%STEAM_DIR%\assets" mkdir "%STEAM_DIR%\assets"
+        copy /Y "%SPAI_MANIFEST%" "%STEAM_DIR%\assets\weapon_nif_catalog.manifest" >nul
+        if errorlevel 1 (
+            echo [deploy]   SPAI FAIL
+        ) else (
+            echo [deploy]   SPAI OK
+        )
+    ) else (
+        echo [deploy]   SPAI SKIP - manifest not found ^(run tools\spai_enum_weapons.py^)
+    )
 )
 
 REM --- Side B: FO4_b
@@ -61,6 +74,17 @@ if not exist "%FO4B_DIR%" (
         ) else (
             echo [deploy]   FWN  OK
         )
+    )
+    if exist "%SPAI_MANIFEST%" (
+        if not exist "%FO4B_DIR%\assets" mkdir "%FO4B_DIR%\assets"
+        copy /Y "%SPAI_MANIFEST%" "%FO4B_DIR%\assets\weapon_nif_catalog.manifest" >nul
+        if errorlevel 1 (
+            echo [deploy]   SPAI FAIL
+        ) else (
+            echo [deploy]   SPAI OK
+        )
+    ) else (
+        echo [deploy]   SPAI SKIP - manifest not found ^(run tools\spai_enum_weapons.py^)
     )
 )
 

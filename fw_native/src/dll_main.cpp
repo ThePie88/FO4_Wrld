@@ -28,6 +28,7 @@
 #include "assets/fwn_loader.h"
 #include "ghost/actor_hijack.h"
 #include "native/scene_inject.h"
+#include "native/spai_prewarm.h"
 
 namespace fs = std::filesystem;
 
@@ -184,6 +185,40 @@ DWORD WINAPI init_thread(LPVOID) {
     // crash, Strada B feasibility is PROVED.
     fw::native::arm_injection_after_boot(30000);
     FW_LOG("[native] Strada B M1: injection armed (30s delay)");
+
+    // --- SPAI Tier 1: force-prewarm of weapon NIF resmgr (2026-05-05) ---
+    //
+    // Loads tools/spai_enum_weapons.py output (weapon_nif_catalog.manifest)
+    // and dispatches one prewarm load per WM_APP message to the main
+    // thread, throttled at ~12 ms/load. With ~1300 paths the full pass
+    // completes in ~16 s of game time — comfortably inside the loading
+    // screen + first 60 s of world play.
+    //
+    // Why prewarm: M9.w4 PROPER's RESMGR-LOOKUP path needs every shipped
+    // weapon mod NIF in the engine resmgr so receivers can attach them
+    // by m_name even without the local player ever having held them.
+    // Without prewarm only what the receiver's player has personally
+    // equipped is in the cache.
+    //
+    // Tier 2 (server-federated user-mod catalog) and Tier 3 (auto-learn
+    // via OMOD RE) build on this same machinery — they only swap the
+    // catalog source. See native/spai_prewarm.h for design.
+    {
+        const auto manifest =
+            dir / "assets" / "weapon_nif_catalog.manifest";
+        if (fw::native::spai::load_catalog(manifest)) {
+            // 60 s delay > arm_injection_after_boot's 30 s + B8's
+            // post-LoadGame 10 s cycle, so prewarm starts after the
+            // engine's own auto-load + equip-cycle has settled.
+            // 12 ms throttle: see header for rationale.
+            fw::native::spai::arm_prewarm(/*delay_ms=*/ 60000,
+                                           /*throttle_ms=*/ 12);
+        } else {
+            FW_WRN("[spai] catalog load failed — Tier 1 prewarm DISABLED. "
+                   "Re-run tools/spai_enum_weapons.py and ensure the "
+                   "manifest is deployed to <game>\\assets\\.");
+        }
+    }
 
     // Ghost module (Path B) kept dormant. init is a cheap no-op — no
     // spawn happens because the net trigger is commented out in

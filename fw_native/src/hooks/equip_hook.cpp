@@ -55,6 +55,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <thread>          // 2026-05-07 — auto re-equip cycle worker
 #include <vector>          // M9.w4 — extract_equipped_mods returns std::vector
 
 #include "container_hook.h"   // tls_applying_remote (forward-compat for w2)
@@ -65,9 +66,132 @@
 #include "../net/protocol.h"
 #include "../native/weapon_witness.h"  // M9 w4 step 2: post-equip NIF walker
 #include "../native/scene_inject.h"    // M9 w4 v9: is_weapon_form form-type gate
+#include "../native/weapon_capture.h"  // M9.w4 PROPER (v0.4.2+): clone-factory capture pipeline
 #include "../main_thread_dispatch.h"   // M9 w4 v9: deferred mesh-tx via WndProc
 
 namespace fw::hooks {
+
+// 2026-05-07 — AUTO RE-EQUIP CYCLE.
+//
+// User-confirmed: the manual manganello workflow (equip Baton, then equip
+// modded weapon X) makes the receiver render X correctly. Without it, the
+// receiver renders X-stock or the previous weapon (off-by-one). Receiver-
+// side primer / refresh attempts all failed.
+//
+// This sender-side automatic cycle replicates the manual workflow:
+// when the user equips weapon X, ~50ms later the sender automatically
+// fires UnequipObject(X) + EquipObject(X). Receiver gets:
+//   1. EQUIP X (1st, from user's actual equip)
+//   2. UNEQUIP X (from auto-cycle)
+//   3. EQUIP X (2nd, from auto-cycle — magic re-equip that renders right)
+//
+// Each event applied normally on the receiver. The 2nd EQUIP X is the
+// one that renders correctly because the engine state has been "kicked"
+// by the intervening unequip+equip cycle.
+//
+// TLS guard prevents the auto-cycle from recursively scheduling more
+// auto-cycles when its own UnequipObject/EquipObject calls fire the
+// detour again.
+
+// (FW_MSG_AUTO_RE_EQUIP declared in equip_hook.h)
+
+thread_local bool tls_in_auto_re_equip = false;
+
+namespace {
+
+struct AutoReEquipCtx {
+    void*          manager;
+    void*          actor;
+    void*          form;          // TESForm* of the weapon
+    std::uint32_t  form_id;       // for logging only
+    std::uint32_t  slot_form_id;  // 0 = default
+};
+
+void schedule_auto_re_equip(void* manager, void* actor, void* form,
+                              std::uint32_t form_id,
+                              std::uint32_t slot_form_id) {
+    auto* ctx = new (std::nothrow) AutoReEquipCtx{
+        manager, actor, form, form_id, slot_form_id
+    };
+    if (!ctx) return;
+
+    std::thread([ctx]() {
+        Sleep(50);
+        HWND hwnd = fw::dispatch::get_target_hwnd();
+        if (hwnd && PostMessageW(hwnd, FW_MSG_AUTO_RE_EQUIP,
+                                  reinterpret_cast<WPARAM>(ctx), 0)) {
+            // Ctx ownership transferred to handler.
+        } else {
+            delete ctx;
+        }
+    }).detach();
+}
+
+}  // anon namespace
+
+// Public — main_menu_hook WndProc dispatches FW_MSG_AUTO_RE_EQUIP here.
+// Called on MAIN THREAD only.
+void on_auto_re_equip_message(WPARAM wp) {
+    auto* ctx = reinterpret_cast<AutoReEquipCtx*>(wp);
+    if (!ctx) return;
+
+    if (!ctx->manager || !ctx->actor || !ctx->form) {
+        delete ctx;
+        return;
+    }
+
+    HMODULE mod = GetModuleHandleW(L"Fallout4.exe");
+    if (!mod) { delete ctx; return; }
+    const auto base = reinterpret_cast<std::uintptr_t>(mod);
+
+    using UnequipFn = char (__fastcall*)(
+        void*, void*, void*,
+        int, std::int64_t, int,
+        char, char, char, char, std::int64_t);
+    using EquipFn = char (__fastcall*)(
+        void*, void*, void*,
+        std::uint32_t, std::int32_t, void*,
+        char, char, char, char, char);
+
+    auto unequip_fn = reinterpret_cast<UnequipFn>(
+        base + offsets::ENGINE_UNEQUIP_OBJECT_RVA);
+    auto equip_fn = reinterpret_cast<EquipFn>(
+        base + offsets::ENGINE_EQUIP_OBJECT_RVA);
+
+    std::uint64_t form_pair[2] = {
+        reinterpret_cast<std::uint64_t>(ctx->form), 0};
+
+    FW_DBG("[auto-cycle] firing UNEQUIP+EQUIP cycle for form=0x%X",
+           ctx->form_id);
+
+    tls_in_auto_re_equip = true;
+    __try {
+        unequip_fn(ctx->manager, ctx->actor, form_pair,
+                   /*count=*/    1,
+                   /*slot=*/     0,
+                   /*stack_id=*/ 0,
+                   /*a7..a10=*/  0, 0, 0, 0,
+                   /*a11=*/      0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("[auto-cycle] SEH inside UnequipObject form=0x%X",
+               ctx->form_id);
+    }
+
+    __try {
+        equip_fn(ctx->manager, ctx->actor, form_pair,
+                 /*stackID=*/  0,
+                 /*count=*/    1,
+                 /*slot=*/     nullptr,
+                 /*a7..a11=*/  0, 0, 0, 0, 0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("[auto-cycle] SEH inside EquipObject form=0x%X",
+               ctx->form_id);
+    }
+    tls_in_auto_re_equip = false;
+
+    FW_LOG("[auto-cycle] cycle complete for form=0x%X", ctx->form_id);
+    delete ctx;
+}
 
 // === M9 w4 v9 — deferred mesh-tx (2026-05-01 22:10) =======================
 //
@@ -121,6 +245,7 @@ void try_mesh_tx_for_form(std::uint32_t form_id) {
         fw::net::MeshBlobMesh w{};
         w.m_name             = m.m_name.c_str();
         w.parent_placeholder = m.parent_placeholder.c_str();
+        w.slot_name          = m.slot_name.c_str();
         w.bgsm_path          = m.bgsm_path.c_str();
         w.vert_count         = m.vert_count;
         w.tri_count          = m.tri_count;
@@ -136,6 +261,7 @@ void try_mesh_tx_for_form(std::uint32_t form_id) {
         blob_estimate += 76;  // MeshRecordHeader
         blob_estimate += m.m_name.size();
         blob_estimate += m.parent_placeholder.size();
+        blob_estimate += m.slot_name.size();
         blob_estimate += m.bgsm_path.size();
         blob_estimate += static_cast<std::size_t>(m.vert_count) * 3 * sizeof(float);
         blob_estimate += static_cast<std::size_t>(m.tri_count) * 3 * sizeof(std::uint16_t);
@@ -930,12 +1056,27 @@ char __fastcall detour_equip_object(
     // RUNTIME-ASSEMBLED MODDED FIREARMS need mesh-blob (their composed
     // BSGeometry tree can't be replicated by loading a static NIF).
     if (fw::native::is_weapon_form(item_form_id) && !wire_mods.empty()) {
+        // M9.w4 PROPER (v0.4.2+, 2026-05-04) — clone-factory-driven capture.
+        // Replaces the v0.4.0 walker (try_mesh_tx_for_form + arm_deferred)
+        // which polled bipedAnim 300ms post-equip. TTD analysis 2026-05-04
+        // proved every modded weapon equip causes 5-15 invocations of the
+        // BSTriShape clone factory (sub_1416D99E0). We arm a 500ms capture
+        // window here; clone_factory_tracker pipes each clone into
+        // weapon_capture::record_clone(); on TTL the data is packaged and
+        // shipped. Avoids the walker race + cross-form contamination.
+        //
+        // Phase 1 (this ship): log-only finalize. Compare logged captures
+        // against v0.4.0 walker output before flipping wire ship in Phase 2.
+        fw::native::weapon_capture::arm(item_form_id, 500);
+
+        /* ROLLBACK: legacy v0.4.0 walker path — uncomment to re-enable.
         // Immediate post-chain attempt — usually fails (walker race with
         // engine assembly), but we try anyway in case the engine had time.
         try_mesh_tx_for_form(item_form_id);
         // Schedule a deferred re-walk 300ms later — by then assembly is
         // typically complete and walker will find the assembled tree.
         arm_deferred_mesh_tx(item_form_id, 300);
+        */
     } else {
         FW_DBG("[mesh-tx] form=0x%X not a weapon (is_weapon_form=false) — skip",
                item_form_id);
@@ -995,6 +1136,25 @@ char __fastcall detour_equip_object(
                    "NIF descriptors", item_form_id,
                    static_cast<unsigned>(wire_nif_count));
         }
+    }
+
+    // 2026-05-07 — AUTO RE-EQUIP CYCLE.
+    // Schedule a sender-side UnequipObject+EquipObject cycle ~50ms after
+    // the user's equip. This automates the manganello workflow: the
+    // receiver gets EQUIP-X / UNEQUIP-X / EQUIP-X (the 2nd one renders
+    // correctly because of the intervening engine state kick). TLS guard
+    // prevents recursive scheduling when the cycle's own engine calls
+    // fire this detour again.
+    //
+    // Gates: skip if already inside an auto-cycle, skip non-weapon forms,
+    // skip non-equip events. Same guards as the main mesh-tx path.
+    if (!tls_in_auto_re_equip
+        && fw::native::is_weapon_form(item_form_id)
+        && item_form != nullptr) {
+        schedule_auto_re_equip(mgr, actor, item_form, item_form_id,
+                                slot_form_id);
+        FW_DBG("[auto-cycle] scheduled re-equip cycle for form=0x%X "
+               "in 50ms", item_form_id);
     }
 
     return rc;

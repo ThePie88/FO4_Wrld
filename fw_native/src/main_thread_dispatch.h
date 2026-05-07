@@ -34,18 +34,26 @@
 
 namespace fw::dispatch {
 
-// WM_APP offsets (CORRECTED 2026-04-27 after collision bug):
-//   0x42 = FW_MSG_LOAD_GAME (B3.b)         — main_menu_hook.cpp
-//   0x43 = FW_MSG_CONTAINER_APPLY (B1.l)   — owned here
-//   0x44 = FW_MSG_SPAWN_GHOST              — ghost/actor_hijack.h
-//   0x45 = FW_MSG_STRADAB_INJECT           — native/scene_inject.h
-//   0x46 = FW_MSG_STRADAB_POS_UPDATE       — native/scene_inject.h
-//   0x47 = FW_MSG_STRADAB_BONE_TICK        — native/scene_inject.h
-//   0x48 = FW_MSG_STRADAB_POSE_APPLY       — native/scene_inject.h
-//   0x49 = FW_MSG_DOOR_APPLY (B6.1)        — owned here
-//   0x4A = FW_MSG_FORCE_EQUIP_CYCLE_UNEQUIP (B8) — equip_cycle.cpp
-//   0x4B = FW_MSG_FORCE_EQUIP_CYCLE_EQUIP   (B8) — equip_cycle.cpp
-//   0x4C = FW_MSG_EQUIP_APPLY (M9 wedge 2) — owned here
+// WM_APP offsets (CORRECTED 2026-04-27 after collision bug;
+//   re-corrected 2026-05-05 after second collision: SPAI_PREWARM was
+//   originally 0x4E which already belonged to DEFERRED_MESH_TX. Symptom:
+//   1257 prewarm messages got silently swallowed by the equip-hook
+//   handler — no progress beacons, no DONE summary. Moved SPAI to 0x50.):
+//   0x42 = FW_MSG_LOAD_GAME (B3.b)             — main_menu_hook.cpp
+//   0x43 = FW_MSG_CONTAINER_APPLY (B1.l)       — owned here
+//   0x44 = FW_MSG_SPAWN_GHOST                  — ghost/actor_hijack.h
+//   0x45 = FW_MSG_STRADAB_INJECT               — native/scene_inject.h
+//   0x46 = FW_MSG_STRADAB_POS_UPDATE           — native/scene_inject.h
+//   0x47 = FW_MSG_STRADAB_BONE_TICK            — native/scene_inject.h
+//   0x48 = FW_MSG_STRADAB_POSE_APPLY           — native/scene_inject.h
+//   0x49 = FW_MSG_DOOR_APPLY (B6.1)            — owned here
+//   0x4A = FW_MSG_FORCE_EQUIP_CYCLE_UNEQUIP    — hooks/equip_cycle.cpp
+//   0x4B = FW_MSG_FORCE_EQUIP_CYCLE_EQUIP      — hooks/equip_cycle.cpp
+//   0x4C = FW_MSG_EQUIP_APPLY (M9 wedge 2)     — owned here
+//   0x4D = FW_MSG_MESH_BLOB_APPLY (M9 w4 v9)   — owned here
+//   0x4E = FW_MSG_DEFERRED_MESH_TX (M9 w4 v9)  — hooks/equip_hook.h
+//   0x4F = FW_MSG_WEAPON_CAPTURE_FINALIZE      — native/weapon_capture.h
+//   0x50 = FW_MSG_SPAI_PREWARM (Tier 1)        — owned here
 //
 // PRE-FIX BUG (commit landed 2026-04-27 evening): DOOR_APPLY was set
 // to 0x47 in the initial Phase 2 ship, colliding with STRADAB_BONE_TICK.
@@ -57,6 +65,7 @@ constexpr UINT FW_MSG_CONTAINER_APPLY = WM_APP + 0x43;
 constexpr UINT FW_MSG_DOOR_APPLY      = WM_APP + 0x49;
 constexpr UINT FW_MSG_EQUIP_APPLY     = WM_APP + 0x4C;
 constexpr UINT FW_MSG_MESH_BLOB_APPLY = WM_APP + 0x4D;  // M9 w4 v9
+constexpr UINT FW_MSG_SPAI_PREWARM    = WM_APP + 0x50;  // SPAI Tier 1
 
 struct PendingContainerOp {
     std::uint32_t kind;               // 1=TAKE, 2=PUT
@@ -107,6 +116,13 @@ struct PendingEquipOp {
     // Empty (nif_count=0) means stock weapon — no extra mods to attach.
     std::uint8_t          nif_count;
     fw::net::NifDescriptor nif_descs[fw::net::MAX_NIF_DESCRIPTORS];
+
+    // 2026-05-07 — OMOD form-ids INLINE. Each EQUIP_BCAST decode copies
+    // the OMOD list directly into the op so the main-thread apply has
+    // everything it needs without a global lookup. Capacity 32 mirrors
+    // MAX_EQUIP_MODS protocol cap.
+    std::uint8_t   omod_count;
+    std::uint32_t  omod_form_ids[32];
 };
 
 // Net thread → enqueues op and posts FW_MSG_CONTAINER_APPLY to the FO4
@@ -146,7 +162,8 @@ void drain_equip_apply_queue();
 // move in / out of the queue; no shared mutable state across threads.
 struct PendingMeshRecord {
     std::string                m_name;
-    std::string                parent_placeholder;
+    std::string                parent_placeholder;  // mod NIF root m_name (resmgr key)
+    std::string                slot_name;            // slot placeholder name in base NIF
     std::string                bgsm_path;
     std::uint16_t              vert_count = 0;
     std::uint32_t              tri_count  = 0;
@@ -160,6 +177,10 @@ struct PendingMeshBlob {
     std::uint32_t                 item_form_id = 0;   // pairs with EQUIP_BCAST
     std::uint32_t                 equip_seq    = 0;   // sender's per-equip id
     std::vector<PendingMeshRecord> meshes;
+    // 2026-05-06 (M9 closure, PLAN B) — when set (non-empty), this is a
+    // raw NIF byte buffer from the engine's NiStream::Save. `meshes` is
+    // ignored. Sender marks via num_meshes=0xFF in MeshBlobHeader.
+    std::vector<std::uint8_t>     nif_blob_bytes;
 };
 
 void enqueue_mesh_blob_apply(PendingMeshBlob op);

@@ -507,6 +507,106 @@ constexpr std::uintptr_t NIF_LOAD_RESMGR_SLOT_RVA    = 0x030DD618;  // qword_143
 // success-by-side-effect.
 constexpr std::uintptr_t NIF_LOAD_WORKER_RVA         = 0x0017B3480; // sub_1417B3480
 
+// === BSResource::EntryDB<BSModelDB::DBTraits> singleton (M9.w4 PROPER) ===
+//
+// The "Resource Manager" we hint at via NIF_LOAD_RESMGR_SLOT_RVA is in fact
+// BSResource::EntryDB specialized for BSModelDB. RTTI-confirmed across
+// 4 independent IDA agents (`re/M9_w4_resmgr_AGENT_{A,B,C,D}.md`):
+//
+//   *qword_1430DD618 → singleton instance (static buffer @ 0x14355EB80)
+//
+// Hash table layout (HIGH consensus 4/4):
+//   singleton+0x180  lock dword (spin lock for hash table mutation)
+//   singleton+0x188  Entry**  bucket array (8B per slot)
+//   singleton+0x190  u32      capacity (init 64, power-of-2)
+//   singleton+0x198  u32      active count (entries live)
+//   singleton+0x19C  u32      max load
+//
+// Open-addressing probe step: (5h+1) & mask. Tombstone sentinel:
+// `unk_142ECF980` (RVA 0x2ECF980).
+//
+// Entry struct (size 0x30 — 3/4 consensus, B dissents):
+//   +0x00..+0x0C  12-byte BSResource::ID hash key (3/4 consensus)
+//                   - u32 hash[0] (lowercased basename hash)
+//                   - u32 hash[1] (extension packed as 4-char)
+//                   - u32 hash[2] (location/partition salt)
+//   +0x0C  u32   state | refcount (4-bit phase + 27-bit refcount)
+//   +0x10  qword DISAGREEMENT POINT — needs live verification:
+//                   - A: secondary refcount qword
+//                   - B: NiAVObject* (contradicted by C's decomp)
+//                   - C: BSFixedString path (qword) ← path RECOVERABLE
+//                   - D: handle/redirect (MED conf)
+//   +0x18  qword chain ptr (used in shard ring) [A,D]
+//   +0x20  qword NiAVObject* / BSFadeNode* (3/4 consensus from
+//                  sub_1417B3E90 reading *(_QWORD*)(v24 + 32))
+//   +0x28  qword flags2 (init 0)
+//
+// Iteration: linear scan of bucket array, skip null + tombstone.
+// Reference function: sub_1417B4A60 (RVA 0x17B4A60, 3/4 consensus).
+// Engine callback iterator: sub_1422A8660 (B's alternative — broader
+// EntryDB-walk used by shutdown path).
+//
+// Enumeration recipe (HIGH confidence parts only):
+//   uint8_t* mgr = *(uint8_t**)(IMAGE + 0x30DD618);
+//   uint32_t cap = *(uint32_t*)(mgr + 0x190);
+//   Entry**  st  = *(Entry***) (mgr + 0x188);
+//   for (uint32_t i = 0; i < cap; ++i) {
+//       Entry* e = st[i];
+//       if (!e || e == TOMBSTONE) continue;
+//       NiAVObject* node = *(NiAVObject**)((char*)e + 0x20);
+//       // ... path recovery: CONSULT live dump
+//   }
+constexpr std::size_t BSRES_ENTRY_DB_LOCK_OFF         = 0x180;
+constexpr std::size_t BSRES_ENTRY_DB_BUCKETS_OFF      = 0x188;
+constexpr std::size_t BSRES_ENTRY_DB_CAPACITY_OFF     = 0x190;
+constexpr std::size_t BSRES_ENTRY_DB_COUNT_OFF        = 0x198;
+constexpr std::size_t BSRES_ENTRY_DB_TOMBSTONE_RVA    = 0x002ECF980;
+constexpr std::size_t BSRES_ENTRY_NODE_OFF            = 0x20;     // 3/4 consensus
+constexpr std::size_t BSRES_ENTRY_SIZEOF              = 0x30;     // 3/4 consensus
+constexpr std::uintptr_t BSRES_ENTRYDB_VTABLE_RVA     = 0x02694C70;
+
+// === BSGEOMETRY FACTORY (M9.w4 PROPER, v0.4.2+) ===
+//
+// sub_14182FFD0 — builds a BSTriShape from raw vertex/index arrays. The
+// receiver-side BSGeometry reconstruction in weapon_capture's Phase 3
+// uses this to rebuild captured weapon-mod meshes on the ghost.
+//
+// Signature (from re/M9_w4_iter11_TIEBREAKER + iter12 + stradaB_M2_geometry):
+//   void* __cdecl sub_14182FFD0(
+//       int          tri_count,         // rcx
+//       __int64      indices_u16,       // rdx — u16 array, 3*tri_count
+//       unsigned int vert_count,        // r8
+//       __int64      positions_vec3,    // r9  — float array, 3*vert_count, 12B/vert
+//       __int64      uvs_vec2,          // stack — null OK
+//       __int64      tangents_vec4,     // stack — null OK
+//       __int64      pos_alt,           // stack — null OK
+//       __int64      normals_vec3,      // stack — null OK
+//       __int64      colors_vec4f,      // stack — null OK
+//       __int64      skin_weights,      // stack — null OK
+//       __int64      skin_indices_dw,   // stack — null OK
+//       __int64      tangent_ex,        // stack — null OK
+//       __int64      eye_data,          // stack — null OK
+//       __int64      normals_alt,       // stack — null OK
+//       __int64      remap_u16,         // stack — null = identity
+//       char         build_mesh_extra); // stack — pass 1 to alloc BSPositionData
+//
+// Returns: BSTriShape* (size 0x170, refcount=0). Caller must bump
+// refcount before attaching. NULL on failure (vc==0 OR tc==0 returns
+// empty-but-valid shape, NOT null).
+//
+// Side effects: allocates 0x170 BSTriShape + (optional) 0x38
+// BSPositionData via internal pool. Two-pass packs vertex streams. Sets
+// vftable, +0x150 BSVertexDesc, +0x158=3, +0x160=tri_count,
+// +0x164=vert_count, +0x120..+0x12F BSBound (computed from positions).
+//
+// Threading: MAIN THREAD ONLY. Internal TLS-owned sub-heap (TlsIndex
+// access at +0x9C0). Calling off main thread → AV.
+//
+// Open: BSVertexDesc nibble layout MED confidence; donor shader binding
+// required post-call for non-pink rendering (clone shader from base NIF
+// BSTriShape's +0x138/+0x130 + refcount bump).
+constexpr std::uintptr_t WEAPON_GEO_FACTORY_RVA      = 0x000182FFD0; // sub_14182FFD0
+
 // === CACHE RESOLVER (last shot before Path B raw capture) ===
 //
 // sub_1416A6D00 ("ResolveFromCacheOrQueue") sits ABOVE the worker.

@@ -3,6 +3,9 @@
 #include <atomic>
 #include <deque>
 #include <mutex>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "engine/engine_calls.h"
 #include "hooks/container_hook.h"   // ApplyingRemoteGuard + tls_applying_remote
@@ -162,9 +165,93 @@ void drain_mesh_blob_apply_queue() {
     std::size_t applied_blobs = 0;
     int total_attached = 0;
     for (auto& blob : local) {
+        // 2026-05-06 LATE evening (M9 closure, PLAN B) — NIF blob
+        // shortcut. If sender shipped a serialized assembled-weapon
+        // tree, deserialize it via NiStream::Load and attach the root
+        // to ghost's WEAPON bone. Skip all per-mesh / per-path logic.
+        if (!blob.nif_blob_bytes.empty()) {
+            FW_LOG("[mesh-rx] APPLY (NIF-blob) peer=%s form=0x%X "
+                   "equip_seq=%u nif_bytes=%zu",
+                   blob.peer_id, blob.item_form_id, blob.equip_seq,
+                   blob.nif_blob_bytes.size());
+
+            // Cleanup previous equip's deserialized roots first.
+            fw::native::clear_ghost_extra_mods(blob.peer_id);
+
+            const bool ok = fw::native::deserialize_and_attach_nif_blob(
+                blob.peer_id, blob.item_form_id,
+                blob.nif_blob_bytes.data(),
+                blob.nif_blob_bytes.size());
+            if (ok) {
+                ++applied_blobs;
+                FW_LOG("[mesh-rx] NIF-blob attached OK peer=%s form=0x%X",
+                       blob.peer_id, blob.item_form_id);
+            } else {
+                FW_WRN("[mesh-rx] NIF-blob attach FAILED peer=%s form=0x%X "
+                       "size=%zu — ghost weapon may be empty until next "
+                       "equip", blob.peer_id, blob.item_form_id,
+                       blob.nif_blob_bytes.size());
+            }
+            continue;  // done with this blob, skip per-mesh path
+        }
+
         FW_LOG("[mesh-rx] APPLY peer=%s form=0x%X equip_seq=%u meshes=%zu",
                blob.peer_id, blob.item_form_id, blob.equip_seq,
                blob.meshes.size());
+
+        // M9.w4 PROPER (v0.4.2+, Path NIF-CAPTURE, 2026-05-04 PM) —
+        // detect "path-only" blob (sentinel: any mesh with vert_count=0
+        // AND non-empty m_name treated as path). The sender shipped the
+        // engine's actually-loaded NIF paths instead of raw geometry.
+        // We replay them: first path = base weapon, rest = mod NIFs
+        // attached to base. Engine handles shader/material/vd binding.
+        const bool is_path_only = !blob.meshes.empty()
+            && blob.meshes[0].vert_count == 0
+            && !blob.meshes[0].m_name.empty();
+        if (is_path_only) {
+            FW_LOG("[mesh-rx] PATH-ONLY blob peer=%s form=0x%X paths=%zu",
+                   blob.peer_id, blob.item_form_id, blob.meshes.size());
+            for (std::size_t pi = 0; pi < blob.meshes.size(); ++pi) {
+                FW_DBG("[mesh-rx]   path[%zu]='%s'", pi,
+                       blob.meshes[pi].m_name.c_str());
+            }
+
+            // First path → base weapon via ghost_set_weapon (handles slot
+            // tracking + replacement). Use it as a single candidate.
+            const std::string& base_path = blob.meshes[0].m_name;
+            const char* base_candidates[] = { base_path.c_str() };
+            const bool base_ok = fw::native::ghost_set_weapon(
+                blob.peer_id, blob.item_form_id, base_candidates, 1);
+            if (!base_ok) {
+                FW_WRN("[mesh-rx] PATH-ONLY base load FAILED path='%s' "
+                       "peer=%s form=0x%X — skipping mod paths too",
+                       base_path.c_str(), blob.peer_id, blob.item_form_id);
+                continue;
+            }
+            FW_LOG("[mesh-rx] PATH-ONLY base loaded: '%s'", base_path.c_str());
+
+            // Subsequent paths → mod NIFs attached as children of base.
+            int mods_attached = 0;
+            int mods_failed = 0;
+            for (std::size_t pi = 1; pi < blob.meshes.size(); ++pi) {
+                const std::string& mod_path = blob.meshes[pi].m_name;
+                if (mod_path.empty()) continue;
+                if (mod_path == base_path) continue;  // dedup against base
+                if (fw::native::attach_extra_nif_to_ghost_weapon(
+                        blob.peer_id, mod_path.c_str())) {
+                    ++mods_attached;
+                } else {
+                    ++mods_failed;
+                }
+            }
+            FW_LOG("[mesh-rx] PATH-ONLY peer=%s form=0x%X DONE base=ok "
+                   "mods_attached=%d mods_failed=%d",
+                   blob.peer_id, blob.item_form_id,
+                   mods_attached, mods_failed);
+            ++applied_blobs;
+            ++total_attached;
+            continue;  // skip the legacy bgsm-derived path below
+        }
 
         // Derive base NIF path from blob's meshes via SMART bgsm pick:
         // walk all meshes, prefer the one whose bgsm matches the canonical
@@ -328,6 +415,463 @@ void drain_mesh_blob_apply_queue() {
                    "candidates=%zu",
                    blob.peer_id, blob.item_form_id,
                    candidate_paths.size());
+
+            // M9.w4 PROPER (v0.4.2+, Path Y, 2026-05-04 PM) — disk-loaded
+            // mod NIFs. The captured mesh data tells us WHICH mods the
+            // peer has equipped (via parent_placeholder = mod root name).
+            // For each, derive a candidate disk path and load via the
+            // engine's nif_load_by_path — engine does shader binding
+            // naturally so no vertex format mismatch crash (which doomed
+            // factory-reconstruct + donor-shader in v0.4.0 + v0.4.2 P3.1).
+            //
+            // Convert blob.meshes (PendingMeshRecord) → CapturedMeshView.
+            std::vector<fw::native::CapturedMeshView> views;
+            views.reserve(blob.meshes.size());
+            for (const auto& m : blob.meshes) {
+                fw::native::CapturedMeshView v{};
+                v.m_name             = m.m_name.c_str();
+                v.parent_placeholder = m.parent_placeholder.c_str();
+                v.positions          = m.positions.empty()
+                                          ? nullptr : m.positions.data();
+                v.indices            = m.indices.empty()
+                                          ? nullptr : m.indices.data();
+                v.vert_count         = m.vert_count;
+                v.tri_count          = m.tri_count;
+                v.local_transform    = m.local_transform;
+                views.push_back(v);
+            }
+
+            // M9.w4 PROPER (v0.4.2+, RESMGR-LOOKUP, 2026-05-04 PM) —
+            // walk the engine's NIF resource manager (singleton at
+            // *qword_1430DD618), find each captured parent_placeholder
+            // by m_name match, refbump-share the BSFadeNode, attach
+            // to ghost weapon root. Engine handles shader/material/vd
+            // binding because the node was loaded by the engine itself
+            // — no factory reconstruction, no donor shader crash.
+            //
+            // The BSResource::EntryDB<BSModelDB> singleton holds ALL
+            // pre-loaded NIFs including weapon mod sub-NIFs. Once the
+            // local player has equipped a modded weapon, every mod's
+            // BSFadeNode is in the cache, keyed by m_name. We just
+            // look it up and share-attach to the ghost.
+            // Hybrid: resmgr-share PRIMARY + disk-load FALLBACK.
+            // Receiver's local resmgr only contains NIFs the receiver's
+            // own engine has loaded; mod NIFs never seen on receiver
+            // require disk fetch via nif_load_by_path (engine then caches
+            // them for future use).
+            //
+            // Derive base folder from slot's loaded nif_path for disk
+            // candidate paths.
+            std::string base_folder;
+            {
+                // ghost_set_weapon stored the loaded path; we re-read it
+                // by calling find via captured base bgsm. Already done by
+                // attach_mod_nifs_via_disk path; here we replicate to
+                // avoid that function's overhead.
+                std::size_t bs = nif_path.find_last_of('\\');
+                if (bs != std::string::npos) {
+                    base_folder = nif_path.substr(0, bs);
+                }
+            }
+
+            // 2026-05-06 evening — UNCONDITIONALLY clear extra_mods at the
+            // start of every blob receive. Was: gated behind `any_mod` so
+            // a blob carrying ZERO mod descriptors didn't trigger cleanup.
+            // Bug exposed by live test: user equipped 10mm-with-silencer,
+            // then switched to a different 10mm-without-silencer instance
+            // from inventory. Second blob had no mods → any_mod=false →
+            // clear skipped → silencer from first equip remained attached
+            // to the cached base. Now we always clear; the per-blob
+            // attach loop below re-attaches whatever mods THIS blob
+            // describes (possibly zero). User reported: "cambio arma
+            // senza silenziatore ma il silenziatore ora permane".
+            fw::native::clear_ghost_extra_mods(blob.peer_id);
+            bool any_mod = false;
+            for (const auto& m : blob.meshes) {
+                if (!m.parent_placeholder.empty()) { any_mod = true; break; }
+            }
+            if (any_mod) {
+                fw::native::dump_ghost_weapon_subtree(blob.peer_id, 6);
+                // 2026-05-06 evening — CULL DISABLED. Was culling EVERY
+                // BSGeometry leaf inside the base BSFadeNode → killed
+                // not just stock-mod-default leaves but also the
+                // ALWAYS-VISIBLE body parts (receiver casting, slide,
+                // frame, hand-grip stock). User reported: "manca la
+                // base dove si attaccano, la pistola non c'è".
+                //
+                // The original intent was to hide stock defaults inside
+                // placeholder NiNodes that were going to be REPLACED by
+                // mod attachments (e.g. cull the default-short-barrel
+                // BSTriShape under "PistolMuzzle" before attaching the
+                // suppressor mod). But our cull walker treated all
+                // base-stock leaves uniformly — no distinction between
+                // "always-visible body part" vs "default that mod
+                // replaces". To do this properly we'd need per-
+                // placeholder cull info: only cull leaves whose parent
+                // placeholder is targeted by an incoming mod.
+                //
+                // For now: NO cull. Mods overlay on full stock weapon.
+                // Some defaults may show through under mods (e.g.
+                // default-short-barrel sticking out from suppressor) —
+                // visually imperfect but at least the body is visible.
+                // Selective placeholder-aware cull is a follow-up.
+                //
+                // const int culled = fw::native::
+                //     cull_base_geometry_for_modded_weapon(blob.peer_id);
+                // FW_LOG("[mesh-rx] base-cull peer=%s form=0x%X "
+                //        "culled %d BSGeometry leaves (stock geom hidden, "
+                //        "mods attach on top)",
+                //        blob.peer_id, blob.item_form_id, culled);
+            }
+
+            // === M9 closure (Phase 1, 2026-05-06) — OMOD-derived path attach ===
+            //
+            // 2026-05-06 PM — DISABLED. The OMOD-derive path attaches
+            // every mod as a direct child of base_root with no
+            // positioning info (no slot placeholder, no transform).
+            // The pre-existing resmgr-share path (above this block) does
+            // proper placeholder-aware attach via slot_name +
+            // find_node_by_name_w4 against the loaded base, with the
+            // sender's captured local_transform.
+            //
+            // 2026-05-06 PM landings that make resmgr-share self-sufficient:
+            //   • name-reader bug fixed (was reading wrong offset → ALL
+            //     placeholder lookups silently failed → fell back to
+            //     attaching at base_root → "tutte uguali e troppo moddate").
+            //   • cull walker stops at BSFadeNode/BSLeafAnimNode for
+            //     non-root nodes (was descending into mod children and
+            //     culling THEIR geometry → growing-cull-count bug).
+            //   • clone_nif_subtree replaced with vt[26] dispatch — every
+            //     peer's loaded base + each attached mod is now an
+            //     independent deep-clone (engine-grade, with GPU buffer
+            //     AddRef on BSTriShape leaves). No more cache-share
+            //     mutation across peers / across equips.
+            //
+            // Keep OMOD-derive gated off as a clean default. If the live
+            // test reveals MISSING mods (e.g. mods whose geometry was
+            // capture-culled at sender side), re-enable as a transform-
+            // less fallback below.
+            int mods_omod_attached = 0;
+            std::unordered_set<std::string> seen_omod_paths;
+            std::uint32_t peer_omod_forms[32]{};
+            const std::uint8_t peer_omod_count = 0;  // FORCED 0 — keep declaration for log compat
+            (void)seen_omod_paths;
+            (void)peer_omod_forms;
+            // const std::uint8_t peer_omod_count =
+            //     fw::native::snapshot_peer_omod_forms_public(
+            //         blob.peer_id, peer_omod_forms, 32);
+            if (peer_omod_count > 0) {
+                FW_LOG("[mesh-rx] OMOD-derive peer=%s has %u OMODs to resolve",
+                       blob.peer_id,
+                       static_cast<unsigned>(peer_omod_count));
+                // 2026-05-06 v2 — self-attach guard. Some OMODs (the
+                // "stock" / default components) have their TESModel.modelPath
+                // pointing to the BASE weapon NIF itself rather than a
+                // distinct mod NIF. Live test caught
+                //   OMOD 0x148337 → 'Weapons\\10mmPistol\\10MMPistol.nif'
+                // which equals the loaded base; nif_load_by_path returns
+                // the cached base node, attach_child_direct then makes the
+                // base its OWN child → cycle in scene graph → AV on next
+                // render walk (the user's "saw it for half a second then
+                // crashed" symptom). Detect via case-insensitive equality
+                // against the slot's stored nif_path.
+                auto path_eq_ci = [](const char* a, const char* b) -> bool {
+                    if (!a || !b) return false;
+                    while (*a && *b) {
+                        char ca = *a, cb = *b;
+                        if (ca >= 'A' && ca <= 'Z') ca = (char)(ca - 'A' + 'a');
+                        if (cb >= 'A' && cb <= 'Z') cb = (char)(cb - 'A' + 'a');
+                        if (ca != cb) return false;
+                        ++a; ++b;
+                    }
+                    return *a == 0 && *b == 0;
+                };
+
+                for (std::uint8_t i = 0; i < peer_omod_count; ++i) {
+                    const std::uint32_t fid = peer_omod_forms[i];
+                    if (fid == 0) continue;
+                    const char* path =
+                        fw::native::resolve_omod_model_path(fid);
+                    if (!path || !path[0]) {
+                        FW_DBG("[mesh-rx]   OMOD 0x%X: no NIF (numeric-only "
+                               "or unresolved)", fid);
+                        continue;
+                    }
+                    // Self-attach guard: skip if this OMOD's modelPath is
+                    // the base weapon NIF itself. Such OMODs are stock
+                    // components that the engine bakes into the base —
+                    // there's nothing extra to attach.
+                    if (!nif_path.empty() && path_eq_ci(path, nif_path.c_str())) {
+                        FW_DBG("[mesh-rx]   OMOD 0x%X path='%s' EQUALS base — "
+                               "stock mod, skip (would self-attach)",
+                               fid, path);
+                        continue;
+                    }
+                    // Dedupe — same NIF path attached more than once would
+                    // waste refbumps and pile up duplicate geometry.
+                    if (!seen_omod_paths.insert(path).second) {
+                        FW_DBG("[mesh-rx]   OMOD 0x%X path='%s' DUP — skip",
+                               fid, path);
+                        continue;
+                    }
+                    if (fw::native::attach_extra_nif_to_ghost_weapon(
+                            blob.peer_id, path)) {
+                        ++mods_omod_attached;
+                        FW_LOG("[mesh-rx]   OMOD 0x%X path='%s' ATTACHED",
+                               fid, path);
+                    } else {
+                        FW_DBG("[mesh-rx]   OMOD 0x%X path='%s' attach FAILED",
+                               fid, path);
+                    }
+                }
+                FW_LOG("[mesh-rx] OMOD-derive: %d/%u attached for peer=%s "
+                       "(form=0x%X)",
+                       mods_omod_attached,
+                       static_cast<unsigned>(peer_omod_count),
+                       blob.peer_id, blob.item_form_id);
+            }
+
+            // 2026-05-05 — pre-pass: group meshes by parent_placeholder
+            // and pick a BEST representative per group. The criteria:
+            // a mesh whose bgsm_path starts with "Materials\\Weapons\\"
+            // gives us the actual weapon-mod NIF filename (e.g.
+            // "Materials\\Weapons\\10mmPistol\\10mmReflexSight.BGSM"
+            // → derive "Weapons\\10mmPistol\\10mmReflexSight.nif"),
+            // whereas a leaf using an EFFECTS material like the reflex
+            // glass overlay (Materials\\Effects\\ReflexGlass10mm.BGSM
+            // .BGEM) is a sub-mesh useless for path derivation.
+            //
+            // Without this pre-pass the simple "first wins" dedupe was
+            // grabbing whatever leaf appeared first in clone-factory
+            // order and missing the canonical mod NIF.
+            struct BestMod {
+                const PendingMeshRecord* mesh        = nullptr;
+                bool                     weapons_bgsm = false;
+            };
+            std::unordered_map<std::string, BestMod> mods_by_parent;
+            mods_by_parent.reserve(blob.meshes.size());
+            int mods_dup = 0;
+            for (const auto& m : blob.meshes) {
+                if (m.parent_placeholder.empty()) continue;
+                auto& slot = mods_by_parent[m.parent_placeholder];
+                // Case-insensitive prefix check for "Materials\\Weapons\\".
+                auto starts_ci = [](const std::string& s, const char* pre) {
+                    const std::size_t pl = std::strlen(pre);
+                    if (s.size() < pl) return false;
+                    for (std::size_t i = 0; i < pl; ++i) {
+                        char a = s[i]; char b = pre[i];
+                        if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+                        if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+                        if (a != b) return false;
+                    }
+                    return true;
+                };
+                const bool this_is_weapons =
+                    starts_ci(m.bgsm_path, "Materials\\Weapons\\");
+                if (!slot.mesh ||
+                    (this_is_weapons && !slot.weapons_bgsm)) {
+                    if (slot.mesh) ++mods_dup;
+                    slot.mesh = &m;
+                    slot.weapons_bgsm = this_is_weapons;
+                } else {
+                    ++mods_dup;
+                }
+            }
+
+            // Helper: derive NIF path from a bgsm_path. Bethesda's
+            // weapon mod authoring puts the NIF and the BGSM next to
+            // each other with the same basename — only the extension
+            // differs. We strip the leading "Materials\\" subfolder and
+            // swap the trailing extension. Returns empty on
+            // un-derivable input.
+            auto derive_nif_from_bgsm =
+                [](const std::string& bgsm) -> std::string {
+                if (bgsm.size() < 11) return {};
+                // Case-insensitive strip of "Materials\\".
+                std::string p;
+                {
+                    std::string head = bgsm.substr(0, 10);
+                    std::string lower;
+                    lower.reserve(10);
+                    for (char c : head) {
+                        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+                        lower.push_back(c);
+                    }
+                    if (lower == "materials\\") p = bgsm.substr(10);
+                    else                         p = bgsm;
+                }
+                // Replace trailing extension. Bethesda chains like
+                // "*.BGSM.BGEM" exist — take the LAST dot's content
+                // and swap if it's BGSM/BGEM/BGSM.BGEM/etc.
+                auto rfind_ext = p.rfind('.');
+                if (rfind_ext == std::string::npos) return {};
+                std::string ext = p.substr(rfind_ext + 1);
+                // lowercase
+                for (auto& c : ext) {
+                    if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+                }
+                if (ext != "bgsm" && ext != "bgem") return {};
+                return p.substr(0, rfind_ext) + ".nif";
+            };
+
+            int mods_share_attached  = 0;
+            int mods_bgsm_attached   = 0;
+            int mods_disk_attached   = 0;
+            int mods_total_miss      = 0;
+            for (const auto& [parent, info] : mods_by_parent) {
+                const auto& m = *info.mesh;
+
+                // Step 1: try resmgr-share (free if already cached).
+                // - parent_placeholder = mod NIF root m_name → resmgr KEY
+                // - slot_name          = base NIF slot name → attach point
+                // - local_transform    = sender-captured leaf transform
+                //                        (written to mod node so it lands
+                //                        at the same offset within slot)
+                void* cached_node = fw::native::find_loaded_nif_by_m_name(
+                    m.parent_placeholder.c_str());
+                if (cached_node) {
+                    if (fw::native::attach_extra_node_to_ghost_weapon(
+                            blob.peer_id, cached_node,
+                            m.parent_placeholder.c_str(),
+                            m.slot_name.empty() ? nullptr : m.slot_name.c_str(),
+                            m.local_transform)) {
+                        ++mods_share_attached;
+                        continue;
+                    }
+                }
+
+                // Step 2: bgsm-derived disk path. Bethesda-naming
+                // convention says the mod NIF and its BGSM share a
+                // basename — so converting the bgsm_path into a NIF
+                // path lets us locate the actual file even when the
+                // mod's runtime m_name (parent_placeholder) doesn't
+                // match the file basename — e.g. when the engine
+                // renames the loaded BSFadeNode root via OMOD INNT
+                // ("10mmReflexSight.nif" loads with m_name set to
+                // "10mmReflexDot" at runtime, so resmgr-by-name lookup
+                // for "10mmReflexDot" misses while the file IS
+                // available on disk under its real basename).
+                //
+                // SKIP if the derived path equals the loaded base — the
+                // sender ships parent_placeholder="Pistol10mmReceiver"
+                // for the 10mm receiver mod whose bgsm_path also points
+                // at "10mmPistol.bgsm" (= base file). Loading that
+                // would just re-load the base nested inside itself.
+                if (!m.bgsm_path.empty()) {
+                    std::string derived = derive_nif_from_bgsm(m.bgsm_path);
+                    bool same_as_base = false;
+                    if (!derived.empty() && !nif_path.empty()) {
+                        // Case-insensitive match against the loaded
+                        // base path.
+                        if (derived.size() == nif_path.size()) {
+                            same_as_base = true;
+                            for (std::size_t i = 0; i < derived.size(); ++i) {
+                                char a = derived[i], b = nif_path[i];
+                                if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+                                if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+                                if (a != b) { same_as_base = false; break; }
+                            }
+                        }
+                    }
+                    if (!derived.empty() && !same_as_base) {
+                        // 2026-05-06 evening — pass slot_name so the
+                        // disk-loaded mod routes to the right placeholder
+                        // (same multi-tier resolver as resmgr-share path).
+                        const char* slot_cstr = m.slot_name.empty()
+                            ? nullptr
+                            : m.slot_name.c_str();
+                        if (fw::native::attach_extra_nif_to_ghost_weapon(
+                                blob.peer_id, derived.c_str(),
+                                slot_cstr)) {
+                            ++mods_bgsm_attached;
+                            continue;
+                        }
+                    }
+                }
+
+                // Step 3: heuristic disk fallback — try multiple path
+                // patterns. The first that loads is attached. Cache
+                // populates as side effect (next equip of same combo
+                // will hit step 1 or step 2).
+                if (base_folder.empty()) {
+                    ++mods_total_miss;
+                    continue;
+                }
+                static const char* const kSubfolders[] = {
+                    "",                        // <folder>\<name>.nif
+                    "Mods\\",
+                    "Mods\\Barrels\\",
+                    "Mods\\Barrel\\",
+                    "Mods\\Muzzles\\",
+                    "Mods\\Muzzle\\",
+                    "Mods\\Sights\\",
+                    "Mods\\Sight\\",
+                    "Mods\\Iron\\",
+                    "Mods\\Receivers\\",
+                    "Mods\\Receiver\\",
+                    "Mods\\Magazines\\",
+                    "Mods\\Magazine\\",
+                    "Mods\\Mag\\",
+                    "Mods\\Grips\\",
+                    "Mods\\Grip\\",
+                    "Mods\\Stocks\\",
+                    "Mods\\Stock\\",
+                };
+                bool disk_ok = false;
+                {
+                    const char* slot_cstr = m.slot_name.empty()
+                        ? nullptr
+                        : m.slot_name.c_str();
+                    for (const char* sub : kSubfolders) {
+                        std::string p = base_folder + "\\" + sub +
+                                        m.parent_placeholder + ".nif";
+                        if (fw::native::attach_extra_nif_to_ghost_weapon(
+                                blob.peer_id, p.c_str(), slot_cstr)) {
+                            disk_ok = true;
+                            ++mods_disk_attached;
+                            break;
+                        }
+                    }
+                }
+                if (!disk_ok) ++mods_total_miss;
+            }
+            FW_LOG("[mesh-rx] resmgr-hybrid: peer=%s form=0x%X "
+                   "share=%d bgsm=%d disk=%d miss=%d dup=%d (of %zu meshes)",
+                   blob.peer_id, blob.item_form_id,
+                   mods_share_attached, mods_bgsm_attached,
+                   mods_disk_attached,
+                   mods_total_miss, mods_dup, blob.meshes.size());
+
+            // ATTEMPT #6 diagnostic — see scene_inject.cpp.
+            // Dump the WEAPON state right after we finished attaching
+            // all mods for this blob. This is the canonical "what does
+            // the engine actually see" snapshot for this equip cycle.
+            fw::native::dump_weapon_attach_state("post-mesh-blob-attach");
+
+            /* Path Y disk-load (kept for fallback diagnostic).
+            const int n_loaded =
+                fw::native::attach_mod_nifs_via_disk(
+                    blob.peer_id, blob.item_form_id,
+                    views.data(), views.size());
+            FW_LOG("[mesh-rx] mod-nif: peer=%s form=0x%X loaded=%d of "
+                   "%zu candidate meshes (grouped by parent_placeholder)",
+                   blob.peer_id, blob.item_form_id,
+                   n_loaded, views.size());
+            */
+
+            /* DISABLED: factory-reconstruct path (Phase 3 base).
+            // Useful for diagnostics: logs what WOULD be reconstructed
+            // from raw geometry. Disabled until shader binding (Phase 3.2)
+            // resolves the vertex format mismatch that blocks visibility.
+            const int n_attached =
+                fw::native::attach_captured_meshes_to_ghost_weapon(
+                    blob.peer_id, blob.item_form_id,
+                    views.data(), views.size());
+            FW_LOG("[mesh-rx] reconstruct: peer=%s form=0x%X attached=%d "
+                   "of %zu candidate meshes",
+                   blob.peer_id, blob.item_form_id,
+                   n_attached, views.size());
+            */
         } else {
             FW_WRN("[mesh-rx] ghost_set_weapon FAILED peer=%s form=0x%X "
                    "(no candidate loaded; existing slot left untouched)",
@@ -417,12 +961,62 @@ void drain_equip_apply_queue() {
         // path never overwrite the proper paths from mesh-blob.
         if (!ok) {
             if (is_equip) {
-                ok = fw::native::ghost_set_weapon(
+                // 2026-05-07 — Receiver applies each EQUIP_BCAST normally.
+                // The off-by-one render lag (first equip displays as
+                // stock or as previous weapon) is fixed sender-side via
+                // the auto re-equip cycle in equip_hook.cpp: 50 ms after
+                // the user's equip, the sender fires UnequipObject +
+                // EquipObject for the same form. Receiver gets EQUIP-X,
+                // UNEQUIP-X, EQUIP-X on the wire and applies each in
+                // order — the second EQUIP-X is the "magic re-equip"
+                // that renders the modded weapon correctly on the ghost.
+                ok = fw::native::ghost_attach_assembled_weapon(
                     op.peer_id, op.item_form_id,
-                    /*no candidates*/ nullptr, 0);
+                    op.omod_form_ids, op.omod_count);
+                if (!ok) {
+                    FW_DBG("[equip-drain] name-match failed for peer=%s "
+                           "form=0x%X — falling back to ghost_set_weapon",
+                           op.peer_id, op.item_form_id);
+                    ok = fw::native::ghost_set_weapon(
+                        op.peer_id, op.item_form_id,
+                        /*no candidates*/ nullptr, 0);
+                }
             } else {
-                ok = fw::native::ghost_clear_weapon(
-                    op.peer_id, op.item_form_id);
+                // 2026-05-07 — TRANSIENT-SWAP-SLOT FILTER.
+                //
+                // The engine's ActorEquipManager internally fires
+                //   Equip(new, slot=DefaultEquipSlot)
+                //   Unequip(new, slot=0x4334D, force=1)   ← THIS LINE
+                //   Unequip(old, slot=0x4334D)
+                // as part of the "swap-into-slot" sequence. The middle
+                // Unequip is targeting a TRANSIENT internal slot
+                // (form id 0x4334D, the kReadiedWeapon BGSEquipSlot).
+                // It does NOT mean "the player no longer has this
+                // weapon equipped" — the engine immediately routes the
+                // ready-state into the real slot afterwards.
+                //
+                // Pre-fix, our ghost_clear_weapon was matching this
+                // Unequip's form_id against our slot's form_id and
+                // wiping the freshly-attached weapon, leaving the
+                // ghost empty. Live test 2026-05-07 06:34:47 showed
+                // EQUIP 0x4822 followed 7ms later by UNEQUIP 0x4822
+                // slot=0x4334D, instantly cancelling the visible weapon.
+                //
+                // Filter: Unequip with slot_form_id == 0x4334D is a
+                // transient bookkeeping op, ignore it on the receiver.
+                // Real "player put the weapon away" UNEQUIPs use
+                // slot_form_id = 0x0 (DefaultEquipSlot) and survive
+                // this filter.
+                constexpr std::uint32_t TRANSIENT_SWAP_SLOT = 0x4334D;
+                if (op.slot_form_id == TRANSIENT_SWAP_SLOT) {
+                    FW_DBG("[equip-drain] skip transient-swap UNEQUIP "
+                           "peer=%s form=0x%X slot=0x%X (engine internal)",
+                           op.peer_id, op.item_form_id, op.slot_form_id);
+                    ok = true;  // treat as handled — no action needed
+                } else {
+                    ok = fw::native::ghost_clear_weapon(
+                        op.peer_id, op.item_form_id);
+                }
             }
         }
 

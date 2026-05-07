@@ -38,4 +38,19 @@ bool install_equip_hook(std::uintptr_t module_base);
 inline constexpr UINT FW_MSG_DEFERRED_MESH_TX = WM_APP + 0x4E;
 void on_deferred_mesh_tx_message();
 
+// 2026-05-07 — AUTO RE-EQUIP CYCLE. Posted ~50ms after each user equip.
+// Handler fires UnequipObject + EquipObject for the same form, generating
+// EQUIP-X / UNEQUIP-X / EQUIP-X on the wire so the receiver gets a "magic
+// re-equip" event that renders the modded weapon correctly on the ghost.
+// Without this, the first apply of a modded weapon renders stock or as
+// the previous weapon (off-by-one). Replicates the manual manganello
+// workflow that the user confirmed works.
+// 2026-05-07 — picked 0x4F to avoid collision with FW_MSG_EQUIP_APPLY
+// (also at WM_APP+0x4C, which would match first in the WndProc dispatch
+// table and route our auto-cycle messages to drain_equip_apply_queue
+// instead of on_auto_re_equip_message). Keep an eye on the numbering
+// table in equip_cycle.cpp's comment block before adding new IDs.
+inline constexpr UINT FW_MSG_AUTO_RE_EQUIP = WM_APP + 0x4F;
+void on_auto_re_equip_message(WPARAM wp);
+
 } // namespace fw::hooks

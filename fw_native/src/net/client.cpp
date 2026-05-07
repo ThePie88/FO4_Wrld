@@ -297,11 +297,12 @@ std::size_t Client::enqueue_mesh_blob_for_equip(
         const auto& m = meshes[i];
         const std::size_t name_len = m.m_name ? std::strlen(m.m_name) : 0;
         const std::size_t parent_len = m.parent_placeholder ? std::strlen(m.parent_placeholder) : 0;
+        const std::size_t slot_len = m.slot_name ? std::strlen(m.slot_name) : 0;
         const std::size_t bgsm_len = m.bgsm_path ? std::strlen(m.bgsm_path) : 0;
-        if (name_len > 255 || parent_len > 255 || bgsm_len > 65535) {
+        if (name_len > 255 || parent_len > 255 || slot_len > 65535 || bgsm_len > 65535) {
             FW_WRN("[mesh-tx] mesh[%zu] string lengths exceed wire caps "
-                   "(name=%zu parent=%zu bgsm=%zu) — dropping blob",
-                   i, name_len, parent_len, bgsm_len);
+                   "(name=%zu parent=%zu slot=%zu bgsm=%zu) — dropping blob",
+                   i, name_len, parent_len, slot_len, bgsm_len);
             return 0;
         }
         if (m.tri_count > 0 && (m.tri_count > (0xFFFFFFFFu / 6))) {
@@ -310,7 +311,7 @@ std::size_t Client::enqueue_mesh_blob_for_equip(
             return 0;
         }
         blob_size += sizeof(MeshRecordHeader);
-        blob_size += name_len + parent_len + bgsm_len;
+        blob_size += name_len + parent_len + slot_len + bgsm_len;
         blob_size += static_cast<std::size_t>(m.vert_count) * 3 * sizeof(float);
         blob_size += static_cast<std::size_t>(m.tri_count) * 3 * sizeof(std::uint16_t);
         if (blob_size > MAX_BLOB_SIZE) {
@@ -347,6 +348,7 @@ std::size_t Client::enqueue_mesh_blob_for_equip(
         const auto& m = meshes[i];
         const std::size_t name_len = m.m_name ? std::strlen(m.m_name) : 0;
         const std::size_t parent_len = m.parent_placeholder ? std::strlen(m.parent_placeholder) : 0;
+        const std::size_t slot_len = m.slot_name ? std::strlen(m.slot_name) : 0;
         const std::size_t bgsm_len = m.bgsm_path ? std::strlen(m.bgsm_path) : 0;
 
         MeshRecordHeader rh{};
@@ -354,15 +356,18 @@ std::size_t Client::enqueue_mesh_blob_for_equip(
         rh.parent_placeholder_len = static_cast<std::uint8_t>(parent_len);
         rh.bgsm_path_len          = static_cast<std::uint16_t>(bgsm_len);
         rh.vert_count             = m.vert_count;
-        rh.reserved               = 0;
+        rh.slot_name_len          = static_cast<std::uint16_t>(slot_len);
         rh.tri_count              = m.tri_count;
         const float* xform = m.local_transform ? m.local_transform : identity_xform;
         std::memcpy(rh.local_transform, xform, sizeof(rh.local_transform));
         std::memcpy(dst, &rh, sizeof(rh));
         dst += sizeof(rh);
 
+        // Variable section. Order matches MeshRecordHeader comment block:
+        // m_name → parent_placeholder → slot_name → bgsm_path → positions → indices.
         if (name_len)   { std::memcpy(dst, m.m_name, name_len); dst += name_len; }
         if (parent_len) { std::memcpy(dst, m.parent_placeholder, parent_len); dst += parent_len; }
+        if (slot_len)   { std::memcpy(dst, m.slot_name, slot_len); dst += slot_len; }
         if (bgsm_len)   { std::memcpy(dst, m.bgsm_path, bgsm_len); dst += bgsm_len; }
 
         const std::size_t pos_bytes = static_cast<std::size_t>(m.vert_count) * 3 * sizeof(float);
@@ -444,6 +449,97 @@ std::size_t Client::enqueue_mesh_blob_for_equip(
     FW_LOG("[mesh-tx] queued mesh blob: form=0x%X equip_seq=%u meshes=%zu "
            "blob=%zu B chunks=%u",
            item_form_id, equip_seq, num_meshes, blob_size,
+           static_cast<unsigned>(total_chunks));
+    return enqueued;
+}
+
+// 2026-05-06 LATE evening (M9 closure, PLAN B) — ship a serialized NIF
+// blob via the same MESH_BLOB_OP wire path. Encoding piggybacks on the
+// existing MeshBlobHeader: num_meshes=0xFF is a sentinel meaning "the
+// payload after the header is a raw NIF byte buffer, not per-mesh
+// records". Receiver detects the sentinel in
+// drain_mesh_blob_apply_queue and routes to nistream_deserialize +
+// attach instead of the per-mesh attach path.
+//
+// Reuses the chunking + reassembly infrastructure (no new packet type
+// needed), maintains backward compat with old senders/receivers (they
+// see num_meshes=0xFF and either skip or interpret garbage as 255 mesh
+// records — sanity checks elsewhere will reject).
+std::size_t Client::enqueue_nif_blob_for_equip(
+    std::uint32_t item_form_id,
+    const void*   nif_buf,
+    std::size_t   nif_size)
+{
+    if (!connected_.load() || stopping_.load()) return 0;
+    if (!nif_buf || nif_size == 0) return 0;
+    if (item_form_id == 0) return 0;
+
+    static std::atomic<std::uint32_t> s_next_equip_seq{0x80000000u};
+    std::uint32_t equip_seq = s_next_equip_seq.fetch_add(1,
+        std::memory_order_relaxed);
+    if (equip_seq == 0) {
+        equip_seq = s_next_equip_seq.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    const std::size_t blob_size = sizeof(MeshBlobHeader) + nif_size;
+    if (blob_size > MAX_BLOB_SIZE) {
+        FW_WRN("[nif-tx] blob_size=%zu > MAX_BLOB_SIZE=%u — dropping",
+               blob_size, MAX_BLOB_SIZE);
+        return 0;
+    }
+
+    std::vector<std::uint8_t> blob;
+    blob.resize(blob_size);
+    {
+        MeshBlobHeader hdr{};
+        hdr.item_form_id = item_form_id;
+        hdr.equip_seq    = equip_seq;
+        hdr.num_meshes   = 0xFF;  // sentinel: raw NIF buffer follows
+        hdr.reserved     = 0;
+        std::memcpy(blob.data(), &hdr, sizeof(hdr));
+        std::memcpy(blob.data() + sizeof(hdr), nif_buf, nif_size);
+    }
+
+    constexpr std::size_t chunk_data_max = MESH_BLOB_BCAST_CHUNK_DATA_MAX;
+    const std::size_t total_chunks_sz =
+        (blob_size + chunk_data_max - 1) / chunk_data_max;
+    if (total_chunks_sz == 0 || total_chunks_sz > 0xFFFF) {
+        FW_WRN("[nif-tx] total_chunks=%zu out of range", total_chunks_sz);
+        return 0;
+    }
+    const std::uint16_t total_chunks = static_cast<std::uint16_t>(total_chunks_sz);
+
+    std::size_t enqueued = 0;
+    {
+        std::lock_guard lk(queue_mutex_);
+        std::size_t off = 0;
+        for (std::uint16_t ci = 0; ci < total_chunks; ++ci) {
+            const std::size_t this_chunk = (blob_size - off) < chunk_data_max
+                ? (blob_size - off) : chunk_data_max;
+
+            QueuedSend q;
+            q.msg_type = MessageType::MESH_BLOB_OP;
+            q.reliable = true;
+            q.payload_bytes.resize(sizeof(MeshBlobChunkHeader) + this_chunk);
+
+            MeshBlobChunkHeader ch{};
+            ch.equip_seq        = equip_seq;
+            ch.total_blob_size  = static_cast<std::uint32_t>(blob_size);
+            ch.chunk_index      = ci;
+            ch.total_chunks     = total_chunks;
+            std::memcpy(q.payload_bytes.data(), &ch, sizeof(ch));
+            std::memcpy(q.payload_bytes.data() + sizeof(ch),
+                        blob.data() + off, this_chunk);
+            queue_.push_back(std::move(q));
+
+            off += this_chunk;
+            ++enqueued;
+        }
+    }
+
+    FW_LOG("[nif-tx] queued NIF blob: form=0x%X equip_seq=%u nif_bytes=%zu "
+           "total_blob=%zu chunks=%u",
+           item_form_id, equip_seq, nif_size, blob_size,
            static_cast<unsigned>(total_chunks));
     return enqueued;
 }
@@ -1069,6 +1165,39 @@ void Client::dispatch(const Delivered& d) {
                        static_cast<unsigned>(mods[i].rank));
             }
         }
+
+        // 2026-05-07 — STASH ONLY ON EQUIP. The engine fires UNEQUIP for
+        // the previously-held weapon RIGHT after EQUIP of the new one,
+        // and that UNEQUIP carries 0 mods. If we let UNEQUIP wipe the
+        // stash (as we did pre-fix), drain_equip_apply_queue's snapshot
+        // sees count=0 and the name-match path attaches a stock weapon.
+        // Live test 2026-05-07 06:26:51.606..608 captured exactly this:
+        //   set 6 forms (EQUIP modded)
+        //   set 0 forms (UNEQUIP previous, wipe!)
+        //   set 0 forms (another UNEQUIP, wipe!)
+        //   [name-match] attached=0/0
+        //
+        // Now: only EQUIP touches the stash. UNEQUIP leaves it alone —
+        // ghost_clear_weapon doesn't need it (it works from form_id).
+        // When the peer re-equips, the new EQUIP overwrites with the
+        // correct mods. Edge case: peer goes from modded → stock weapon
+        // is handled because the new EQUIP ships mod_count=0, which
+        // we explicitly clear (still gated on EQUIP).
+        const bool is_equip = (b.kind ==
+            static_cast<std::uint8_t>(EquipOpKind::EQUIP));
+        if (is_equip) {
+            std::uint32_t form_ids[32]{};
+            const std::uint8_t copy_n = mod_count > 32
+                ? static_cast<std::uint8_t>(32) : mod_count;
+            for (std::uint8_t i = 0; i < copy_n; ++i) {
+                const auto* mods = reinterpret_cast<const EquipModRecord*>(
+                    d.payload.data() + tail_off + 1);
+                form_ids[i] = mods[i].form_id;
+            }
+            fw::native::set_peer_omod_forms(
+                b.peer_id.get().c_str(),
+                copy_n > 0 ? form_ids : nullptr, copy_n);
+        }
         // === end v7 tail ===
 
         // === Protocol v8 — witness NIF descriptor tail ===
@@ -1132,6 +1261,23 @@ void Client::dispatch(const Delivered& d) {
         if (nif_count > 0) {
             std::memcpy(op.nif_descs, nif_descs,
                         nif_count * sizeof(NifDescriptor));
+        }
+
+        // 2026-05-07 — embed OMOD form_ids INLINE in the op. Removes the
+        // race where a refresh fires 500ms later, by which time the
+        // global stash (set_peer_omod_forms) has been overwritten by a
+        // SUBSEQUENT equip event for a different weapon. Capture once
+        // here, no global lookup at apply time.
+        op.omod_count = mod_count;
+        if (mod_count > 0) {
+            const auto* mods = reinterpret_cast<const EquipModRecord*>(
+                d.payload.data() + tail_off + 1);
+            const std::uint8_t copy_n = mod_count > 32
+                ? static_cast<std::uint8_t>(32) : mod_count;
+            for (std::uint8_t i = 0; i < copy_n; ++i) {
+                op.omod_form_ids[i] = mods[i].form_id;
+            }
+            op.omod_count = copy_n;
         }
         fw::dispatch::enqueue_equip_apply(op);
         break;
@@ -1321,6 +1467,39 @@ void Client::dispatch(const Delivered& d) {
                 FW_WRN("[mesh-rx] blob header equip_seq=%u != chunk equip_seq=%u",
                        bh.equip_seq, equip_seq);
             }
+            // 2026-05-06 LATE evening (M9 closure, PLAN B) — sentinel
+            // num_meshes=0xFF means the rest of the blob is an opaque
+            // NIF byte buffer (engine NiStream::Save output) instead of
+            // per-mesh records. Receiver routes to nistream_deserialize
+            // + attach instead of the per-mesh attach path.
+            if (bh.num_meshes == 0xFFu) {
+                fw::dispatch::PendingMeshBlob pop_nif{};
+                const std::size_t pn_nif = peer_id_str.size() < 15
+                    ? peer_id_str.size() : 15;
+                std::memcpy(pop_nif.peer_id, peer_id_str.data(), pn_nif);
+                pop_nif.peer_id[pn_nif]  = 0;
+                pop_nif.item_form_id = bh.item_form_id;
+                pop_nif.equip_seq    = bh.equip_seq;
+                const std::size_t nif_off = sizeof(MeshBlobHeader);
+                const std::size_t nif_size = (blob.size() > nif_off)
+                    ? (blob.size() - nif_off) : 0;
+                if (nif_size > 0) {
+                    pop_nif.nif_blob_bytes.assign(
+                        blob.data() + nif_off,
+                        blob.data() + nif_off + nif_size);
+                }
+                FW_LOG("[nif-rx] reassembled NIF blob peer=%s form=0x%X "
+                       "equip_seq=%u nif_bytes=%zu → dispatch to main",
+                       peer_id_str.c_str(), bh.item_form_id, bh.equip_seq,
+                       nif_size);
+                fw::dispatch::enqueue_mesh_blob_apply(std::move(pop_nif));
+                FW_LOG("dispatch: nif-blob enqueued peer=%s form=0x%X "
+                       "equip_seq=%u nif_bytes=%zu",
+                       peer_id_str.c_str(), bh.item_form_id, bh.equip_seq,
+                       nif_size);
+                break;  // done with this reassembled blob
+            }
+
             if (bh.num_meshes == 0 || bh.num_meshes > MAX_MESHES_PER_BLOB) {
                 FW_WRN("[mesh-rx] blob num_meshes=%u out of range",
                        static_cast<unsigned>(bh.num_meshes));
@@ -1350,12 +1529,13 @@ void Client::dispatch(const Delivered& d) {
 
                 const std::size_t name_len   = rh.m_name_len;
                 const std::size_t parent_len = rh.parent_placeholder_len;
+                const std::size_t slot_len   = rh.slot_name_len;
                 const std::size_t bgsm_len   = rh.bgsm_path_len;
                 const std::size_t pos_bytes  =
                     static_cast<std::size_t>(rh.vert_count) * 3 * sizeof(float);
                 const std::size_t idx_bytes  =
                     static_cast<std::size_t>(rh.tri_count) * 3 * sizeof(std::uint16_t);
-                const std::size_t need = name_len + parent_len + bgsm_len
+                const std::size_t need = name_len + parent_len + slot_len + bgsm_len
                                        + pos_bytes + idx_bytes;
                 if (roff + need > blob.size()) {
                     FW_WRN("[mesh-rx] mesh[%u] body truncated: roff=%zu "
@@ -1372,6 +1552,13 @@ void Client::dispatch(const Delivered& d) {
                 rec.parent_placeholder.assign(reinterpret_cast<const char*>(
                     blob.data() + roff), parent_len);
                 roff += parent_len;
+                // 2026-05-05 — slot_name added (uses former `reserved` u16
+                // slot in MeshRecordHeader). Pre-fix sender DLLs wrote 0,
+                // which yields slot_len=0 here → empty string → receiver
+                // attach falls back to base root.
+                rec.slot_name.assign(reinterpret_cast<const char*>(
+                    blob.data() + roff), slot_len);
+                roff += slot_len;
                 rec.bgsm_path.assign(reinterpret_cast<const char*>(
                     blob.data() + roff), bgsm_len);
                 roff += bgsm_len;

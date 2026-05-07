@@ -69,7 +69,16 @@ struct Snapshot {
 // copies; ours can be freely freed when the wire encoding is done).
 struct ExtractedMesh {
     std::string m_name;              // e.g. "10mmHeavyPortedBarrel002:0"
-    std::string parent_placeholder;  // e.g. "P-Barrel" (the placeholder bone in base weapon NIF)
+    // Immediate parent of the BSGeometry leaf — in practice, the mod NIF
+    // root (e.g. "Pistol10mmReceiver"). Used by the receiver as the KEY
+    // for the resmgr-share lookup (matches the cached BSFadeNode m_name).
+    std::string parent_placeholder;
+    // Grand-parent of the BSGeometry leaf — in practice, the slot
+    // placeholder NiNode in the base weapon NIF (e.g. "PistolReceiver").
+    // Used by the receiver to position the mod under the right slot in
+    // the loaded base. May be empty if grandparent missing or unnamed.
+    // (Added 2026-05-05 to fix the "all-mods-stacked-at-root" bug.)
+    std::string slot_name;
     std::string bgsm_path;           // e.g. "Materials\\Weapons\\10mmPistol\\10mmPistol.bgsm"
 
     std::uint16_t vert_count = 0;
@@ -108,5 +117,54 @@ Snapshot snapshot_local_player_weapon();
 
 // Pretty-print a snapshot to the FW_LOG channel. Never throws.
 void log_snapshot(const Snapshot& s, const char* tag = "[witness]");
+
+// M9.w4 PROPER (v0.4.2+) — single-source mesh extraction for the
+// clone-factory-driven capture pipeline (weapon_capture module).
+// Takes a BSGeometry-derived node (BSTriShape / BSSITF) and fills
+// `m` with positions, indices, transform, m_name, bgsm_path.
+//
+// Returns true on success, false if:
+//   - geom is null
+//   - reading +0x148 helper struct fails (= not a real BSGeometry,
+//     e.g. NiNode where +0x148 is past-the-end heap garbage)
+//   - vert_count or tri_count is zero
+//   - any SEH read fails on engine memory
+//
+// SEH-safe internally. Main thread only (engine memory mutates from
+// main thread via clone factory + render walk).
+bool extract_mesh_for_capture(void* geom, ExtractedMesh& m);
+
+// Low-level scene-graph readers — public wrappers around the
+// anonymous-namespace primitives in weapon_witness.cpp. Allow other
+// TUs (e.g. weapon_capture's finalize post-pass that re-reads
+// slot_name from the clone's grandparent after assembly settles)
+// to access them without exposing the anon-ns internals.
+//
+// All SEH-caged. Return null/false on AV.
+void* read_parent_pub(void* node);
+bool  read_node_name_pub(void* node, char* buf, std::size_t bufsz);
+
+// 2026-05-06 — walk UP from `leaf` (a BSGeometry leaf or any descendant of
+// a mod NIF subtree) looking for the FIRST ancestor whose vtable RVA is
+// BSFADENODE_VTABLE_RVA (= the mod NIF's root, since loaded NIFs wrap in
+// BSFadeNode). Returns that BSFadeNode or nullptr if not found within
+// `max_walk` levels.
+//
+// Used by both clone-time (weapon_witness.cpp extract_one_mesh) and
+// finalize-time (weapon_capture.cpp post-pass) to locate the mod-NIF
+// boundary so we can derive the BASE PLACEHOLDER name (= the mod root's
+// PARENT m_name) instead of accidentally landing inside a mod-internal
+// wrapper like "P-Receiver".
+void* find_mod_nif_root_pub(void* leaf, int max_walk = 8);
+
+// 2026-05-06 LATE evening (M9 closure, PLAN B) — locate the LOCAL
+// player's assembled weapon root via the same path as
+// snapshot_player_weapon_meshes (player loaded3D → WEAPON bone → first
+// named child). On success returns the assembled weapon's root NiNode
+// / BSFadeNode (engine-built, all OMODs already applied). On failure
+// returns nullptr (no player loaded, no WEAPON bone, no weapon equipped).
+//
+// Threading: MAIN THREAD ONLY (touches scene graph + reads via SEH).
+void* find_player_assembled_weapon_root_pub();
 
 } // namespace fw::native::weapon_witness

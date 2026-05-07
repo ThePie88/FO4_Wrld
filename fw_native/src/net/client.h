@@ -61,6 +61,12 @@ struct RemotePlayerSnapshot {
 struct MeshBlobMesh {
     const char*           m_name;                // null-terminated, ≤255 chars
     const char*           parent_placeholder;    // null-terminated, ≤255 chars
+    // Slot name in the base weapon NIF — i.e. m_name of the placeholder
+    // NiNode that the mod root attaches to inside the base. May be null
+    // or empty for stock weapons (no mod under this leaf) and pre-fix
+    // sender DLLs (which left this field unpopulated; receiver falls back
+    // to attaching at base root). 2026-05-05 fix.
+    const char*           slot_name;             // null-terminated, ≤65535 chars
     const char*           bgsm_path;             // null-terminated, ≤65535 chars
     std::uint16_t         vert_count;
     std::uint32_t         tri_count;
@@ -199,6 +205,16 @@ public:
         std::uint32_t item_form_id,
         const struct MeshBlobMesh* meshes,
         std::size_t  num_meshes);
+
+    // 2026-05-06 (M9 closure, PLAN B) — ship a serialized NIF buffer
+    // (engine NiStream::SaveToMemory output) using the same MESH_BLOB_OP
+    // wire format. Encoded with num_meshes=0xFF sentinel — receiver
+    // detects this and deserializes the payload via NiStream::Load
+    // instead of decoding per-mesh records.
+    std::size_t enqueue_nif_blob_for_equip(
+        std::uint32_t item_form_id,
+        const void*   nif_buf,
+        std::size_t   nif_size);
 
     // B1.d: Blocking submit. Fills op.client_op_id from an internal counter,
     // sends reliable, waits up to `timeout_ms` on a condvar for the matching

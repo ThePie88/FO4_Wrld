@@ -35,8 +35,20 @@ Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 > peer's force-equip-cycle. Combat / outfit z-fight closed by M9.w3 body
 > cull (v0.4.1, 2026-05-03). Vault Suit equip-cycle SEH crash + post-cycle
 > body invisible / ghost armor disappears / T-pose closed by M9 v0.4.2
-> (2026-05-04, this patch) via path-routed deep clone of the VS NIF
-> subtree. See [CHANGELOG.md](CHANGELOG.md).
+> (2026-05-04) via path-routed deep clone of the VS NIF subtree.
+>
+> **M9 v0.5.0 shipped (2026-05-07)** — **modded weapon visuals replicated
+> on the ghost** for pistols. As far as I can tell this is the first time
+> it has been done in the FO4 multiplayer modding scene: peer A equips a
+> 10mm with reflex sight, suppressor, heavy receiver, and extended mag,
+> and peer B sees the exact same configuration in A's ghost hand,
+> animated with A's pose. The receiver runs the engine's own per-OMOD
+> attach helper (`sub_140434DA0`), which internally matches mod sub-NIFs
+> to the base via the BSConnectPoint extra-data system baked into the
+> NIF files. Sender fires a tiny re-equip cycle 50 ms after each user
+> equip to work around a first-equip render lag I couldn't fix on the
+> receiver alone. Rifles next session to close M9 fully. See
+> [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -108,11 +120,11 @@ in real time).
 | **B5** D3D11 custom render | 🗿 not needed — Strada B native injection replaced |
 | **B6** World-state sync expansion *(composite — 13 wedges, multi-month epic)* | 🟡 1/13 done |
 | ↳ **B6.1** Door open/close sync | ✅ done — `sub_140514180` Activate worker hook + dual-agent RE convergence, [30s demo](https://youtu.be/T8wLZmCqjxw), see [CHANGELOG.md](CHANGELOG.md) |
-| **M9** Equipment sync between peers *(clothing + armor visual replication)* | 🟡 4/5 wedges done + w4 foundation — clothing + body cull + OMOD-driven ARMA tier work end-to-end, Vault Suit equip-cycle stable (v0.4.2 path-routed deep clone — no more SEH crash / body invisible / T-pose), weapon visibility on ghost in PoC quality, true BGSMod weapon mods pending (w4 PROPER) |
+| **M9** Equipment sync between peers *(clothing + armor + weapon visual replication)* | 🟢 5/5 wedges done for pistols (v0.5.0): clothing + body cull + OMOD-driven ARMA tier + Vault Suit cycle stable + **modded firearm visualization** end-to-end via engine BSConnectPoint pairing. Rifles (sniper/assault/hunting) next session to fully close M9. |
 | ↳ **M9.w1** Equip event detection + broadcast (sender hook OBSERVE-only) | ✅ done — `ActorEquipManager::EquipObject/UnequipObject` detour, EQUIP_OP/EQUIP_BCAST opcodes (protocol v6), [video coming soon] |
 | ↳ **M9.w2** Receiver-side NIF resolution + ghost attach + animation | ✅ done — TESObjectARMO struct walk, gender-aware path scoring (M3rd preferred over F/1stP), OMOD-driven priority extracted from `BGSObjectInstance.extra+0x56` and shipped via wire (proto v10) so ghost picks the correct ARMA tier (Lite/Mid/Heavy). Engine helper `sub_1404626A0` PrioritySelect algorithm reimplemented receiver-side. TTD-confirmed 2026-05-03. |
 | ↳ **M9.w3** Biped slot masking (hide ghost body parts under armor) | ✅ done — `TESObjectARMO+0x1E8` bipedSlots bitmask, slot-3 BODY mask flips `NIAV_FLAG_APP_CULLED` on ghost's `BaseMaleBody:0` BSSubIndexTriShape (cached at body inject via vtable RVA `0x2697D40` walker). Body hidden under Vault Suit / Power Armor / Synth Armor — no more z-fight. |
-| ↳ **M9.w4** Object Modification (BGSMod) sync — shoulder pads, weapon mods, paint variants | 🟡 foundation done in v0.4.0 — wire protocol v9 + mesh-blob pipeline + ghost-weapon state machine + smart NIF resolution. Pistols/melee/launchers visible on ghost as STOCK base. Modded firearms still render as base (no compensator/scope/etc. visible); heavily-modded rifles show one sub-component only. True mod replication blocked on full BSVertexDesc RE — deferred to v0.5+ |
+| ↳ **M9.w4** Object Modification (BGSMod) sync — shoulder pads, weapon mods, paint variants | 🟢 modded **pistols** end-to-end (v0.5.0, 2026-05-07) — engine OMOD attacher `sub_140434DA0` + BSConnectPoint pairing, sender-side 50ms auto re-equip cycle for off-by-one render lag. Modded 10mm/handmade pistol receivers/scopes/suppressors/mags all visible on the ghost. Rifles (sniper/assault/hunting) next session to fully close M9. |
 | ↳ **M9.w5** Peer rejoin equipment-state push | ✅ done in v0.3.1 — PEER_JOIN trigger re-arms equip cycle (DONE→ARMED state transition), 1500ms delay, current outfit re-broadcast to newly-joined peer |
 | ↳ **B6.2** Lights toggle sync (lamps, lanterns, generators) | ⏳ — same Activate worker pattern as doors, formType filter on `0x20` LIGH |
 | ↳ **B6.3** Locks state sync (lockpicked → unlocked cross-client) | ⏳ — REFR lock extra-data + `OnLockedClick` callback hook |
@@ -152,6 +164,60 @@ in real time).
 
 Latest 3 patches summarized below. **Full version history in
 [CHANGELOG.md](CHANGELOG.md).**
+
+### M9 v0.5.0 (2026-05-07) — modded weapons visible on ghost (pistols) — STABLE
+
+- **Pistols with mods now render correctly on the remote ghost.** Peer A
+  equips a 10mm with reflex sight, suppressor, heavy receiver and
+  extended mag; peer B sees the exact same configuration in A's ghost
+  hand, animated with A's pose. As far as I can tell this is the first
+  time it has been done in the FO4 multiplayer modding scene — previous
+  attempts (Fallout Together, F4MP) never reached this point.
+- **Per-OMOD attach is `sub_140434DA0(omod_form, base_BSFadeNode,
+  placeholder_or_NULL, flags)`** (RVA `+0x00434DA0`). It reads the
+  OMOD's `TESModel.modelPath` at `OMOD+0x50`, loads the sub-NIF,
+  deep-clones, registers materials, then parents it under the base via
+  `sub_14186E960`. The attach helper is **BSConnectPoint pairing**, not
+  `NiNode::AttachChild`: the base weapon NIF carries a
+  `BSConnectPoint::Children` extra-data array on its root, the mod
+  sub-NIFs carry a matching `BSConnectPoint::Parents`, and the engine
+  matches by string. All driven by data baked into the NIF files, not
+  by anything on the form. Refuted ~10 plausible designs first
+  (synthetic REFR via `vt[170]`, BSModelProcessor OIE post-hook,
+  `find_node_by_name` + `AttachChild` driven by INNT, receiver-side
+  primer + 50/100/500 ms refresh schedules); all failed live test or
+  the 4-agent debate. See [CHANGELOG.md](CHANGELOG.md) for the full RE
+  trace.
+- **Sender fires a 50 ms auto re-equip cycle** to fix a first-equip
+  render lag I couldn't fix on the receiver alone. The first equip of
+  a modded weapon used to render on the ghost as either stock or as the
+  previous weapon — one event behind. The fix mirrors a workaround I
+  noticed manually (equip a Baton, then the modded weapon → renders
+  correctly). 50 ms after the user's `EquipObject`, the sender posts
+  `WM_APP+0x4F`; handler calls `UnequipObject(form, slot=0)` +
+  `EquipObject(form, …)` for the same form, guarded by a TLS flag so
+  it doesn't recurse. Receiver gets `EQUIP X / UNEQUIP X / EQUIP X` on
+  the wire and the second `EQUIP X` is the one that renders correctly.
+  A message-id collision (`FW_MSG_AUTO_RE_EQUIP` and `FW_MSG_EQUIP_APPLY`
+  both at `WM_APP+0x4C`) cost me an afternoon — the cycle was scheduled
+  but the WndProc routed every post to the wrong handler. Now at
+  `WM_APP+0x4F`.
+- **Net cleanup.** `MAX_RETRANSMITS` 8 → 32 (bursty equip traffic was
+  killing the channel inside ~11 s); mesh-blob shipping disabled
+  (`SHIP_LEGACY_BLOBS = false`) since everything I need now rides in
+  the EQUIP_OP tail; OMOD form ids inline in `PendingEquipOp` instead
+  of via a global stash (the old design had a refresh-vs-overwrite
+  race); `UNEQUIP` ops with `slot_form_id == 0x4334D` (engine's
+  internal `kReadiedWeapon` swap slot) are filtered in the drain so the
+  freshly-attached weapon isn't wiped ~7 ms after attach.
+- **Honest residual.** Rifles (sniper, assault, hunting, shotgun) still
+  render invisible on the ghost. The same code path runs for them, so
+  the failure is either in base path resolution (my canonical fallback
+  may not match every rifle family's authoring convention) or in the
+  BSConnectPoint authoring on rifle base NIFs. Next session I'll dump
+  a rifle base subtree and check which `BSConnectPoint::Children`
+  entries it actually carries. Tag
+  `v0.5.0-w4-modded-firearms-pistols`.
 
 ### M9 v0.4.2 (2026-05-04) — Vault Suit cycle stability via path-routed deep clone — STABLE
 
@@ -208,38 +274,6 @@ Latest 3 patches summarized below. **Full version history in
 - Both wedges settled by HIGH×HIGH consensus from independent IDA
   agents plus TTD ground-truth verification.
 
-### M9 v0.4.0 (2026-05-01) — wedge 4 foundation: weapon mesh on ghost (PoC, needs heavy polish) [Video coming soon]
-
-- New protocol v9 message types `MESH_BLOB_OP/BCAST` (chunked mesh
-  replication, 1372 B `chunk_data` sized BCAST-safe so server can
-  fan-out without re-fragmentation). Sender extracts BSGeometry leaves
-  from runtime-assembled weapon via 3-level indirection on
-  `BSGeometryStreamHelper` at `clone+0x148`. 22 new pytest cases.
-- 300 ms deferred mesh-tx via `FW_MSG_DEFERRED_MESH_TX`/`WM_APP+0x4E`
-  worker — beats the race against engine's async weapon assembly post-
-  `g_orig_equip` (immediate walker frequently captures empty).
-- Receiver unified state machine `ghost_set_weapon(peer, form,
-  candidates[])` — single weapon slot per peer, atomic transitions,
-  downgrade protection (placeholder NIFs never overwrite proper ones),
-  idempotent. All wire receivers (EQUIP_BCAST, MESH_BLOB, UNEQUIP)
-  funnel through.
-- Smart NIF resolution chain: canonical `Weapons\X\X.bgsm` pick →
-  folder-derived canonical (`Weapons\MachineGun\MachineGun.nif` from
-  sub-component bgsm paths) → all sub-component bgsm-derived → legacy
-  TESModel probe (extended `[0x60..0x180]` range + generic Dummy
-  filter).
-- ⚠️ **Hard-won PoC, NOT production**. Working: pistols, baton,
-  Fat Man, Grognak's Axe, Deathclaw Gauntlet visible on ghost as
-  STOCK base. Modded firearms render without mod parts. Heavily-modded
-  rifles show only one sub-component (just the barrel for assault
-  rifle, just the stock for shotgun). Hunting rifle invisible. True
-  mod replication blocked on full BSVertexDesc RE — see [CHANGELOG.md
-  ](CHANGELOG.md) "Why this was extremely hard" for the 10-point
-  list of engine constraints fought (runtime-assembled weapons with
-  no static NIF, async assembly walker race, donor shader vd
-  mismatch crashes, server fan-out chunk-overflow, downgrade races,
-  cross-form mesh contamination, ...). Tag: `v0.4.0-w4-foundation`.
-
 ## Why this exists
 
 I've been waiting ~10 years for someone to ship Fallout 4 multiplayer.
@@ -254,10 +288,10 @@ Existing efforts I'm aware of:
 This project takes a different architectural bet: **native scene-graph
 injection** (BSFadeNode → ShadowSceneNode) plus per-bone joint
 replication via the engine's own `UpdateDownwardPass` propagation,
-instead of reimplementing skinning from scratch. We let the engine do
+instead of reimplementing skinning from scratch. I let the engine do
 the heavy lifting (skin upload, GPU constant buffers, lighting, shadows
 when fixed) and feed it joint matrices via memory writes that match
-exactly what its anim graph would produce.
+what its anim graph would have produced.
 
 Whether this scales cleanly to 10 peers is an open question — current
 testing is 2-peer. The RE work for the 1.11.191 next-gen build (skin
@@ -268,8 +302,8 @@ that should be most reusable for anyone else attempting the same thing.
 
 - **Fingers don't articulate** — finger joints exist only in the
   underlying havok skeleton (`.hkx`), not in the rendered scene-graph
-  tree we walk. Receiver gets a sentinel quat for them and falls back
-  to bind pose (slightly curled fingers, not extended T-pose).
+  tree the receiver walks. Sentinel quat for them, falling back to
+  bind pose (slightly curled fingers, not extended T-pose).
 - **1st-person sender → ghost adopts V/T-pose stub** — when the sender
   is in 1P view, the engine animates the alt-tree body to a simplified
   stub pose since the body is invisible to the local camera. Two
@@ -293,34 +327,20 @@ that should be most reusable for anyone else attempting the same thing.
 - **Network rate-limited to 20Hz** — works smoothly on LAN, untested
   over real-world internet routes; receiver-side interpolation between
   POSE_BROADCAST frames is open work.
-- **Modded weapons render as STOCK on ghost** — M9.w4 v0.4.0 ships the
-  pipeline (mesh-blob wire + state machine + NIF resolution) but the
-  receiver doesn't reconstruct mod parts. Compensator / scope / custom
-  barrel / paint variants on a peer's weapon are NOT visible to other
-  peers; they see the base weapon NIF only. True mod replication
-  blocked on full `BSVertexDesc` RE — needed to rebuild factory-output
-  BSTriShapes that the engine's existing shaders accept (donor shader
-  cloning crashed in render walk every time during v0.4.0 iteration —
-  vd format mismatch). Deferred to v0.5+. See [CHANGELOG.md](CHANGELOG.md)
-  "Why this was extremely hard" for the full investigation.
-- **Heavily-modded rifles show only ONE sub-component on ghost** —
-  assault rifle renders just the barrel; double-barrel shotgun renders
-  just the wood stock. The receiver's smart NIF resolution picks the
-  first loadable candidate from the wire's bgsm paths; for runtime-
-  assembled rifles that's a sub-component (`MachineGunBarrelLong01.nif`)
-  rather than an assembled weapon (the latter doesn't exist as a static
-  NIF — it's composed at `EquipObject` time from N sub-NIFs).
-- **Hunting Rifle invisible on ghost** — neither the canonical bgsm
-  pick nor the folder-derived heuristic
-  (`Weapons\HuntingRifle\HuntingRifle.nif`) finds a loadable NIF; falls
-  back to `RecieverDummy.nif` placeholder (empty NIF). Likely needs a
-  hard-coded path table or a different resolution strategy.
-- **Cross-form mesh contamination** — walker on the sender sometimes
-  captures bgsm paths from a PREVIOUSLY-equipped weapon still residing
-  in the player's bipedAnim subtree (observed: assault rifle equip
-  captures hunting rifle `308Casings` bgsm paths). Receiver gets
-  contaminated candidate list; usually still loads correctly thanks to
-  the multi-candidate try-each fallback, but path resolution is brittle.
+- **Rifles still render invisible on ghost** — pistols (10mm,
+  Handmade pistol-form) work end-to-end with v0.5.0's BSConnectPoint
+  pipeline; rifles (sniper / assault / hunting / shotgun) don't yet.
+  Same code path executes — failure is in either base path resolution
+  (canonical fallback `Weapons\<X>\<X>.nif` may not match every rifle
+  family's authoring convention) or in BSConnectPoint::Children
+  authoring differing for rifle base NIFs. Next session investigation
+  to close M9 fully.
+- **Sender sees a ~50 ms weapon flicker on equip** — visible side
+  effect of the v0.5.0 auto re-equip cycle: 50 ms after the user's
+  EquipObject the sender fires UnequipObject + EquipObject for the
+  same form to make the receiver render correctly. The user's own
+  weapon briefly disappears and reappears in their hand. Cosmetic; no
+  gameplay impact (animation graph and damage state aren't affected).
 
 ## Reverse-engineering target
 
@@ -334,7 +354,7 @@ copy of Fallout4.exe.
 
 Personal mod project. Not distributed. Requires owned copy of Fallout 4.
 No Bethesda IP committed to this repo (no game binaries, no BA2 contents,
-no decomp dumps — only our own analysis dossiers).
+no decomp dumps — only my own analysis dossiers).
 
 ## Notes
 

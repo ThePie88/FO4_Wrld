@@ -5,6 +5,193 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## M9 v0.5.0 — modded weapons visible on ghost (pistols) (2026-05-07) — STABLE
+
+Pistols with mods now render correctly on the remote ghost: peer A
+equips a 10mm with a reflex sight, suppressor, heavy receiver and
+extended mag, and peer B sees the exact same configuration in A's
+hand on the ghost. All mod parts visible, animated with A's pose,
+geometry fully assembled by the engine itself.
+
+As far as I can tell this is the first time it has been done in the
+FO4 multiplayer modding scene; previous attempts (Fallout Together,
+F4MP) never reached this point.
+
+### What was hard
+
+The engine's weapon-mod assembly is not driven by any user-callable
+"apply this OMOD list to this NiNode" function. I went through several
+plausible designs before finding the one that actually works:
+
+- **Synthetic `TESObjectREFR` + `vt[170]`** — refuted: `vt[170]` is just
+  a flag setter on the REFR. The actual NIF load is run by a
+  `NewInventoryMenuItemLoadTask` inside the Pipboy's
+  `Inventory3DManager`, which I'd have to recreate end-to-end.
+- **Direct `sub_1404580C0` sync load** — refuted: it returns a stock
+  NIF clone, with no OMOD context.
+- **BSModelProcessor post-hook reading the OIE** — refuted by live
+  test: the loaded weapon NIF carries no `BGSObjectInstanceExtra` in
+  its extra-data chain, so the OMOD-apply branch in the post-hook
+  never fires. The static decomp suggested it would, but the live
+  receiver path doesn't reach it.
+- **`find_node_by_name` + `AttachChild` driven by INNT** — refuted by
+  the 4-agent debate: the engine doesn't match by NiNode name for OMOD
+  attach, and the INNT property defaults to the literal string
+  `"Default"` for almost every vanilla receiver-replacement OMOD.
+- **Receiver-side primer (Baton attach+detach + 500/100/50 ms refresh
+  schedule)** — refuted: didn't fix the first-equip render lag.
+
+### What actually works
+
+Per-OMOD attach is `sub_140434DA0(omod_form, base_BSFadeNode,
+placeholder_or_NULL, flags)` (RVA `+0x00434DA0`). It reads the OMOD's
+`TESModel.modelPath` at `OMOD+0x50`, loads the sub-NIF via
+`sub_1417B3E90`, deep-clones via `sub_1416BA8E0`, registers materials
+via `sub_140255BA0`, then attaches via `sub_14186E960`.
+
+The attach helper `sub_14186E960` is **BSConnectPoint pairing**, not
+`NiNode::AttachChild`. The base weapon NIF authored by Bethesda carries
+a `BSConnectPoint::Children` BSExtraData array on its root (entries
+like `"Pistol10mmReceiver"`, `"WeaponMagazine"`, `"WeaponOptics1"`).
+The mod sub-NIFs carry a matching `BSConnectPoint::Parents` array.
+The engine matches the two arrays by string and parents the mod under
+the right slot — all driven by data baked into the NIF files, not by
+anything on the form.
+
+`sub_14098C100(refr)` (RVA `+0x0098C100`) is the public convenience
+entry that walks a REFR's OmodChain and calls `sub_140434DA0` per OMOD.
+I don't use it directly because building the synthetic REFR with all
+its preconditions would put me back at the failure mode the original
+GAMMA path hit.
+
+### Receiver pipeline
+
+`ghost_attach_assembled_weapon` does this:
+
+1. Resolve weapon `TESForm*` → `TESModel.modelPath`. The probe handles
+   the case where the default mod redirects to `*RecieverDummy.nif`;
+   the canonical fallback computes `Weapons\<folder>\<folder>.nif`
+   and tries that first.
+2. `nif_load_by_path` + `apply_materials` walker for the base.
+3. Deep-clone via the vt[26] wrapper `sub_1416BA800`, so the ghost
+   has its own per-peer instance and the cached NIF the local player
+   uses doesn't get polluted.
+4. Attach the base clone to the ghost's WEAPON bone.
+5. For each OMOD form id: `lookup_by_form_id` → check
+   `formType == 0x90` → `sub_140434DA0(omod, base_clone, NULL, 0)`.
+   The engine takes care of the rest.
+
+### Sender-side auto re-equip cycle (off-by-one fix)
+
+The first equip of a modded weapon rendered on the ghost as either
+stock or as the previous weapon — one event behind. Receiver-side
+primers and refresh schedules all failed to fix it.
+
+The fix mirrors a workaround I noticed manually: equipping a Baton
+first and then the modded weapon makes the modded weapon render
+correctly. So the sender now does this automatically.
+
+50 ms after the user's `EquipObject` fires, the sender's detour
+spawns a worker that posts `WM_APP+0x4F`. The handler sets a TLS
+guard and calls `UnequipObject(actor, form, slot=0)` and
+`EquipObject(actor, form, …)` for the same form. The TLS guard
+prevents the cycle from re-scheduling itself, but events still go
+out on the wire. The receiver gets `EQUIP X / UNEQUIP X / EQUIP X`
+and applies each normally — the second `EQUIP X` is the one that
+renders correctly.
+
+A message-id collision cost me an afternoon: my first
+`FW_MSG_AUTO_RE_EQUIP` constant was `WM_APP+0x4C`, the same as
+`FW_MSG_EQUIP_APPLY`. The `WndProc` dispatcher matched the first
+`if (msg == ...)` line and routed every auto-cycle `PostMessage` to
+`drain_equip_apply_queue` instead of the real handler. The cycle was
+scheduled fine but never fired. Now at `WM_APP+0x4F`. Reminder for
+next time: `grep` every `FW_MSG_*` constant before adding a new one.
+
+### Net cleanup
+
+- `MAX_RETRANSMITS` 8 → 32. Bursty equip-cycle traffic was killing
+  the channel inside ~11 s of relay hiccup; ~60 s tolerance now.
+- Mesh-blob shipping disabled (`SHIP_LEGACY_BLOBS = false` in
+  `weapon_capture::finalize_locked`). The v0.4.0 chunked mesh-blob
+  payload was the biggest reliable-traffic generator and is no
+  longer needed — everything I need rides in the EQUIP_OP tail.
+- OMOD form ids now travel inline in `PendingEquipOp`, not via a
+  global stash. The old global-stash design had a race: if a refresh
+  fired 500 ms after the original equip, it could pick up the next
+  weapon's mods because the stash had been overwritten in the meantime.
+
+### Receiver UNEQUIP filter
+
+`ActorEquipManager` fires `Equip(new) → Unequip(new from slot 0x4334D)
+→ Unequip(old from 0x4334D)` as part of its own swap-into-slot
+pattern. Before the fix, the middle `Unequip(new from 0x4334D)`
+matched the slot and wiped the just-attached weapon ~7 ms after attach
+(live trace 06:34:47.780 → .787). The drain now skips `UNEQUIP` ops
+with `slot_form_id == 0x4334D` (the `kReadiedWeapon` BGSEquipSlot).
+Player-initiated unequips arrive with `slot_form_id = 0` and pass
+through.
+
+### Files changed
+
+- `fw_native/src/native/scene_inject.cpp/h` — new
+  `ghost_attach_assembled_weapon`, `seh_call_omod_attach` POD
+  wrapper, transient-slot filter notes; removed obsolete
+  `run_baton_primer` and the receiver-side primer cycle.
+- `fw_native/src/hooks/equip_hook.cpp/h` — `tls_in_auto_re_equip`,
+  `schedule_auto_re_equip`, `on_auto_re_equip_message`,
+  `FW_MSG_AUTO_RE_EQUIP = WM_APP + 0x4F`.
+- `fw_native/src/main_thread_dispatch.h/.cpp` — inline OMOD fields on
+  `PendingEquipOp`, drain routes EQUIP through the new path with
+  legacy fallback, transient-slot filter on UNEQUIP.
+- `fw_native/src/net/client.cpp` — EQUIP_BCAST decode fills
+  `op.omod_form_ids` inline; `set_peer_omod_forms` gated on
+  `is_equip`.
+- `fw_native/src/hooks/main_menu_hook.cpp` — `WndProc` dispatch for
+  `FW_MSG_AUTO_RE_EQUIP`.
+- `fw_native/src/native/weapon_capture.cpp` — `SHIP_LEGACY_BLOBS =
+  false`.
+- `fw_native/src/net/reliable.h` — `MAX_RETRANSMITS = 32`.
+
+### Dossiers (`re/`)
+
+- `COLLAB_ALPHA_equip_chain.md` — top-down equip pipeline trace.
+- `COLLAB_BETA_unequip_chain.md` — BipedAnim slot table layout,
+  `slot[+0x40]` swap primitive `sub_1402C9BA0`.
+- `COLLAB_GAMMA_alt_paths.md` — Inventory3DManager / WorkshopMenu
+  synthetic REFR pattern (later refuted).
+- `COLLAB_DELTA_synthetic_refr.md` — TESObjectREFR vtable map.
+- `COLLAB_FOLLOWUP_vt170.md` — vt[170] decoded as flag-setter.
+- `COLLAB_FOLLOWUP_loaded3d.md` — `*(refr+0xF0)+0x8` confirmed for
+  plain REFR loaded3D.
+- `COLLAB_FOLLOWUP_oie_construction.md` — manual
+  `BGSObjectInstanceExtra` fabrication recipe (kept as fallback
+  reference, not the active path).
+- `COLLAB_FOLLOWUP_sub1404580C0.md` — `sub_1404580C0` body decoded;
+  the 4th arg is a `BSFixedString*` for SetName, not modelExtraData.
+- `COLLAB_FOLLOWUP_pipboy_omod_apply.md` — Inventory3DManager task
+  processor decoded; no factored OMOD applier inside.
+- `COLLAB_FOLLOWUP_omod_apply_xref.md` — bottom-up xref hunt that
+  found `sub_140434DA0` and the BSConnectPoint mechanism.
+- `COLLAB_DEBATE_omod_apply_VERDICT.md` — independent verification
+  of the bottom-up finding, 98% confidence.
+
+### Pending (next session, M9 close)
+
+Rifles (sniper / assault / hunting / shotgun) still render invisible
+on the ghost. The same code path runs for them as for pistols, so the
+failure is either in base path resolution (the canonical fallback may
+not match every rifle family's authoring convention) or in the
+BSConnectPoint authoring on the rifle base NIFs. I'll start by
+dumping the rifle base subtree and checking what `BSConnectPoint::
+Children` it actually carries.
+
+Once rifles are visible, M9 closes with all five wedges done.
+
+**Tag:** `v0.5.0-w4-modded-firearms-pistols`.
+
+---
+
 ## M9 v0.4.2 — Vault Suit cycle stability via path-routed deep clone (2026-05-04) — STABLE
 
 Closes four long-standing equip-cycle bugs on Vault Suit and unifies the

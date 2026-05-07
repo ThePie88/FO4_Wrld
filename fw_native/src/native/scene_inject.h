@@ -343,6 +343,353 @@ bool ghost_set_weapon(const char* peer_id,
 bool ghost_clear_weapon(const char* peer_id,
                          std::uint32_t expected_form_id);
 
+// === M9.w4 PROPER (v0.4.2+) — captured-mesh receiver reconstruction ========
+//
+// POD view of one captured mesh from sender's clone-factory pipeline.
+// All pointers reference caller-owned storage; the function copies what
+// it needs into engine-owned BSTriShape allocations during the call.
+struct CapturedMeshView {
+    const char*         m_name;             // null-terminated, e.g. "10mmSuppressor:0"
+    const char*         parent_placeholder; // attach-target NiNode name, may be empty
+    const float*        positions;          // 3*vert_count floats (12B/vert)
+    const std::uint16_t* indices;           // 3*tri_count u16
+    std::uint16_t       vert_count;
+    std::uint32_t       tri_count;
+    const float*        local_transform;    // 16 floats; nullptr = identity
+};
+
+// Reconstruct + attach captured weapon-mod meshes to the ghost's already-
+// loaded base weapon NIF. Caller must have invoked ghost_set_weapon FIRST
+// to load the base; this function adds the mod meshes ON TOP of it.
+//
+// Per mesh:
+//   1. Dedup by m_name (engine clones some pieces twice; keep first).
+//   2. Build BSTriShape via factory `sub_14182FFD0` from positions+indices.
+//   3. Set local_transform at +0x30..+0x6C.
+//   4. Find `parent_placeholder` NiNode in the loaded base NIF tree.
+//   5. attach_child_direct(parent, geom).
+//
+// No shader/material binding in this initial cut — geometry renders
+// with default (likely pink/white). Material binding is a follow-up.
+//
+// Returns count of meshes successfully attached, or -1 on hard failure
+// (no ghost weapon slot, factory not resolved, etc.).
+//
+// Threading: MAIN THREAD ONLY. Called from drain_mesh_blob_apply_queue
+// after ghost_set_weapon succeeds.
+int attach_captured_meshes_to_ghost_weapon(
+    const char*               peer_id,
+    std::uint32_t             item_form_id,
+    const CapturedMeshView*   meshes,
+    std::size_t               mesh_count);
+
+// === M9.w4 PROPER (v0.4.2+, Path Y) — disk-loaded mod NIFs ================
+//
+// ALTERNATIVE to the factory-reconstruct path. Instead of building
+// BSTriShape from raw vertex/index data captured by the sender, this
+// function uses the captured `parent_placeholder` (= mod sub-NIF root
+// name, e.g. "10mmSuppressor") + `bgsm_path` (gives us the base folder)
+// to derive a disk path for each mod's sub-NIF and load it via the
+// engine's standard nif_load_by_path. The engine handles shader binding
+// + material resolution naturally — no vertex format mismatch crash
+// (which is what doomed the donor-clone approach in v0.4.0 + v0.4.2 P3.1).
+//
+// Per UNIQUE parent_placeholder (deduped):
+//   1. Collect base folder from the captured bgsm_path's parent dir.
+//   2. Build candidate disk paths:
+//        Weapons\<base_folder>\<placeholder>.nif
+//        Weapons\<base_folder>\Mods\<placeholder>.nif
+//   3. nif_load_by_path on each candidate; first success wins.
+//   4. apply_materials walker on the loaded mod NIF.
+//   5. attach_child_direct to ghost's base weapon root.
+//
+// Skips entries whose m_name appears in the base NIF tree (= stock
+// parts already in the loaded base, no need to add a duplicate).
+//
+// Returns count of mod NIFs successfully loaded + attached.
+//
+// Threading: MAIN THREAD ONLY.
+int attach_mod_nifs_via_disk(
+    const char*               peer_id,
+    std::uint32_t             item_form_id,
+    const CapturedMeshView*   meshes,
+    std::size_t               mesh_count);
+
+// === M9.w4 PROPER (v0.4.2+) — BSResource::EntryDB live probe ==============
+//
+// Dumps first N non-null entries from the NIF resource manager singleton
+// to settle 4-agent disagreement on Entry+0x10 layout. Logs raw qwords +
+// per-field interpretation attempts (BSFixedString-like, raw char*,
+// FO4 +0x18 pool entry). Threading: SEH-caged, can run from any thread.
+void dump_resmgr_first_entries(int count_max);
+
+// Spawn a one-shot worker thread that calls dump_resmgr_first_entries(8)
+// after `delay_ms`. Use 60-90s delay to give the player time to load
+// game + walk around + equip a weapon (so resmgr has weapon entries).
+void arm_resmgr_probe(unsigned int delay_ms);
+
+// M9.w4 PROPER (v0.4.2+, RESMGR-LOOKUP) — find a cached NIF by its
+// BSFadeNode m_name. Walks the BSResource::EntryDB<BSModelDB> bucket
+// array, returns the first node matching `target_name`.
+//
+// Caller must REFBUMP the returned node before attaching to ghost
+// (the singleton holds its own ref, but attach_child_direct pulls
+// another ref for the parent slot — without a pre-bump, detach
+// could free it from under the cache).
+//
+// Returns nullptr on miss / engine not ready.
+//
+// SEH-caged. Threading: main thread.
+void* find_loaded_nif_by_m_name(const char* target_name);
+
+// Path NIF-CAPTURE — load `path` via nif_load_by_path + apply_materials,
+// attach as child of the ghost's already-loaded base weapon NIF (slot's
+// nif_node, set by ghost_set_weapon). Returns true on success.
+//
+// Used by drain_mesh_blob_apply_queue when handling a path-only blob:
+// the FIRST path goes through ghost_set_weapon (slot replacement),
+// subsequent paths go through this helper (additive attach).
+//
+// Threading: MAIN THREAD ONLY.
+// 2026-05-06 — slot_name added so disk-loaded mods route to the same
+// resolved placeholder as resmgr-share path. Pass nullptr or empty for
+// the legacy "attach at base_root" behaviour.
+bool attach_extra_nif_to_ghost_weapon(const char* peer_id,
+                                       const char* path,
+                                       const char* slot_name = nullptr);
+
+// 2026-05-06 LATE evening (M9 closure, PLAN B — NiStream serialization).
+// SENDER side: serialize the LOCAL player's assembled weapon subtree
+// (= first child of WEAPON bone, the engine-assembled weapon with all
+// OMODs applied) to a byte buffer, ship via fw::net::client over the
+// MESH_BLOB_OP wire path with num_meshes=0xFF sentinel, free the
+// buffer. Returns the number of chunks queued (0 = nothing sent).
+//
+// Called from weapon_capture::finalize_pending() when an equip event
+// settles. Bypasses the per-leaf ExtractedMesh capture pipeline entirely
+// — instead of trying to reconstruct the assembled weapon on the
+// receiver from primitive parts (which kept failing), we let the engine
+// serialize what it already assembled and let the engine on the other
+// side load it back.
+//
+// `item_form_id` correlates with EQUIP_OP/BCAST.
+// Threading: MAIN THREAD (uses NiStream which touches engine globals).
+std::size_t serialize_and_ship_player_weapon(std::uint32_t item_form_id);
+
+// RECEIVER side: deserialize a NIF byte buffer and attach the resulting
+// root subtree to the ghost's WEAPON bone. Replaces the per-mesh
+// receiver path for nif_blob frames. Returns true on success.
+//
+// The deserialized root is tracked in slot.extra_mods for cleanup on
+// next equip. SEH-caged at every engine call.
+//
+// Threading: MAIN THREAD ONLY.
+bool deserialize_and_attach_nif_blob(const char* peer_id,
+                                       std::uint32_t item_form_id,
+                                       const void* nif_buf,
+                                       std::size_t nif_size);
+
+// M9.w4 PROPER (v0.4.2+, RESMGR-SHARE) — refbump-share an existing
+// engine-loaded BSFadeNode (returned by find_loaded_nif_by_m_name) and
+// attach it as child of the ghost's loaded base weapon NIF.
+//
+// Refbump is required: the singleton holds 1 ref already, but
+// attach_child_direct grabs ANOTHER ref for the parent slot. Without a
+// pre-bump, on detach the engine could free the node from under the cache.
+//
+// `display_name` is the parent_placeholder string captured by the
+// sender (e.g. "Pistol10mmReceiver" — the mod NIF root's m_name). It
+// is used purely as the resmgr-share KEY (matching the cached
+// BSFadeNode m_name) and as a log label. Do NOT use it as the slot
+// search key — that's what `slot_name` is for.
+//
+// `slot_name` is the m_name of the placeholder NiNode INSIDE the base
+// weapon NIF where this mod should attach (e.g. "PistolReceiver"). The
+// sender extracts this by walking one level above the mod root in its
+// own assembled weapon tree (= grand-parent of the captured
+// BSGeometry leaf). The receiver runs find_node_by_name on the loaded
+// base weapon root looking for an NiNode with this exact name and
+// attaches the mod as a child of THAT.
+//
+// Pass nullptr or empty for `slot_name` if unavailable (e.g. pre-fix
+// sender DLL): the mod is then attached at base_root and the log marks
+// it FALLBACK. Same fallback fires if the slot name is non-empty but
+// no placeholder by that name is found inside the base subtree.
+//
+// `local_transform` is 16 floats (3x4 rotation + 3 translation + 1
+// scale) captured by the sender from its own engine post mod-assembly.
+// We write them to NIAV_LOCAL_ROTATE_OFF on the mod node so it lands
+// where the engine put it on the sender side. Pass nullptr to skip the
+// transform write (mod will inherit whatever transform it had — usually
+// identity for a fresh resmgr entry, which is wrong, so don't skip
+// unless you know what you're doing).
+//
+// Returns true on attach success (placeholder OR fallback). Threading:
+// main thread only.
+bool attach_extra_node_to_ghost_weapon(const char* peer_id,
+                                        void* node,
+                                        const char* display_name,
+                                        const char* slot_name,
+                                        const float local_transform[16]);
+
+// 2026-05-05 — hide a ghost weapon's "default" base geometry when the
+// blob carries mod descriptors. Walks the loaded base subtree and sets
+// NIAV_FLAG_APP_CULLED on every BSGeometry-derived leaf (BSTriShape,
+// BSSITF, BSDynamicTriShape).
+//
+// Why: FO4 weapons aren't "base + mod patches", they're "all parts are
+// mods, including a default receiver/barrel/grip etc.". When we load
+// e.g. 10mmRecieverDummy.nif (which despite the name carries the
+// stock-pistol geometry) and then attach the user-chosen mods on top
+// (Pistol10mmReceiver, 10mmHeavyBarrel, …), the user sees the default
+// geometry AND the chosen mods overlapping ("two pistols stacked"
+// visual). Culling the base geometry leaves makes only the mods
+// visible — i.e. the actual modded loadout the sender has.
+//
+// Returns the count of leaves culled (zero is fine — means the base
+// was already empty / structural). Returns -1 if the peer has no
+// active ghost weapon slot (call ghost_set_weapon first).
+//
+// Idempotent per-peer per-base — internally we set a `base_culled`
+// flag on the slot after the first call so subsequent invocations
+// during repeat equips of the same cached base don't re-walk into
+// previously-attached mod subtrees (which would cull the mods'
+// geometry too, the symptom that produced the "floating fragments
+// after second equip" bug observed 2026-05-05).
+//
+// Threading: main thread only.
+int cull_base_geometry_for_modded_weapon(const char* peer_id);
+
+// === M9 closure (Phase 1, 2026-05-06) — OMOD-derived mod NIF paths ===
+//
+// The sender already ships the list of equipped OMOD form-ids in the
+// EQUIP_BCAST tail (decoded at client.cpp ~L1063). Without them, the
+// receiver was guessing mod NIF paths via bgsm-derive heuristics + 18
+// fallback subfolder patterns — fragile (e.g. file basename `10mmReflexSight.nif`
+// vs runtime m_name `10mmReflexDot` mismatch).
+//
+// With OMOD form-ids in hand, each one resolves DETERMINISTICALLY to
+// its NIF file path via the engine: lookup_by_form_id(omod) → TESForm*
+// (validated as OMOD by form-tag byte +0x1A == 0x90), then read
+// TESModel.modelPath at OMOD +0x50 (BSFixedString handle pattern). This
+// is the same path Bethesda's engine itself uses during runtime mod
+// assembly — ground truth.
+//
+// We stash the per-peer OMOD list at EQUIP_BCAST decode time (net
+// thread, via set_peer_omod_forms) and consume it in
+// drain_mesh_blob_apply_queue (main thread).
+
+// Stash the OMOD form-ids attached to peer_id's currently-equipped
+// weapon. Called from net-thread EQUIP_BCAST decode after the wire
+// tail is parsed. `forms` is a non-owning view; we copy into the
+// internal storage. Pass form_count=0 to clear (UNEQUIP, peer
+// disconnect, etc.). Threading: any thread.
+void set_peer_omod_forms(const char* peer_id,
+                          const std::uint32_t* forms,
+                          std::uint8_t form_count);
+
+// Resolve an OMOD form-id to the NIF file path stored in its
+// TESModel.modelPath sub-object. Returns nullptr if the form isn't
+// loaded, isn't an OMOD (form-tag byte +0x1A != 0x90), or has no
+// modelPath. The returned pointer is stable for the form's lifetime
+// (BSFixedString pool entry). Threading: main thread only (engine
+// form lookup is main-thread-affine).
+const char* resolve_omod_model_path(std::uint32_t omod_form_id);
+
+// Snapshot the per-peer OMOD form-id list set by set_peer_omod_forms.
+// Caller passes a buffer; receives the count actually copied (≤ buffer
+// capacity, which is bounded internally to 32). Threading: any thread.
+std::uint8_t snapshot_peer_omod_forms_public(const char* peer_id,
+                                              std::uint32_t* out_buf,
+                                              std::size_t out_cap);
+
+// 2026-05-06 — diagnostic: dump the loaded ghost weapon subtree as
+// indented [name + vtable RVA] lines. Used to discover empirically
+// which placeholder NiNode names exist inside a base weapon NIF
+// (10mmPistol.nif etc.) — those are the INNT names where mod NIFs
+// should attach. We don't yet have a way to extract INNT from OMOD
+// records (engine's serialization format is non-trivial), so this
+// gives us ground truth from the loaded tree itself.
+//
+// `max_depth` caps the recursion (typical weapon NIFs are 3-5 deep).
+// Threading: main thread only.
+void dump_ghost_weapon_subtree(const char* peer_id, int max_depth);
+
+// 2026-05-06 LATE evening — diagnostic dump of the WEAPON attach node
+// state (what the engine actually sees, vs what our slot map says).
+// Logs:
+//   • parent chain from WEAPON UP to scene root
+//   • full WEAPON subtree (DFS, vtable + name + parent + culled flag)
+//   • global g_owned_clones tracker size
+//   • per-peer slot summary
+// Call at strategic moments (post-set-weapon, post-clear-weapon,
+// post-mesh-blob-attach) to diff what's REALLY attached vs what we
+// think is attached. `event_tag` is a free-form string included in
+// every log line for grep-ability.
+void dump_weapon_attach_state(const char* event_tag);
+
+// 2026-05-05 — detach + refdec every cached mod node previously
+// attached via attach_extra_node_to_ghost_weapon for `peer_id`.
+//
+// Called by drain_mesh_blob_apply_queue at the START of each equip's
+// mod-attach loop, BEFORE the new attach pass. Without this, the
+// cached BSFadeNode of the ghost weapon base (shared across equip
+// cycles in the engine resmgr) accumulates child entries: each prior
+// equip's mods stay attached, and on rendering they overlap with the
+// current equip's mods → "weapon-soup" / "armi doppie" visual the
+// user reported.
+//
+// Idempotent: calling on a peer with no extras is a no-op.
+//
+// Threading: main thread only.
+void clear_ghost_extra_mods(const char* peer_id);
+
+// === M9 closure (2026-05-07) — synthetic-REFR ghost weapon attach =========
+//
+// Bridges fw::native::synthetic_refr (which produces a fully-assembled,
+// OMOD-applied BSFadeNode* asynchronously) to the existing ghost weapon
+// machinery (g_ghost_weapon_slot, g_owned_clones, attach_child_direct).
+//
+// Caller passes (peer_id, weapon_form_id, omod_form_ids[]). We:
+//   1. Schedule a synthetic_refr::assemble_modded_weapon_async call.
+//   2. Inside the resulting callback (main thread, ~100-300ms later):
+//      a. clear_ghost_extra_mods(peer_id) — release the previous equip
+//      b. find ghost WEAPON bone via skin_rebind::get_bone_by_name
+//      c. attach assembled_root as child of the bone
+//      d. record in g_ghost_weapon_slot for next-equip cleanup
+//
+// Returns true if the assembly was scheduled. Returns false (and fires
+// nothing) if synthetic_refr couldn't even queue the request. The
+// caller can fall back to the legacy ghost_set_weapon path on false.
+//
+// Threading: MAIN THREAD ONLY. Schedules the assembly via the in-process
+// poll worker; callback fires on main thread via WM_APP message.
+bool ghost_attach_assembled_weapon(const char* peer_id,
+                                     std::uint32_t weapon_form_id,
+                                     const std::uint32_t* omod_form_ids,
+                                     std::size_t num_omods);
+
+// SPAI Tier 1 — force-prewarm a single NIF path into the engine's
+// BSResource::EntryDB<BSModelDB> cache. Wraps the canonical load
+// sequence (texture-resolver killswitch ON → nif_load_by_path with
+// FADE_WRAP|POSTPROC → apply_materials → killswitch restore) so that
+// the resulting BSFadeNode is fully shader/material-bound and shows up
+// in resmgr lookups by m_name from then on.
+//
+// We do NOT attach the node to anything. The engine's resmgr holds its
+// own ref, and the loader's out-pointer ref is intentionally dropped on
+// the floor — we only want the side effect of "this NIF is now cached".
+// Subsequent ghost equips can then resolve the node via
+// find_loaded_nif_by_m_name and attach via attach_extra_node_to_ghost_weapon.
+//
+// Returns true on rc==0 + non-null node. False on resolver-not-ready,
+// loader rc!=0, or null out-node. SEH-caged.
+//
+// Threading: MAIN THREAD ONLY (resolver init + apply_materials + scene
+// graph internal allocator state are all main-thread-affine — same
+// rationale as the body/head/equip load paths).
+bool spai_force_load_path(const char* path);
+
 // --- M2.2: BSDynamicTriShape allocation (empty, no geometry yet) -----------
 
 // Allocate + in-place-ctor a BSDynamicTriShape via the engine's allocator,

@@ -11,6 +11,8 @@
 #include "equip_cycle.h"     // B8: post-LoadGame BipedAnim normalize
 #include "equip_hook.h"      // M9 wedge 1: equipment-event sender hook
 #include "engine_tracer.h"
+#include "subrefload_hook.h" // M9 closure: live capture of sub_1404580C0 args
+#include "bsmodelproc_hook.h" // M9 closure: live capture of BSModelProcessor post-hook
 
 #include "../log.h"
 #include "../native/nif_path_cache.h"  // M9 w4 witness pattern step 1
@@ -116,6 +118,35 @@ InstallSummary install_all(std::uintptr_t module_base,
         fw::native::ni_alloc_tracker::install(module_base);
     if (!alloc_trk_ok) {
         FW_WRN("hooks: ni_alloc_tracker install FAILED");
+    }
+
+    // M9 closure (2026-05-07) — diagnostic hook on sub_1404580C0.
+    // GAMMA's vt[170] path was refuted (sub_140513760 is a flag-setter,
+    // not a loader). DELTA §8 candidate: sub_1404580C0 = direct
+    // load+clone+wrap, opts byte 0x08 triggers BSModelProcessor → OMOD
+    // apply. The 4th arg `modelExtraData` carries OMOD context but its
+    // shape is unknown statically. This hook captures every fire's
+    // raw args + hex dumps so we can reverse the layout from live data.
+    // Trigger: open Pipboy, hover modded weapons. First 24 fires logged.
+    const bool subload_ok = install_subload_hook(module_base);
+    if (!subload_ok) {
+        FW_WRN("hooks: subrefload install FAILED");
+    }
+
+    // M9 closure (2026-05-07) — diagnostic hook on sub_1402FC0E0
+    // (BSModelProcessor post-hook). Per ALPHA's dossier, this is THE
+    // function where OMODs get attached to a freshly-parsed BSFadeNode.
+    // Triggered any time the engine parses a NIF with opts.flag&0x08
+    // set + the BSModelProcessor singleton non-null. EQUIP of a modded
+    // weapon fires this on the receiving end. Logging captures: args,
+    // node ptr, extra-data chain (the post-hook reads node+0x18), and
+    // what the form-info path gives us. Goal: discover what state must
+    // be present in memory for the OMOD branch to fire so we can
+    // reproduce it on a synthetic load. First 32 weapon/armor fires
+    // logged; everything else silently passed through.
+    const bool bsmp_ok = install_bsmodelproc_hook(module_base);
+    if (!bsmp_ok) {
+        FW_WRN("hooks: bsmodelproc install FAILED");
     }
 
     // M9 wedge 4 — hook the BSTriShape CLONE FACTORY (sub_1416D99E0).

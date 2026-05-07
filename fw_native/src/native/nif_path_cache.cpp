@@ -36,6 +36,7 @@
 #include "../hook_manager.h"
 #include "../log.h"
 #include "ni_offsets.h"
+#include "weapon_capture.h"  // M9.w4 PROPER (v0.4.2+, Path NIF-CAPTURE)
 
 namespace fw::native::nif_path_cache {
 
@@ -148,6 +149,11 @@ void* __fastcall detour_nif_load(
     // defensive).
     if (buf[0] == 0) return rc;
 
+    // M9.w4 PROPER (v0.4.2+, Path NIF-CAPTURE) — notify weapon_capture if
+    // an equip window is currently armed. Filters internally to weapon
+    // paths; cheap fast-out otherwise.
+    fw::native::weapon_capture::record_loaded_path(buf);
+
     // Insert under exclusive lock. Cap-and-clear on overflow.
     {
         std::unique_lock<std::shared_mutex> lk(g_mtx);
@@ -200,6 +206,12 @@ int __fastcall detour_cache_resolver(
     char buf[MAX_PATH];
     if (!seh_strcpy(path, buf, sizeof(buf))) return rc;
     if (buf[0] == 0) return rc;
+
+    // M9.w4 PROPER (v0.4.2+, Path NIF-CAPTURE) — notify weapon_capture.
+    // Resolver fires on EVERY lookup including cache hits, so this is
+    // where we catch repeat-equips of the same modded weapon (worker
+    // hook only fires on cache miss).
+    fw::native::weapon_capture::record_loaded_path(buf);
 
     // Detect weapon-ish paths for quick visual scanning of the log.
     // FO4 uses "Weapons\\..." rooted under "Meshes\\". Because we observe

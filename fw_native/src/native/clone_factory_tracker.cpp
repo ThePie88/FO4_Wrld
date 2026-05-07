@@ -13,6 +13,7 @@
 
 #include "../hook_manager.h"
 #include "../log.h"
+#include "weapon_capture.h"  // M9.w4 PROPER: pipe each clone into capture window
 
 namespace fw::native::clone_factory_tracker {
 
@@ -106,6 +107,15 @@ void* __fastcall detour_clone_factory(void* a1, void* a2) {
     }
 
     void* clone = g_orig(a1, a2);
+
+    // M9.w4 PROPER (v0.4.2+) — feed every clone into the weapon-capture
+    // pipeline. record_clone() does a fast-out atomic check; if no equip
+    // window is currently armed it returns immediately. When armed (first
+    // ~500ms after a modded weapon equip), it stages source→clone for
+    // later mesh extraction + ship.
+    if (a1 && clone) {
+        fw::native::weapon_capture::record_clone(a1, clone);
+    }
 
     // Cache the clone→source mapping for later walker queries.
     if (clone && a1) {

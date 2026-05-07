@@ -33,6 +33,8 @@ add_library(fw_native SHARED
     src/hooks/equip_cycle.cpp       # B8  : post-LoadGame BipedAnim normalize
     src/hooks/equip_hook.cpp        # M9 w1: equipment-event sender hook
     src/hooks/engine_tracer.cpp     # M6.3: native NIF-load path observation
+    src/hooks/subrefload_hook.cpp   # M9 closure: live capture of sub_1404580C0 args
+    src/hooks/bsmodelproc_hook.cpp  # M9 closure: live capture of BSModelProcessor post-hook
     src/net/udp_socket.cpp
     src/net/reliable.cpp
     src/net/client.cpp
@@ -55,6 +57,9 @@ add_library(fw_native SHARED
     src/native/bsgeo_input_cache.cpp # M9 w4 Path B-alt-1: factory input cache (BSTriShape* → vertex/index)
     src/native/ni_alloc_tracker.cpp  # M9 w4 Path B-alt-2: pool allocator caller RIP capture
     src/native/clone_factory_tracker.cpp # M9 w4: BSTriShape clone factory hook + hex dump
+    src/native/weapon_capture.cpp        # M9.w4 PROPER (v0.4.2+): clone-factory-driven mesh capture
+    src/native/spai_prewarm.cpp          # SPAI Tier 1: force-prewarm of weapon NIF resmgr
+    src/native/synthetic_refr.cpp        # M9 closure (2026-05-07): synthetic TESObjectREFR weapon assembly
 )
 
 target_link_libraries(fw_native PRIVATE minhook)
