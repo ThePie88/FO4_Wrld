@@ -129,6 +129,13 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         fw::dispatch::drain_door_apply_queue();
         return 0;
     }
+    // B6.3 v0.5.3: drain remote lock events. Each op resolves form_id +
+    // (base, cell) identity, then calls Papyrus binding sub_141158640
+    // with ai_notify=0 — no minigame, no key consumption, no AI events.
+    if (msg == fw::dispatch::FW_MSG_LOCK_APPLY) {
+        fw::dispatch::drain_lock_apply_queue();
+        return 0;
+    }
     // M9 wedge 2: drain remote equip events. Each op resolves form_id →
     // ARMA → 3rd-person NIF path and attaches/detaches on the ghost.
     // Engine NIF loader + scene graph mutation = main-thread-required.

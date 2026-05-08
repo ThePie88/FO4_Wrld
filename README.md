@@ -68,6 +68,16 @@ Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 > payloads; the server validator now accepts cross-cell teleports as a
 > baseline reset instead of rejecting them as 2.4 M u/s "cheat" speed
 > spikes. See [CHANGELOG.md](CHANGELOG.md).
+>
+> **B6.3 v0.5.3 — Lock state sync (2026-05-08).** When peer A picklocks
+> a door, safe, weapon locker, or terminal-linked container, peer B's
+> matching REFR unlocks too — no minigame prompt on B's side. Wire
+> proto v12 adds `LOCK_OP` / `LOCK_BCAST`; sender hooks `ForceUnlock`
+> (`sub_140563320`) + `ForceLock` (`sub_140563360`); receiver applies
+> via the Papyrus `ObjectReference.Lock` binding (`sub_141158640`)
+> with `ai_notify=0` to skip the minigame and key consumption. Server
+> persists per-(base, cell) lock state and replays it to peers joining
+> mid-session. See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -137,7 +147,7 @@ in real time).
 | **M8P2** RE BSGeometry skin instance offsets | ✅ done — `+0x140` confirmed |
 | **M8P3** Skin pipeline RE + per-bone pose replication | ✅ M8P3.23 — body+head+hands animated, see [CHANGELOG.md](CHANGELOG.md) |
 | **B5** D3D11 custom render | 🗿 not needed — Strada B native injection replaced |
-| **B6** World-state sync expansion *(composite — 13 wedges, multi-month epic)* | 🟡 2/13 done |
+| **B6** World-state sync expansion *(composite — 13 wedges, multi-month epic)* | 🟡 3/13 done |
 | ↳ **B6.0** Door open/close sync | ✅ done — `sub_140514180` Activate worker hook + dual-agent RE convergence, [30s demo](https://youtu.be/T8wLZmCqjxw), see [CHANGELOG.md](CHANGELOG.md) |
 | ↳ **B6.1** Cell-aware ghost transitions (interior / fast-travel / worldspace switch) | ✅ done (v0.5.2, 2026-05-08) — wire proto v11 ships `cell_id` in pos payloads; server validator accepts cross-cell teleport as baseline reset instead of rejecting it at the 2500 u/s speed gate. Receiver is a plain coord-bind: cross-cell distance (~120k units) puts the ghost outside the local frustum naturally; same-interior co-op puts both peers in the same coord frame. |
 | **M9** Equipment sync between peers *(clothing + armor + weapon visual replication)* | ✅ done (v0.5.1, 2026-05-08) — 5/5 wedges across **all firearm families**: pistols (10mm, handmade), sniper rifle, assault rifle, hunting rifle, combat shotgun, combat rifle, minigun, Fat Man, laser, plasma — all visible with mods on the remote ghost via engine BSConnectPoint pairing. Plus clothing + body cull + OMOD-driven ARMA tier + Vault Suit cycle stable. |
@@ -147,7 +157,7 @@ in real time).
 | ↳ **M9.w4** Object Modification (BGSMod) sync — shoulder pads, weapon mods, paint variants | ✅ done (v0.5.1, 2026-05-08) — engine OMOD attacher `sub_140434DA0` + BSConnectPoint pairing, sender-side 50ms auto re-equip cycle for off-by-one render lag. Every firearm family verified with mods (pistols, sniper, assault, hunting, combat shotgun, combat rifle, minigun, Fat Man, laser, plasma). Receivers, mags, scopes, suppressors, grips, barrels — all replicated. [Demo](https://youtu.be/r34D4IL7wAk). |
 | ↳ **M9.w5** Peer rejoin equipment-state push | ✅ done in v0.3.1 — PEER_JOIN trigger re-arms equip cycle (DONE→ARMED state transition), 1500ms delay, current outfit re-broadcast to newly-joined peer |
 | ↳ **B6.2** Lights toggle sync (lamps, lanterns, generators) | ⏳ — same Activate worker pattern as doors, formType filter on `0x20` LIGH |
-| ↳ **B6.3** Locks state sync (lockpicked → unlocked cross-client) | ⏳ — REFR lock extra-data + `OnLockedClick` callback hook |
+| ↳ **B6.3** Locks state sync (lockpicked → unlocked cross-client) | ✅ done (v0.5.3, 2026-05-08) — sender hooks `ForceUnlock` (`sub_140563320`) + `ForceLock` (`sub_140563360`); receiver applies via Papyrus `ObjectReference.Lock` binding (`sub_141158640`) with `ai_notify=0` to skip minigame + key consumption. Wire proto v12 ships `(form_id, base_id, cell_id, locked, ts)`. Covers doors, safes, weapon lockers, terminal-linked containers. Server persists per-(base, cell) state + replays on peer-join bootstrap. |
 | ↳ **B6.4** Terminals state sync (hacked / unlocked) | ⏳ — TerminalMenu activation event + persisted "hacked" flag |
 | ↳ **B6.5** NPC actor pos + pose sync | ⏳ — extend POSE_BROADCAST to remote actors with authority-per-NPC model. The big one — turns "co-op chat in same world" into "actual multiplayer game" |
 | ↳ **B6.6** NPC combat target + aggro sync | ⏳ — RE `CombatController::SetTarget`, broadcast NPC→target so observers see "raider shoots peer A" not "raider shoots air" |
@@ -184,6 +194,36 @@ in real time).
 
 Latest 3 patches summarized below. **Full version history in
 [CHANGELOG.md](CHANGELOG.md).**
+
+### B6.3 v0.5.3 (2026-05-08) — lock state sync — STABLE
+
+- **Lock state now syncs across peers.** Picklock a Sanctuary safe on
+  client A → client B's same safe is unlocked too, no minigame prompt
+  on B's side. Covers doors, safes, weapon lockers, and terminal-linked
+  containers. Server persists per-(base, cell) state across restarts;
+  peers joining mid-session catch up via bootstrap `LOCK_BCAST` frames.
+- **Sender** hooks the engine's two canonical mutators —
+  `ForceUnlock` (`sub_140563320`) and `ForceLock` (`sub_140563360`).
+  Coverage: lockpick minigame, terminal hack, key unlock, AI lock/unlock
+  package, perk auto-unlock, savefile load. Detour reads post-state
+  from `LockData` (flag bit 0 at `+0x10`), broadcasts
+  `(form_id, base_id, cell_id, locked, ts)` as reliable `LOCK_OP`.
+  `tls_applying_remote` guards the receiver-side recursion.
+- **Receiver** applies via Papyrus `ObjectReference.Lock`/`Unlock`
+  binding (`sub_141158640`) with `ai_notify=0` — flips ExtraLock,
+  clears partial-pick state, refreshes visuals, and skips the
+  minigame, key consumption, and AI events. Allocates ExtraLock if
+  the REFR doesn't have one yet.
+- **Wire proto v12** adds `LOCK_OP` (`0x0260`) + `LOCK_BCAST`
+  (`0x0261`). `LockOpPayload` = 21 B; `LockBroadcastPayload` = 37 B.
+  Server snapshot v4 adds a `locks` JSON section; v3 snapshots load
+  fine (empty `lock_state`).
+- **Bug fixed mid-session.** First test silently dropped
+  `LOCK_BCAST` because `LockWorldState` wasn't imported in
+  `server/main.py` — `_handle_lock_op` raised `NameError` inside the
+  outer try/except, logged but didn't broadcast. One-line import fix;
+  7/7 server integration tests pass. Tag
+  `v0.5.3-b6.3-lock-state-sync`.
 
 ### B6.1 v0.5.2 (2026-05-08) — cell-aware ghost transitions — STABLE
 
@@ -232,61 +272,6 @@ Latest 3 patches summarized below. **Full version history in
   pattern as B6.1 doors) and eventually B6.5 NPC pose sync — the real
   "co-op chat → playable multiplayer" turning point. Tag
   `v0.5.1-m9-closed`.
-
-### M9 v0.5.0 (2026-05-07) — modded weapons visible on ghost (pistols) — STABLE
-
-- **Pistols with mods now render correctly on the remote ghost.** Peer A
-  equips a 10mm with reflex sight, suppressor, heavy receiver and
-  extended mag; peer B sees the exact same configuration in A's ghost
-  hand, animated with A's pose. As far as I can tell this is the first
-  time it has been done in the FO4 multiplayer modding scene — previous
-  attempts (Fallout Together, F4MP) never reached this point.
-  [Demo on YouTube](https://youtu.be/r34D4IL7wAk).
-- **Per-OMOD attach is `sub_140434DA0(omod_form, base_BSFadeNode,
-  placeholder_or_NULL, flags)`** (RVA `+0x00434DA0`). It reads the
-  OMOD's `TESModel.modelPath` at `OMOD+0x50`, loads the sub-NIF,
-  deep-clones, registers materials, then parents it under the base via
-  `sub_14186E960`. The attach helper is **BSConnectPoint pairing**, not
-  `NiNode::AttachChild`: the base weapon NIF carries a
-  `BSConnectPoint::Children` extra-data array on its root, the mod
-  sub-NIFs carry a matching `BSConnectPoint::Parents`, and the engine
-  matches by string. All driven by data baked into the NIF files, not
-  by anything on the form. Refuted ~10 plausible designs first
-  (synthetic REFR via `vt[170]`, BSModelProcessor OIE post-hook,
-  `find_node_by_name` + `AttachChild` driven by INNT, receiver-side
-  primer + 50/100/500 ms refresh schedules); all failed live test or
-  the 4-agent debate. See [CHANGELOG.md](CHANGELOG.md) for the full RE
-  trace.
-- **Sender fires a 50 ms auto re-equip cycle** to fix a first-equip
-  render lag I couldn't fix on the receiver alone. The first equip of
-  a modded weapon used to render on the ghost as either stock or as the
-  previous weapon — one event behind. The fix mirrors a workaround I
-  noticed manually (equip a Baton, then the modded weapon → renders
-  correctly). 50 ms after the user's `EquipObject`, the sender posts
-  `WM_APP+0x4F`; handler calls `UnequipObject(form, slot=0)` +
-  `EquipObject(form, …)` for the same form, guarded by a TLS flag so
-  it doesn't recurse. Receiver gets `EQUIP X / UNEQUIP X / EQUIP X` on
-  the wire and the second `EQUIP X` is the one that renders correctly.
-  A message-id collision (`FW_MSG_AUTO_RE_EQUIP` and `FW_MSG_EQUIP_APPLY`
-  both at `WM_APP+0x4C`) cost me an afternoon — the cycle was scheduled
-  but the WndProc routed every post to the wrong handler. Now at
-  `WM_APP+0x4F`.
-- **Net cleanup.** `MAX_RETRANSMITS` 8 → 32 (bursty equip traffic was
-  killing the channel inside ~11 s); mesh-blob shipping disabled
-  (`SHIP_LEGACY_BLOBS = false`) since everything I need now rides in
-  the EQUIP_OP tail; OMOD form ids inline in `PendingEquipOp` instead
-  of via a global stash (the old design had a refresh-vs-overwrite
-  race); `UNEQUIP` ops with `slot_form_id == 0x4334D` (engine's
-  internal `kReadiedWeapon` swap slot) are filtered in the drain so the
-  freshly-attached weapon isn't wiped ~7 ms after attach.
-- **Honest residual.** Rifles (sniper, assault, hunting, shotgun) still
-  render invisible on the ghost. The same code path runs for them, so
-  the failure is either in base path resolution (my canonical fallback
-  may not match every rifle family's authoring convention) or in the
-  BSConnectPoint authoring on rifle base NIFs. Next session I'll dump
-  a rifle base subtree and check which `BSConnectPoint::Children`
-  entries it actually carries. Tag
-  `v0.5.0-w4-modded-firearms-pistols`.
 
 ## Why this exists
 
@@ -347,6 +332,22 @@ that should be most reusable for anyone else attempting the same thing.
   same form to make the receiver render correctly. The user's own
   weapon briefly disappears and reappears in their hand. Cosmetic; no
   gameplay impact (animation graph and damage state aren't affected).
+- **Crash on TAKE-weapon from a B6.3-synced container** — taking a
+  weapon out of a lockable container that was synced via B6.3 (e.g.
+  one peer deposited it into a Sanctuary safe) freezes the taker's
+  main thread for ~7 s in the engine's auto-equip pipeline, then the
+  FO4 process dies silently. Lock and container sync apply correctly
+  up to that point; the issue surfaces in the receiver's M9
+  `EQUIP_BCAST` resolver, which reads a corrupted addon array (count
+  ≈ 2.3 billion garbage, base pointer null) for the auto-equipped
+  weapon form. Likely a pre-existing M9 receiver fragility that the
+  heavier B6.3 sync stress exposes — not introduced by lock sync
+  itself. Tracked separately. Workaround for now: deposit / take
+  non-weapon items only from synced containers.
+- **Container UI doesn't refresh on the observer when peers picklock
+  the same container** — engine quirk in the ContainerMenu redraw
+  path; closing and reopening the container forces the refresh.
+  Cosmetic, no state impact.
 
 ## Reverse-engineering target
 

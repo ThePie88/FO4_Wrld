@@ -24,6 +24,14 @@ namespace fw::net {
 // -------------------------------------------------------------- constants
 
 constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
+// v12: B6.3 lock state sync — adds LOCK_OP (0x0260) / LOCK_BCAST (0x0261)
+//     opcodes. Sender hooks ForceUnlock (sub_140563320) and ForceLock
+//     (sub_140563360); broadcast carries (form_id, base_id, cell_id,
+//     locked, timestamp_ms). Receiver applies via Papyrus binding
+//     sub_141158640 with ai_notify=0 — bypasses minigame and key
+//     consumption. Fires for lockpick success, terminal hack, AI lock
+//     packages, perk auto-unlock, and savefile load (server dedups
+//     by state). LockOpPayload = 25 bytes, LockBroadcastPayload = 41.
 // v11: B6.PROLOGUE (cell-aware ghost) — extends PosStatePayload and
 //     PosBroadcastPayload with a `u32 cell_id` field at the end. Sender
 //     reads it from PlayerCharacter.parentCell.formID (offset 0xB8 + 0x14).
@@ -113,7 +121,7 @@ constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
 //     back in CONTAINER_OP_ACK. Enables sender-side pre-mutation block
 //     (DLL waits on condvar keyed on op_id before letting the engine's
 //     AddObjectToContainer proceed). Closes the container dup race.
-constexpr std::uint8_t  PROTOCOL_VERSION  = 11;
+constexpr std::uint8_t  PROTOCOL_VERSION  = 12;
 constexpr std::size_t   HEADER_SIZE       = 12;
 constexpr std::size_t   MAX_PAYLOAD_SIZE  = 1400;
 constexpr std::size_t   MAX_FRAME_SIZE    = HEADER_SIZE + MAX_PAYLOAD_SIZE;
@@ -147,12 +155,15 @@ enum class MessageType : std::uint16_t {
     CONTAINER_BCAST = 0x0202,
     CONTAINER_SEED  = 0x0203,   // v3: client -> server full inventory dump
     CONTAINER_OP_ACK = 0x0204,  // v3: server -> sender verdict
-    DOOR_OP         = 0x0230,   // B6.1: client -> server door activated
-    DOOR_BCAST      = 0x0231,   // B6.1: server -> other peers door activated
+    DOOR_OP         = 0x0230,   // B6.0: client -> server door activated
+    DOOR_BCAST      = 0x0231,   // B6.0: server -> other peers door activated
+
     EQUIP_OP        = 0x0240,   // M9 w1: client -> server: I equipped/unequipped item X
     EQUIP_BCAST     = 0x0241,   // M9 w1: server -> other peers: peer X equipped/unequipped item Y
     MESH_BLOB_OP    = 0x0250,   // M9 w4 v9: client -> server: chunked mesh blob for an equip event
     MESH_BLOB_BCAST = 0x0251,   // M9 w4 v9: server -> peers: chunked mesh blob (peer-attributed)
+    LOCK_OP         = 0x0260,   // B6.3 v0.5.3: client -> server lock state changed
+    LOCK_BCAST      = 0x0261,   // B6.3 v0.5.3: server -> other peers lock state changed
 
     CHAT            = 0x0300,
 
@@ -458,6 +469,33 @@ struct DoorBroadcastPayload {
     std::uint64_t timestamp_ms;
 };
 static_assert(sizeof(DoorBroadcastPayload) == 36, "DoorBroadcastPayload size");
+
+// B6.3 v0.5.3 — LOCK_OP / LOCK_BCAST. ForceUnlock/ForceLock fired on
+// sender, receiver applies via Papyrus binding sub_141158640. Identity
+// is (form_id, base_id, cell_id) like doors — receiver looks up REFR
+// via lookup_by_form_id, then validates against base+cell.
+//
+// Wire layout — Python: I I I B Q  =  4+4+4+1+8 = 21 bytes (pack=1).
+// Note: pack(push, 1) at the top of the file ensures no padding,
+// otherwise MSVC would align to 8 → 24 bytes.
+struct LockOpPayload {
+    std::uint32_t lock_form_id;    // sender's REFR form_id
+    std::uint32_t lock_base_id;    // base form id (identity)
+    std::uint32_t lock_cell_id;    // cell form id (identity)
+    std::uint8_t  locked;          // 0 = unlocked, 1 = locked
+    std::uint64_t timestamp_ms;    // sender wall clock
+};
+static_assert(sizeof(LockOpPayload) == 21, "LockOpPayload size");
+
+struct LockBroadcastPayload {
+    FixedClientId peer_id;         // 16 bytes
+    std::uint32_t lock_form_id;
+    std::uint32_t lock_base_id;
+    std::uint32_t lock_cell_id;
+    std::uint8_t  locked;
+    std::uint64_t timestamp_ms;
+};
+static_assert(sizeof(LockBroadcastPayload) == 37, "LockBroadcastPayload size");
 
 // M9 w1 — EQUIP_OP / EQUIP_BCAST. Carries the result of an
 // ActorEquipManager::EquipObject or ::UnequipObject fire that we observed

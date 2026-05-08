@@ -32,7 +32,14 @@ from typing import ClassVar, Union
 # ------------------------------------------------------------------ constants
 
 PROTOCOL_MAGIC: int = 0xFA
-PROTOCOL_VERSION: int = 11
+PROTOCOL_VERSION: int = 12
+# v12 (2026-05-08): B6.3 lock state sync — adds LOCK_OP (0x0240) and
+# LOCK_BCAST (0x0241). Sender hooks engine ForceUnlock / ForceLock,
+# broadcasts (form_id, base_id, cell_id, locked, timestamp_ms).
+# Receiver applies via Papyrus binding sub_141158640 with ai_notify=0
+# — bypasses the lockpicking minigame and key consumption. Server
+# persists last-known state per (base_id, cell_id) and replays it to
+# new peers on join. LockOpPayload = 21 B, LockBroadcastPayload = 37 B.
 # v11 (2026-05-08): B6 prologue — cell-aware ghost. PosStatePayload and
 # PosBroadcastPayload extended with `cell_id: u32` (parentCell.formID).
 # Sender reads it from PlayerCharacter.parentCell.formID. Receiver compares
@@ -135,6 +142,8 @@ class MessageType(IntEnum):
     EQUIP_BCAST      = 0x0241   # M9 w1: server -> other peers: peer X equipped/unequipped item Y
     MESH_BLOB_OP     = 0x0250   # M9 w4 v9: client -> server: chunked mesh blob for an equip event
     MESH_BLOB_BCAST  = 0x0251   # M9 w4 v9: server -> peers: chunked mesh blob (peer-attributed)
+    LOCK_OP          = 0x0260   # B6.3 v0.5.3: client -> server: lock state changed (locked/unlocked)
+    LOCK_BCAST       = 0x0261   # B6.3 v0.5.3: server -> peers: lock state changed
 
     # Social (0x03XX) — reliable
     CHAT          = 0x0300
@@ -1287,6 +1296,74 @@ class DoorBroadcastPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class LockOpPayload:
+    """B6.3 v0.5.3 — client -> server: 'I just changed lock state on REFR X'.
+
+    Identity is (lock_form_id, lock_base_id, lock_cell_id) like doors —
+    receiver looks up its local REFR via lookup_by_form_id and validates
+    against base+cell. New state in `locked`: 0=unlocked, 1=locked.
+    Sender hooks engine ForceUnlock (sub_140563320) and ForceLock
+    (sub_140563360). Receiver applies via Papyrus binding sub_141158640
+    with ai_notify=0 — bypasses minigame and key consumption.
+    """
+    lock_form_id: int    # u32 — sender's REFR form_id
+    lock_base_id: int    # u32 — base form id (identity check)
+    lock_cell_id: int    # u32 — cell form id (identity check)
+    locked: int          # u8  — 0 = unlocked, 1 = locked
+    timestamp_ms: int    # u64 — sender wall clock for ordering / dedup
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIBQ")  # 21B
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.lock_form_id, self.lock_base_id, self.lock_cell_id,
+            self.locked & 0xFF, self.timestamp_ms,
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "LockOpPayload":
+        if len(data) != cls._STRUCT.size:
+            raise ValueError(
+                f"LockOpPayload: expected {cls._STRUCT.size} bytes, got {len(data)}")
+        fid, bid, cid, locked, ts = cls._STRUCT.unpack(data)
+        return cls(lock_form_id=fid, lock_base_id=bid, lock_cell_id=cid,
+                   locked=locked, timestamp_ms=ts)
+
+
+@dataclass(frozen=True, slots=True)
+class LockBroadcastPayload:
+    """B6.3 v0.5.3 — server -> other peers: 'peer X changed lock state on REFR Y'."""
+    peer_id: str
+    lock_form_id: int
+    lock_base_id: int
+    lock_cell_id: int
+    locked: int
+    timestamp_ms: int
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIBQ")  # 21B + 16B peer_id = 37B total
+
+    def encode(self) -> bytes:
+        return (
+            _encode_fixed_string(self.peer_id, MAX_CLIENT_ID_LEN)
+            + self._STRUCT.pack(
+                self.lock_form_id, self.lock_base_id, self.lock_cell_id,
+                self.locked & 0xFF, self.timestamp_ms,
+            )
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "LockBroadcastPayload":
+        expected = MAX_CLIENT_ID_LEN + 1 + cls._STRUCT.size
+        if len(data) != expected:
+            raise ValueError(
+                f"LockBroadcastPayload: expected {expected} bytes, got {len(data)}")
+        peer = _decode_fixed_string(data[: MAX_CLIENT_ID_LEN + 1], MAX_CLIENT_ID_LEN)
+        fid, bid, cid, locked, ts = cls._STRUCT.unpack(data[MAX_CLIENT_ID_LEN + 1:])
+        return cls(peer_id=peer, lock_form_id=fid, lock_base_id=bid,
+                   lock_cell_id=cid, locked=locked, timestamp_ms=ts)
+
+
+@dataclass(frozen=True, slots=True)
 class EquipModRecord:
     """M9.w4 v7 — single OMOD attachment record (8 B).
 
@@ -1941,6 +2018,7 @@ Payload = Union[
     DoorOpPayload, DoorBroadcastPayload,
     EquipOpPayload, EquipBroadcastPayload,
     MeshBlobChunkPayload, MeshBlobChunkBroadcastPayload,
+    LockOpPayload, LockBroadcastPayload,
     RawMessage,
 ]
 
@@ -1977,6 +2055,8 @@ _TYPE_TO_PAYLOAD_CLS: dict[int, type] = {
     MessageType.EQUIP_BCAST:           EquipBroadcastPayload,
     MessageType.MESH_BLOB_OP:          MeshBlobChunkPayload,
     MessageType.MESH_BLOB_BCAST:       MeshBlobChunkBroadcastPayload,
+    MessageType.LOCK_OP:               LockOpPayload,
+    MessageType.LOCK_BCAST:            LockBroadcastPayload,
 }
 
 

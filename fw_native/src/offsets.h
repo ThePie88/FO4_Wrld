@@ -363,6 +363,44 @@ constexpr std::uintptr_t ENGINE_SET_OPEN_STATE_RVA = 0x00305760;
 // 1 fire per E press with refr being the door + identity_ok=1.
 constexpr std::uintptr_t ENGINE_ACTIVATE_WORKER_RVA = 0x00514180;
 
+// --- B6.3 lock state sync ---
+//
+// ForceUnlock (sub_140563320) and ForceLock (sub_140563360) are the
+// canonical engine entry points that flip ExtraLock state on a REFR.
+// Both signatures: void(__fastcall)(TESObjectREFR* refr).
+//
+// Coverage (RE'd 2026-05-08 across decomp xrefs):
+//   - lockpick minigame success  → sub_14106BE80 → ForceUnlock
+//   - terminal hack success      → ForceUnlock
+//   - AI lock/unlock package     → sub_140CEE8F0/9C0 → ForceLock/Unlock
+//   - perk auto-unlock effect    → sub_140B92A10 → ForceUnlock
+//   - savefile load              → ForceUnlock (server dedups by state)
+// MISSES: Papyrus ObjectReference.Lock/Unlock (uses sub_141158640
+// directly), magic LockEffect (uses sub_140B81EB0). Cover the common
+// gameplay (lockpick + terminal + AI); add the rest later if needed.
+//
+// Receiver-side apply: sub_141158640 — Papyrus binding for
+// ObjectReference.Lock/Unlock.
+//   signature: void(_unused, _unused, REFR*, u8 locked, char ai_notify)
+//   call: sub_141158640(0, 0, refr, locked ? 1 : 0, 0);
+// With ai_notify=0: no AI side-effects, no key consumption, no
+// minigame trigger. Allocates ExtraLock if missing. Recurses into
+// ForceUnlock/ForceLock — net thread sets tls_applying_remote so
+// the recursive hook fire is filtered.
+//
+// LockData layout (read via sub_140563170(REFR) → LockData* or null):
+//   +0x00  u8     base_lock_level (1..99)
+//   +0x08  TESForm* required_key
+//   +0x10  u8     flags  (bit 0 = LOCKED — the flag we care about)
+//   +0x14  u32    partial_pick state (cleared on unlock)
+constexpr std::uintptr_t ENGINE_FORCE_UNLOCK_RVA       = 0x00563320;
+constexpr std::uintptr_t ENGINE_FORCE_LOCK_RVA         = 0x00563360;
+constexpr std::uintptr_t ENGINE_LOCK_DATA_GET_RVA      = 0x00563170;
+constexpr std::uintptr_t ENGINE_LOCK_PAPYRUS_APPLY_RVA = 0x01158640;
+
+constexpr std::size_t  LOCK_DATA_FLAGS_OFF = 0x10;
+constexpr std::uint8_t LOCK_FLAG_LOCKED    = 0x01;
+
 // --- B3.b engine LoadGame ---
 // Decoded from the `LoadGame` console command exec_fn (sub_1405EFAC0) via
 // re/console_table_report.txt. Signature of the real loader:

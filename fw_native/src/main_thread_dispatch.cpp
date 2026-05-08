@@ -37,6 +37,11 @@ std::deque<PendingEquipOp> g_equip_queue;
 std::mutex g_mesh_blob_mtx;
 std::deque<PendingMeshBlob> g_mesh_blob_queue;
 
+// B6.3 v0.5.3: lock queue — separate mutex so locks don't contend with
+// doors/containers. Lower-frequency than doors (1 per lockpick / hack).
+std::mutex g_lock_mtx;
+std::deque<PendingLockOp> g_lock_queue;
+
 // The FO4 main window handle. Set exactly once by main_menu_hook after
 // it subclasses WndProc (post-B3.b-registrar detection). Read lock-free
 // thereafter; atomic for publish/acquire ordering.
@@ -80,6 +85,15 @@ void post_wakeup_mesh_blob() noexcept {
     }
 }
 
+void post_wakeup_lock() noexcept {
+    HWND h = g_hwnd.load(std::memory_order_acquire);
+    if (!h) return;
+    if (!PostMessageW(h, FW_MSG_LOCK_APPLY, 0, 0)) {
+        FW_DBG("dispatch: PostMessage(FW_MSG_LOCK_APPLY) failed (err=%lu)",
+               GetLastError());
+    }
+}
+
 } // namespace
 
 void enqueue_container_apply(const PendingContainerOp& op) {
@@ -104,6 +118,19 @@ void enqueue_door_apply(const PendingDoorOp& op) {
     FW_DBG("dispatch: door enqueued form=0x%X base=0x%X cell=0x%X (qsize=%zu)",
            op.door_form_id, op.door_base_id, op.door_cell_id, qsize);
     post_wakeup_door();
+}
+
+void enqueue_lock_apply(const PendingLockOp& op) {
+    std::size_t qsize;
+    {
+        std::lock_guard lk(g_lock_mtx);
+        g_lock_queue.push_back(op);
+        qsize = g_lock_queue.size();
+    }
+    FW_DBG("dispatch: lock enqueued form=0x%X base=0x%X cell=0x%X locked=%u (qsize=%zu)",
+           op.lock_form_id, op.lock_base_id, op.lock_cell_id,
+           static_cast<unsigned>(op.locked), qsize);
+    post_wakeup_lock();
 }
 
 void enqueue_equip_apply(const PendingEquipOp& op) {
@@ -1053,6 +1080,36 @@ void drain_door_apply_queue() {
         if (ok) ++applied_ok; else ++failed;
     }
     FW_LOG("dispatch: drained %zu door ops (applied=%zu failed=%zu)",
+           local.size(), applied_ok, failed);
+}
+
+void drain_lock_apply_queue() {
+    std::deque<PendingLockOp> local;
+    {
+        std::lock_guard lk(g_lock_mtx);
+        local.swap(g_lock_queue);
+    }
+    if (local.empty()) {
+        FW_DBG("dispatch: lock drain with empty queue — no-op");
+        return;
+    }
+
+    // Same guard pattern as door drain: receiver-side apply
+    // (sub_141158640) recurses into ForceUnlock/ForceLock — our hooks
+    // see tls_applying_remote=true and skip broadcasting back, so the
+    // remote op doesn't echo to the server.
+    fw::hooks::ApplyingRemoteGuard guard;
+
+    std::size_t applied_ok = 0, failed = 0;
+    for (const auto& op : local) {
+        const bool ok = fw::engine::apply_lock_op_to_engine(
+            op.lock_form_id,
+            op.lock_base_id,
+            op.lock_cell_id,
+            op.locked != 0);
+        if (ok) ++applied_ok; else ++failed;
+    }
+    FW_LOG("dispatch: drained %zu lock ops (applied=%zu failed=%zu)",
            local.size(), applied_ok, failed);
 }
 

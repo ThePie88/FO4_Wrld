@@ -8,6 +8,7 @@
 #include "main_menu_hook.h"
 #include "worldstate_hook.h"
 #include "door_hook.h"
+#include "lock_hook.h"
 #include "equip_cycle.h"     // B8: post-LoadGame BipedAnim normalize
 #include "equip_hook.h"      // M9 wedge 1: equipment-event sender hook
 #include "engine_tracer.h"
@@ -41,8 +42,10 @@ InstallSummary install_all(std::uintptr_t module_base,
     s.player_pos_ok  = start_player_pos_poll(module_base);
     s.main_menu_ok   = install_main_menu_hook(module_base, cfg);
     s.worldstate_ok  = install_worldstate_hooks(module_base);
-    // B6.1: door SetOpenState observation (phase 1).
+    // B6.0: door Activate worker hook (open/close sync).
     s.door_ok        = install_door_hook(module_base);
+    // B6.3 v0.5.3: ForceUnlock + ForceLock detours (lock state sync).
+    s.lock_ok        = install_lock_hook(module_base);
     // M9 wedge 1: ActorEquipManager Equip + Unequip detours (OBSERVE-only).
     //   Detect local-player equip changes → broadcast EQUIP_OP. Receivers
     //   in wedge 1 just log RX; wedge 2 will swap visuals on the M8P3

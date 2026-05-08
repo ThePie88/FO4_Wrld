@@ -179,6 +179,33 @@ void Client::enqueue_door_op(std::uint32_t door_form_id,
     }
 }
 
+void Client::enqueue_lock_op(std::uint32_t lock_form_id,
+                             std::uint32_t lock_base_id,
+                             std::uint32_t lock_cell_id,
+                             bool          locked,
+                             std::uint64_t timestamp_ms)
+{
+    if (!connected_.load() || stopping_.load()) return;
+    if (lock_form_id == 0 || lock_base_id == 0) return;
+
+    LockOpPayload p{};
+    p.lock_form_id  = lock_form_id;
+    p.lock_base_id  = lock_base_id;
+    p.lock_cell_id  = lock_cell_id;
+    p.locked        = locked ? std::uint8_t{1} : std::uint8_t{0};
+    p.timestamp_ms  = timestamp_ms;
+
+    QueuedSend q;
+    q.msg_type = MessageType::LOCK_OP;
+    q.reliable = true;
+    q.payload_bytes.resize(sizeof(p));
+    std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
+    {
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+}
+
 void Client::enqueue_equip_op(std::uint32_t item_form_id,
                               std::uint8_t  kind,
                               std::uint32_t slot_form_id,
@@ -1099,6 +1126,26 @@ void Client::dispatch(const Delivered& d) {
                "peer=%s form=0x%X base=0x%X cell=0x%X",
                b.peer_id.get().c_str(),
                b.door_form_id, b.door_base_id, b.door_cell_id);
+        break;
+    }
+
+    case static_cast<std::uint16_t>(MessageType::LOCK_BCAST): {
+        if (d.payload.size() < sizeof(LockBroadcastPayload)) break;
+        LockBroadcastPayload b{};
+        std::memcpy(&b, d.payload.data(), sizeof(b));
+        if (b.lock_form_id == 0 || b.lock_base_id == 0) break;
+
+        fw::dispatch::PendingLockOp op{};
+        op.lock_form_id  = b.lock_form_id;
+        op.lock_base_id  = b.lock_base_id;
+        op.lock_cell_id  = b.lock_cell_id;
+        op.locked        = b.locked ? std::uint8_t{1} : std::uint8_t{0};
+        fw::dispatch::enqueue_lock_apply(op);
+        FW_DBG("net: LOCK_BCAST enqueued for main-thread apply "
+               "peer=%s form=0x%X base=0x%X cell=0x%X locked=%u",
+               b.peer_id.get().c_str(),
+               b.lock_form_id, b.lock_base_id, b.lock_cell_id,
+               static_cast<unsigned>(b.locked));
         break;
     }
 

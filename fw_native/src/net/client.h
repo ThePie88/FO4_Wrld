@@ -144,6 +144,17 @@ public:
                          std::uint32_t door_cell_id,
                          std::uint64_t timestamp_ms);
 
+    // B6.3 v0.5.3: reliable LOCK_OP — sender broadcasts when ForceUnlock
+    // / ForceLock fires for a REFR. `locked` carries the new state
+    // (0 = unlocked, 1 = locked). Identity (form_id, base_id, cell_id)
+    // lets the receiver look up its local REFR and validate before
+    // applying via Papyrus binding sub_141158640.
+    void enqueue_lock_op(std::uint32_t lock_form_id,
+                         std::uint32_t lock_base_id,
+                         std::uint32_t lock_cell_id,
+                         bool          locked,
+                         std::uint64_t timestamp_ms);
+
     // M9 wedge 1: reliable EQUIP_OP — fire-and-forget. Sender hooks
     // ActorEquipManager::Equip/UnequipObject in the engine and forwards
     // each LOCAL-PLAYER fire here. Server fans out as EQUIP_BCAST to

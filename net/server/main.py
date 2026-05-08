@@ -38,11 +38,12 @@ from protocol import (  # noqa: E402
     GlobalVarSetPayload, GlobalVarBroadcastPayload,
     GlobalVarStateBootPayload, GlobalVarStateEntry,
     DoorOpPayload, DoorBroadcastPayload,
+    LockOpPayload, LockBroadcastPayload,
     EquipOpPayload, EquipBroadcastPayload, EquipOpKind,
     MeshBlobChunkPayload, MeshBlobChunkBroadcastPayload,
     encode_frame, decode_frame,
 )
-from server.state import ServerState, PeerSession, SessionState  # noqa: E402
+from server.state import ServerState, PeerSession, SessionState, LockWorldState  # noqa: E402
 from server.validator import (  # noqa: E402
     validate_pos_state, validate_actor_event, validate_container_op, RejectReason,
 )
@@ -178,6 +179,9 @@ class ServerProtocol(asyncio.DatagramProtocol):
         if mtype == MessageType.DOOR_OP:
             self._handle_door_op(session, payload, now_ms)
             return
+        if mtype == MessageType.LOCK_OP:
+            self._handle_lock_op(session, payload, now_ms)
+            return
         if mtype == MessageType.EQUIP_OP:
             self._handle_equip_op(session, payload, now_ms)
             return
@@ -228,6 +232,10 @@ class ServerProtocol(asyncio.DatagramProtocol):
         self._send_quest_state_bootstrap(session, now_ms)
         # Bootstrap: global variables (B4, chunked)
         self._send_global_var_state_bootstrap(session, now_ms)
+        # Bootstrap: lock states (B6.3 v0.5.3) — replay last-known state
+        # for every (base, cell) the server has seen, as individual
+        # LOCK_BCAST frames. Client treats them as fresh remote ops.
+        self._send_lock_state_bootstrap(session, now_ms)
 
         # Notify other peers (PEER_JOIN, reliable)
         join_msg = self.state.peer_join_for(session)
@@ -689,6 +697,35 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 MessageType.GLOBAL_VAR_STATE_BOOT, payload, now_ms)
             self._send(session.addr, raw)
 
+    def _send_lock_state_bootstrap(
+        self, session: PeerSession, now_ms: float
+    ) -> None:
+        """B6.3 v0.5.3 — replay every known lock state to the new peer.
+
+        Each entry is shipped as a fresh LOCK_BCAST so the client
+        treats it identically to a runtime lock change (peer_id is
+        synthesized as 'server' for telemetry; client only cares about
+        identity + state). Reliable channel — order doesn't matter
+        because each entry is independent (different REFR identity).
+        """
+        locks = self.state.all_locks()
+        if not locks:
+            log.debug("no lock states to bootstrap for %s", session.peer_id)
+            return
+        log.info("lock bootstrap %s: %d entries", session.peer_id, len(locks))
+        for lk in locks:
+            payload = LockBroadcastPayload(
+                peer_id="server",
+                lock_form_id=lk.form_id,
+                lock_base_id=lk.base_id,
+                lock_cell_id=lk.cell_id,
+                locked=1 if lk.locked else 0,
+                timestamp_ms=lk.timestamp_ms,
+            )
+            raw = session.channel.send_reliable(
+                MessageType.LOCK_BCAST, payload, now_ms)
+            self._send(session.addr, raw)
+
     def _handle_door_op(self, session: PeerSession, payload, now_ms: float) -> None:
         """B6.1 — door activation broadcast.
 
@@ -721,6 +758,61 @@ class ServerProtocol(asyncio.DatagramProtocol):
         log.debug("door op form=0x%X base=0x%X cell=0x%X by %s",
                   payload.door_form_id, payload.door_base_id,
                   payload.door_cell_id, session.peer_id)
+
+    def _handle_lock_op(self, session: PeerSession, payload, now_ms: float) -> None:
+        """B6.3 v0.5.3 — lock state change broadcast + persistence.
+
+        Sender hooks the engine's ForceUnlock (sub_140563320) and
+        ForceLock (sub_140563360); both fire on real state transitions
+        (lockpick success, terminal hack, key unlock, AI/quest, perk
+        auto-unlock, savefile load).
+
+        Server tracks last-known state per (base_id, cell_id) so new
+        peers entering the cell get the right state replayed. Dedup:
+        if the incoming state matches what we already have, skip the
+        broadcast — saves traffic from the savefile-load fire on
+        client (which fires for every locked REFR in the loaded cell
+        regardless of whether it actually changed).
+        """
+        if not isinstance(payload, LockOpPayload):
+            return
+        if payload.lock_form_id == 0 or payload.lock_base_id == 0:
+            log.debug("lock_op from %s: zero identity (form=0x%X base=0x%X) — drop",
+                      session.peer_id, payload.lock_form_id, payload.lock_base_id)
+            return
+
+        new_locked = bool(payload.locked)
+        key = (payload.lock_base_id, payload.lock_cell_id)
+        prev = self.state.lock_state.get(key)
+        if prev is not None and prev.locked == new_locked:
+            log.debug("lock_op no-op (state unchanged) form=0x%X by %s",
+                      payload.lock_form_id, session.peer_id)
+            return
+
+        self.state.lock_state[key] = LockWorldState(
+            base_id=payload.lock_base_id,
+            cell_id=payload.lock_cell_id,
+            form_id=payload.lock_form_id,
+            locked=new_locked,
+            timestamp_ms=payload.timestamp_ms,
+        )
+
+        broadcast = LockBroadcastPayload(
+            peer_id=session.peer_id,
+            lock_form_id=payload.lock_form_id,
+            lock_base_id=payload.lock_base_id,
+            lock_cell_id=payload.lock_cell_id,
+            locked=payload.locked,
+            timestamp_ms=payload.timestamp_ms,
+        )
+        for other in self.state.other_sessions(session.addr):
+            raw = other.channel.send_reliable(
+                MessageType.LOCK_BCAST, broadcast, now_ms)
+            self._send(other.addr, raw)
+
+        log.debug("lock op form=0x%X base=0x%X cell=0x%X locked=%d by %s",
+                  payload.lock_form_id, payload.lock_base_id,
+                  payload.lock_cell_id, payload.locked, session.peer_id)
 
     def _handle_equip_op(self, session: PeerSession, payload, now_ms: float) -> None:
         """M9 wedge 1 — equipment-event broadcast.

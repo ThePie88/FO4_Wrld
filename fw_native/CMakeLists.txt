@@ -29,7 +29,8 @@ add_library(fw_native SHARED
     src/hooks/player_pos_hook.cpp
     src/hooks/main_menu_hook.cpp
     src/hooks/worldstate_hook.cpp
-    src/hooks/door_hook.cpp         # B6.1: SetOpenState mutator observation
+    src/hooks/door_hook.cpp         # B6.0: Activate worker for door open/close
+    src/hooks/lock_hook.cpp         # B6.3: ForceUnlock + ForceLock detours
     src/hooks/equip_cycle.cpp       # B8  : post-LoadGame BipedAnim normalize
     src/hooks/equip_hook.cpp        # M9 w1: equipment-event sender hook
     src/hooks/engine_tracer.cpp     # M6.3: native NIF-load path observation

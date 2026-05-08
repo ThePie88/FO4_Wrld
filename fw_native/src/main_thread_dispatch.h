@@ -54,6 +54,7 @@ namespace fw::dispatch {
 //   0x4E = FW_MSG_DEFERRED_MESH_TX (M9 w4 v9)  — hooks/equip_hook.h
 //   0x4F = FW_MSG_WEAPON_CAPTURE_FINALIZE      — native/weapon_capture.h
 //   0x50 = FW_MSG_SPAI_PREWARM (Tier 1)        — owned here
+//   0x51 = FW_MSG_LOCK_APPLY (B6.3 v0.5.3)     — owned here
 //
 // PRE-FIX BUG (commit landed 2026-04-27 evening): DOOR_APPLY was set
 // to 0x47 in the initial Phase 2 ship, colliding with STRADAB_BONE_TICK.
@@ -66,6 +67,7 @@ constexpr UINT FW_MSG_DOOR_APPLY      = WM_APP + 0x49;
 constexpr UINT FW_MSG_EQUIP_APPLY     = WM_APP + 0x4C;
 constexpr UINT FW_MSG_MESH_BLOB_APPLY = WM_APP + 0x4D;  // M9 w4 v9
 constexpr UINT FW_MSG_SPAI_PREWARM    = WM_APP + 0x50;  // SPAI Tier 1
+constexpr UINT FW_MSG_LOCK_APPLY      = WM_APP + 0x51;  // B6.3 v0.5.3
 
 struct PendingContainerOp {
     std::uint32_t kind;               // 1=TAKE, 2=PUT
@@ -80,6 +82,19 @@ struct PendingDoorOp {
     std::uint32_t door_form_id;   // sender's form_id (lookup_by_form_id)
     std::uint32_t door_base_id;   // identity check
     std::uint32_t door_cell_id;   // identity check
+};
+
+// B6.3 v0.5.3 — lock state apply.
+// Receiver gets LOCK_BCAST(form_id, base_id, cell_id, locked), enqueues
+// this struct, posts FW_MSG_LOCK_APPLY. Main thread drains and calls
+// fw::engine::apply_lock_op_to_engine on each, under
+// fw::hooks::ApplyingRemoteGuard so the recursive ForceUnlock/ForceLock
+// fires in our own hooks don't echo back as a fresh LOCK_OP.
+struct PendingLockOp {
+    std::uint32_t lock_form_id;   // sender's form_id (lookup_by_form_id)
+    std::uint32_t lock_base_id;   // identity check
+    std::uint32_t lock_cell_id;   // identity check
+    std::uint8_t  locked;         // 0 = unlocked, 1 = locked
 };
 
 // M9 wedge 2: armor visual sync.
@@ -141,6 +156,10 @@ void drain_container_apply_queue();
 // B6.1: door apply queue — same pattern as container.
 void enqueue_door_apply(const PendingDoorOp& op);
 void drain_door_apply_queue();
+
+// B6.3 v0.5.3: lock apply queue — same pattern as door.
+void enqueue_lock_apply(const PendingLockOp& op);
+void drain_lock_apply_queue();
 
 // M9 wedge 2: equip apply queue — visual armor on ghost.
 //   enqueue_equip_apply: net thread, after EQUIP_BCAST decode

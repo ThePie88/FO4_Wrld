@@ -78,6 +78,13 @@ using ActivateWorkerFn = char (*)(void* refr, void* activator,
                                   void* a3, void* a4,
                                   void* a5, void* a6, void* a7);
 ActivateWorkerFn     g_engine_activate    = nullptr;
+
+// B6.3 v0.5.3 — Papyrus ObjectReference.Lock/Unlock binding.
+// Signature: void(_unused, _unused, REFR*, u8 locked, char ai_notify).
+// With ai_notify=0: bypass minigame, no key consumption, no AI events.
+using LockApplyPapyrusFn = void (*)(void* a1, void* a2, void* refr,
+                                    std::uint8_t locked, char ai_notify);
+LockApplyPapyrusFn   g_lock_apply_papyrus = nullptr;
 RefHandleResolveFn   g_refhandle_resolve  = nullptr;
 InvEntryToFormFn     g_inv_entry_to_form  = nullptr;
 // B1.k.3: form-cache global slot. Value at this address is the "form cache"
@@ -158,6 +165,12 @@ bool init(std::uintptr_t module_base) {
     // B6.1: Activate worker resolver (door open/close engine call).
     g_engine_activate = reinterpret_cast<ActivateWorkerFn>(
         module_base + offsets::ENGINE_ACTIVATE_WORKER_RVA);
+
+    // B6.3 v0.5.3: Papyrus Lock/Unlock binding (sub_141158640) for the
+    // receiver-side lock state apply. With ai_notify=0 it bypasses the
+    // minigame and key-consumption side effects.
+    g_lock_apply_papyrus = reinterpret_cast<LockApplyPapyrusFn>(
+        module_base + offsets::ENGINE_LOCK_PAPYRUS_APPLY_RVA);
 
     // B1.k.2: BGSObjectRefHandle resolver — for ContainerMenu::TransferItem
     // we need to reach the container REFR from `this+1064` (a handle slot).
@@ -651,6 +664,71 @@ bool apply_door_op_to_engine(
         FW_LOG("engine: apply_door_op_to_engine dfid=0x%X "
                "(base=0x%X cell=0x%X)",
                door_form_id, id.base_id, id.cell_id);
+    }
+    return ok;
+}
+
+bool apply_lock_op_to_engine(
+    std::uint32_t lock_form_id,
+    std::uint32_t expected_base_id,
+    std::uint32_t expected_cell_id,
+    bool          locked)
+{
+    if (!g_ready.load(std::memory_order_acquire)) return false;
+    if (lock_form_id == 0) {
+        FW_DBG("engine: apply_lock_op: zero form_id");
+        return false;
+    }
+    if (!g_lock_apply_papyrus) {
+        FW_WRN("engine: apply_lock_op: Papyrus binding not resolved");
+        return false;
+    }
+
+    void* lock_ref = lookup_by_form_id(lock_form_id);
+    if (!lock_ref) {
+        // Cell not streamed in — silent no-op. Server keeps the
+        // authoritative state; when the cell loads, the bootstrap
+        // snapshot replays the latest state to this client.
+        FW_DBG("engine: apply_lock_op: REFR 0x%X not loaded locally",
+               lock_form_id);
+        return false;
+    }
+
+    // Identity check — same defensive pattern as door / container apply.
+    const auto id = read_ref_identity(lock_ref);
+    const bool base_mismatch =
+        (expected_base_id != 0) && (id.base_id != expected_base_id);
+    const bool cell_mismatch =
+        (expected_cell_id != 0) && (id.cell_id != expected_cell_id);
+    if (base_mismatch || cell_mismatch) {
+        FW_WRN("engine: apply_lock_op: identity mismatch fid=0x%X "
+               "got=(base=0x%X cell=0x%X) expected=(base=0x%X cell=0x%X)",
+               lock_form_id,
+               id.base_id, id.cell_id,
+               expected_base_id, expected_cell_id);
+        return false;
+    }
+
+    bool ok = false;
+    __try {
+        // sub_141158640(_unused, _unused, REFR*, u8 locked, char ai_notify).
+        // ai_notify=0 → no AI events / key consumption / minigame.
+        g_lock_apply_papyrus(nullptr, nullptr, lock_ref,
+                             locked ? std::uint8_t{1} : std::uint8_t{0},
+                             /*ai_notify=*/0);
+        ok = true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_ERR("engine: SEH in apply_lock_op_to_engine "
+               "fid=0x%X (base=0x%X cell=0x%X locked=%d)",
+               lock_form_id, expected_base_id, expected_cell_id,
+               locked ? 1 : 0);
+        return false;
+    }
+
+    if (ok) {
+        FW_LOG("engine: apply_lock_op_to_engine fid=0x%X "
+               "(base=0x%X cell=0x%X locked=%d)",
+               lock_form_id, id.base_id, id.cell_id, locked ? 1 : 0);
     }
     return ok;
 }

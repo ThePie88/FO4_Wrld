@@ -5,6 +5,107 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## B6.3 v0.5.3 — Lock state sync (2026-05-08) — STABLE
+
+When peer A picklocks a door, safe, weapon locker, or terminal-linked
+container, peer B's matching REFR unlocks too — no minigame prompt on
+B's side. Server persists last-known state per `(base_id, cell_id)`;
+clients joining mid-session catch up via bootstrap `LOCK_BCAST` frames.
+
+### Sender hook
+
+Two narrow detours on the engine's canonical lock-state mutators:
+
+- `sub_140563320` — ForceUnlock, RVA `+0x563320`
+- `sub_140563360` — ForceLock,   RVA `+0x563360`
+
+Both `void(__fastcall)(TESObjectREFR*)`. Coverage across decomp xrefs:
+lockpick minigame, terminal hack, key unlock, AI lock/unlock package,
+perk auto-unlock, savefile load. The detour runs the engine flip
+first, reads the post-state from LockData (`sub_140563170` returns
+`LockData*` or null; flag bit 0 at `+0x10` = LOCKED), then broadcasts
+`(form_id, base_id, cell_id, locked, ts)` as a reliable `LOCK_OP`.
+`tls_applying_remote` guards the recursive fire from receiver-side
+apply, so no echo loop.
+
+### Receiver apply
+
+`apply_lock_op_to_engine` resolves the local REFR via
+`lookup_by_form_id`, validates against `(base_id, cell_id)`, then
+calls the Papyrus `ObjectReference.Lock`/`Unlock` binding directly:
+
+`sub_141158640(0, 0, refr, locked ? 1 : 0, /*ai_notify=*/0)`
+
+With `ai_notify=0` the binding flips ExtraLock, clears partial-pick,
+refreshes visuals, and skips the minigame, key consumption, and AI
+events. Allocates ExtraLock if the REFR doesn't have one yet.
+
+### Wire proto v12
+
+- `LOCK_OP` (`0x0260`) + `LOCK_BCAST` (`0x0261`)
+- `LockOpPayload`        = `<IIIBQ` = 21 B
+- `LockBroadcastPayload` = `peer_id(16)` + 21 = 37 B
+
+### Server persistence
+
+`ServerState.lock_state` keyed by `(base_id, cell_id)`. Dedup: if the
+incoming state matches what the server already has, skip rebroadcast.
+This silences the savefile-load fire that would otherwise hit every
+locked REFR on cell-load. Snapshot format v4 adds a `locks` JSON
+section; v3 snapshots still load fine (empty `lock_state`).
+
+Peer-join bootstrap: server replays every stored lock state as
+individual `LOCK_BCAST` frames (peer_id="server") so a fresh client
+sees correct state for every previously-cracked container.
+
+### Bug fixed mid-session
+
+First test silently dropped `LOCK_BCAST`. Cause: `LockWorldState`
+wasn't imported in `net/server/main.py`, so `_handle_lock_op` raised
+`NameError` inside the outer try/except — logged but didn't broadcast.
+One-line import fix; 7/7 server integration tests pass.
+
+### Files changed
+
+C++:
+- `fw_native/src/offsets.h` — 5 lock RVAs + LockData flag offset
+- `fw_native/src/net/protocol.h` — `PROTOCOL_VERSION` 11→12, opcodes,
+  payloads
+- `fw_native/src/hooks/lock_hook.{cpp,h}` — ForceUnlock + ForceLock
+  detours
+- `fw_native/src/engine/engine_calls.{cpp,h}` —
+  `apply_lock_op_to_engine` via Papyrus binding
+- `fw_native/src/main_thread_dispatch.{cpp,h}` — `PendingLockOp` +
+  `FW_MSG_LOCK_APPLY` (`WM_APP+0x51`) + drain
+- `fw_native/src/net/client.{cpp,h}` — `enqueue_lock_op` +
+  `LOCK_BCAST` dispatch
+- `fw_native/src/hooks/install_all.{cpp,h}` — install + summary flag
+- `fw_native/src/hooks/main_menu_hook.cpp` — WndProc route
+- `fw_native/CMakeLists.txt` — `lock_hook.cpp` source
+
+Python:
+- `net/protocol.py` — mirror v12 + payloads
+- `net/server/main.py` — `_handle_lock_op` + `_send_lock_state_bootstrap`
+- `net/server/state.py` — `LockWorldState` + `lock_state` table
+- `net/server/persistence.py` — v4 snapshot with `locks` section
+
+### Known residual
+
+Taking a weapon out of a synced lockable container (e.g. a safe one
+peer just deposited everything into) can freeze the taker's main
+thread for ~7 s in the engine's auto-equip pipeline, then the FO4
+process dies silently. Lock and container sync apply correctly up to
+that point — the issue surfaces in the receiver's M9 `EQUIP_BCAST`
+resolver, which reads a corrupted addon array (count ≈ 2.3 billion,
+base = null) for the auto-equipped weapon form. Likely a pre-existing
+M9 receiver fragility that B6.3's heavier sync traffic exposes.
+Tracked separately; not blocking B6.3 ship. Workaround for now:
+deposit / take non-weapon items only.
+
+**Tag:** `v0.5.3-b6.3-lock-state-sync`.
+
+---
+
 ## B6.1 v0.5.2 — Cell-aware ghost transitions (2026-05-08) — STABLE
 
 When a peer crosses a cell boundary (entering an interior, fast-travel,

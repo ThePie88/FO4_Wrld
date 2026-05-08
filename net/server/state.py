@@ -139,6 +139,23 @@ class QuestStageState:
 
 
 @dataclass(slots=True)
+class LockWorldState:
+    """B6.3 v0.5.3 — authoritative lock state for one REFR.
+
+    Identity key is (base_id, cell_id) — same stability rationale as
+    actor / container state. `form_id` is a hint for receiver-side
+    LookupByFormID; not a key. `locked` is the boolean state. `level`
+    and `key_form` are static world data and not tracked here (server
+    only cares about state transitions).
+    """
+    base_id: int
+    cell_id: int
+    form_id: int = 0
+    locked: bool = True
+    timestamp_ms: int = 0
+
+
+@dataclass(slots=True)
 class GlobalVarState:
     """Authoritative value of one GlobalVariable (TESGlobal).
 
@@ -189,6 +206,8 @@ class ServerState:
     _quests: dict[int, QuestStageState] = field(default_factory=dict)
     # B4: global variables, keyed by global_form_id.
     _globals: dict[int, GlobalVarState] = field(default_factory=dict)
+    # B6.3 v0.5.3: lock states keyed by (base_id, cell_id).
+    lock_state: dict[tuple[int, int], LockWorldState] = field(default_factory=dict)
 
     # ---------------------------------------------------------- session mgmt
 
@@ -464,6 +483,11 @@ class ServerState:
 
     def all_globals(self) -> list[GlobalVarState]:
         return list(self._globals.values())
+
+    # ---------------------------------------------------------- locks (B6.3)
+
+    def all_locks(self) -> list[LockWorldState]:
+        return list(self.lock_state.values())
 
     # ---------------------------------------------------------- convenience
 

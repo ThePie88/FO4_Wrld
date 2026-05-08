@@ -25,12 +25,18 @@ from typing import Any
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from server.state import ServerState, SessionState, ActorWorldState, ContainerWorldState  # noqa: E402
+from server.state import (  # noqa: E402
+    ServerState, SessionState, ActorWorldState, ContainerWorldState,
+    LockWorldState,
+)
 
 
 log = logging.getLogger("persistence")
 
-SNAPSHOT_FORMAT_VERSION: int = 3
+SNAPSHOT_FORMAT_VERSION: int = 4
+# v4 (B6.3 v0.5.3, 2026-05-08): adds `locks` section keyed by
+#     (base_id, cell_id), with form_id hint + locked bool + timestamp.
+#     v3 snapshots load fine (no locks key → empty lock_state).
 
 
 def snapshot(state: ServerState, path: Path, *, pretty: bool = True) -> None:
@@ -85,6 +91,16 @@ def snapshot(state: ServerState, path: Path, *, pretty: bool = True) -> None:
                 "last_update_ms": c.last_update_ms,
             }
             for c in state.all_containers()
+        ],
+        "locks": [
+            {
+                "base_id": f"0x{lk.base_id:X}",
+                "cell_id": f"0x{lk.cell_id:X}",
+                "form_id": f"0x{lk.form_id:X}",
+                "locked": lk.locked,
+                "timestamp_ms": lk.timestamp_ms,
+            }
+            for lk in state.all_locks()
         ],
     }
 
@@ -154,12 +170,13 @@ def load_into(state: ServerState, path: Path) -> int:
         )
         return 0
 
-    # v2 snapshots have no containers section; v3 adds one. Both are readable.
-    # Unknown versions (> 3 or other) are rejected.
-    if version not in (2, SNAPSHOT_FORMAT_VERSION):
+    # v2 snapshots have no containers section; v3 adds containers; v4 adds
+    # locks. All three are readable — older missing sections become empty.
+    # Unknown versions (> 4 or other) are rejected.
+    if version not in (2, 3, SNAPSHOT_FORMAT_VERSION):
         raise ValueError(
             f"snapshot format version {version!r} unsupported "
-            f"(expected {SNAPSHOT_FORMAT_VERSION}, 2, or 1)"
+            f"(expected {SNAPSHOT_FORMAT_VERSION}, 3, 2, or 1)"
         )
 
     # Restore world actors (the authoritative game state)
@@ -239,6 +256,35 @@ def load_into(state: ServerState, path: Path) -> int:
             "snapshot %s: skipped %d container entries with missing/zero identity",
             path, container_skipped,
         )
+
+    # Restore lock states (v4+). Older snapshots won't have this key.
+    lock_skipped = 0
+    for lk in data.get("locks", []):
+        base_raw = lk.get("base_id")
+        cell_raw = lk.get("cell_id")
+        if base_raw is None or cell_raw is None:
+            lock_skipped += 1
+            continue
+        base_id = int(base_raw, 16) if isinstance(base_raw, str) else int(base_raw)
+        cell_id = int(cell_raw, 16) if isinstance(cell_raw, str) else int(cell_raw)
+        if base_id == 0 or cell_id == 0:
+            lock_skipped += 1
+            continue
+        form_raw = lk.get("form_id", 0)
+        form_id = int(form_raw, 16) if isinstance(form_raw, str) else int(form_raw)
+        state.lock_state[(base_id, cell_id)] = LockWorldState(
+            base_id=base_id,
+            cell_id=cell_id,
+            form_id=form_id,
+            locked=bool(lk.get("locked", True)),
+            timestamp_ms=int(lk.get("timestamp_ms", 0)),
+        )
+    if lock_skipped:
+        log.warning(
+            "snapshot %s: skipped %d lock entries with missing/zero identity",
+            path, lock_skipped,
+        )
+
     return n
 
 

@@ -208,6 +208,31 @@ bool apply_door_op_to_engine(
     std::uint32_t expected_base_id,
     std::uint32_t expected_cell_id);
 
+// B6.3 v0.5.3: Apply a remote LOCK_BCAST on the local REFR.
+//
+// Resolves form_id via lookup_by_form_id, verifies (base_id, cell_id)
+// match identity, then calls Papyrus binding sub_141158640 with
+// ai_notify=0:
+//
+//   sub_141158640(0, 0, refr, locked ? 1 : 0, 0)
+//
+// The binding allocates ExtraLock if the REFR doesn't already have one,
+// flips the LOCKED bit, clears partial-pick state, and triggers a visual
+// refresh — without consuming a key, opening the lockpicking minigame, or
+// firing AI events. Recurses internally into ForceUnlock/ForceLock; the
+// caller MUST set tls_applying_remote before invoking so the recursive
+// hook fire doesn't echo back as a fresh LOCK_OP.
+//
+// Returns true on apply, false if:
+//   - lookup_by_form_id returned null (REFR not loaded yet)
+//   - identity mismatch (wrong base or cell)
+//   - SEH inside the engine call
+bool apply_lock_op_to_engine(
+    std::uint32_t lock_form_id,
+    std::uint32_t expected_base_id,
+    std::uint32_t expected_cell_id,
+    bool          locked);
+
 // B5 scene view-proj capture: read the 4x4 matrix at NiCamera+288
 // owned by PlayerCamera.states[0] (FirstPersonState — always populated)
 // plus the player eye world position. Hypothesis: captured matrix is
