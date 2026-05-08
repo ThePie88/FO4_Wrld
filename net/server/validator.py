@@ -113,6 +113,27 @@ def validate_pos_state(
             f"incoming {incoming.timestamp_ms} < last {session.last_pos.timestamp_ms}",
         )
 
+    # B6 prologue (v11, 2026-05-08) — cell-change teleport bypass.
+    # When the player crosses a cell boundary the engine moves them via
+    # MoveTo, often hundreds of thousands of units in a single frame
+    # (interior cells use a coordinate frame near origin while exterior
+    # is e.g. Sanctuary at ~(-76000, 93000, 7700) — delta ~120k units).
+    # That registers as ~2.4M u/s through the speed gate below and gets
+    # rejected as a cheat, dropping every POS_STATE forever after (since
+    # session.last_pos stays at the pre-teleport value, every fresh
+    # interior pos still computes a huge delta vs that stale baseline).
+    # When the wire cell_id changes between two consecutive POS_STATE
+    # frames, treat the new pos as a legitimate transition and accept it
+    # as the new baseline. Both fields must be non-zero (pre-v11 senders
+    # leave them at 0 and we keep the standard speed gate for them).
+    cell_changed = (
+        incoming.cell_id != 0
+        and session.last_pos.cell_id != 0
+        and incoming.cell_id != session.last_pos.cell_id
+    )
+    if cell_changed:
+        return ValidationResult.accept()
+
     # 3D displacement
     dx = incoming.x - session.last_pos.x
     dy = incoming.y - session.last_pos.y

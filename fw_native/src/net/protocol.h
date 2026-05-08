@@ -24,6 +24,14 @@ namespace fw::net {
 // -------------------------------------------------------------- constants
 
 constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
+// v11: B6.PROLOGUE (cell-aware ghost) — extends PosStatePayload and
+//     PosBroadcastPayload with a `u32 cell_id` field at the end. Sender
+//     reads it from PlayerCharacter.parentCell.formID (offset 0xB8 + 0x14).
+//     Receiver compares with its own local cell every pos update and flips
+//     NIAV_FLAG_APP_CULLED on the ghost BSFadeNode when cells differ. This
+//     fixes the "ghost stays frozen at the door" bug when peer A enters an
+//     interior cell that peer B isn't loaded into. PosState 32→36 bytes,
+//     PosBroadcast 48→52 bytes.
 // v9: M9 wedge 4 — raw mesh replication. Adds MESH_BLOB_OP (0x0250) and
 //     MESH_BLOB_BCAST (0x0251). Each frame carries one CHUNK of a serialized
 //     mesh blob (multiple BSGeometry leaves extracted from a modded weapon).
@@ -105,7 +113,7 @@ constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
 //     back in CONTAINER_OP_ACK. Enables sender-side pre-mutation block
 //     (DLL waits on condvar keyed on op_id before letting the engine's
 //     AddObjectToContainer proceed). Closes the container dup race.
-constexpr std::uint8_t  PROTOCOL_VERSION  = 10;
+constexpr std::uint8_t  PROTOCOL_VERSION  = 11;
 constexpr std::size_t   HEADER_SIZE       = 12;
 constexpr std::size_t   MAX_PAYLOAD_SIZE  = 1400;
 constexpr std::size_t   MAX_FRAME_SIZE    = HEADER_SIZE + MAX_PAYLOAD_SIZE;
@@ -278,22 +286,24 @@ struct AckPayload {
 };
 static_assert(sizeof(AckPayload) == 8, "AckPayload size");
 
-// POS_STATE (client → server). Python: 6f Q = 32 bytes
+// POS_STATE (client → server). Python: 6f Q I = 36 bytes (v11)
 struct PosStatePayload {
     float x, y, z;
     float rx, ry, rz;
     std::uint64_t timestamp_ms;
+    std::uint32_t cell_id;          // v11: parentCell.formID (B6 prologue)
 };
-static_assert(sizeof(PosStatePayload) == 32, "PosStatePayload size");
+static_assert(sizeof(PosStatePayload) == 36, "PosStatePayload size");
 
-// POS_BROADCAST (server → client). Python: FixedString(15) + 6f Q = 48 bytes
+// POS_BROADCAST (server → client). Python: FixedString(15) + 6f Q I = 52 bytes (v11)
 struct PosBroadcastPayload {
     FixedClientId peer_id;
     float x, y, z;
     float rx, ry, rz;
     std::uint64_t timestamp_ms;
+    std::uint32_t cell_id;          // v11: peer's parentCell.formID (B6 prologue)
 };
-static_assert(sizeof(PosBroadcastPayload) == 48, "PosBroadcastPayload size");
+static_assert(sizeof(PosBroadcastPayload) == 52, "PosBroadcastPayload size");
 
 // ---- M8P3.15 POSE replication ---------------------------------------------
 // Wire layout:

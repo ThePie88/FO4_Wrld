@@ -336,6 +336,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
             x=payload.x, y=payload.y, z=payload.z,
             rx=payload.rx, ry=payload.ry, rz=payload.rz,
             timestamp_ms=payload.timestamp_ms,
+            cell_id=payload.cell_id,    # v11: B6 prologue cell-aware ghost
         )
         for other in self.state.other_sessions(session.addr):
             raw = other.channel.send_unreliable(MessageType.POS_BROADCAST, broadcast)

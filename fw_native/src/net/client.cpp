@@ -936,6 +936,7 @@ void Client::dispatch(const Delivered& d) {
             remote_snapshot_.rot[2]         = p.rz;
             remote_snapshot_.server_ts_ms   = p.timestamp_ms;
             remote_snapshot_.received_at_ms = GetTickCount64();
+            remote_snapshot_.cell_id        = p.cell_id;   // v11 — B6 prologue
         }
 
         // M3.1 event-driven cube tracking (Strada B): post WM_APP+0x46 to

@@ -47,6 +47,7 @@ struct RemotePlayerSnapshot {
     float         rot[3]         = { 0.0f, 0.0f, 0.0f };
     std::uint64_t server_ts_ms   = 0;                // from payload
     std::uint64_t received_at_ms = 0;                // local GetTickCount64
+    std::uint32_t cell_id        = 0;                // v11: peer's parentCell.formID (B6 prologue)
 };
 
 // M9.w4 v9 — POD shape for mesh blob serialization (decoupled from

@@ -59,6 +59,15 @@ Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 > issue; the v0.5.0 BSConnectPoint pipeline already covered everything.
 > No code changes in v0.5.1. M9 is closed, 5/5 wedges done across all
 > firearms.
+>
+> **B6.1 v0.5.2 — Cell-aware ghost transitions (2026-05-08).** When a
+> peer crosses a cell boundary (entering an interior, fast-travel,
+> worldspace switch), the ghost on the remote client now stays synced.
+> Co-op inside the same interior works too — both peers see each other's
+> ghost in the same room. Wire proto v11 adds `cell_id` to the pos
+> payloads; the server validator now accepts cross-cell teleports as a
+> baseline reset instead of rejecting them as 2.4 M u/s "cheat" speed
+> spikes. See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -128,8 +137,9 @@ in real time).
 | **M8P2** RE BSGeometry skin instance offsets | ✅ done — `+0x140` confirmed |
 | **M8P3** Skin pipeline RE + per-bone pose replication | ✅ M8P3.23 — body+head+hands animated, see [CHANGELOG.md](CHANGELOG.md) |
 | **B5** D3D11 custom render | 🗿 not needed — Strada B native injection replaced |
-| **B6** World-state sync expansion *(composite — 13 wedges, multi-month epic)* | 🟡 1/13 done |
-| ↳ **B6.1** Door open/close sync | ✅ done — `sub_140514180` Activate worker hook + dual-agent RE convergence, [30s demo](https://youtu.be/T8wLZmCqjxw), see [CHANGELOG.md](CHANGELOG.md) |
+| **B6** World-state sync expansion *(composite — 13 wedges, multi-month epic)* | 🟡 2/13 done |
+| ↳ **B6.0** Door open/close sync | ✅ done — `sub_140514180` Activate worker hook + dual-agent RE convergence, [30s demo](https://youtu.be/T8wLZmCqjxw), see [CHANGELOG.md](CHANGELOG.md) |
+| ↳ **B6.1** Cell-aware ghost transitions (interior / fast-travel / worldspace switch) | ✅ done (v0.5.2, 2026-05-08) — wire proto v11 ships `cell_id` in pos payloads; server validator accepts cross-cell teleport as baseline reset instead of rejecting it at the 2500 u/s speed gate. Receiver is a plain coord-bind: cross-cell distance (~120k units) puts the ghost outside the local frustum naturally; same-interior co-op puts both peers in the same coord frame. |
 | **M9** Equipment sync between peers *(clothing + armor + weapon visual replication)* | ✅ done (v0.5.1, 2026-05-08) — 5/5 wedges across **all firearm families**: pistols (10mm, handmade), sniper rifle, assault rifle, hunting rifle, combat shotgun, combat rifle, minigun, Fat Man, laser, plasma — all visible with mods on the remote ghost via engine BSConnectPoint pairing. Plus clothing + body cull + OMOD-driven ARMA tier + Vault Suit cycle stable. |
 | ↳ **M9.w1** Equip event detection + broadcast (sender hook OBSERVE-only) | ✅ done — `ActorEquipManager::EquipObject/UnequipObject` detour, EQUIP_OP/EQUIP_BCAST opcodes (protocol v6), [video coming soon] |
 | ↳ **M9.w2** Receiver-side NIF resolution + ghost attach + animation | ✅ done — TESObjectARMO struct walk, gender-aware path scoring (M3rd preferred over F/1stP), OMOD-driven priority extracted from `BGSObjectInstance.extra+0x56` and shipped via wire (proto v10) so ghost picks the correct ARMA tier (Lite/Mid/Heavy). Engine helper `sub_1404626A0` PrioritySelect algorithm reimplemented receiver-side. TTD-confirmed 2026-05-03. |
@@ -174,6 +184,36 @@ in real time).
 
 Latest 3 patches summarized below. **Full version history in
 [CHANGELOG.md](CHANGELOG.md).**
+
+### B6.1 v0.5.2 (2026-05-08) — cell-aware ghost transitions — STABLE
+
+- **Cell transitions now work across the network.** Peer enters an
+  interior or fast-travels, the ghost on the remote client stays in
+  sync. Both peers in the same interior see each other.
+- **Root cause was server-side, not render-side.** The pos validator
+  caps speed at 2500 u/s; a cross-cell teleport is ~120k units in
+  50 ms ≈ 2.4 M u/s, so every POS_STATE got rejected as cheat. The
+  ghost stayed pinned at the last accepted exterior pos — exactly at
+  the door I just walked through.
+- **Fix.** Wire proto v11 adds `cell_id` (u32) to `PosState` /
+  `PosBroadcast`. Server validator now accepts `incoming.cell_id !=
+  session.last_pos.cell_id` as a baseline reset (legit cell change,
+  not cheat). Pre-v11 senders (`cell_id == 0`) keep the standard speed
+  gate unchanged. Receiver-side rendering stays as a plain coord-bind:
+  cross-cell distance pushes the ghost outside the local frustum
+  naturally, same-interior co-op puts both peers in the same coord
+  frame so the ghost is positioned correctly relative to whoever is
+  watching.
+- **What I tried first.** Four receiver-side hide attempts —
+  `NIAV_FLAG_APP_CULLED` on body BSFadeNode root, `local.translate =
+  (1e7, 1e7, 1e7)`, detach body from World SceneGraph, recursive
+  `APP_CULLED` on every leaf — all failed because the rendered
+  geometry comes through the skin pipeline independently of scene
+  graph attachment and BSFadeNodeCuller logic. The diagnostic that
+  mattered was `pos_bcast` counter stuck in the log while `pose-rx`
+  ticked normally; the server was the only piece filtering pos
+  differently. Lesson: counters before code. Tag
+  `v0.5.2-b6.1-cell-aware-ghost`.
 
 ### M9 v0.5.1 (2026-05-08) — M9 closed: every weapon family confirmed — STABLE
 
@@ -247,40 +287,6 @@ Latest 3 patches summarized below. **Full version history in
   a rifle base subtree and check which `BSConnectPoint::Children`
   entries it actually carries. Tag
   `v0.5.0-w4-modded-firearms-pistols`.
-
-### M9 v0.4.2 (2026-05-04) — Vault Suit cycle stability via path-routed deep clone — STABLE
-
-- Closes four equip-cycle bugs on Vault Suit: SEH crash on spam
-  unequip/equip, post-cycle local body invisible, ghost VS disappears
-  after re-equip, ghost VS frozen in T-pose. Single root cause across
-  all four: ghost shared the same cached `MaleBody.nif` / Vault Suit
-  BSFadeNode with the local player; engine cleanup on each cycle freed
-  state the ghost was still pointing at (`bones_pri[i]` raw `+0x70`
-  pointers into freed `BSFlattenedBoneTree`, plus shared `APP_CULLED`
-  bits leaking across actors).
-- Path-whitelist routing in `ghost_attach_armor`: NIF paths containing
-  `Vault111Suit` go through a manual deep-clone walker
-  (`BSFadeNode`/`BSLeafAnimNode`/`NiNode`/`BSSubIndexTriShape` +
-  manual `BSSkin::Instance` deep copy). Everything else
-  (combat light/heavy, RusticUnderArmor jacket, regular outfits)
-  stays on yesterday's v0.4.1 SHARED + snapshot/restore pipeline,
-  which already had universal armor render.
-- Body inject (`try_inject_body_nif`) deep-clones `MaleBody.nif`
-  unconditionally so the ghost body has its own independent BSSITF;
-  body cull `APP_CULLED` no longer bleeds across actors.
-- Periodic 4Hz skin re-apply in `on_bone_tick_message` with silent flag
-  refreshes ghost-skel binding on SHARED-path armors, neutralizing
-  engine's local-actor re-bind drift during local equip churn.
-- Whitelist instead of geometry-type detection because empirically
-  combat heavy + RusticUnderArmor are also homogeneous BSSITF (no
-  BSTriShape children) but their clones render invisible — the
-  manual clone walker only survives for VS, likely due to its
-  specific vertex layout tolerating a missing call to engine
-  helper `sub_1416D5600` (NiSkinPartition / D3D resource binding
-  setup).
-- M9 still 4/5 wedges; w4 PROPER (weapon mod parts) is the remaining
-  in-scope work. B8 boot-time force-equip-cycle workaround kept enabled
-  — defense in depth, no harm. Tag `v0.4.2-vs-cycle-stable`.
 
 ## Why this exists
 

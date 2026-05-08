@@ -10580,9 +10580,46 @@ void on_pos_update_message() {
     void* head = g_injected_head.load(std::memory_order_acquire);
     const auto snap = fw::net::client().get_remote_snapshot();
     if (!snap.has_state) return;
-    // M5: body origin = feet, so no Z offset. v12: body gets yaw only,
-    // head gets pitch only — no more tree-trunk rotation when remote
-    // looks up/down.
+
+    // B6 prologue (v0.6.0, 2026-05-08) — coord-bind ghost, no manual hide.
+    //
+    // We always write peer's broadcast coords to the ghost, regardless of
+    // cell-mismatch. Two consequences worth understanding:
+    //
+    //   1. When peer A enters an interior, A's coords change to interior
+    //      values like (-200, 200, 0). The ghost on peer B's exterior view
+    //      ends up at world (-200, 200, 0) — typically ≥ 100k units from
+    //      peer B at exterior Sanctuary coords (~-76000, 93000, 7700).
+    //      The engine's frustum/far-plane culls naturally drop the ghost
+    //      from rendering. No manual cull needed.
+    //
+    //   2. When peer B follows into the same interior, B's local pos and
+    //      A's broadcast pos are now in the same coord frame (interior
+    //      worldspace). The ghost at A's interior coords is correctly
+    //      positioned relative to B's interior view → ghost visible to B
+    //      naturally. Multi-peer-in-same-interior case solved by design,
+    //      no special handling needed.
+    //
+    // Cell-aware hide attempts (kept as memory of failed iterations):
+    //   - APP_CULLED on body BSFadeNode root → NO-OP (BSFadeNodeCuller
+    //     ignores the bit at root level)
+    //   - body.local.translate = (1e7, 1e7, 1e7) → NO-OP (BSFlattenedBoneTree
+    //     caches bone matrices independently from the BSFadeNode hierarchy)
+    //   - Detach body from World SceneGraph parent → NO-OP (skin pipeline
+    //     iterates BSSkin::Instance objects independently of scene-graph
+    //     attachment)
+    //   - APP_CULLED walker on every leaf in body subtree → NO-OP (still
+    //     visible, didn't dig into why; abandoned in favor of natural
+    //     frustum cull via coord-bind)
+    //
+    // The proto v11 cell_id wire field stays plumbed (sender writes
+    // PlayerCharacter.parentCell.formID, server forwards, receiver stores
+    // in RemoteSnapshot.cell_id) for future cell-aware logic if we ever
+    // want explicit per-cell ghost lifecycle (e.g. multi-peer registry
+    // keyed on cell_id, or interior-only voice chat scope).
+    //
+    // M5: body origin = feet, no Z offset. v12: body yaw only, head
+    // pitch only — head decoupled to avoid tree-trunk rotation.
     pos_update_seh(body, head,
                    snap.pos[0], snap.pos[1], snap.pos[2],
                    snap.rot[0], snap.rot[1], snap.rot[2]);

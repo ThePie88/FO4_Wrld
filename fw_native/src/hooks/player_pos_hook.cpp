@@ -68,6 +68,13 @@ void poll_loop(std::uintptr_t module_base) {
                 base + offsets::PARENT_CELL_OFF, nullptr);
             if (!cell) continue;
 
+            // v11 (B6 prologue): read parentCell.formID so receiver can
+            // CULL the ghost when peers are in different cells. Cell is a
+            // TESObjectCELL → inherits TESForm → formID at +0x14.
+            const auto cell_form_id = safe_read<std::uint32_t>(
+                reinterpret_cast<const std::uint8_t*>(cell) + offsets::FORMID_OFF,
+                0u);
+
             const Vec3 pos{
                 safe_read<float>(base + offsets::POS_OFF,     0.0f),
                 safe_read<float>(base + offsets::POS_OFF + 4, 0.0f),
@@ -100,6 +107,7 @@ void poll_loop(std::uintptr_t module_base) {
                 p.rx = rot.x; p.ry = rot.y; p.rz = rot.z;
                 p.timestamp_ms = duration_cast<milliseconds>(
                     system_clock::now().time_since_epoch()).count();
+                p.cell_id = cell_form_id;   // v11 — B6 prologue
                 fw::net::client().enqueue_pos_state(p);
             }
 

@@ -32,7 +32,14 @@ from typing import ClassVar, Union
 # ------------------------------------------------------------------ constants
 
 PROTOCOL_MAGIC: int = 0xFA
-PROTOCOL_VERSION: int = 10
+PROTOCOL_VERSION: int = 11
+# v11 (2026-05-08): B6 prologue — cell-aware ghost. PosStatePayload and
+# PosBroadcastPayload extended with `cell_id: u32` (parentCell.formID).
+# Sender reads it from PlayerCharacter.parentCell.formID. Receiver compares
+# with its own local cell every pos update and flips NIAV_FLAG_APP_CULLED
+# on the ghost BSFadeNode when cells differ. Fixes the "ghost frozen at the
+# door" bug when peer A enters an interior cell that peer B isn't loaded
+# into. PosState 32→36 bytes, PosBroadcast 48→52 bytes.
 # v9 (2026-04-30): M9 wedge 4 — raw mesh replication. New message types
 # MESH_BLOB_OP (client→server) and MESH_BLOB_BCAST (server→peers) carry
 # CHUNKS of a serialized mesh blob extracted from the local player's
@@ -348,17 +355,24 @@ class AckPayload:
 
 @dataclass(frozen=True, slots=True)
 class PosStatePayload:
-    """Current local player pos+rot snapshot. Unreliable."""
+    """Current local player pos+rot snapshot. Unreliable.
+
+    v11 (B6 prologue): adds cell_id (parentCell.formID) so the receiver
+    can compare with its own local cell and CULL the ghost when peers
+    are in different cells.
+    """
     x: float; y: float; z: float   # world coords (float32)
     rx: float; ry: float; rz: float # rotation radians (float32)
     timestamp_ms: int              # u64 client wall clock (for RTT/interp)
+    cell_id: int = 0               # v11: parentCell.formID (u32)
 
-    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<6fQ")
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<6fQI")
 
     def encode(self) -> bytes:
         return self._STRUCT.pack(self.x, self.y, self.z,
                                   self.rx, self.ry, self.rz,
-                                  self.timestamp_ms)
+                                  self.timestamp_ms,
+                                  self.cell_id)
 
     @classmethod
     def decode(cls, data: bytes) -> "PosStatePayload":
@@ -369,20 +383,25 @@ class PosStatePayload:
 
 @dataclass(frozen=True, slots=True)
 class PosBroadcastPayload:
-    """Pos+rot of a remote peer, as relayed by server. Extends PosState with peer_id."""
+    """Pos+rot of a remote peer, as relayed by server. Extends PosState with peer_id.
+
+    v11 (B6 prologue): adds cell_id, mirrored from PosStatePayload.
+    """
     peer_id: str
     x: float; y: float; z: float
     rx: float; ry: float; rz: float
     timestamp_ms: int
+    cell_id: int = 0               # v11: peer's parentCell.formID (u32)
 
-    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<6fQ")
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<6fQI")
 
     def encode(self) -> bytes:
         return (
             _encode_fixed_string(self.peer_id, MAX_CLIENT_ID_LEN)
             + self._STRUCT.pack(self.x, self.y, self.z,
                                  self.rx, self.ry, self.rz,
-                                 self.timestamp_ms)
+                                 self.timestamp_ms,
+                                 self.cell_id)
         )
 
     @classmethod
@@ -391,8 +410,8 @@ class PosBroadcastPayload:
         if len(data) < off + cls._STRUCT.size:
             raise ProtocolError("POS_BROADCAST truncated")
         pid = _decode_fixed_string(data, MAX_CLIENT_ID_LEN)
-        x, y, z, rx, ry, rz, ts = cls._STRUCT.unpack_from(data, off)
-        return cls(pid, x, y, z, rx, ry, rz, ts)
+        x, y, z, rx, ry, rz, ts, cell = cls._STRUCT.unpack_from(data, off)
+        return cls(pid, x, y, z, rx, ry, rz, ts, cell)
 
 
 # ---- M8P3.15 POSE replication ----------------------------------------------

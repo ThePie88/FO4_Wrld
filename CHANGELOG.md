@@ -5,6 +5,77 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## B6.1 v0.5.2 — Cell-aware ghost transitions (2026-05-08) — STABLE
+
+When a peer crosses a cell boundary (entering an interior, fast-travel,
+worldspace switch), the ghost on the remote client now stays in sync.
+Co-op inside the same interior works too: both peers see each other's
+ghost in the same room.
+
+### Root cause
+
+The server pos validator caps speed at 2500 u/s. A cross-cell teleport
+is ~120k units in 50 ms ≈ 2.4 M u/s — every POS_STATE got rejected as
+cheat, so the ghost stayed pinned at the last accepted exterior pos
+(the door I had just walked through).
+
+### Fix
+
+- **Wire proto v11** — `cell_id` (u32) added to `PosStatePayload`
+  (32→36 B) and `PosBroadcastPayload` (48→52 B). Sender reads
+  `PlayerCharacter.parentCell.formID`; server forwards.
+- **Validator bypass** — when `incoming.cell_id != session.last_pos.cell_id`
+  and both are non-zero, accept as baseline reset. Legit cell change,
+  not cheat. Pre-v11 senders (`cell_id == 0`) keep the standard speed
+  gate intact, so back-compat is clean.
+- **Receiver stays simple** — bind ghost to peer coords as before. No
+  manual cull / detach / hide. Cross-cell distance pushes the ghost
+  outside the local frustum naturally; same-interior co-op puts both
+  peers in the same coord frame so the ghost is correctly placed
+  relative to whoever is watching.
+
+### What I tried first that didn't work
+
+I burned ~2 hours on the receiver side before checking the server.
+Tried, in order:
+
+1. **NIAV_FLAG_APP_CULLED on body BSFadeNode root** — `BSFadeNodeCuller`
+   (vtable RVA `0x14290D088`) ignores the bit at root level.
+2. **`body.local.translate = (1e7, 1e7, 1e7)`** — `BSFlattenedBoneTree`
+   caches bone matrices independently from the BSFadeNode hierarchy,
+   skin pipeline kept rendering at the original place.
+3. **Detach body from World SceneGraph parent** — skin pipeline
+   iterates `BSSkin::Instance` independently of scene-graph attachment.
+4. **Recursive APP_CULLED on every leaf in the body subtree** — still
+   visible.
+
+All four were wasted cycles. The diagnostic that mattered was sitting
+in the log the whole time: peer B's `pos_bcast` counter stayed pinned
+at 1303 across the whole period peer A was inside, while `pose-rx`
+ticked at 20 Hz normally. Net traffic was dropping pos but not pose —
+the validator was the only piece that filtered pos differently.
+
+**Lesson**: counters / state / log deltas first, code later.
+
+### Files changed
+
+- `fw_native/src/net/protocol.h` — `PROTOCOL_VERSION` 10→11; `cell_id`
+  on the two pos payloads.
+- `fw_native/src/hooks/player_pos_hook.cpp` — sender reads
+  `parentCell.formID`.
+- `fw_native/src/net/client.{h,cpp}` — receiver stores `cell_id` in
+  `RemotePlayerSnapshot`.
+- `fw_native/src/native/scene_inject.cpp` — `on_pos_update_message`
+  back to a plain coord write; comment block documents the four failed
+  hide attempts as memory.
+- `net/protocol.py` — mirror v11 layout.
+- `net/server/main.py` — forwards `cell_id` in broadcast.
+- `net/server/validator.py` — cell-change baseline reset.
+
+**Tag:** `v0.5.2-b6.1-cell-aware-ghost`.
+
+---
+
 ## M9 v0.5.1 — M9 closed: every weapon family confirmed (2026-05-08) — STABLE
 
 Full pass across the weapon roster after the v0.5.0 demo recording
