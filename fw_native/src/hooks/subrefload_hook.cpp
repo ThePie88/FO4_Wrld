@@ -1,3 +1,13 @@
+// ============================================================================
+// DEAD-END / KEPT FOR MEMORY OF HOURS PASSED — M9.w4 RE phase, Apr-May 2026
+// ============================================================================
+//
+// See subrefload_hook.h header for the full DEAD-END notice.
+// Working M9.w4 path: scene_inject.cpp::ghost_attach_assembled_weapon
+// (uses `sub_140434DA0` per-OMOD attach + BSConnectPoint pairing).
+// Install call disabled in install_all.cpp.
+// ============================================================================
+//
 // Diagnostic hook for sub_1404580C0 — capture run-time args.
 // See subrefload_hook.h for rationale.
 

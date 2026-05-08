@@ -1,3 +1,30 @@
+// ============================================================================
+// DEAD-END / KEPT FOR MEMORY OF HOURS PASSED — M9.w4 RE phase, Apr-May 2026
+// ============================================================================
+//
+// This file represents a failed approach to M9.w4 (modded weapon
+// visualization on the ghost). The working path landed in v0.5.0
+// (see CHANGELOG.md) and uses the engine's `sub_140434DA0` per-OMOD
+// attach helper plus BSConnectPoint pairing — implemented in
+// scene_inject.cpp::ghost_attach_assembled_weapon.
+//
+// What was tried here: diagnostic hook on sub_1402FC0E0
+// (BSModelProcessor post-hook), used to learn how the engine applies
+// OMODs to a freshly-parsed BSFadeNode tree on a real engine call.
+// Theory: synthetic load + fabricated BGSObjectInstanceExtra would
+// reach this branch and apply OMODs in-place.
+//
+// Why it failed: live test showed weapon NIFs carry NO
+// BGSObjectInstanceExtra (type 0x35) in their extra-data chain when
+// the parser runs. The OMOD-apply branch in this post-hook NEVER
+// fires for our use case. The static decomp suggested it would; the
+// live receiver path doesn't reach it. Documented in CHANGELOG v0.5.0
+// "Refuted along the way" section.
+//
+// Install call disabled in install_all.cpp; kept on disk because the
+// arg-capture machinery is reusable for any future post-hook RE.
+// ============================================================================
+//
 // Diagnostic hook for sub_1402FC0E0 — the BSModelProcessor post-hook
 // where OMODs are applied to a freshly-parsed BSFadeNode tree.
 //

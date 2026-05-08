@@ -5,6 +5,43 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## M9 v0.5.1 — M9 closed: every weapon family confirmed (2026-05-08) — STABLE
+
+Full pass across the weapon roster after the v0.5.0 demo recording
+showed rifles working when the v0.5.0 changelog still flagged them
+as pending. Every family I tested renders correctly on the ghost
+with mods applied:
+
+- Pistols — 10mm, handmade
+- Sniper rifle
+- Assault rifle
+- Hunting rifle
+- Combat shotgun
+- Combat rifle
+- Minigun
+- Fat Man
+- Laser weapons
+- Plasma weapons
+
+Receivers, magazines, scopes, suppressors, grips, barrels — all
+replicated through the same v0.5.0 BSConnectPoint pipeline. No code
+changes; the v0.5.0 attach path already covered everything.
+
+The "rifles render invisible" line in the v0.5.0 entry was a testing
+gap, not a real bug. I had only validated pistols + handmade before
+shipping; deeper coverage during the demo recording, then a proper
+roster pass at the start of this session, confirmed full coverage.
+
+**M9 is closed.** All five wedges done across all firearms (and on
+top of clothing, body cull, ARMA tier, Vault Suit cycle stability).
+Next session moves on to B6 wedges (lights, locks, terminals) and
+eventually B6.5 NPC pose sync — the real "co-op chat → playable
+multiplayer" turning point.
+
+**Tag:** `v0.5.1-m9-closed`.
+
+---
+
 ## M9 v0.5.0 — modded weapons visible on ghost (pistols) (2026-05-07) — STABLE
 
 Pistols with mods now render correctly on the remote ghost: peer A

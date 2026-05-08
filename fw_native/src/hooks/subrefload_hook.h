@@ -1,3 +1,30 @@
+// ============================================================================
+// DEAD-END / KEPT FOR MEMORY OF HOURS PASSED — M9.w4 RE phase, Apr-May 2026
+// ============================================================================
+//
+// This file represents a failed approach to M9.w4 (modded weapon
+// visualization on the ghost). The working path landed in v0.5.0
+// (see CHANGELOG.md) and uses the engine's `sub_140434DA0` per-OMOD
+// attach helper plus BSConnectPoint pairing — implemented in
+// scene_inject.cpp::ghost_attach_assembled_weapon.
+//
+// What was tried here: diagnostic hook on sub_1404580C0 to capture
+// real engine arg layout. Theory: this is the engine's load+clone+wrap
+// helper, and with opts byte 0x2D (bit 0x08 set) it would trigger
+// BSModelProcessor → OMOD apply in-place, threading our fabricated
+// BGSObjectInstanceExtra via the 4th arg.
+//
+// Why it failed: sub_1404580C0 returns a stock NIF clone with no
+// OMOD context. The 4th arg is BSFixedString* for SetName, NOT
+// modelExtraData (refuted by separate follow-up agent decoding the
+// function body). Documented in re/COLLAB_FOLLOWUP_sub1404580C0.md
+// and CHANGELOG v0.5.0 "Refuted along the way" section.
+//
+// Install call disabled in install_all.cpp; kept on disk because the
+// arg-capture rate-limited logging machinery is reusable for any
+// future engine-internal RE.
+// ============================================================================
+//
 // Diagnostic hook for sub_1404580C0 — the engine's "load NIF + clone +
 // wrap" function (DELTA §8 candidate for our synthetic-load path).
 //

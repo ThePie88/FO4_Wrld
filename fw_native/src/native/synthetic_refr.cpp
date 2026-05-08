@@ -1,3 +1,13 @@
+// ============================================================================
+// DEAD-END / KEPT FOR MEMORY OF HOURS PASSED — M9.w4 RE phase, Apr-May 2026
+// ============================================================================
+//
+// See synthetic_refr.h header for the full DEAD-END notice.
+// Working M9.w4 path: scene_inject.cpp::ghost_attach_assembled_weapon
+// (uses `sub_140434DA0` per-OMOD attach + BSConnectPoint pairing).
+// Kept on disk for the RE history and OIE fabrication recipe below.
+// ============================================================================
+//
 // Modded weapon assembly via direct NIF loader.
 //
 // See synthetic_refr.h for the architectural rationale. Iteration #2

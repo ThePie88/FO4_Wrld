@@ -120,6 +120,18 @@ InstallSummary install_all(std::uintptr_t module_base,
         FW_WRN("hooks: ni_alloc_tracker install FAILED");
     }
 
+    // ============================================================
+    // DEAD-END diagnostic hooks DISABLED (2026-05-08, post-M9 cleanup)
+    // ============================================================
+    // Both hooks below were RE diagnostics during M9.w4 to learn the
+    // engine's modded-weapon assembly mechanism. The working path
+    // turned out to be `sub_140434DA0` per-OMOD attach + BSConnectPoint
+    // pairing (see CHANGELOG v0.5.0), which neither hook touches.
+    // Files kept on disk with DEAD-END headers as memory of hours
+    // passed; install calls disabled here to avoid wasted boot work
+    // and log noise. To re-enable for future RE rounds: uncomment
+    // the original blocks below.
+    //
     // M9 closure (2026-05-07) — diagnostic hook on sub_1404580C0.
     // GAMMA's vt[170] path was refuted (sub_140513760 is a flag-setter,
     // not a loader). DELTA §8 candidate: sub_1404580C0 = direct
@@ -128,10 +140,11 @@ InstallSummary install_all(std::uintptr_t module_base,
     // shape is unknown statically. This hook captures every fire's
     // raw args + hex dumps so we can reverse the layout from live data.
     // Trigger: open Pipboy, hover modded weapons. First 24 fires logged.
-    const bool subload_ok = install_subload_hook(module_base);
-    if (!subload_ok) {
-        FW_WRN("hooks: subrefload install FAILED");
-    }
+    //
+    //   const bool subload_ok = install_subload_hook(module_base);
+    //   if (!subload_ok) {
+    //       FW_WRN("hooks: subrefload install FAILED");
+    //   }
 
     // M9 closure (2026-05-07) — diagnostic hook on sub_1402FC0E0
     // (BSModelProcessor post-hook). Per ALPHA's dossier, this is THE
@@ -144,10 +157,11 @@ InstallSummary install_all(std::uintptr_t module_base,
     // be present in memory for the OMOD branch to fire so we can
     // reproduce it on a synthetic load. First 32 weapon/armor fires
     // logged; everything else silently passed through.
-    const bool bsmp_ok = install_bsmodelproc_hook(module_base);
-    if (!bsmp_ok) {
-        FW_WRN("hooks: bsmodelproc install FAILED");
-    }
+    //
+    //   const bool bsmp_ok = install_bsmodelproc_hook(module_base);
+    //   if (!bsmp_ok) {
+    //       FW_WRN("hooks: bsmodelproc install FAILED");
+    //   }
 
     // M9 wedge 4 — hook the BSTriShape CLONE FACTORY (sub_1416D99E0).
     // The alloc tracker (above) identified ALL weapon BSTriShape leaves

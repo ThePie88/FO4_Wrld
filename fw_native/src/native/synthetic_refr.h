@@ -1,3 +1,34 @@
+// ============================================================================
+// DEAD-END / KEPT FOR MEMORY OF HOURS PASSED — M9.w4 RE phase, Apr-May 2026
+// ============================================================================
+//
+// This file represents a failed approach to M9.w4 (modded weapon
+// visualization on the ghost). The working path landed in v0.5.0
+// (see CHANGELOG.md) and uses the engine's `sub_140434DA0` per-OMOD
+// attach helper plus BSConnectPoint pairing — implemented in
+// scene_inject.cpp::ghost_attach_assembled_weapon.
+//
+// What was tried here:
+//   Iter #1 — synthetic TESObjectREFR via vt[170] + loaded3D polling
+//   Iter #2 — direct sub_1404580C0 sync load with fabricated OIE
+//
+// Why it failed:
+//   Iter #1 — vt[170] is `sub_140513760`, a 0x28-byte flag setter; no
+//   NIF load is ever triggered. Documented in
+//   re/COLLAB_FOLLOWUP_vt170.md (99% confidence, decomp + static scan
+//   of all 197 REFR vtable slots).
+//   Iter #2 — sub_1404580C0 returns a stock NIF clone with no OMOD
+//   context applied; the 4th arg is BSFixedString* for SetName, not
+//   modelExtraData. Documented in re/COLLAB_FOLLOWUP_sub1404580C0.md.
+//
+// Current state: `assemble_modded_weapon` body is a SAFE NO-OP that
+// returns nullptr + kErrInternal. The OIE fabrication helpers below
+// are fully implemented and tested but unused.
+//
+// Kept on disk because the RE history below + the OIE recipe are
+// useful reference for any future engine-internal exploration.
+// ============================================================================
+//
 // M9 closure (2026-05-07) — Modded weapon assembly via direct NIF loader.
 //
 // PURPOSE

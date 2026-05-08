@@ -47,9 +47,18 @@ Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 > to the base via the BSConnectPoint extra-data system baked into the
 > NIF files. Sender fires a tiny re-equip cycle 50 ms after each user
 > equip to work around a first-equip render lag I couldn't fix on the
-> receiver alone. Rifles next session to close M9 fully.
+> receiver alone.
 > [Demo (clothes + armor + modded firearms)](https://youtu.be/r34D4IL7wAk).
 > See [CHANGELOG.md](CHANGELOG.md).
+>
+> **M9 v0.5.1 — M9 closed (2026-05-08).** Full pass on the weapon
+> roster: pistols (10mm, handmade), sniper rifle, assault rifle, hunting
+> rifle, combat shotgun, combat rifle, minigun, Fat Man, laser, plasma —
+> all render correctly on the ghost with mods applied. The "rifles
+> render invisible" caveat in v0.5.0 was a testing gap, not a code
+> issue; the v0.5.0 BSConnectPoint pipeline already covered everything.
+> No code changes in v0.5.1. M9 is closed, 5/5 wedges done across all
+> firearms.
 
 ---
 
@@ -121,11 +130,11 @@ in real time).
 | **B5** D3D11 custom render | 🗿 not needed — Strada B native injection replaced |
 | **B6** World-state sync expansion *(composite — 13 wedges, multi-month epic)* | 🟡 1/13 done |
 | ↳ **B6.1** Door open/close sync | ✅ done — `sub_140514180` Activate worker hook + dual-agent RE convergence, [30s demo](https://youtu.be/T8wLZmCqjxw), see [CHANGELOG.md](CHANGELOG.md) |
-| **M9** Equipment sync between peers *(clothing + armor + weapon visual replication)* | 🟢 5/5 wedges done for pistols (v0.5.0): clothing + body cull + OMOD-driven ARMA tier + Vault Suit cycle stable + **modded firearm visualization** end-to-end via engine BSConnectPoint pairing. Rifles (sniper/assault/hunting) next session to fully close M9. |
+| **M9** Equipment sync between peers *(clothing + armor + weapon visual replication)* | ✅ done (v0.5.1, 2026-05-08) — 5/5 wedges across **all firearm families**: pistols (10mm, handmade), sniper rifle, assault rifle, hunting rifle, combat shotgun, combat rifle, minigun, Fat Man, laser, plasma — all visible with mods on the remote ghost via engine BSConnectPoint pairing. Plus clothing + body cull + OMOD-driven ARMA tier + Vault Suit cycle stable. |
 | ↳ **M9.w1** Equip event detection + broadcast (sender hook OBSERVE-only) | ✅ done — `ActorEquipManager::EquipObject/UnequipObject` detour, EQUIP_OP/EQUIP_BCAST opcodes (protocol v6), [video coming soon] |
 | ↳ **M9.w2** Receiver-side NIF resolution + ghost attach + animation | ✅ done — TESObjectARMO struct walk, gender-aware path scoring (M3rd preferred over F/1stP), OMOD-driven priority extracted from `BGSObjectInstance.extra+0x56` and shipped via wire (proto v10) so ghost picks the correct ARMA tier (Lite/Mid/Heavy). Engine helper `sub_1404626A0` PrioritySelect algorithm reimplemented receiver-side. TTD-confirmed 2026-05-03. |
 | ↳ **M9.w3** Biped slot masking (hide ghost body parts under armor) | ✅ done — `TESObjectARMO+0x1E8` bipedSlots bitmask, slot-3 BODY mask flips `NIAV_FLAG_APP_CULLED` on ghost's `BaseMaleBody:0` BSSubIndexTriShape (cached at body inject via vtable RVA `0x2697D40` walker). Body hidden under Vault Suit / Power Armor / Synth Armor — no more z-fight. |
-| ↳ **M9.w4** Object Modification (BGSMod) sync — shoulder pads, weapon mods, paint variants | 🟢 modded **pistols** end-to-end (v0.5.0, 2026-05-07) — engine OMOD attacher `sub_140434DA0` + BSConnectPoint pairing, sender-side 50ms auto re-equip cycle for off-by-one render lag. Modded 10mm/handmade pistol receivers/scopes/suppressors/mags all visible on the ghost, [demo](https://youtu.be/r34D4IL7wAk). Rifles (sniper/assault/hunting) next session to fully close M9. |
+| ↳ **M9.w4** Object Modification (BGSMod) sync — shoulder pads, weapon mods, paint variants | ✅ done (v0.5.1, 2026-05-08) — engine OMOD attacher `sub_140434DA0` + BSConnectPoint pairing, sender-side 50ms auto re-equip cycle for off-by-one render lag. Every firearm family verified with mods (pistols, sniper, assault, hunting, combat shotgun, combat rifle, minigun, Fat Man, laser, plasma). Receivers, mags, scopes, suppressors, grips, barrels — all replicated. [Demo](https://youtu.be/r34D4IL7wAk). |
 | ↳ **M9.w5** Peer rejoin equipment-state push | ✅ done in v0.3.1 — PEER_JOIN trigger re-arms equip cycle (DONE→ARMED state transition), 1500ms delay, current outfit re-broadcast to newly-joined peer |
 | ↳ **B6.2** Lights toggle sync (lamps, lanterns, generators) | ⏳ — same Activate worker pattern as doors, formType filter on `0x20` LIGH |
 | ↳ **B6.3** Locks state sync (lockpicked → unlocked cross-client) | ⏳ — REFR lock extra-data + `OnLockedClick` callback hook |
@@ -165,6 +174,24 @@ in real time).
 
 Latest 3 patches summarized below. **Full version history in
 [CHANGELOG.md](CHANGELOG.md).**
+
+### M9 v0.5.1 (2026-05-08) — M9 closed: every weapon family confirmed — STABLE
+
+- **M9 is closed.** Full pass on the weapon roster: pistols (10mm,
+  handmade), sniper rifle, assault rifle, hunting rifle, combat
+  shotgun, combat rifle, minigun, Fat Man, laser, plasma — all
+  render correctly on the ghost with mods applied (receivers, mags,
+  scopes, suppressors, grips, barrels). Same v0.5.0 BSConnectPoint
+  pipeline; no code changes.
+- **The "rifles render invisible" caveat in v0.5.0 was a testing gap,
+  not a real bug.** I had only validated pistols + handmade before
+  shipping; deeper coverage during the demo recording, then a roster
+  pass at the start of this session, confirmed the v0.5.0 pipeline
+  already covered every family.
+- **Next:** B6 wedges (lights, locks, terminals — same Activate-worker
+  pattern as B6.1 doors) and eventually B6.5 NPC pose sync — the real
+  "co-op chat → playable multiplayer" turning point. Tag
+  `v0.5.1-m9-closed`.
 
 ### M9 v0.5.0 (2026-05-07) — modded weapons visible on ghost (pistols) — STABLE
 
@@ -255,27 +282,6 @@ Latest 3 patches summarized below. **Full version history in
   in-scope work. B8 boot-time force-equip-cycle workaround kept enabled
   — defense in depth, no harm. Tag `v0.4.2-vs-cycle-stable`.
 
-### M9 v0.4.1 (2026-05-03) — wedge 2 PROPER + wedge 3 body cull — STABLE
-
-- M9.w3 — biped slot body cull. `TESObjectARMO+0x1E8` `bipedSlots`
-  bitmask drives `NIAV_FLAG_APP_CULLED` on the cached
-  `BaseMaleBody:0` BSSubIndexTriShape (vtable RVA `0x2697D40`).
-  When peer equips a slot-3 BODY armor (Vault Suit, Power Armor,
-  Synth Armor) the ghost body is hidden under the armor mesh.
-  Per-peer contributor set tracking handles concurrent BODY armors
-  and guarantees correct restore on last-detach.
-- M9.w2 PROPER — OMOD-driven ARMA tier selection. RE'd engine
-  selector `sub_1404626A0` (`TESObjectARMO::ForEachAddonInstance`,
-  RVA `0x4626A0`) and reimplemented its PrioritySelect algorithm
-  receiver-side. Sender extracts effective priority from
-  `BGSObjectInstance.extra+0x56`, TTD-confirmed against engine's
-  r8 argument to the build-holder helper. Ships via wire (proto v10)
-  so the ghost picks the same ARMA tier (Lite/Mid/Heavy) the player
-  wears. Gender-fix in path scoring catches the `F_<X>` filename
-  convention used by Combat Armor and DLC meshes.
-- Both wedges settled by HIGH×HIGH consensus from independent IDA
-  agents plus TTD ground-truth verification.
-
 ## Why this exists
 
 I've been waiting ~10 years for someone to ship Fallout 4 multiplayer.
@@ -329,14 +335,6 @@ that should be most reusable for anyone else attempting the same thing.
 - **Network rate-limited to 20Hz** — works smoothly on LAN, untested
   over real-world internet routes; receiver-side interpolation between
   POSE_BROADCAST frames is open work.
-- **Rifles still render invisible on ghost** — pistols (10mm,
-  Handmade pistol-form) work end-to-end with v0.5.0's BSConnectPoint
-  pipeline; rifles (sniper / assault / hunting / shotgun) don't yet.
-  Same code path executes — failure is in either base path resolution
-  (canonical fallback `Weapons\<X>\<X>.nif` may not match every rifle
-  family's authoring convention) or in BSConnectPoint::Children
-  authoring differing for rifle base NIFs. Next session investigation
-  to close M9 fully.
 - **Sender sees a ~50 ms weapon flicker on equip** — visible side
   effect of the v0.5.0 auto re-equip cycle: 50 ms after the user's
   EquipObject the sender fires UnequipObject + EquipObject for the

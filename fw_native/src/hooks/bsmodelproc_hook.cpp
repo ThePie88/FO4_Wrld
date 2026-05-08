@@ -1,3 +1,13 @@
+// ============================================================================
+// DEAD-END / KEPT FOR MEMORY OF HOURS PASSED — M9.w4 RE phase, Apr-May 2026
+// ============================================================================
+//
+// See bsmodelproc_hook.h header for the full DEAD-END notice.
+// Working M9.w4 path: scene_inject.cpp::ghost_attach_assembled_weapon
+// (uses `sub_140434DA0` per-OMOD attach + BSConnectPoint pairing).
+// Install call disabled in install_all.cpp.
+// ============================================================================
+//
 // Diagnostic hook for sub_1402FC0E0 — the BSModelProcessor post-hook
 // where OMODs are applied to a freshly-parsed BSFadeNode tree.
 // See bsmodelproc_hook.h for the design rationale.
