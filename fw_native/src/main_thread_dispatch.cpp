@@ -1188,6 +1188,29 @@ void set_target_hwnd(HWND hwnd) {
                pending_mesh_blobs);
         post_wakeup_mesh_blob();
     }
+    // B6.3 v0.5.3 (fix landed in v0.5.5 2026-05-09): flush any lock ops
+    // accumulated pre-subclass. The original B6.3 ship forgot to add this
+    // alongside the container/door/equip/mesh-blob flushes, so the
+    // server's peer-join bootstrap LOCK_BCAST (which arrives within ~50 ms
+    // of the net handshake, ~8 s before WndProc subclass install on a
+    // typical FO4 NG boot) was silently swallowed. Symptom: receiver's
+    // local engine never learned about previously-cracked container locks
+    // and showed them as locked even after sender repeatedly sent
+    // LOCK_OP — the runtime resends got dedup'd by the server because the
+    // stored state already matched, but the receiver had never applied
+    // the bootstrap, so its engine view stayed stale. With this flush
+    // wired up, the bootstrap lock state is applied as soon as the
+    // WndProc subclass is up and dispatching messages.
+    std::size_t pending_locks = 0;
+    {
+        std::lock_guard lk(g_lock_mtx);
+        pending_locks = g_lock_queue.size();
+    }
+    if (pending_locks > 0) {
+        FW_LOG("dispatch: flushing %zu pre-hwnd queued lock ops",
+               pending_locks);
+        post_wakeup_lock();
+    }
 }
 
 std::size_t pending_count() {

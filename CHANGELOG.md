@@ -5,6 +5,100 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## B6.3.1 v0.5.5 — Lock bootstrap flush fix (2026-05-09) — HOTFIX
+
+### Symptom
+
+After the v0.5.4 bridge fix landed, lock state sync appeared broken on
+re-test: peer A picklocks a safe, peer B's safe stays visually locked.
+First instinct was a B8-removal regression. It wasn't — the bug was a
+latent oversight in B6.3 itself, exposed by the user retesting with
+server-persisted lock state.
+
+### Investigation
+
+Steam-side fw_native.log showed the server's peer-join bootstrap
+arrived correctly at boot:
+
+    [16:48:45.025][DBG] net: LOCK_BCAST enqueued for main-thread apply
+                        peer=server form=0xB0D1A ... locked=0
+
+But there was no follow-up `dispatch: drained N lock ops` and no
+`engine: apply_lock_op_to_engine` line. The op was queued but never
+applied. Then ~8 seconds later:
+
+    [16:48:53.488][INF] [main_menu] WndProc subclassed on hwnd=...
+    [16:48:53.489][INF] dispatch: target hwnd set to ...
+
+So the bootstrap LOCK_BCAST arrived *before* `set_target_hwnd` had
+been called. `post_wakeup_lock()` short-circuits with
+`if (!h) return;` when the hwnd is null, dropping the wake-up
+PostMessage silently. The lock op stayed in the queue.
+
+When the WndProc subclass install finally ran, `set_target_hwnd`
+flushed the container, door, equip, and mesh-blob queues — but **not
+the lock queue**. The B6.3 ship had simply forgotten to add the lock
+flush block alongside the others. Lock op stayed forever undrained.
+
+### Why it didn't bite during the original B6.3 demo
+
+The first B6.3 live test ("Cassaforte si unlocka in entrambi i client,
+corretto") happened to pick the lock *after* the WndProc subclass was
+installed, so the runtime LOCK_BCAST hit the dispatch queue with a
+valid hwnd and drained normally. The bootstrap-on-connect path was
+never exercised because the server had no stored lock state on first
+run. As soon as state accumulated in the server's
+state_snapshot.json's `locks` section across sessions, every
+subsequent peer connect tried to bootstrap and silently failed.
+
+### Compounding side effect: server dedup
+
+The first failed bootstrap leaves the receiver's engine in a stale
+state (safe shows locked even though server thinks unlocked). When
+the sender re-picks the lock at runtime, the new LOCK_OP carries the
+same `locked=false` value the server already stored. Server dedup
+(per the B6.3 commit message: *"if state matches stored, skip
+rebroadcast"*) kicks in — no rebroadcast — and the receiver never
+gets a runtime opportunity to fix its stale engine state.
+
+So the user saw zero LOCK_BCAST entries on the receiver after a fresh
+unlock attempt. Bootstrap was swallowed; runtime was dedup'd. Two
+effects, single root cause.
+
+### Fix
+
+`fw_native/src/main_thread_dispatch.cpp` `set_target_hwnd` — appended
+the same flush block that already existed for container, door, equip,
+and mesh-blob, with a long comment block documenting why the bug
+existed and what the symptom looks like in the log. ~12 lines added,
+no behavior change to other paths.
+
+### Files changed
+
+- `fw_native/src/main_thread_dispatch.cpp` — lock queue flush in
+  `set_target_hwnd`.
+- `CHANGELOG.md` — this entry.
+
+### Wire format
+
+No protocol change. v12 stays.
+
+### Bonus discovery during this hotfix's live test
+
+The v0.5.4 B8 disable also incidentally fixed the B6.3 "Known residual"
+about taking a weapon out of a synced lockable container freezing the
+taker's main thread for ~7 s and silently killing the FO4 process.
+Same root cause — B8's corrupted engine state — surfaced via two
+different triggers: bridge cell stream (fixed in v0.5.4) and
+container auto-equip (turns out fixed by the same disable). Confirmed
+by spamming TAKE on multi-item synced safes during this v0.5.5
+verification; no crash, antidupe (server-validated container ack
+chain) holds under stress. README "Known limitations" entry removed.
+
+**Tag:** `v0.5.5-b6.3.1-lock-bootstrap-flush`.
+
+---
+
 ## B6.4-pre v0.5.4 — Bridge crash fix: B8 force-equip-cycle disabled (2026-05-08) — HOTFIX
 
 Discovered while heading to a terminal to test B6.4 (terminal hack

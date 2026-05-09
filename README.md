@@ -78,6 +78,35 @@ Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 > with `ai_notify=0` to skip the minigame and key consumption. Server
 > persists per-(base, cell) lock state and replays it to peers joining
 > mid-session. See [CHANGELOG.md](CHANGELOG.md).
+>
+> **B6.4-pre v0.5.4 — Bridge crash fix (2026-05-08).** Disabled the B8
+> force-equip-cycle workaround (`hooks/equip_cycle.cpp`) which AV'd
+> internally on every boot inside `ActorEquipManager::Equip` and left
+> engine state subtly corrupted. The corruption was dormant during
+> normal play but surfaced as a deterministic main-thread freeze when
+> crossing the Sanctuary→Red Rocket bridge — heavy exterior cell-stream
+> re-triggered the corrupted auto-equip on a BSJobs PostMainRender
+> worker, which AV'd silently and wedged the JobListMgr forever. Two
+> wins: bridge works, and the original M8P3 "clothes-change crash" B8
+> was patching is also gone (later M9 / pose-tx evolution fixed the
+> root cause). Side effect: peer ghosts spawn naked at startup until
+> they actively equip something — replacement scaffolded as
+> `equip_announce.{h,cpp}` (NON TESTATO).
+> See [CHANGELOG.md](CHANGELOG.md).
+>
+> **B6.3.1 v0.5.5 — Lock bootstrap flush fix (2026-05-09).** Latent
+> oversight in B6.3: `set_target_hwnd` in `main_thread_dispatch.cpp`
+> flushes the container / door / equip / mesh-blob queues but forgot
+> the lock queue. Server peer-join bootstrap `LOCK_BCAST` arrives
+> ~8 s before the WndProc subclass install, so it queued without a
+> wake-up PostMessage and was never drained. Combined with the server
+> dedup logic ("skip rebroadcast if state matches stored") this looked
+> like "lock sync broken" on every reconnect once the server had
+> persisted state. One-block fix in `set_target_hwnd` adds the missing
+> lock flush. Bonus discovery: the v0.5.4 B8 disable also incidentally
+> fixed the B6.3 "Known residual" — taking a weapon out of a synced
+> lockable container no longer crashes (same engine state corruption
+> root cause). See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -195,6 +224,82 @@ in real time).
 Latest 3 patches summarized below. **Full version history in
 [CHANGELOG.md](CHANGELOG.md).**
 
+### B6.3.1 v0.5.5 (2026-05-09) — lock bootstrap flush fix — HOTFIX
+
+- **Symptom.** After v0.5.4 landed, lock sync looked broken on retest:
+  picklock a safe on client A, client B's safe stayed visually locked.
+  First instinct was a B8-removal regression — it wasn't. Latent B6.3
+  bug, exposed by retesting with state already persisted server-side.
+- **Investigation.** Steam-side log showed the server's peer-join
+  bootstrap `LOCK_BCAST` arrived correctly at boot, but ~8 s before
+  `set_target_hwnd` was called. `post_wakeup_lock` short-circuits
+  with `if (!h) return;` when hwnd is null, so the wake-up
+  `PostMessage` was silently dropped. The op stayed queued. When the
+  WndProc subclass install finally ran, `set_target_hwnd` flushed
+  container / door / equip / mesh-blob queues — but **forgot the lock
+  queue**. The B6.3 ship had simply skipped that flush block.
+- **Compounded by server dedup.** First failed bootstrap left the
+  receiver's engine stale (safe shows locked even though server
+  thinks unlocked). When the sender re-picked the lock at runtime,
+  the new `LOCK_OP` matched the server's stored state → server dedup
+  kicked in → no rebroadcast → receiver never got a runtime fix
+  opportunity. Bootstrap swallowed + runtime dedup'd = zero
+  `LOCK_BCAST` entries on receiver after a fresh unlock.
+- **Why the original B6.3 demo passed.** First live test happened to
+  pick the lock *after* the WndProc subclass was installed, so the
+  runtime LOCK_BCAST hit the queue with a valid hwnd and drained
+  normally. Bootstrap path wasn't exercised because the server had no
+  stored state on first run. Once state accumulated across sessions,
+  every subsequent peer connect tried to bootstrap and silently failed.
+- **Fix.** Appended the same flush block already used for container /
+  door / equip / mesh-blob queues. ~12 lines in
+  `main_thread_dispatch.cpp`. No behavior change to other paths. Live
+  re-test: bootstrap applies cleanly, runtime sync works, antidupe
+  (server-validated container ack chain) confirmed under spam. Tag
+  `v0.5.5-b6.3.1-lock-bootstrap-flush`.
+- **Bonus discovery during this hotfix.** The v0.5.4 B8 disable also
+  incidentally fixed the B6.3 "Known residual" about TAKE-weapon from
+  a synced container freezing the taker's main thread. Same root
+  cause — B8's corrupted engine state — surfaced via two different
+  triggers (bridge cell stream / container auto-equip). Both gone now.
+
+### B6.4-pre v0.5.4 (2026-05-08) — bridge crash fix: B8 disabled — HOTFIX
+
+- **Bridge crash.** Deterministic main-thread freeze when crossing
+  Sanctuary→Red Rocket bridge, both clients, every time. Vanilla FO4
+  walked through cleanly — DLL was at fault. Frida + WinDbg pinned
+  the wedge: main parked forever in
+  `WaitForSingleObjectEx(JobListMgr+0x60, INFINITE)` from
+  `sub_140BD4CA0` (BSJobs serving-thread wait); hung JobList was
+  `PostMainRenderJobList`. A worker had stopped signaling completion.
+- **Bisection eliminated** `FW_LOG`/`FlushFileBuffers` contention,
+  the four M9 wedge-4 worker hooks, Strada B SSN injection, and SPAI
+  weapon prewarm — one by one. Last suspect standing was B8.
+- **Root cause.** `equip_cycle.cpp`'s direct engine call to
+  `ActorEquipManager::Equip` / `Unequip` on the Vault Suit at T+10s
+  post-LoadGame AV'd internally every boot. SEH wrapper hid the AV
+  but the half-completed equip left engine state corrupted at a
+  sub-visible level. Sanctuary indoor cells didn't trigger the bad
+  paths; the bridge's heavy exterior cell-streaming did — one
+  streamed cell re-invoked the auto-equip pipeline on a BSJobs
+  PostMainRender worker with no SEH protection. AV → silent thread
+  termination → JobListMgr never got completion signal → INFINITE
+  wait → frozen process.
+- **Fix.** Disabled both B8 arm sites:
+  `hooks/main_menu_hook.cpp` (boot-time arm) and `net/client.cpp`
+  (peer-join re-arm). `equip_cycle.{h,cpp}` left compiled-but-uninvoked
+  for archeological reference. Live test confirmed: bridge works,
+  modded weapons still display via M9 witness pipeline (event-driven),
+  clothes change still works (the original M8P3 bug B8 was patching
+  has been resolved as a side effect of later M9 / pose-tx evolution).
+- **Side effect.** Apparel passively worn at LoadGame doesn't
+  broadcast to peers anymore (peer ghosts spawn naked until they
+  actively equip something). Replacement scaffolded as
+  `hooks/equip_announce.{h,cpp}` (NON TESTATO, not invoked) for a
+  future minimal apparel-bootstrap broadcast that doesn't go through
+  the engine equip path. Tag
+  `v0.5.4-b6.4-pre-bridge-crash-fix`.
+
 ### B6.3 v0.5.3 (2026-05-08) — lock state sync — STABLE
 
 - **Lock state now syncs across peers.** Picklock a Sanctuary safe on
@@ -217,61 +322,8 @@ Latest 3 patches summarized below. **Full version history in
 - **Wire proto v12** adds `LOCK_OP` (`0x0260`) + `LOCK_BCAST`
   (`0x0261`). `LockOpPayload` = 21 B; `LockBroadcastPayload` = 37 B.
   Server snapshot v4 adds a `locks` JSON section; v3 snapshots load
-  fine (empty `lock_state`).
-- **Bug fixed mid-session.** First test silently dropped
-  `LOCK_BCAST` because `LockWorldState` wasn't imported in
-  `server/main.py` — `_handle_lock_op` raised `NameError` inside the
-  outer try/except, logged but didn't broadcast. One-line import fix;
-  7/7 server integration tests pass. Tag
+  fine (empty `lock_state`). Tag
   `v0.5.3-b6.3-lock-state-sync`.
-
-### B6.1 v0.5.2 (2026-05-08) — cell-aware ghost transitions — STABLE
-
-- **Cell transitions now work across the network.** Peer enters an
-  interior or fast-travels, the ghost on the remote client stays in
-  sync. Both peers in the same interior see each other.
-- **Root cause was server-side, not render-side.** The pos validator
-  caps speed at 2500 u/s; a cross-cell teleport is ~120k units in
-  50 ms ≈ 2.4 M u/s, so every POS_STATE got rejected as cheat. The
-  ghost stayed pinned at the last accepted exterior pos — exactly at
-  the door I just walked through.
-- **Fix.** Wire proto v11 adds `cell_id` (u32) to `PosState` /
-  `PosBroadcast`. Server validator now accepts `incoming.cell_id !=
-  session.last_pos.cell_id` as a baseline reset (legit cell change,
-  not cheat). Pre-v11 senders (`cell_id == 0`) keep the standard speed
-  gate unchanged. Receiver-side rendering stays as a plain coord-bind:
-  cross-cell distance pushes the ghost outside the local frustum
-  naturally, same-interior co-op puts both peers in the same coord
-  frame so the ghost is positioned correctly relative to whoever is
-  watching.
-- **What I tried first.** Four receiver-side hide attempts —
-  `NIAV_FLAG_APP_CULLED` on body BSFadeNode root, `local.translate =
-  (1e7, 1e7, 1e7)`, detach body from World SceneGraph, recursive
-  `APP_CULLED` on every leaf — all failed because the rendered
-  geometry comes through the skin pipeline independently of scene
-  graph attachment and BSFadeNodeCuller logic. The diagnostic that
-  mattered was `pos_bcast` counter stuck in the log while `pose-rx`
-  ticked normally; the server was the only piece filtering pos
-  differently. Lesson: counters before code. Tag
-  `v0.5.2-b6.1-cell-aware-ghost`.
-
-### M9 v0.5.1 (2026-05-08) — M9 closed: every weapon family confirmed — STABLE
-
-- **M9 is closed.** Full pass on the weapon roster: pistols (10mm,
-  handmade), sniper rifle, assault rifle, hunting rifle, combat
-  shotgun, combat rifle, minigun, Fat Man, laser, plasma — all
-  render correctly on the ghost with mods applied (receivers, mags,
-  scopes, suppressors, grips, barrels). Same v0.5.0 BSConnectPoint
-  pipeline; no code changes.
-- **The "rifles render invisible" caveat in v0.5.0 was a testing gap,
-  not a real bug.** I had only validated pistols + handmade before
-  shipping; deeper coverage during the demo recording, then a roster
-  pass at the start of this session, confirmed the v0.5.0 pipeline
-  already covered every family.
-- **Next:** B6 wedges (lights, locks, terminals — same Activate-worker
-  pattern as B6.1 doors) and eventually B6.5 NPC pose sync — the real
-  "co-op chat → playable multiplayer" turning point. Tag
-  `v0.5.1-m9-closed`.
 
 ## Why this exists
 
@@ -332,22 +384,14 @@ that should be most reusable for anyone else attempting the same thing.
   same form to make the receiver render correctly. The user's own
   weapon briefly disappears and reappears in their hand. Cosmetic; no
   gameplay impact (animation graph and damage state aren't affected).
-- **Crash on TAKE-weapon from a B6.3-synced container** — taking a
-  weapon out of a lockable container that was synced via B6.3 (e.g.
-  one peer deposited it into a Sanctuary safe) freezes the taker's
-  main thread for ~7 s in the engine's auto-equip pipeline, then the
-  FO4 process dies silently. Lock and container sync apply correctly
-  up to that point; the issue surfaces in the receiver's M9
-  `EQUIP_BCAST` resolver, which reads a corrupted addon array (count
-  ≈ 2.3 billion garbage, base pointer null) for the auto-equipped
-  weapon form. Likely a pre-existing M9 receiver fragility that the
-  heavier B6.3 sync stress exposes — not introduced by lock sync
-  itself. Tracked separately. Workaround for now: deposit / take
-  non-weapon items only from synced containers.
 - **Container UI doesn't refresh on the observer when peers picklock
   the same container** — engine quirk in the ContainerMenu redraw
   path; closing and reopening the container forces the refresh.
-  Cosmetic, no state impact.
+  Cosmetic, no state impact. Note: the antidupe layer is still
+  enforced server-side by the container ack chain (server-validated
+  count), so the observer can't actually take items that another peer
+  has already removed even if the menu's local view is stale —
+  attempts get rejected before they reach the inventory.
 - **Peer ghosts spawn naked at startup until the peer actively equips
   something** — side effect of disabling B8 force-equip-cycle in
   v0.5.4 (bridge crash fix). Items already worn at save load don't
