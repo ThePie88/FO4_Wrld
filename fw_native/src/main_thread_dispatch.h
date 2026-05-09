@@ -55,6 +55,9 @@ namespace fw::dispatch {
 //   0x4F = FW_MSG_WEAPON_CAPTURE_FINALIZE      — native/weapon_capture.h
 //   0x50 = FW_MSG_SPAI_PREWARM (Tier 1)        — owned here
 //   0x51 = FW_MSG_LOCK_APPLY (B6.3 v0.5.3)     — owned here
+//   0x52 = FW_MSG_EQUIP_ANNOUNCE_FIRE          — hooks/equip_announce.cpp
+//                                                (NON TESTATO 2026-05-08,
+//                                                 not dispatched yet)
 //
 // PRE-FIX BUG (commit landed 2026-04-27 evening): DOOR_APPLY was set
 // to 0x47 in the initial Phase 2 ship, colliding with STRADAB_BONE_TICK.

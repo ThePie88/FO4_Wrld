@@ -5,6 +5,142 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## B6.4-pre v0.5.4 — Bridge crash fix: B8 force-equip-cycle disabled (2026-05-08) — HOTFIX
+
+Discovered while heading to a terminal to test B6.4 (terminal hack
+sync): client A crashed deterministically when crossing the
+Sanctuary→Red Rocket bridge at ~50 m from the bridge entrance.
+Reproduced on both clients, every time. Vanilla FO4 (no DLL) walked
+through cleanly, confirming the DLL was at fault.
+
+### Investigation
+
+Frida + WinDbg pinned the freeze: main thread parked forever inside
+`WaitForSingleObjectEx(JobListMgr+0x60, INFINITE)` from `sub_140BD4CA0`
+(BSJobs serving-thread wait). The hung JobList is `PostMainRenderJobList`.
+A worker assigned to it had stopped signaling completion — silent thread
+death, no AV captured by our SEH wrappers because the AV happened on a
+worker our hooks weren't watching.
+
+Hypothesis bisection (each disproven by live test):
+
+1. `FW_LOG`/`FlushFileBuffers` contention with worker hooks — no, crash
+   persists with `log_level=error` filtering all detour logs at
+   `log.cpp:100` before any mutex.
+2. M9 wedge-4 worker hooks (`nif_path_cache`, `bsgeo_input_cache`,
+   `ni_alloc_tracker`, `clone_factory_tracker`) — no, crash persists
+   with all four uninstalled. Modded weapons still display correctly,
+   showing the witness pattern wasn't strictly needed for that.
+3. Strada B SSN injection + SPAI weapon prewarm — no, crash persists
+   with both `arm_injection_after_boot` and `arm_prewarm` skipped.
+4. **B8 force-equip-cycle (`hooks/equip_cycle.cpp`)** — yes. Bridge
+   works after disabling, every other hook restored.
+
+### Root cause
+
+B8 was a workaround landed during M8P3 for an old ghost-pointer-sharing
+bug ("first equip after peer-join crashes"). The cycle ran a direct
+engine call to `ActorEquipManager::UnequipObject` then `EquipObject` on
+the Vault Suit at T+10s post-LoadGame, with non-standard arguments
+(`stack_id=1` literal to skip the AV-prone `sub_140505440` stack
+recompute path). The engine call AV'd internally on every boot —
+caught by our SEH and hidden from the user (`[equip-cycle] EQUIP: SEH
+caught — engine call faulted` in every fw_native.log, every session).
+The half-completed equip left engine state subtly corrupted: stack
+allocations partially started, refcount transitions in progress,
+addon-array linkage broken at a level invisible during normal play.
+
+Sanctuary indoor + nearby cells didn't trigger the corrupted code paths,
+so the issue was dormant. The Sanctuary→Red Rocket bridge is heavy
+exterior cell-streaming territory; one of the streamed cells re-invokes
+the auto-equip pipeline (LOD swap or cell-load auto-equip), this time
+on a BSJobs `PostMainRender` worker thread with no SEH protection.
+AV → silent thread termination → JobListMgr never receives completion
+signal → main thread `INFINITE` wait → frozen process.
+
+The B6.3 commit message had documented the same symptom on a different
+trigger (taking a weapon out of a synced lockable container also hit
+"corrupted addon array, count ≈ 2.3 billion, base = null" inside the
+auto-equip pipeline). Same root cause, different surface — both ride
+on top of the engine state B8 leaves corrupted.
+
+### Fix
+
+Disabled B8 at both arm sites:
+
+- `fw_native/src/hooks/main_menu_hook.cpp` — boot-time arm in
+  `fw_wndproc` post-`FW_MSG_LOAD_GAME`.
+- `fw_native/src/net/client.cpp` — peer-join re-arm in `PEER_JOIN`
+  handler.
+
+`hooks/equip_cycle.{h,cpp}` is left compiled but uninvoked, and the
+`offsets.h` "B8 force-equip-cycle" block stays as archeological
+reference + RE'd engine fn signatures.
+
+### Side effects (verified live 2026-05-08)
+
+- **Bridge works.** Both clients walked from spawn across the bridge to
+  Red Rocket gas station with no freeze.
+- **Modded weapons still display correctly on peer ghosts.** The M9
+  witness pattern is event-driven on real engine equip events
+  (`clone_factory_tracker` firing on `sub_1416D99E0`), independent of
+  B8. Whenever a peer draws a weapon during play, the cycle fires and
+  mods are captured. Confirmed live: modded 10mm pistol (silencer +
+  long barrel) visible on peer ghost.
+- **Clothes change no longer crashes either.** B8's original purpose
+  ("clothes change crashes on first cycle") is also fixed — verified
+  by spam-equip/unequip on both clients with no crash. The original
+  M8P3 bug that B8 was patching has been resolved as a side effect of
+  later M9 / pose-tx evolution that decoupled the ghost's bone state
+  from the local player's BipedAnim pointer-sharing.
+- **Apparel passively worn at LoadGame doesn't broadcast to peers.**
+  Without the synthetic equip events B8 generated as a side effect,
+  peer ghosts spawn naked. Items the local player actively equips
+  during the session appear correctly via the standard pipeline; only
+  items already worn at save load are missing. Tracked in Known
+  Limitations.
+
+### Future replacement scaffolded (NON TESTATO)
+
+`fw_native/src/hooks/equip_announce.{h,cpp}` lays out an Option B
+client-side apparel-bootstrap broadcast that doesn't go through the
+engine equip path: passive enumeration of `PlayerCharacter::BipedAnim`
+and emission of one `EQUIP_OP` per non-empty apparel slot via the
+existing `enqueue_equip_op` API. Receiver pipeline (M9 wedge 2) needs
+no changes. Compiles clean, NOT invoked at runtime, header banner
+documents wire-up steps and the BipedAnim-enumeration TODO that needs
+RE work before this can do real work. Reserved `WM_APP+0x52` =
+`FW_MSG_EQUIP_ANNOUNCE_FIRE` in the canonical message map.
+
+### Wire format
+
+No protocol change. v12 stays.
+
+### Files changed
+
+C++:
+
+- `fw_native/src/hooks/main_menu_hook.cpp` — B8 boot arm commented out
+  with permanent post-mortem comment block (replaces the temporary
+  `CRASH-HUNT 2026-05-08` marker from the bisect phase).
+- `fw_native/src/net/client.cpp` — B8 peer-join arm commented out with
+  short reference to the post-mortem in `main_menu_hook.cpp`.
+- `fw_native/src/hooks/equip_announce.{h,cpp}` (NEW) — scaffolding for
+  future apparel bootstrap. NON TESTATO. Not invoked.
+- `fw_native/src/main_thread_dispatch.h` — reserved `WM_APP+0x52` for
+  `FW_MSG_EQUIP_ANNOUNCE_FIRE` in the canonical message map.
+- `fw_native/CMakeLists.txt` — added `equip_announce.cpp` (compiles,
+  not invoked).
+
+Docs:
+
+- `README.md` — Known Limitations: added "peer ghost spawns naked at
+  startup" entry.
+
+**Tag:** `v0.5.4-b6.4-pre-bridge-crash-fix`.
+
+---
+
 ## B6.3 v0.5.3 — Lock state sync (2026-05-08) — STABLE
 
 When peer A picklocks a door, safe, weapon locker, or terminal-linked

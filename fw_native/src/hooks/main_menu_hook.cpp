@@ -99,17 +99,43 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             FW_WRN("[main_menu] LoadGame returned failure — main menu stays up");
             return 0;
         }
-        // B8 — arm force-equip-cycle worker NOW (after LoadGame native
-        // returns; timing measured from this point, not DLL inject).
-        // 10s delay lands the cycle ~5s after the loading screen ends
-        // (LoadGame is async — kicks off load, returns immediately;
-        // loading screen typically takes 3-5s). The cycle fires before
-        // any peer can connect (net thread handshake takes ~15s+ from
-        // boot), satisfying the "before ghost spawn" precondition that
-        // makes BipedAnim normalize work. Per user empirical validation
-        // 2026-04-28: cycle pre-peer = no crash, post-peer = crash.
-        // See offsets.h "B8 force-equip-cycle" for full rationale.
-        fw::hooks::arm_equip_cycle_after_loadgame(10000);
+        // B8 force-equip-cycle — DISABLED 2026-05-08.
+        //
+        // Was: post-LoadGame BipedAnim normalize via direct engine call to
+        // ActorEquipManager::Unequip + Equip on the Vault Suit. Workaround
+        // for an M8P3-era ghost-pointer-sharing bug where the first equip
+        // event after peer-connect crashed due to "semi-allocated"
+        // BipedAnim state. See `re/B8_force_equip_cycle.log` and the
+        // `offsets.h` "B8 force-equip-cycle" comment block for the
+        // original architectural rationale.
+        //
+        // Why disabled: B8's engine call AV'd internally on every boot
+        // (caught by our SEH wrapper, hidden from the user). The half-
+        // completed equip left engine state subtly corrupted; the
+        // corruption was dormant during normal play but surfaced as a
+        // deterministic main-thread freeze when crossing the Sanctuary→
+        // Red Rocket bridge — heavy exterior cell-streaming re-triggered
+        // the corrupted auto-equip code path on a BSJobs PostMainRender
+        // worker, killing it silently and wedging JobListMgr+0x60 on an
+        // INFINITE wait. Live test 2026-05-08 confirmed: B8 enabled =
+        // bridge crashes, B8 disabled = bridge works + clothes change
+        // still works (the original M8P3 bug B8 was fixing has been
+        // resolved as a side effect of later M9 work).
+        //
+        // The secondary role B8 played as a side effect — broadcasting
+        // initial apparel state to peers via the engine equip events it
+        // generated — is replaced by the `equip_announce` scaffold (see
+        // `hooks/equip_announce.h`, NON TESTATO).
+        //
+        // Files left in repo for archeological reference:
+        //   - hooks/equip_cycle.{h,cpp} (still compiled but never invoked)
+        //   - offsets.h B8 block (rationale + RE'd engine fn signatures)
+        //
+        // To revive: uncomment the arm call below. Don't, until the
+        // engine AV inside sub_140CE5900 is understood and fixed at the
+        // arg/timing level — see `re/B8_force_equip_cycle.log` for the
+        // deepest level of stack/arg analysis we have.
+        // fw::hooks::arm_equip_cycle_after_loadgame(10000);
         return 0;
     }
     // B1.l: CONTAINER_BCAST apply. Drains any container ops that the net

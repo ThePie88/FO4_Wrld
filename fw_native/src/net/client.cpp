@@ -1723,7 +1723,13 @@ void Client::dispatch(const Delivered& d) {
         // engine startup state to wait for) but still gives a small
         // buffer in case the just-joined peer's ghost spawn / WELCOME
         // exchange takes a moment.
-        fw::hooks::arm_equip_cycle_for_peer_join(1500);
+        //
+        // B8 force-equip-cycle re-arm DISABLED 2026-05-08 — see
+        // `hooks/main_menu_hook.cpp` and the CHANGELOG entry for the
+        // bridge-crash post-mortem. Future replacement for the
+        // initial-apparel-broadcast role: `hooks/equip_announce.h`
+        // (NON TESTATO scaffold).
+        // fw::hooks::arm_equip_cycle_for_peer_join(1500);
         break;
     }
 

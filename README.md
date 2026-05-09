@@ -348,6 +348,15 @@ that should be most reusable for anyone else attempting the same thing.
   the same container** — engine quirk in the ContainerMenu redraw
   path; closing and reopening the container forces the refresh.
   Cosmetic, no state impact.
+- **Peer ghosts spawn naked at startup until the peer actively equips
+  something** — side effect of disabling B8 force-equip-cycle in
+  v0.5.4 (bridge crash fix). Items already worn at save load don't
+  fire engine equip events, so the M9 visual-sync pipeline never sees
+  them. Items the peer actively equips/draws during the session show
+  up correctly (modded weapons, swapped armor, clothes changes — all
+  visible). A non-engine-call apparel bootstrap broadcast is
+  scaffolded in `fw_native/src/hooks/equip_announce.{h,cpp}` for
+  future implementation when the BipedAnim layout is RE'd.
 
 ## Reverse-engineering target
 
