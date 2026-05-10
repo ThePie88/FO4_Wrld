@@ -37,6 +37,14 @@
 
 namespace fw::native::skin_rebind {
 
+// Forward declaration of the swap-shield counter. Definition lives at
+// the bottom of this TU near the other shield/hook primitives. Declared
+// here at non-anon namespace scope so swap_for_geometry (in the second
+// anonymous namespace below) can fetch_add to it without internal-
+// linkage shenanigans (cf. compile error C7631 if you try `extern` from
+// inside an anon-ns function body).
+extern std::atomic<std::uint64_t> g_swap_shield_fires;
+
 namespace {
 
 // ------------------------------------------------------------------
@@ -573,7 +581,27 @@ void swap_for_geometry(void* geom, void* skel_root,
         char bname[96];
         __try { current = bones_fb_head[i]; }
         __except (EXCEPTION_EXECUTE_HANDLER) { break; }
-        if (!current) continue;
+        if (!current) {
+            // 2026-05-10 — DO NOT fill NULL slots with skel_root sentinel.
+            // First attempt did this and broke ghost's hand skin visually:
+            // the geometry's vertex weights DO reference some "NULL" slots
+            // (the original code's `continue` skip is correct — those
+            // slots had a real "_skin"-anchor before, and got NULL'd by
+            // engine local-actor rebind; replacing with skel_root makes
+            // GPU pull skel_root's world matrix → vertices stretch).
+            //
+            // Engine AV prevention is handled at a different layer: the
+            // bone-iter shield hook on sub_1416C7510 entry (defined later
+            // in this TU). That hook intercepts the NULL+offset deref
+            // pattern at the engine boundary WITHOUT modifying bones_fb
+            // contents, so visual fidelity is preserved.
+            //
+            // The g_swap_shield_fires counter is kept as a diagnostic to
+            // observe how often NULL slots are encountered; it doesn't
+            // mutate state.
+            g_swap_shield_fires.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
 
         const int n = try_read_ni_name(current, bname, sizeof(bname));
         if (n <= 0) continue;
@@ -1372,6 +1400,119 @@ int dump_skeleton_bones(void* skel_root) {
 
     FW_LOG("[skel] dump END  visited=%d nodes", visited);
     return visited;
+}
+
+// ====================================================================
+// 2026-05-10 — Engine-bug shield on sub_1416C7510
+// ====================================================================
+//
+// TTD-confirmed AV pattern: the bone-tree visitor sub_1416C7510 (RVA
+// 0x16C7510) at offset +0x29 does `mov r8, [rax]` where `rax = *ctx[0]`.
+// When ctx[0] points to a stack slot whose value is NULL+0x10 = 0x10
+// (because the iterator at RVA 0x35F560 walked a bones_FB array slot
+// that was NULL and added the +0x10 member offset blindly), [rax] reads
+// from address 0x10 — unmapped low memory — and the process AV's.
+//
+// Vanilla NPCs don't trigger this because their bones_FB arrays are
+// dense. Our ghost's BSSITFs can have sparse bones_FB (some armor pieces
+// or LOD variants only deform via 1-2 bones out of 38 logical slots),
+// and the engine's local-actor re-bind cycle can NULL slots between
+// our 4Hz periodic re-apply ticks.
+//
+// Defense-in-depth strategy:
+//   (1) swap_for_geometry replaces NULL slots with skel_root sentinel
+//       at body inject + every 4Hz periodic re-apply (see line ~576).
+//   (2) Periodic re-apply walks the entire ghost subtree (body +
+//       attached armors) — see scene_inject.cpp line ~10888.
+//   (3) THIS HOOK (last line of defense): catches any remaining race
+//       window between engine-null and our shield, and any skin
+//       instance we don't reach in our walk (e.g., engine-internal
+//       LOD variants, BSSITFs created by cell-stream that aren't
+//       attached to the ghost root yet but share refcounts with our
+//       skin tree). Validates *ctx is a non-low-memory pointer; on
+//       failure, returns early without invoking the original.
+//
+// Skipping a single visitor call is safe semantically: sub_1416C7510 is
+// a NiAVObject tree visitor; the iterator at frame_2 will move on to
+// the next slot. One missed visit drops a single bone deformation
+// contribution this frame at most (and only on slots that were
+// already-broken before our hook fired).
+namespace {
+
+// Atomic counters for diagnostic — read + reset by on_bone_tick_message
+// to log when the shields are active.
+std::atomic<std::uint64_t> g_iter_shield_skips_local{0};
+
+constexpr std::uintptr_t kBoneIterRva = 0x16C7510;  // sub_1416C7510
+
+using BoneIterFn = void (__fastcall*)(void*, void*);
+BoneIterFn        g_orig_bone_iter         = nullptr;
+std::atomic<bool> g_iter_shield_installed{false};
+
+// SEH-safe deref. POD-only function so __try doesn't conflict with
+// any caller's C++ object lifetimes (C2712 avoidance).
+void* seh_deref_void_ptr(void* p) {
+    if (!p) return nullptr;
+    __try { return *reinterpret_cast<void**>(p); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        // Sentinel: 0xFFFF is also < 0x10000, will be caught by the
+        // low-memory check in the hook.
+        return reinterpret_cast<void*>(static_cast<std::uintptr_t>(0xFFFF));
+    }
+}
+
+void __fastcall hook_bone_iter(void* this_obj, void* ctx) {
+    if (!ctx) {
+        g_iter_shield_skips_local.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    void* slot = seh_deref_void_ptr(ctx);
+    if (reinterpret_cast<std::uintptr_t>(slot) < 0x10000) {
+        g_iter_shield_skips_local.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    if (g_orig_bone_iter) {
+        g_orig_bone_iter(this_obj, ctx);
+    }
+}
+
+} // namespace
+
+// Definition of the swap-shield counter referenced from
+// swap_for_geometry's NULL fill branch (anon ns above; the extern
+// declaration there resolves to this namespace-scope definition).
+std::atomic<std::uint64_t> g_swap_shield_fires{0};
+
+bool install_bone_iter_shield(std::uintptr_t module_base) {
+    bool expected = false;
+    if (!g_iter_shield_installed.compare_exchange_strong(expected, true)) {
+        FW_DBG("[skin] bone-iter shield already installed");
+        return true;
+    }
+    auto target = reinterpret_cast<void*>(module_base + kBoneIterRva);
+    const bool ok = fw::hooks::install(
+        target,
+        reinterpret_cast<void*>(&hook_bone_iter),
+        reinterpret_cast<void**>(&g_orig_bone_iter));
+    if (!ok) {
+        FW_ERR("[skin] install_bone_iter_shield FAILED at %p (RVA 0x%llX)",
+               target, static_cast<unsigned long long>(kBoneIterRva));
+        g_iter_shield_installed.store(false);
+        return false;
+    }
+    FW_LOG("[skin] bone-iter shield installed @ %p (RVA 0x%llX) — "
+           "intercepts NULL+0x10 calls to sub_1416C7510 (engine AV "
+           "prevention, last line of defense)",
+           target, static_cast<unsigned long long>(kBoneIterRva));
+    return true;
+}
+
+std::uint64_t get_and_reset_iter_shield_stats() {
+    return g_iter_shield_skips_local.exchange(0, std::memory_order_relaxed);
+}
+
+std::uint64_t get_and_reset_swap_shield_stats() {
+    return g_swap_shield_fires.exchange(0, std::memory_order_relaxed);
 }
 
 } // namespace fw::native::skin_rebind

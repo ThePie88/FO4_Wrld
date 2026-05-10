@@ -200,6 +200,39 @@ void clear_ghost_bones();
 // Useful to verify the hook is firing.
 void get_and_reset_hook_stats(std::uint64_t& total, std::uint64_t& overrides);
 
+// ---- 2026-05-10 — Engine-bug shield on sub_1416C7510 ------------------
+//
+// TTD-confirmed AV at sub_1416C7510 + 0x29 (mov r8, [rax] with rax=0x10):
+// the function dereferences ctx[0]+0x10 without null-check on a flat bone
+// tree iteration. When ghost geometry's bones_fb has NULL slots, the
+// iterator at RVA 0x35F560 calls this function with rdx pointing at a
+// stack slot whose value is NULL+0x10 = 0x10. Engine AV's, process
+// terminates with no handler firing.
+//
+// install_bone_iter_shield hooks sub_1416C7510 entry, validates *ctx is
+// a non-low-memory pointer, and skips the call if not. Safe semantically:
+// the function is a tree-walk visitor; skipping a single bad slot
+// iteration drops one visit but leaves the rest of the walk unaffected.
+//
+// Defense-in-depth: the swap_for_geometry NULL→skel_root sentinel fill
+// + 4Hz periodic re-apply prevent NULL slots in our ghost's known
+// skin instances. This hook is the last line of defense for any
+// remaining race window OR for skin instances we don't reach in our
+// walk (e.g., engine-internal LOD variants we haven't audited).
+//
+// Idempotent. Returns true on success.
+bool install_bone_iter_shield(std::uintptr_t module_base);
+
+// Read + reset bone-iter shield stats. Returns count of NULL-pattern
+// calls intercepted at sub_1416C7510 entry since last reset
+// (= engine AV's prevented).
+std::uint64_t get_and_reset_iter_shield_stats();
+
+// Read + reset swap-shield stats. Returns count of NULL bones_fb
+// slots filled with skel_root sentinel by swap_for_geometry since
+// last reset.
+std::uint64_t get_and_reset_swap_shield_stats();
+
 // Write a translation row (12 bytes: x, y, z) into bones_pri[idx]'s
 // matrix struct. The matrix struct is reached via:
 //   bones_pri_head = *(skin+0x28)

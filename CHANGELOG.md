@@ -5,6 +5,171 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## B6.4 v0.5.6 — Interior cell-entry crash fix + B6.4 implicit closure (2026-05-10) — HOTFIX
+
+Deterministic crash on a peer's machine when another peer crossed into
+an interior cell. Reproduced on the Sanctuary terminal-house entry,
+both clients, every time. Vanilla FO4 (no DLL) walked the same
+transition cleanly, confirming the DLL was at fault.
+
+### TTD trace
+
+`NtTerminateProcess(ExitStatus=0xC0000005)` — access violation, not a
+clean exit. Faulting RIP: `Fallout4+0x16C7539` = `sub_1416C7510 + 0x29`:
+
+    mov r8, qword ptr [rax]     ; rax = 0x10 → AV at address 0x10
+
+`sub_1416C7510` is a `BSFlattenedBoneTree` visitor. Disassembly:
+
+    +0x14  test rcx, rcx; je out   ; null-checks `arg1` (this) only
+    +0x1A  mov rax, [rdx]           ; rax = *ctx[0]
+    +0x29  mov r8,  [rax]           ; r8 = **ctx[0]  ← faulting
+
+Walking up: caller at RVA `0x16BFFF0` is a tree-walker wrapper that
+builds a 3-field `ctx` struct on its own stack from `arg2` of its
+caller. Its caller at RVA `0x35F560` is the iterator. Inner loop:
+
+    LOOP:
+      mov rdx, qword ptr [rbx]   ; rdx = *current_slot_in_array
+      add rdx, 0x10              ; rdx = (*slot) + 0x10  ← UNCHECKED NULL
+      ...
+      call frame_1               ; → sub_1416C7510 → AV when *slot == NULL
+
+The iterator walks an `NiAVObject*` array and adds `0x10` (a member
+offset) blindly to each slot value without null-checking. When
+`*slot == NULL`, that becomes `0x10`. The downstream visitor
+dereferences it as `ctx`, hits the AV at `+0x29`.
+
+### Root cause
+
+Cross-referencing frame 3's call chain (`[obj+0x140] + 0x10`) with
+the M8P3 dossier (`re/M8P3_skin_instance_dossier.txt`):
+
+- `BSGeometry+0x140` = `NiPointer<BSSkin::Instance>`
+- `BSSkin::Instance+0x10` = bones_fallback head (`NiAVObject**`)
+- `BSSkin::Instance+0x20` = bones_fallback count (`u32`)
+
+The iterator is walking `bones_fallback` of a ghost-side BSSITF skin
+instance. TTD memory inspection of the array showed 38 slots with
+only slots 3 and 6 holding valid `NiNode*` (heap range matching
+skel.nif joints) and the remaining 36 NULL. The half-NULL state is
+not freed memory — it's the engine's local-actor rebind cycle
+interrupted mid-populate (reset-then-populate pattern: clear all
+slots, repopulate from the local actor's skel).
+
+The ghost's body NIF was deep-cloned at inject (M9.5 path,
+`clone_nif_subtree` via engine `vt[26]`), so its skin instance is
+independent of the local player's. **Head and hands NIFs were not
+cloned** — they share the engine's cached `BSFadeNode` + skin
+instance with the local player. Cell-load triggers a rebind cycle on
+the local actor's skin instances; the rebind nukes `bones_fb` slots
+mid-flight. Because the instance is shared, the ghost sees the same
+nuked array. The visitor in the same render pass hits NULL slot[0]
+before the rebind populate completes. AV.
+
+Vanilla NPCs don't trip this: every actor gets its own instance via
+the engine's internal clone-on-spawn pipeline. Strada B's
+`nif_load_by_path` returns the cached node directly; cloning is on
+the caller, and the caller (the ghost injector) was missing it for
+head and hands.
+
+### Fix
+
+Three layers, all in `fw_native/src/native/`.
+
+**1. Engine-bug shield** (`skin_rebind.cpp`, `install_bone_iter_shield`).
+MinHook detour on `sub_1416C7510` (RVA `0x16C7510`) entry. Validates
+`*ctx >= 0x10000`; on the NULL+offset pattern, increments
+`g_iter_shield_skips` and returns early without invoking the original.
+Skipping a single visitor call is safe semantically — the function
+is a tree-walk visitor; missing one slot drops one bone deformation
+contribution at most, and only on slots that were already broken
+before the hook fired. Counter exposed via
+`get_and_reset_iter_shield_stats()` for periodic logging.
+
+**2. Independent skin instances** (`scene_inject.cpp`, `inject_body_nif`).
+Deep-clone of head and hands NIFs immediately after
+`load_nif_and_apply` returns, mirroring the body clone path. Uses
+`clone_nif_subtree` → engine `sub_1416BA800` DeepClone front-end →
+`vt[26]` dispatch. After clone, drops the +1 ref on the shared
+instance (engine cache keeps its own slot ref, so the shared node
+stays alive for the local player). The ghost's head + hands now hold
+skin instances the engine local-actor rebind never touches.
+
+**3. Body in periodic re-apply** (`scene_inject.cpp`,
+`on_bone_tick_message`). The 4 Hz `swap_skin_bones_to_skeleton`
+re-apply loop, previously iterating only `g_attached_armor`, now
+also walks the body root. `walk_for_swap` recurses into all child
+geometries (body / head / hands BSSITFs and any attached armor), so
+a single call covers the entire ghost subtree. Idempotent:
+`niptr_swap` early-returns if the slot already holds the new value.
+
+Diagnostic line emitted per 4 Hz tick when either counter is non-zero:
+
+    [skin-shield] last-tick: swap_NULL_fills=N iter_AV_skips=M
+
+`swap_NULL_fills` is informational (counts NULL slots encountered by
+`swap_for_geometry`, no mutation). `iter_AV_skips` is the engine bug
+shield's actual interception count. Production traces show steady
+state `swap_NULL_fills=36` (= 36 NULL slots persisting in some
+ghost-side BSSITF, harmless because the GPU doesn't read them) and
+`iter_AV_skips=0` outside cell-load events; at cell-entry the
+shield's counter spikes to 36–108 in a single tick (= 1×36 to 3×36,
+= number of BSSITFs the engine rebind touched in the burst), then
+returns to zero.
+
+### B6.4 closes for free
+
+Verifying the cell-entry fix on the Sanctuary terminal-house, peer A
+hacked the entry-room terminal successfully. Peer B's terminal
+flipped to unlocked immediately, no minigame prompt — exactly the
+B6.4 behaviour scoped for a future wedge.
+
+A successful terminal hack flips `ExtraLock` via the engine's
+standard `ForceUnlock` (`sub_140563320`). The B6.3 v0.5.3
+lock-state-sync detour already hooks that function (xref coverage:
+lockpick minigame, **terminal hack**, key unlock, AI lock/unlock
+package, perk auto-unlock, savefile load). Terminals are `REFR`s
+with `ExtraLock`; the broadcast and receiver-apply paths are
+identical to those for any other lockable REFR.
+
+Result: B6.4 needed zero code. README milestone table moves to done;
+the `lock_hook.cpp` header comment is updated to call out terminal
+coverage explicitly.
+
+### Files changed
+
+C++:
+
+- `fw_native/src/native/skin_rebind.h` — `install_bone_iter_shield`,
+  `get_and_reset_iter_shield_stats`,
+  `get_and_reset_swap_shield_stats` prototypes with dossier-style
+  block comment.
+- `fw_native/src/native/skin_rebind.cpp` — bone-iter shield detour
+  (`hook_bone_iter` + `install_bone_iter_shield`), atomic counters,
+  POD `seh_deref_void_ptr` helper, swap-shield diagnostic counter
+  in `swap_for_geometry`'s NULL-slot branch.
+- `fw_native/src/native/scene_inject.cpp` —
+  - `inject_body_nif`: deep-clone head and hands NIFs after
+    `load_nif_and_apply`; install bone-iter shield right after
+    `install_world_update_hook`.
+  - `on_bone_tick_message`: body root added to 4 Hz re-apply loop;
+    diagnostic stats line emitted per tick.
+
+Docs:
+
+- `README.md` — Status section, milestone table B6.4 → done,
+  Changelog summary section refreshed.
+- `CHANGELOG.md` — this entry.
+
+### Wire format
+
+No protocol change. v12 stays.
+
+**Tag:** `v0.5.6-b6.4-interior-crash-fix`.
+
+---
+
 ## B6.3.1 v0.5.5 — Lock bootstrap flush fix (2026-05-09) — HOTFIX
 
 ### Symptom

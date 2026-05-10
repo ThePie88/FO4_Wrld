@@ -107,6 +107,29 @@ Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 > fixed the B6.3 "Known residual" — taking a weapon out of a synced
 > lockable container no longer crashes (same engine state corruption
 > root cause). See [CHANGELOG.md](CHANGELOG.md).
+>
+> **B6.4 v0.5.6 — Interior cell-entry crash fix + B6.4 implicit
+> closure (2026-05-10).** Closes the deterministic crash when a
+> remote peer crosses into an interior (repro on the Sanctuary
+> terminal-house entry, both clients, every time). TTD pinned the AV
+> at `sub_1416C7510 + 0x29` = `mov r8, [rax]` with `rax = 0x10` — a
+> `BSFlattenedBoneTree` visitor dereferencing `**ctx[0]` against a
+> NULL-padded `bones_fallback` slot (`BSSkin::Instance+0x10`, count
+> at `+0x20`). Three layers in `fw_native/src/native/`: (1) MinHook
+> detour on `sub_1416C7510` validates `*ctx >= 0x10000` and skips the
+> call on the NULL+offset pattern; (2) head and hands NIFs deep-cloned
+> at inject via `clone_nif_subtree` (engine `vt[26]` DeepClone, RVA
+> `0x16BA800`, mirroring the body clone path) so their skin instances
+> are independent of the local player's, eliminating the shared-rebind
+> race that nukes `bones_fb` mid-cycle on cell-load; (3) 4 Hz
+> `swap_skin_bones_to_skeleton` re-apply now also walks the body root
+> in addition to attached armors. Bonus: B6.4 (terminal hack state
+> sync) closes for free — verified live on the same fix test pass
+> (peer A hacks terminal → peer B sees unlocked instantly, no
+> minigame). Successful hack flips `ExtraLock` via the same
+> `ForceUnlock` (`sub_140563320`) the B6.3 v0.5.3 detour already
+> covers. Zero new code for B6.4.
+> See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -187,7 +210,7 @@ in real time).
 | ↳ **M9.w5** Peer rejoin equipment-state push | ✅ done in v0.3.1 — PEER_JOIN trigger re-arms equip cycle (DONE→ARMED state transition), 1500ms delay, current outfit re-broadcast to newly-joined peer |
 | ↳ **B6.2** Lights toggle sync (lamps, lanterns, generators) | ⏳ — same Activate worker pattern as doors, formType filter on `0x20` LIGH |
 | ↳ **B6.3** Locks state sync (lockpicked → unlocked cross-client) | ✅ done (v0.5.3, 2026-05-08) — sender hooks `ForceUnlock` (`sub_140563320`) + `ForceLock` (`sub_140563360`); receiver applies via Papyrus `ObjectReference.Lock` binding (`sub_141158640`) with `ai_notify=0` to skip minigame + key consumption. Wire proto v12 ships `(form_id, base_id, cell_id, locked, ts)`. Covers doors, safes, weapon lockers, terminal-linked containers. Server persists per-(base, cell) state + replays on peer-join bootstrap. |
-| ↳ **B6.4** Terminals state sync (hacked / unlocked) | ⏳ — TerminalMenu activation event + persisted "hacked" flag |
+| ↳ **B6.4** Terminals state sync (hacked / unlocked) | ✅ done (v0.5.6, 2026-05-10) — implicit closure: a successful terminal hack flips `ExtraLock` via the engine's `ForceUnlock` (`sub_140563320`), already detoured by B6.3. Broadcast and receiver-apply paths are identical to those for doors / safes / weapon lockers. Zero new code. Verified live on the Sanctuary terminal-house during the v0.5.6 cell-entry crash fix test pass. |
 | ↳ **B6.5** NPC actor pos + pose sync | ⏳ — extend POSE_BROADCAST to remote actors with authority-per-NPC model. The big one — turns "co-op chat in same world" into "actual multiplayer game" |
 | ↳ **B6.6** NPC combat target + aggro sync | ⏳ — RE `CombatController::SetTarget`, broadcast NPC→target so observers see "raider shoots peer A" not "raider shoots air" |
 | ↳ **B6.7** NPC dialogue state + faction joined | ⏳ — quest-stage adjacent; brainstorm §3.2 says 10 players = 1 entity, simplifies state |
@@ -223,6 +246,50 @@ in real time).
 
 Latest 3 patches summarized below. **Full version history in
 [CHANGELOG.md](CHANGELOG.md).**
+
+### B6.4 v0.5.6 (2026-05-10) — interior cell-entry crash fix + B6.4 free closure — HOTFIX
+
+- **Symptom.** Deterministic crash on a peer's machine when another
+  peer crossed into an interior cell. Repro on the Sanctuary
+  terminal-house entry, both clients, every time. Vanilla FO4 (no
+  DLL) walked through cleanly; DLL was at fault.
+- **TTD root-cause.** AV at `sub_1416C7510 + 0x29` (`mov r8, [rax]`
+  with `rax = 0x10`). The function is a `BSFlattenedBoneTree`
+  visitor; the iterator at RVA `0x35F560` walks an `NiAVObject*`
+  array (`bones_fallback` of `BSSkin::Instance+0x10`, count at
+  `+0x20`) and computes `(*slot) + 0x10` for every entry without
+  null-checking. When `*slot == NULL`, that becomes `0x10`, which
+  the visitor downstream dereferences. Vanilla NPCs don't trip this
+  because their `bones_fb` stays densely populated; the ghost-side
+  BSSITF instances were shared with the local player's NIF cache
+  and got nuked mid-cycle by the engine local-actor rebind on
+  cell-load.
+- **Fix.** Three layers, all in `fw_native/src/native/`. (1) MinHook
+  detour on `sub_1416C7510` (`install_bone_iter_shield`,
+  `skin_rebind.cpp`) intercepts the NULL+offset pattern at engine
+  boundary. (2) `inject_body_nif` deep-clones head and hands NIFs
+  immediately after `nif_load_by_path` (mirror of body clone path)
+  via `clone_nif_subtree` → engine `sub_1416BA800` DeepClone →
+  `vt[26]` dispatch, giving the ghost independent skin instances
+  the engine local-actor rebind never touches. (3)
+  `on_bone_tick_message` 4 Hz `swap_skin_bones_to_skeleton`
+  re-apply loop now also walks the body root.
+- **Diagnostic counters** in `skin_rebind.cpp` track shield
+  activations per tick, logged from `on_bone_tick_message` when
+  non-zero: `[skin-shield] last-tick: swap_NULL_fills=N
+  iter_AV_skips=M`. Production traces show steady-state
+  `swap_NULL_fills=36` (harmless, GPU doesn't read those slots) and
+  `iter_AV_skips=0` outside cell-load events; at cell-entry the
+  shield's counter spikes to 36–108 in a single tick (= 1×36 to 3×36
+  BSSITFs touched in the burst), then returns to zero.
+- **B6.4 closes for free.** During the same fix test pass, peer A's
+  successful terminal hack on the Sanctuary terminal-house unlocked
+  the terminal on peer B with no minigame prompt — exactly the B6.4
+  behaviour planned as a future wedge. The B6.3 v0.5.3 `ForceUnlock`
+  detour (`sub_140563320`) already covers terminals (the hack flips
+  `ExtraLock` through the same engine path). Milestone table moves
+  to done with zero new code. Tag
+  `v0.5.6-b6.4-interior-crash-fix`.
 
 ### B6.3.1 v0.5.5 (2026-05-09) — lock bootstrap flush fix — HOTFIX
 
@@ -299,31 +366,6 @@ Latest 3 patches summarized below. **Full version history in
   future minimal apparel-bootstrap broadcast that doesn't go through
   the engine equip path. Tag
   `v0.5.4-b6.4-pre-bridge-crash-fix`.
-
-### B6.3 v0.5.3 (2026-05-08) — lock state sync — STABLE
-
-- **Lock state now syncs across peers.** Picklock a Sanctuary safe on
-  client A → client B's same safe is unlocked too, no minigame prompt
-  on B's side. Covers doors, safes, weapon lockers, and terminal-linked
-  containers. Server persists per-(base, cell) state across restarts;
-  peers joining mid-session catch up via bootstrap `LOCK_BCAST` frames.
-- **Sender** hooks the engine's two canonical mutators —
-  `ForceUnlock` (`sub_140563320`) and `ForceLock` (`sub_140563360`).
-  Coverage: lockpick minigame, terminal hack, key unlock, AI lock/unlock
-  package, perk auto-unlock, savefile load. Detour reads post-state
-  from `LockData` (flag bit 0 at `+0x10`), broadcasts
-  `(form_id, base_id, cell_id, locked, ts)` as reliable `LOCK_OP`.
-  `tls_applying_remote` guards the receiver-side recursion.
-- **Receiver** applies via Papyrus `ObjectReference.Lock`/`Unlock`
-  binding (`sub_141158640`) with `ai_notify=0` — flips ExtraLock,
-  clears partial-pick state, refreshes visuals, and skips the
-  minigame, key consumption, and AI events. Allocates ExtraLock if
-  the REFR doesn't have one yet.
-- **Wire proto v12** adds `LOCK_OP` (`0x0260`) + `LOCK_BCAST`
-  (`0x0261`). `LockOpPayload` = 21 B; `LockBroadcastPayload` = 37 B.
-  Server snapshot v4 adds a `locks` JSON section; v3 snapshots load
-  fine (empty `lock_state`). Tag
-  `v0.5.3-b6.3-lock-state-sync`.
 
 ## Why this exists
 

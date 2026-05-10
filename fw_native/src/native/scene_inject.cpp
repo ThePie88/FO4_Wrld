@@ -2160,6 +2160,11 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
                 // both body NIF and skeleton.nif use _skin suffix on
                 // skinning anchor bones). Lookup name = stub name.
                 fw::native::skin_rebind::install_world_update_hook(g_r.base);
+                // 2026-05-10 — engine-bug shield on sub_1416C7510 (RVA
+                // 0x16C7510). Last line of defense for the cell-entry
+                // AV pattern (NULL+0x10 deref). Idempotent install,
+                // safe to call on every body inject.
+                fw::native::skin_rebind::install_bone_iter_shield(g_r.base);
                 void* body_skin = fw::native::skin_rebind::find_body_skin_instance(body);
                 void* test_bone = nullptr;
                 if (body_skin) {
@@ -2263,6 +2268,38 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
                 break;
             }
             FW_LOG("[native] inject_head: path='%s' missed, trying next", hp);
+        }
+        // 2026-05-10 — Deep-clone head NIF for independent skin instance
+        // (mirror of body clone above). Without this the head BSGeometry's
+        // skin instance is SHARED with the local player's BaseMaleHead.nif
+        // (engine NIF cache returns the same node). When the engine
+        // local-actor rebind cycle fires on cell-load (interior entry),
+        // it nukes bones_fb on the shared instance for both local AND
+        // ghost. The bone-iter shield catches the AV, but bones_fb stays
+        // half-NULL → bones_pri[i] = bones_fb[i]+0x70 = 0x70 = low-mem
+        // garbage matrix → GPU stretches vertices.
+        //
+        // Cloning gives the ghost an INDEPENDENT skin: our 4Hz re-apply
+        // maintains ghost-skel binding, engine local-actor rebind
+        // operates only on the local player's untouched original.
+        if (head) {
+            void* head_clone = clone_nif_subtree(head);
+            if (head_clone == head) {
+                FW_WRN("[native] inject_head: deep-clone returned shared "
+                       "(vt[26] DeepClone returned same ptr) — cache-share "
+                       "bug may persist; bone-iter shield will still "
+                       "prevent AV but visuals may glitch on cell-load");
+            } else {
+                FW_LOG("[native] inject_head: deep-cloned %p -> %p "
+                       "(independent skin instance, no shared-rebind race)",
+                       head, head_clone);
+                __try {
+                    auto* rcp = reinterpret_cast<long*>(
+                        reinterpret_cast<char*>(head) + NIAV_REFCOUNT_OFF);
+                    _InterlockedDecrement(rcp);
+                } __except (EXCEPTION_EXECUTE_HANDLER) {}
+                head = head_clone;
+            }
         }
         if (head) {
             __try {
@@ -2418,6 +2455,36 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
                 break;
             }
             FW_LOG("[native] inject_hands: path='%s' missed, trying next", hp);
+        }
+        // 2026-05-10 — Deep-clone hands NIF for independent skin instance
+        // (mirror of body + head clone). The hands BSSITF (BaseMaleHands3rd:0,
+        // 38-bone skin) was the SPECIFIC geometry observed glitching on
+        // cell-entry: TTD trace showed 36/38 NULL slots in bones_fb after
+        // engine local-actor rebind, and the bone-iter shield's iter_AV_skips
+        // counter reported 36-108 AVs intercepted in a single tick at the
+        // moment of interior entry (1×36 for hands alone, or 3×36 if body+
+        // head+hands all share-rebind in burst).
+        //
+        // Cloning isolates the ghost's skin from the engine's per-frame
+        // local-actor rebind. Combined with the bone-iter shield (Layer 3)
+        // as ultimate AV defense.
+        if (hands) {
+            void* hands_clone = clone_nif_subtree(hands);
+            if (hands_clone == hands) {
+                FW_WRN("[native] inject_hands: deep-clone returned shared "
+                       "(vt[26] DeepClone returned same ptr) — cache-share "
+                       "bug may persist; visuals may glitch on cell-load");
+            } else {
+                FW_LOG("[native] inject_hands: deep-cloned %p -> %p "
+                       "(independent skin instance, no shared-rebind race)",
+                       hands, hands_clone);
+                __try {
+                    auto* rcp = reinterpret_cast<long*>(
+                        reinterpret_cast<char*>(hands) + NIAV_REFCOUNT_OFF);
+                    _InterlockedDecrement(rcp);
+                } __except (EXCEPTION_EXECUTE_HANDLER) {}
+                hands = hands_clone;
+            }
         }
 
         if (hands) {
@@ -10888,6 +10955,38 @@ void on_bone_tick_message() {
                 for (void* armor : armors_snapshot) {
                     (void)fw::native::skin_rebind::swap_skin_bones_to_skeleton(
                         armor, skel, /*silent=*/true);
+                }
+                // 2026-05-10 — TTD-confirmed: engine cell-load + local-actor
+                // re-bind cycles can NULL bones_fb slots on the body's own
+                // BSSubIndexTriShape (BaseMaleBody:0), not just on attached
+                // armor BSSITFs. Without this body-level re-apply, a sparse
+                // body bones_fb hits sub_1416C7510 + 0x29 AV when the engine
+                // iterates it on entering interior cells (recurring crash
+                // first observed on Sanctuary terminal-house entry).
+                //
+                // walk_for_swap recurses into children, so this single body
+                // walk redundantly covers the attached armors above too —
+                // kept the per-armor loop for explicit semantics + because
+                // niptr_swap is idempotent on no-op (cheap when nothing
+                // changed). Combined with skin_rebind.cpp's NULL→skel_root
+                // shield in swap_for_geometry, the body's flat-tree
+                // iteration is now safe across cell transitions.
+                (void)fw::native::skin_rebind::swap_skin_bones_to_skeleton(
+                    body, skel, /*silent=*/true);
+
+                // 2026-05-10 — diagnostic: emit a single line every
+                // 4Hz tick (not silent) reporting how many shield
+                // operations fired in the last interval. Zero-skip:
+                // suppress when both counters are 0 to avoid noise.
+                const std::uint64_t swap_fires =
+                    fw::native::skin_rebind::get_and_reset_swap_shield_stats();
+                const std::uint64_t iter_skips =
+                    fw::native::skin_rebind::get_and_reset_iter_shield_stats();
+                if (swap_fires > 0 || iter_skips > 0) {
+                    FW_LOG("[skin-shield] last-tick: swap_NULL_fills=%llu "
+                           "iter_AV_skips=%llu",
+                           static_cast<unsigned long long>(swap_fires),
+                           static_cast<unsigned long long>(iter_skips));
                 }
             }
         }
