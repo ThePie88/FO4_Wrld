@@ -10,6 +10,7 @@
 #include "../ghost/actor_hijack.h"
 #include "../hooks/container_hook.h"
 #include "../hooks/equip_cycle.h"   // M9 v0.3.x: re-arm cycle on PEER_JOIN
+#include "../hooks/npc_ai_suppress.h" // B6.5w4: suppress/passthrough counters
 #include "../main_thread_dispatch.h"
 #include "../native/scene_inject.h"
 
@@ -863,6 +864,19 @@ void Client::run_loop() {
                    static_cast<unsigned long long>(stats_.reliable_received.load()),
                    static_cast<unsigned long long>(stats_.world_state_entries.load()),
                    static_cast<unsigned long long>(stats_.container_state_entries.load()));
+            // B6.5w4 diagnostic: dump AI suppression hook counters + tracked
+            // set size. If suppress=0 → hook isn't matching any tracked
+            // form_id (registration bug or wrong hook RVA). If passthrough
+            // grows but NPCs still wander → AI source is elsewhere.
+            FW_LOG("npc-ai: tracked=%zu  suppress_fires=%llu  passthrough_fires=%llu  "
+                   "seh_failures=%llu",
+                   fw::dispatch::tracked_npc_count(),
+                   static_cast<unsigned long long>(
+                       fw::hooks::get_npc_ai_suppress_fires()),
+                   static_cast<unsigned long long>(
+                       fw::hooks::get_npc_ai_passthrough_fires()),
+                   static_cast<unsigned long long>(
+                       fw::hooks::get_npc_ai_seh_failures()));
             next_stats = now + STATS_INTERVAL;
         }
     }
@@ -1146,6 +1160,71 @@ void Client::dispatch(const Delivered& d) {
                b.peer_id.get().c_str(),
                b.lock_form_id, b.lock_base_id, b.lock_cell_id,
                static_cast<unsigned>(b.locked));
+        break;
+    }
+
+    case static_cast<std::uint16_t>(MessageType::NPC_STATE_BCAST): {
+        // B6.5w3.b — decode + enqueue all entries. The main thread
+        // (WndProc dispatcher) drains and applies each via
+        // engine::apply_npc_state_to_engine.
+        //
+        // Server emits at 10 Hz × N tracked NPCs; we trim each frame
+        // into ≤ MAX_NPC_STATES_PER_FRAME entries and push them all
+        // in one mutex acquisition + one PostMessage.
+        if (d.payload.size() < sizeof(NPCStateBroadcastHeader)) break;
+        NPCStateBroadcastHeader hdr{};
+        std::memcpy(&hdr, d.payload.data(), sizeof(hdr));
+        if (hdr.num_entries == 0) break;
+        if (hdr.num_entries > MAX_NPC_STATES_PER_FRAME) {
+            FW_DBG("net: NPC_STATE_BCAST count=%u > MAX=%u — drop",
+                   static_cast<unsigned>(hdr.num_entries),
+                   static_cast<unsigned>(MAX_NPC_STATES_PER_FRAME));
+            break;
+        }
+        const std::size_t need =
+            sizeof(hdr) +
+            static_cast<std::size_t>(hdr.num_entries) * sizeof(NPCStateEntry);
+        if (d.payload.size() < need) {
+            FW_DBG("net: NPC_STATE_BCAST truncated need=%zu got=%zu",
+                   need, d.payload.size());
+            break;
+        }
+
+        std::vector<fw::dispatch::PendingNPCStateEntry> batch;
+        batch.reserve(hdr.num_entries);
+        const std::uint8_t* p = d.payload.data() + sizeof(hdr);
+        for (std::uint16_t i = 0; i < hdr.num_entries; ++i) {
+            NPCStateEntry wire{};
+            std::memcpy(&wire, p + i * sizeof(NPCStateEntry), sizeof(wire));
+            fw::dispatch::PendingNPCStateEntry pe{};
+            pe.form_id      = wire.form_id;
+            pe.pos_x        = wire.pos_x;
+            pe.pos_y        = wire.pos_y;
+            pe.pos_z        = wire.pos_z;
+            pe.yaw_deg_math = wire.yaw;     // brain emits degrees, math conv
+            pe.anim_state   = wire.anim_state;
+            batch.push_back(pe);
+
+            // B6.5w4 round 2: update the per-NPC cache. The main-thread
+            // suppression detour reads this on each Actor::Update_PerFrame
+            // fire (~60 Hz) and POST-overwrites pos/yaw/anim from cache so
+            // the engine's NIF sync runs (renderer sees our pos) but our
+            // writes become authoritative on each frame.
+            fw::dispatch::update_npc_cache(
+                wire.form_id,
+                wire.pos_x, wire.pos_y, wire.pos_z,
+                wire.yaw, wire.anim_state);
+        }
+        fw::dispatch::enqueue_npc_state_apply(batch);
+        // Spot-check log of the first entry — useful for confirming the
+        // pipeline is live without spamming at 10 Hz.
+        FW_DBG("net: NPC_STATE_BCAST count=%u first formid=0x%X pos=(%.1f,%.1f,%.1f) "
+               "yaw=%.2f anim=%u enqueued for main-thread apply",
+               static_cast<unsigned>(hdr.num_entries),
+               batch[0].form_id,
+               batch[0].pos_x, batch[0].pos_y, batch[0].pos_z,
+               batch[0].yaw_deg_math,
+               static_cast<unsigned>(batch[0].anim_state));
         break;
     }
 

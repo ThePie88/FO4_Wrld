@@ -41,6 +41,7 @@ from protocol import (  # noqa: E402
     LockOpPayload, LockBroadcastPayload,
     EquipOpPayload, EquipBroadcastPayload, EquipOpKind,
     MeshBlobChunkPayload, MeshBlobChunkBroadcastPayload,
+    NPCStateEntry, NPCStateBroadcastPayload, MAX_NPC_STATES_PER_FRAME,
     encode_frame, decode_frame,
 )
 from server.state import ServerState, PeerSession, SessionState, LockWorldState  # noqa: E402
@@ -48,6 +49,7 @@ from server.validator import (  # noqa: E402
     validate_pos_state, validate_actor_event, validate_container_op, RejectReason,
 )
 from server.persistence import snapshot, load_into, rotate_snapshots  # noqa: E402
+from server.npc_brain import NPCBrain  # noqa: E402
 
 
 log = logging.getLogger("server")
@@ -64,6 +66,8 @@ class Config:
         snapshot_path: Optional[Path] = None,
         snapshot_interval_s: float = 30.0,
         log_level: str = "INFO",
+        waypoints_dir: Optional[Path] = None,
+        npc_tick_hz: int = 10,
     ) -> None:
         self.host = host
         self.port = port
@@ -71,6 +75,8 @@ class Config:
         self.snapshot_path = snapshot_path
         self.snapshot_interval_s = snapshot_interval_s
         self.log_level = log_level
+        self.waypoints_dir = waypoints_dir
+        self.npc_tick_hz = npc_tick_hz
 
 
 # ---------------------------------------------------------------- protocol handler
@@ -933,6 +939,56 @@ class ServerProtocol(asyncio.DatagramProtocol):
             raw = other.channel.send_reliable(MessageType.CHAT, payload, now_ms)
             self._send(other.addr, raw)
 
+    # ----- B6.5w2: NPC state broadcast (v13)
+
+    def broadcast_npc_states(self, brain: NPCBrain, now_ms: float) -> None:
+        """Emit NPC_STATE_BCAST to every connected peer.
+
+        Called by ``_periodic_npc_brain_tick`` right after the brain
+        advances. Unreliable channel — drops are tolerable since the
+        next tick (~100 ms later at default 10 Hz) resends fresh state.
+
+        No cell-aware filtering yet: every peer receives every tracked
+        NPC. Interest management lands in B6.7+.
+
+        Chunks across frames if NPC count exceeds
+        ``MAX_NPC_STATES_PER_FRAME`` (26 at MTU 1400).
+        """
+        sessions = self.state.all_sessions()
+        if not sessions:
+            return
+        npcs = brain.all_npcs()
+        if not npcs:
+            return
+
+        ts_ms = int(now_ms)
+        all_entries = [
+            NPCStateEntry(
+                form_id=r.spec.form_id,
+                base_id=r.spec.base_id,
+                cell_id=r.spec.cell_id,
+                pos_x=r.pos_x, pos_y=r.pos_y, pos_z=r.pos_z,
+                yaw=r.yaw, pitch=r.pitch,
+                target_id=r.target_id,
+                timestamp_ms=ts_ms,
+                anim_state=r.anim_state,
+                aggro_state=r.aggro_state,
+                hp_pct=r.hp_pct,
+                target_kind=r.target_kind,
+                flags=1,  # bit 0 = visible (always, for now)
+            )
+            for r in npcs
+        ]
+
+        max_per = MAX_NPC_STATES_PER_FRAME
+        for off in range(0, len(all_entries), max_per):
+            chunk = all_entries[off : off + max_per]
+            payload = NPCStateBroadcastPayload(entries=tuple(chunk))
+            for s in sessions:
+                raw = s.channel.send_unreliable(
+                    MessageType.NPC_STATE_BCAST, payload)
+                self._send(s.addr, raw)
+
     # ----- periodic tasks
 
     def tick(self, now_ms: float) -> None:
@@ -990,6 +1046,39 @@ async def _periodic_tick(protocol: ServerProtocol, rate_hz: int) -> None:
         protocol.tick(now_ms)
 
 
+async def _periodic_npc_brain_tick(
+    brain: NPCBrain, protocol: ServerProtocol, rate_hz: int,
+) -> None:
+    """B6.5w1+w2 — drive the NPC brain at ``rate_hz`` and broadcast state.
+
+    Each tick: advance brain (compute new pos/anim) → broadcast
+    NPC_STATE_BCAST to every peer (B6.5w2). Logs a single-line status at
+    ~1 Hz so the operator sees liveness without drowning the log.
+
+    Wedges w3/w4 hang their concerns off the receiver side; the server
+    task remains the same.
+    """
+    interval = 1.0 / rate_hz
+    last_ms = _now_ms()
+    log_every = max(1, rate_hz)  # ~once per second
+    tick_idx = 0
+    while True:
+        await asyncio.sleep(interval)
+        now_ms = _now_ms()
+        dt_s = (now_ms - last_ms) / 1000.0
+        last_ms = now_ms
+        n = brain.tick(now_ms, dt_s)
+        protocol.broadcast_npc_states(brain, now_ms)
+        tick_idx += 1
+        if tick_idx % log_every == 0:
+            n_peers = len(protocol.state.all_sessions())
+            log.info(
+                "npc tick: processed %d npc(s), broadcast to %d peer(s) "
+                "(cells=%s)",
+                n, n_peers, brain.cells_loaded,
+            )
+
+
 async def _periodic_snapshot(
     protocol: ServerProtocol,
     path: Path,
@@ -1041,6 +1130,26 @@ async def run_server(cfg: Config) -> None:
         except Exception as e:
             log.warning("snapshot restore failed (%s): starting with empty world", e)
 
+    # B6.5w1 — load NPC brain from waypoint JSONs, if any. Brain is only
+    # ticked when at least one NPC was loaded; an empty brain is a no-op
+    # so legacy CLI invocations (no --waypoints-dir) are unaffected.
+    npc_brain = NPCBrain()
+    if cfg.waypoints_dir is not None and cfg.waypoints_dir.is_dir():
+        for jp in sorted(cfg.waypoints_dir.glob("*.json")):
+            try:
+                npc_brain.load_cell(jp)
+            except Exception as e:
+                log.warning("npc_brain: failed to load %s: %s", jp, e)
+        log.info(
+            "npc_brain ready: %d npc(s) across %d cell(s)",
+            npc_brain.count(), len(npc_brain.cells_loaded),
+        )
+    elif cfg.waypoints_dir is not None:
+        log.warning(
+            "npc_brain: --waypoints-dir %s does not exist; brain idle",
+            cfg.waypoints_dir,
+        )
+
     loop = asyncio.get_running_loop()
     transport, protocol = await loop.create_datagram_endpoint(
         lambda: ServerProtocol(state),
@@ -1054,6 +1163,10 @@ async def run_server(cfg: Config) -> None:
         if cfg.snapshot_path is not None:
             tasks.append(asyncio.create_task(
                 _periodic_snapshot(protocol, cfg.snapshot_path, cfg.snapshot_interval_s)
+            ))
+        if npc_brain.count() > 0:
+            tasks.append(asyncio.create_task(
+                _periodic_npc_brain_tick(npc_brain, protocol, cfg.npc_tick_hz)
             ))
         log.info("server v1 ready")
         await asyncio.gather(*tasks)
@@ -1077,6 +1190,11 @@ def parse_args() -> Config:
     ap.add_argument("--snapshot-interval-s", type=float, default=30.0)
     ap.add_argument("--log-level", default="INFO",
                     choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+    ap.add_argument("--waypoints-dir", type=Path, default=None,
+                    help="if set, load every .json file from this dir into "
+                         "the NPC brain at startup (B6.5+)")
+    ap.add_argument("--npc-tick-hz", type=int, default=10,
+                    help="NPC brain tick rate Hz (default 10)")
     args = ap.parse_args()
     return Config(
         host=args.host, port=args.port,
@@ -1084,6 +1202,8 @@ def parse_args() -> Config:
         snapshot_path=args.snapshot_path,
         snapshot_interval_s=args.snapshot_interval_s,
         log_level=args.log_level,
+        waypoints_dir=args.waypoints_dir,
+        npc_tick_hz=args.npc_tick_hz,
     )
 
 

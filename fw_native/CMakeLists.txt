@@ -31,6 +31,7 @@ add_library(fw_native SHARED
     src/hooks/worldstate_hook.cpp
     src/hooks/door_hook.cpp         # B6.0: Activate worker for door open/close
     src/hooks/lock_hook.cpp         # B6.3: ForceUnlock + ForceLock detours
+    src/hooks/npc_ai_suppress.cpp   # B6.5w4: Actor::Update_PerFrame suppression for tracked NPCs
     src/hooks/equip_cycle.cpp       # B8  : post-LoadGame BipedAnim normalize (DISABLED 2026-05-08, see equip_announce.h)
     src/hooks/equip_announce.cpp    # B8 successor (NON TESTATO): apparel bootstrap broadcast — Option B scaffold
     src/hooks/equip_hook.cpp        # M9 w1: equipment-event sender hook

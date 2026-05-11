@@ -42,6 +42,40 @@ std::deque<PendingMeshBlob> g_mesh_blob_queue;
 std::mutex g_lock_mtx;
 std::deque<PendingLockOp> g_lock_queue;
 
+// B6.5w3.b: NPC continuous-state queue. Higher frequency than locks
+// (10 Hz × N npcs server-side) but each entry is small (24 B POD).
+// Separate mutex so NPC traffic doesn't block lock/door/container drains.
+std::mutex g_npc_mtx;
+std::deque<PendingNPCStateEntry> g_npc_queue;
+
+// B6.5w4 round 2: per-NPC state cache (replaces the bare set from
+// round 1). Net thread updates on each BCAST; main thread suppression
+// detour reads on each Actor::Update_PerFrame fire and applies state
+// POST-hook so renderer sees our pos.
+//
+// Round 9 extension: track PREV+CURRENT snapshot pair for client-side
+// linear interpolation. update_npc_cache shifts current → prev on each
+// BCAST before writing new current. Render thread linearly interpolates
+// between the two based on elapsed time.
+struct CachedNPCStateImpl {
+    // Current (latest from server)
+    float pos_x;
+    float pos_y;
+    float pos_z;
+    float yaw_deg_math;
+    std::uint8_t anim_state;
+    std::uint64_t last_update_ms;
+    // Previous (before last BCAST)
+    float prev_pos_x;
+    float prev_pos_y;
+    float prev_pos_z;
+    float prev_yaw_deg_math;
+    std::uint64_t prev_update_ms;
+    bool has_prev;
+};
+std::mutex g_npc_cache_mtx;
+std::unordered_map<std::uint32_t, CachedNPCStateImpl> g_npc_cache;
+
 // The FO4 main window handle. Set exactly once by main_menu_hook after
 // it subclasses WndProc (post-B3.b-registrar detection). Read lock-free
 // thereafter; atomic for publish/acquire ordering.
@@ -94,6 +128,36 @@ void post_wakeup_lock() noexcept {
     }
 }
 
+void post_wakeup_npc() noexcept {
+    HWND h = g_hwnd.load(std::memory_order_acquire);
+    if (h && PostMessageW(h, FW_MSG_NPC_STATE_APPLY, 0, 0)) {
+        return;  // happy path — WndProc will drain
+    }
+    // Either no HWND yet or PostMessage failed. Diagnose:
+    if (h) {
+        const DWORD err = GetLastError();
+        if (err == ERROR_INVALID_WINDOW_HANDLE) {
+            // HWND went stale (FO4 recreates the main window across cell
+            // transitions / menu open / DXGI reset). Clear it so we don't
+            // spam this branch every BCAST; main_menu_hook will call
+            // set_target_hwnd again when it re-subclasses the new window
+            // and full main-thread drain resumes. Until then we fall
+            // back to inline pos-only drain so visible sync keeps
+            // working across clients.
+            g_hwnd.store(nullptr, std::memory_order_release);
+            FW_WRN("dispatch: NPC HWND %p stale (err 1400) — clearing, "
+                   "falling back to inline pos-only drain until next "
+                   "set_target_hwnd", h);
+        } else {
+            FW_DBG("dispatch: PostMessage(FW_MSG_NPC_STATE_APPLY) failed err=%lu",
+                   err);
+        }
+    }
+    // No HWND OR failed post — apply pos-only from this thread so the
+    // NPC at least stays at the right world position on the receiver.
+    drain_npc_state_apply_queue_pos_only();
+}
+
 } // namespace
 
 void enqueue_container_apply(const PendingContainerOp& op) {
@@ -131,6 +195,20 @@ void enqueue_lock_apply(const PendingLockOp& op) {
            op.lock_form_id, op.lock_base_id, op.lock_cell_id,
            static_cast<unsigned>(op.locked), qsize);
     post_wakeup_lock();
+}
+
+void enqueue_npc_state_apply(const std::vector<PendingNPCStateEntry>& entries) {
+    if (entries.empty()) return;
+    std::size_t qsize;
+    {
+        std::lock_guard lk(g_npc_mtx);
+        for (const auto& e : entries) g_npc_queue.push_back(e);
+        qsize = g_npc_queue.size();
+    }
+    // 10 Hz × N npcs makes this chatty — keep at DBG.
+    FW_DBG("dispatch: npc enqueued %zu entries (qsize=%zu)",
+           entries.size(), qsize);
+    post_wakeup_npc();
 }
 
 void enqueue_equip_apply(const PendingEquipOp& op) {
@@ -1111,6 +1189,219 @@ void drain_lock_apply_queue() {
     }
     FW_LOG("dispatch: drained %zu lock ops (applied=%zu failed=%zu)",
            local.size(), applied_ok, failed);
+}
+
+void drain_npc_state_apply_queue() {
+    std::deque<PendingNPCStateEntry> local;
+    {
+        std::lock_guard lk(g_npc_mtx);
+        local.swap(g_npc_queue);
+    }
+    if (local.empty()) {
+        // High-frequency queue — empty drains are normal between bursts.
+        return;
+    }
+
+    // No fw::hooks::ApplyingRemoteGuard needed here yet — apply path
+    // writes directly to Actor fields + IAnimationGraphManagerHolder
+    // setters. Neither triggers our own hooks (no sender-side NPC pos
+    // observe yet; the only NPC traffic flows server→client).
+    //
+    // When B6.5w4 (AI suppression) lands, we'll detour
+    // Actor::Update_PerFrame@0xC636A0; tracked-form filter happens
+    // inside the detour so we don't need a tls-guard scope here.
+
+    std::size_t applied = 0, missed = 0;
+    for (const auto& e : local) {
+        const bool ok = fw::engine::apply_npc_state_to_engine(
+            e.form_id, e.pos_x, e.pos_y, e.pos_z,
+            e.yaw_deg_math, e.anim_state,
+            /*skip_anim_graph=*/false);   // main thread → full apply
+        if (ok) ++applied; else ++missed;
+    }
+    // At 10 Hz × 2 NPCs = 20 entries/sec. Logging every drain at INFO
+    // would be 10 lines/sec. DBG is fine; a periodic INFO summary can
+    // be added later if needed.
+    FW_DBG("dispatch: drained %zu npc entries (applied=%zu missed=%zu)",
+           local.size(), applied, missed);
+}
+
+void drain_npc_state_apply_queue_pos_only() {
+    // Called from the net thread when PostMessage fails. Same drain
+    // logic as drain_npc_state_apply_queue but passes skip_anim_graph=
+    // true so SetGraphVariable* (main-thread-only) is skipped. Pos +
+    // yaw writes are pure memory ops and safe from any thread.
+    std::deque<PendingNPCStateEntry> local;
+    {
+        std::lock_guard lk(g_npc_mtx);
+        local.swap(g_npc_queue);
+    }
+    if (local.empty()) return;
+
+    std::size_t applied = 0, missed = 0;
+    for (const auto& e : local) {
+        const bool ok = fw::engine::apply_npc_state_to_engine(
+            e.form_id, e.pos_x, e.pos_y, e.pos_z,
+            e.yaw_deg_math, e.anim_state,
+            /*skip_anim_graph=*/true);   // net thread → no anim setter
+        if (ok) ++applied; else ++missed;
+    }
+    FW_DBG("dispatch: net-thread fallback pos-only drain %zu entries "
+           "(applied=%zu missed=%zu)",
+           local.size(), applied, missed);
+}
+
+// =========================================================================
+// B6.5w4 round 2 — Per-NPC state cache
+// =========================================================================
+
+void update_npc_cache(std::uint32_t form_id,
+                     float pos_x, float pos_y, float pos_z,
+                     float yaw_deg_math,
+                     std::uint8_t anim_state) {
+    if (form_id == 0) return;
+    bool inserted_now = false;
+    std::size_t new_size = 0;
+    const auto now_ms = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    {
+        std::lock_guard lk(g_npc_cache_mtx);
+        auto it = g_npc_cache.find(form_id);
+        if (it == g_npc_cache.end()) {
+            inserted_now = true;
+            CachedNPCStateImpl fresh{};
+            fresh.pos_x = pos_x;
+            fresh.pos_y = pos_y;
+            fresh.pos_z = pos_z;
+            fresh.yaw_deg_math = yaw_deg_math;
+            fresh.anim_state = anim_state;
+            fresh.last_update_ms = now_ms;
+            fresh.has_prev = false;
+            g_npc_cache[form_id] = fresh;
+        } else {
+            // Round 9: shift current → prev BEFORE writing new current,
+            // so the render thread can interpolate between the pair.
+            it->second.prev_pos_x = it->second.pos_x;
+            it->second.prev_pos_y = it->second.pos_y;
+            it->second.prev_pos_z = it->second.pos_z;
+            it->second.prev_yaw_deg_math = it->second.yaw_deg_math;
+            it->second.prev_update_ms = it->second.last_update_ms;
+            it->second.has_prev = true;
+
+            it->second.pos_x = pos_x;
+            it->second.pos_y = pos_y;
+            it->second.pos_z = pos_z;
+            it->second.yaw_deg_math = yaw_deg_math;
+            it->second.anim_state = anim_state;
+            it->second.last_update_ms = now_ms;
+        }
+        new_size = g_npc_cache.size();
+    }
+    if (inserted_now) {
+        FW_LOG("dispatch: tracked NPC registered form_id=0x%X (cache size=%zu) — "
+               "Update_PerFrame detour will now POST-overwrite state for this form",
+               form_id, new_size);
+    }
+}
+
+bool get_cached_npc_state(std::uint32_t form_id, CachedNPCState* out) {
+    if (form_id == 0) return false;
+    std::lock_guard lk(g_npc_cache_mtx);
+    auto it = g_npc_cache.find(form_id);
+    if (it == g_npc_cache.end()) return false;
+    if (out) {
+        out->pos_x = it->second.pos_x;
+        out->pos_y = it->second.pos_y;
+        out->pos_z = it->second.pos_z;
+        out->yaw_deg_math = it->second.yaw_deg_math;
+        out->anim_state = it->second.anim_state;
+        out->last_update_ms = it->second.last_update_ms;
+    }
+    return true;
+}
+
+std::size_t tracked_npc_count() {
+    std::lock_guard lk(g_npc_cache_mtx);
+    return g_npc_cache.size();
+}
+
+std::vector<std::pair<std::uint32_t, CachedNPCState>> get_all_cached_npcs() {
+    std::vector<std::pair<std::uint32_t, CachedNPCState>> out;
+    std::lock_guard lk(g_npc_cache_mtx);
+    out.reserve(g_npc_cache.size());
+    for (const auto& [fid, st] : g_npc_cache) {
+        CachedNPCState s;
+        s.pos_x = st.pos_x;
+        s.pos_y = st.pos_y;
+        s.pos_z = st.pos_z;
+        s.yaw_deg_math = st.yaw_deg_math;
+        s.anim_state = st.anim_state;
+        s.last_update_ms = st.last_update_ms;
+        out.emplace_back(fid, s);
+    }
+    return out;
+}
+
+bool get_interpolated_npc_state(std::uint32_t form_id,
+                               std::uint64_t now_ms,
+                               InterpolatedNPCState* out) {
+    if (form_id == 0 || !out) return false;
+    // Snapshot under lock then compute outside it.
+    CachedNPCStateImpl snap{};
+    {
+        std::lock_guard lk(g_npc_cache_mtx);
+        auto it = g_npc_cache.find(form_id);
+        if (it == g_npc_cache.end()) return false;
+        snap = it->second;
+    }
+
+    out->anim_state = snap.anim_state;
+
+    if (!snap.has_prev) {
+        // First BCAST — nothing to lerp from, use current as-is.
+        out->pos_x = snap.pos_x;
+        out->pos_y = snap.pos_y;
+        out->pos_z = snap.pos_z;
+        out->yaw_deg_math = snap.yaw_deg_math;
+        return true;
+    }
+
+    const std::uint64_t dt_prev_cur_ms =
+        (snap.last_update_ms > snap.prev_update_ms)
+            ? (snap.last_update_ms - snap.prev_update_ms)
+            : 1ull;  // avoid div-by-0; treat as 1ms
+
+    // t goes from 0 (just got current snap) to 1 (one BCAST interval
+    // has passed since current). Beyond 1, we EXTRAPOLATE — capped at
+    // 1.5x interval to avoid runaway when server stalls or stops.
+    const float dt_now_cur_ms_f =
+        static_cast<float>(now_ms >= snap.last_update_ms
+                              ? (now_ms - snap.last_update_ms)
+                              : 0);
+    const float dt_prev_cur_ms_f = static_cast<float>(dt_prev_cur_ms);
+    float t = dt_now_cur_ms_f / dt_prev_cur_ms_f;
+    constexpr float kMaxExtrapolation = 1.5f;
+    if (t > kMaxExtrapolation) t = kMaxExtrapolation;
+
+    // Linear extrapolation from current using prev→current velocity:
+    //   pos(now) = current + (current - prev) * t
+    const float vx = snap.pos_x - snap.prev_pos_x;
+    const float vy = snap.pos_y - snap.prev_pos_y;
+    const float vz = snap.pos_z - snap.prev_pos_z;
+    out->pos_x = snap.pos_x + vx * t;
+    out->pos_y = snap.pos_y + vy * t;
+    out->pos_z = snap.pos_z + vz * t;
+
+    // Yaw: same linear approach. Wrap-around fix: if diff > 180, take
+    // the short way around (subtract 360). Avoids 359°→1° jumping
+    // backwards through 358 intermediate degrees.
+    float yaw_diff = snap.yaw_deg_math - snap.prev_yaw_deg_math;
+    if (yaw_diff > 180.0f)  yaw_diff -= 360.0f;
+    if (yaw_diff < -180.0f) yaw_diff += 360.0f;
+    out->yaw_deg_math = snap.yaw_deg_math + yaw_diff * t;
+
+    return true;
 }
 
 void drain_container_apply_queue() {

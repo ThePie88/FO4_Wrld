@@ -24,6 +24,20 @@ namespace fw::net {
 // -------------------------------------------------------------- constants
 
 constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
+// v13: B6.5w2 NPC continuous-state sync — adds NPC_STATE_BCAST (0x0270).
+//     Server-authoritative: the Python NPCBrain (server/npc_brain.py)
+//     ticks all tracked NPCs at npc_tick_hz (default 10 Hz) and
+//     broadcasts a batched snapshot per tick. Receiver looks up local
+//     Actor by form_id via lookup_by_form_id (RVA 0x311850), writes
+//     pos at Actor+0xD0 / rot at Actor+0xC0, sets anim graph variables
+//     on the IAnimationGraphManagerHolder (Actor+0x48) via
+//     SetGraphVariable* at RVA 0x818D60/D80/DA0
+//     (re/B6.5_npc_pipeline_AGENT_B.md). Wire: 53 B / NPCStateEntry,
+//     ≤26 entries per frame at MTU 1400 + 4 B header (count u16 +
+//     reserved u16). Unreliable channel — drops tolerable, next tick
+//     resends fresh state. w3.a (this DLL revision) decodes + logs RX
+//     only; w3.b adds the engine apply (PendingNPCStateBatch +
+//     main-thread drain in npc_apply.cpp).
 // v12: B6.3 lock state sync — adds LOCK_OP (0x0260) / LOCK_BCAST (0x0261)
 //     opcodes. Sender hooks ForceUnlock (sub_140563320) and ForceLock
 //     (sub_140563360); broadcast carries (form_id, base_id, cell_id,
@@ -121,7 +135,7 @@ constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
 //     back in CONTAINER_OP_ACK. Enables sender-side pre-mutation block
 //     (DLL waits on condvar keyed on op_id before letting the engine's
 //     AddObjectToContainer proceed). Closes the container dup race.
-constexpr std::uint8_t  PROTOCOL_VERSION  = 12;
+constexpr std::uint8_t  PROTOCOL_VERSION  = 13;
 constexpr std::size_t   HEADER_SIZE       = 12;
 constexpr std::size_t   MAX_PAYLOAD_SIZE  = 1400;
 constexpr std::size_t   MAX_FRAME_SIZE    = HEADER_SIZE + MAX_PAYLOAD_SIZE;
@@ -164,6 +178,7 @@ enum class MessageType : std::uint16_t {
     MESH_BLOB_BCAST = 0x0251,   // M9 w4 v9: server -> peers: chunked mesh blob (peer-attributed)
     LOCK_OP         = 0x0260,   // B6.3 v0.5.3: client -> server lock state changed
     LOCK_BCAST      = 0x0261,   // B6.3 v0.5.3: server -> other peers lock state changed
+    NPC_STATE_BCAST = 0x0270,   // B6.5w2 v13: server -> peers batched NPC pos/anim state (unreliable, ~10 Hz)
 
     CHAT            = 0x0300,
 
@@ -592,6 +607,50 @@ constexpr std::uint8_t MAX_EQUIP_MODS = 32;
 constexpr std::size_t  MAX_NIF_PATH_LEN     = 192;   // bytes (not incl null)
 constexpr std::size_t  MAX_NIF_NAME_LEN     = 64;
 constexpr std::uint8_t MAX_NIF_DESCRIPTORS  = 8;
+
+// === B6.5w2 (v13) — NPC continuous-state broadcast =========================
+// Mirror of protocol.py::NPCStateEntry + NPCStateBroadcastPayload. Wire
+// MUST match byte-for-byte: 53 B per entry, no padding (pack=1). Server
+// (server/npc_brain.py) emits at 10 Hz. Unreliable channel.
+//
+// Receiver pipeline (w3.b — this DLL revision is w3.a, log-only):
+//   1. lookup_by_form_id(entry.form_id) → local Actor* (or null if not loaded)
+//   2. write pos at Actor+0xD0 (3 floats, world units)
+//   3. write rot at Actor+0xC0 (3 floats, radians)
+//   4. translate anim_state → SetGraphVariable* on
+//      IAnimationGraphManagerHolder at Actor+0x48
+//      (RVA 0x818D60/D80/DA0; re/B6.5_npc_pipeline_AGENT_B.md)
+//      // #STATE MINIMAL for now: only IDLE (no-op) and WALKING/RUNNING
+//      // (SpeedSampled + Direction). AIMING/FIRING/RELOADING/DEAD layer
+//      // in B6.6 + B6.5w4 (suppression).
+
+constexpr std::uint8_t MAX_NPC_STATES_PER_FRAME = 26;  // (MTU 1400 - 4 hdr) / 53 = 26
+
+struct NPCStateEntry {
+    std::uint32_t form_id;
+    std::uint32_t base_id;
+    std::uint32_t cell_id;
+    float         pos_x;
+    float         pos_y;
+    float         pos_z;
+    float         yaw;
+    float         pitch;
+    std::uint64_t target_id;
+    std::uint64_t timestamp_ms;
+    std::uint8_t  anim_state;
+    std::uint8_t  aggro_state;
+    std::uint8_t  hp_pct;
+    std::uint8_t  target_kind;
+    std::uint8_t  flags;
+};
+static_assert(sizeof(NPCStateEntry) == 53, "NPCStateEntry size (v13)");
+
+struct NPCStateBroadcastHeader {
+    std::uint16_t num_entries;   // <= MAX_NPC_STATES_PER_FRAME
+    std::uint16_t reserved;      // 0 — alignment + future flags
+};
+static_assert(sizeof(NPCStateBroadcastHeader) == 4,
+              "NPCStateBroadcastHeader size (v13)");
 
 #pragma pack(pop)
 struct NifDescriptor {

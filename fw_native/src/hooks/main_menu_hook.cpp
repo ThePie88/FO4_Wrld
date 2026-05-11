@@ -162,6 +162,14 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         fw::dispatch::drain_lock_apply_queue();
         return 0;
     }
+    // B6.5w3.b: drain remote NPC state-broadcast entries. Each entry
+    // resolves form_id, writes pos/yaw directly to Actor fields, and
+    // sets anim graph variables to drive the engine's animation tree
+    // (no AI suppression yet — B6.5w4 lands the local-tick filter).
+    if (msg == fw::dispatch::FW_MSG_NPC_STATE_APPLY) {
+        fw::dispatch::drain_npc_state_apply_queue();
+        return 0;
+    }
     // M9 wedge 2: drain remote equip events. Each op resolves form_id →
     // ARMA → 3rd-person NIF path and attaches/detaches on the ghost.
     // Engine NIF loader + scene graph mutation = main-thread-required.

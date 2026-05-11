@@ -137,6 +137,9 @@ fw_native/assets/raw/Textures/
 # -- Server runtime state snapshots (regenerable, contains in-game state) ----
 net/state_snapshot.json*
 
+# -- Personal design memos / scratch docs (live across sessions, not public) -
+NPCs.md
+
 # -- Tools binaries (we don't ship these in repo) ---------------------------
 tools/*.exe
 

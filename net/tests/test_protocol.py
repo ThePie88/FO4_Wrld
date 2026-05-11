@@ -29,6 +29,7 @@ from protocol import (  # noqa: E402
     MAX_MESHES_PER_BLOB, MAX_BLOB_SIZE,
     MESH_BLOB_OP_CHUNK_DATA_MAX, MESH_BLOB_BCAST_CHUNK_DATA_MAX,
     chunk_mesh_blob,
+    NPCStateEntry, NPCStateBroadcastPayload, MAX_NPC_STATES_PER_FRAME,
     RawMessage,
     encode_header, decode_header, encode_frame, decode_frame,
 )
@@ -799,3 +800,127 @@ class TestMeshBlobE2E:
         assert f.header.msg_type == MessageType.MESH_BLOB_BCAST
         assert isinstance(f.payload, MeshBlobChunkBroadcastPayload)
         assert f.payload.peer_id == "alice"
+
+
+# ============================================================================
+# B6.5w2 (v13) — NPC continuous-state broadcast
+# ============================================================================
+
+class TestNPCStateEntry:
+    def test_struct_size_53b(self):
+        """Wire width contract: 53 B per entry, no padding."""
+        assert NPCStateEntry._STRUCT.size == 53
+
+    def test_roundtrip(self):
+        e = NPCStateEntry(
+            form_id=0xDEAD0001, base_id=0xBEEF0001, cell_id=0x00001234,
+            pos_x=-10000.5, pos_y=5000.25, pos_z=50.0,
+            yaw=45.0, pitch=-5.0,
+            target_id=0x123456789ABCDEF0,
+            timestamp_ms=1234567890,
+            anim_state=1, aggro_state=0, hp_pct=100,
+            target_kind=0, flags=1,
+        )
+        e2 = NPCStateEntry.decode(e.encode())
+        assert e2.form_id == e.form_id
+        assert e2.base_id == e.base_id
+        assert e2.cell_id == e.cell_id
+        assert abs(e2.pos_x - e.pos_x) < 1e-3
+        assert abs(e2.pos_y - e.pos_y) < 1e-3
+        assert abs(e2.pos_z - e.pos_z) < 1e-3
+        assert abs(e2.yaw - e.yaw) < 1e-3
+        assert abs(e2.pitch - e.pitch) < 1e-3
+        assert e2.target_id == e.target_id
+        assert e2.timestamp_ms == e.timestamp_ms
+        assert e2.anim_state == e.anim_state
+        assert e2.aggro_state == e.aggro_state
+        assert e2.hp_pct == e.hp_pct
+        assert e2.target_kind == e.target_kind
+        assert e2.flags == e.flags
+
+    def test_max_u32_form_id(self):
+        e = NPCStateEntry(
+            form_id=0xFFFFFFFF, base_id=0xFFFFFFFF, cell_id=0xFFFFFFFF,
+            pos_x=0.0, pos_y=0.0, pos_z=0.0, yaw=0.0, pitch=0.0,
+            target_id=0xFFFFFFFFFFFFFFFF,
+            timestamp_ms=0xFFFFFFFFFFFFFFFF,
+            anim_state=255, aggro_state=255, hp_pct=255,
+            target_kind=255, flags=255,
+        )
+        e2 = NPCStateEntry.decode(e.encode())
+        assert e2.form_id == 0xFFFFFFFF
+        assert e2.target_id == 0xFFFFFFFFFFFFFFFF
+
+    def test_truncated_raises(self):
+        with pytest.raises(ProtocolError):
+            NPCStateEntry.decode(b"\x00" * 10)
+
+
+class TestNPCStateBroadcast:
+    def _entry(self, form_id: int = 0x1) -> NPCStateEntry:
+        return NPCStateEntry(
+            form_id=form_id, base_id=0xBEEF, cell_id=0x1234,
+            pos_x=1.0, pos_y=2.0, pos_z=3.0,
+            yaw=0.0, pitch=0.0,
+            target_id=0, timestamp_ms=0,
+            anim_state=0, aggro_state=0, hp_pct=100,
+            target_kind=0, flags=1,
+        )
+
+    def test_max_per_frame_at_least_10(self):
+        """Sanity: capacity must comfortably hold the MVP-scale 10 NPCs."""
+        assert MAX_NPC_STATES_PER_FRAME >= 10
+
+    def test_empty_roundtrip(self):
+        p = NPCStateBroadcastPayload(entries=())
+        p2 = NPCStateBroadcastPayload.decode(p.encode())
+        assert p2.entries == ()
+
+    def test_single_entry_roundtrip(self):
+        p = NPCStateBroadcastPayload(entries=(self._entry(0x10),))
+        p2 = NPCStateBroadcastPayload.decode(p.encode())
+        assert len(p2.entries) == 1
+        assert p2.entries[0].form_id == 0x10
+
+    def test_max_entries_roundtrip(self):
+        entries = tuple(self._entry(i) for i in range(MAX_NPC_STATES_PER_FRAME))
+        p = NPCStateBroadcastPayload(entries=entries)
+        p2 = NPCStateBroadcastPayload.decode(p.encode())
+        assert len(p2.entries) == MAX_NPC_STATES_PER_FRAME
+        assert all(p2.entries[i].form_id == i
+                   for i in range(MAX_NPC_STATES_PER_FRAME))
+
+    def test_too_many_raises_on_encode(self):
+        entries = tuple(self._entry(i) for i in range(MAX_NPC_STATES_PER_FRAME + 1))
+        p = NPCStateBroadcastPayload(entries=entries)
+        with pytest.raises(ProtocolError):
+            p.encode()
+
+    def test_truncated_header_raises(self):
+        with pytest.raises(ProtocolError):
+            NPCStateBroadcastPayload.decode(b"\x00" * 2)
+
+    def test_truncated_body_raises(self):
+        # Claim 1 entry but ship only the header.
+        bad = struct.pack("<HH", 1, 0)
+        with pytest.raises(ProtocolError):
+            NPCStateBroadcastPayload.decode(bad)
+
+    def test_count_too_high_raises(self):
+        bad = struct.pack("<HH", MAX_NPC_STATES_PER_FRAME + 1, 0)
+        with pytest.raises(ProtocolError):
+            NPCStateBroadcastPayload.decode(bad)
+
+    def test_max_batch_under_mtu(self):
+        """Full-batch frame must fit within MAX_PAYLOAD_SIZE (≤ MTU-headers)."""
+        entries = tuple(self._entry(i) for i in range(MAX_NPC_STATES_PER_FRAME))
+        p = NPCStateBroadcastPayload(entries=entries)
+        assert len(p.encode()) <= MAX_PAYLOAD_SIZE
+
+    def test_message_type_dispatch(self):
+        p = NPCStateBroadcastPayload(entries=(self._entry(0x42),))
+        frame_bytes = encode_frame(MessageType.NPC_STATE_BCAST, 1, p)
+        f = decode_frame(frame_bytes)
+        assert f.header.msg_type == MessageType.NPC_STATE_BCAST
+        assert isinstance(f.payload, NPCStateBroadcastPayload)
+        assert f.payload.entries[0].form_id == 0x42

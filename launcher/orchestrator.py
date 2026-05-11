@@ -66,6 +66,15 @@ def start_server_detached(python_exe: str = sys.executable) -> subprocess.Popen:
         "--snapshot-interval-s", str(config.SERVER_SNAPSHOT_INTERVAL_S),
         "--log-level", "INFO",
     ]
+    # B6.5+: NPC brain — only enable if the waypoints dir exists with at
+    # least one .json. Missing dir = brain stays idle (no NPC_STATE_BCAST
+    # emission), preserving backward compatibility with pre-B6.5 sessions.
+    if config.SERVER_WAYPOINTS_DIR.is_dir() and \
+            any(config.SERVER_WAYPOINTS_DIR.glob("*.json")):
+        cmd.extend([
+            "--waypoints-dir", str(config.SERVER_WAYPOINTS_DIR),
+            "--npc-tick-hz", str(config.SERVER_NPC_TICK_HZ),
+        ])
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     return subprocess.Popen(

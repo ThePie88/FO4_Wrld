@@ -71,6 +71,7 @@ constexpr UINT FW_MSG_EQUIP_APPLY     = WM_APP + 0x4C;
 constexpr UINT FW_MSG_MESH_BLOB_APPLY = WM_APP + 0x4D;  // M9 w4 v9
 constexpr UINT FW_MSG_SPAI_PREWARM    = WM_APP + 0x50;  // SPAI Tier 1
 constexpr UINT FW_MSG_LOCK_APPLY      = WM_APP + 0x51;  // B6.3 v0.5.3
+constexpr UINT FW_MSG_NPC_STATE_APPLY = WM_APP + 0x53;  // B6.5w3.b
 
 struct PendingContainerOp {
     std::uint32_t kind;               // 1=TAKE, 2=PUT
@@ -207,6 +208,117 @@ struct PendingMeshBlob {
 
 void enqueue_mesh_blob_apply(PendingMeshBlob op);
 void drain_mesh_blob_apply_queue();
+
+// B6.5w3.b: NPC continuous-state apply queue.
+// Net thread (client.cpp NPC_STATE_BCAST dispatch case) decodes one
+// frame's worth of entries (≤ MAX_NPC_STATES_PER_FRAME = 26 typical),
+// pushes a flat list, PostMessages FW_MSG_NPC_STATE_APPLY. Main thread
+// drains all queued entries and applies each via
+// fw::engine::apply_npc_state_to_engine — see engine_calls.h.
+//
+// Why flat queue (not batches): at 10 Hz × 2-10 NPCs the queue depth is
+// tiny; batching adds complexity without measurable wins. Drain swaps
+// the whole deque atomically so partial drains aren't a concern.
+struct PendingNPCStateEntry {
+    std::uint32_t form_id;
+    float         pos_x;
+    float         pos_y;
+    float         pos_z;
+    float         yaw_deg_math;   // math convention (0=+X, CCW), degrees
+    std::uint8_t  anim_state;     // see AnimState enum (server/npc_brain.py)
+};
+
+void enqueue_npc_state_apply(const std::vector<PendingNPCStateEntry>& entries);
+void drain_npc_state_apply_queue();
+
+// Fallback drain path: invoked from the net thread when PostMessage to
+// the WndProc fails (HWND stale during game-window recreation, etc.).
+// Skips the anim-graph setter calls (main-thread-only) and applies pos
+// + yaw only. Loses animation sync until the WndProc subclass is
+// re-installed by main_menu_hook on the new window, at which point full
+// apply resumes via the normal drain_npc_state_apply_queue path.
+void drain_npc_state_apply_queue_pos_only();
+
+// =========================================================================
+// B6.5w4 round 2 — Per-NPC state cache (for in-detour POST-hook apply)
+// =========================================================================
+//
+// Round 1 strategy was to BAIL out of Actor::Update_PerFrame for tracked
+// form_ids. Numbers confirmed the hook fired correctly (~80 suppress
+// fires/sec per actor) but visually NPCs froze mid-vanilla-state.
+// Root cause: skipping Update_PerFrame also skips the engine's internal
+// NIF-sync pass that propagates Actor+0xD0 → BSFadeNode.world.translate;
+// our pos writes landed in memory but never reached the renderer.
+//
+// Round 2 strategy: let original Update_PerFrame run (so NIF sync, anim
+// graph evaluation, collision all happen), then in the detour POST-call
+// overwrite pos/yaw/anim from our cache. Our writes become the LAST of
+// the frame → renderer sees them.
+//
+// The net thread updates the cache on every NPC_STATE_BCAST (10 Hz).
+// The main-thread detour reads the cache on every Update_PerFrame fire
+// (~60 Hz per tracked actor) and applies, so visible state advances at
+// engine tick rate even though server only emits at 10 Hz (NPC freezes
+// briefly between server samples; could add interpolation later).
+//
+// Thread safety: update + get share a std::mutex. Critical section is
+// a single map operation; contention is negligible at this rate.
+
+struct CachedNPCState {
+    float          pos_x;
+    float          pos_y;
+    float          pos_z;
+    float          yaw_deg_math;  // server brain emits in math conv (atan2 deg)
+    std::uint8_t   anim_state;    // AnimState enum (server/npc_brain.py)
+    std::uint64_t  last_update_ms;
+};
+
+// Net thread (client.cpp NPC_STATE_BCAST handler): cache the latest server
+// state for one NPC. Idempotent on repeats; just overwrites the entry.
+void update_npc_cache(std::uint32_t form_id,
+                     float pos_x, float pos_y, float pos_z,
+                     float yaw_deg_math,
+                     std::uint8_t anim_state);
+
+// Main thread (suppression detour): fetch the latest cached state for
+// one form_id. Returns true if present (= tracked); fills `*out` only on
+// true. Pass nullptr `out` for presence-only check.
+bool get_cached_npc_state(std::uint32_t form_id, CachedNPCState* out);
+
+// Diagnostic: number of NPCs in the cache.
+std::size_t tracked_npc_count();
+
+// Snapshot of all cached NPC states. Used by the scene_render hook
+// (B6.5w4 round 4) to iterate every tracked NPC and apply state
+// late in the frame pipeline — after Havok physics, before render
+// reads NIF.world.translate.
+std::vector<std::pair<std::uint32_t, CachedNPCState>> get_all_cached_npcs();
+
+// B6.5w4 round 9 — client-side interpolation.
+//
+// To kill the 10 Hz visual flicker (server BCAST cadence) we keep TWO
+// snapshots per NPC: prev (older) and current (latest). Every render
+// frame (~60 Hz) we linearly LERP between prev and current based on
+// elapsed time since `current.last_update_ms`, producing a smooth
+// per-frame pos for the renderer. Both clients run the same lerp on
+// the same two endpoints → sync preserved, motion smooth.
+//
+// `now_ms` = local steady_clock millis (caller responsibility — the
+// cache stores its own millis from the BCAST handler so both sides
+// agree on time deltas, not absolute time).
+//
+// Returns false if no data for this form_id.
+struct InterpolatedNPCState {
+    float pos_x;
+    float pos_y;
+    float pos_z;
+    float yaw_deg_math;
+    std::uint8_t anim_state;
+};
+
+bool get_interpolated_npc_state(std::uint32_t form_id,
+                               std::uint64_t now_ms,
+                               InterpolatedNPCState* out);
 
 // Wires the HWND of the main FO4 window. Called exactly once from
 // main_menu_hook after SetWindowLongPtr succeeds. Also flushes any ops

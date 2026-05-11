@@ -29,6 +29,7 @@ struct InstallSummary {
     bool door_ok        = false;    // B6.0: Activate worker (door open/close)
     bool equip_ok       = false;    // M9 w1: ActorEquipManager Equip+Unequip detours
     bool lock_ok        = false;    // B6.3 v0.5.3: ForceUnlock + ForceLock detours
+    bool npc_ai_suppress_ok = false; // B6.5w4: Actor::Update_PerFrame detour (per-NPC AI skip)
 
     [[nodiscard]] std::size_t success_count() const noexcept {
         return (kill_ok ? 1u : 0u)
@@ -40,7 +41,8 @@ struct InstallSummary {
              + (worldstate_ok ? 1u : 0u)
              + (door_ok ? 1u : 0u)
              + (equip_ok ? 1u : 0u)
-             + (lock_ok ? 1u : 0u);
+             + (lock_ok ? 1u : 0u)
+             + (npc_ai_suppress_ok ? 1u : 0u);
     }
 };
 

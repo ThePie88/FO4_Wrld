@@ -106,6 +106,55 @@ std::uint8_t*    g_load_in_progress   = nullptr;
 PlaceAtMeFn      g_place_at_me         = nullptr;
 void**           g_player_singleton_slot = nullptr;   // deref → Actor*
 
+// B6.5w3.b — anim graph variable setters + BSFixedString minter.
+// `BSFixedString` is internally an 8-byte struct holding a pointer to
+// a refcount-managed pool entry. We pre-mint the names we care about
+// (SpeedSampled, Direction) ONCE at init so the refcount stays at +1
+// for the lifetime of the DLL; setter calls re-use the same cached
+// pointer and don't leak per-call.
+struct BSFixedString {
+    void* pool_entry = nullptr;
+};
+
+using BSFixedStringMakeFn = void  (*)(BSFixedString* dest, const char* literal);
+using SetGraphVarFloatFn  = bool  (*)(void* holder, const BSFixedString* name, float value);
+using SetGraphVarBoolFn   = bool  (*)(void* holder, const BSFixedString* name, char value);
+using SetGraphVarIntFn    = bool  (*)(void* holder, const BSFixedString* name, int value);
+
+BSFixedStringMakeFn g_bsfs_make           = nullptr;
+SetGraphVarFloatFn  g_set_graph_var_float = nullptr;
+SetGraphVarBoolFn   g_set_graph_var_bool  = nullptr;
+SetGraphVarIntFn    g_set_graph_var_int   = nullptr;
+
+// B6.5w4 round 5 — Actor.EnableAI native.
+using ActorEnableAIFn = char (*)(void* actor, char enable, char queue);
+ActorEnableAIFn g_actor_enable_ai = nullptr;
+
+// B6.5w4 round 7 — Actor::MoveTo atomic teleport + NiAVObject::SetMotionType.
+using ActorMoveToFn = char (*)(
+    void* actor, float pos[3], float yaw, float pitch,
+    void* target_cell, void* target_marker,
+    char ran_interior_change, char skip_player_check, char skip_area_check);
+using NiAVSetMotionTypeFn = char (*)(
+    void* root3d, int motion_type, char a3, char a4, std::uint8_t activate_on_land);
+
+ActorMoveToFn       g_actor_atomic_teleport = nullptr;
+NiAVSetMotionTypeFn g_niav_set_motion_type  = nullptr;
+
+BSFixedString g_bs_speed_sampled{};   // pre-minted at init for hot-path WALKING/RUNNING
+BSFixedString g_bs_direction{};       // pre-minted at init
+BSFixedString g_bs_anim_driven{};     // pre-minted at init for round 3 — kills root motion
+// B6.5w4 round 8 — humanoid anim graph state suite. Written every frame
+// for tracked NPCs to override vanilla AI's local decisions and sync
+// anim state across clients.
+BSFixedString g_bs_is_running{};
+BSFixedString g_bs_is_sprinting{};
+BSFixedString g_bs_is_attacking{};
+BSFixedString g_bs_is_aiming_gun{};
+BSFixedString g_bs_is_blocking{};
+BSFixedString g_bs_is_sneaking{};
+BSFixedString g_bs_is_dead{};
+
 std::atomic<bool> g_ready{false};
 
 // SEH-safe pointer read at offset.
@@ -171,6 +220,70 @@ bool init(std::uintptr_t module_base) {
     // minigame and key-consumption side effects.
     g_lock_apply_papyrus = reinterpret_cast<LockApplyPapyrusFn>(
         module_base + offsets::ENGINE_LOCK_PAPYRUS_APPLY_RVA);
+
+    // B6.5w3.b: anim graph variable setters + BSFixedString minter.
+    g_bsfs_make = reinterpret_cast<BSFixedStringMakeFn>(
+        module_base + offsets::BSFIXEDSTRING_MAKE_RVA);
+    g_set_graph_var_float = reinterpret_cast<SetGraphVarFloatFn>(
+        module_base + offsets::SET_GRAPH_VAR_FLOAT_RVA);
+    g_set_graph_var_bool = reinterpret_cast<SetGraphVarBoolFn>(
+        module_base + offsets::SET_GRAPH_VAR_BOOL_RVA);
+    g_set_graph_var_int = reinterpret_cast<SetGraphVarIntFn>(
+        module_base + offsets::SET_GRAPH_VAR_INT_RVA);
+
+    // B6.5w4 round 5: Actor.EnableAI native — clears bit 2 of flags_720
+    // (+0x2D0). Walker gate `(flags_720 & 2) != 0` becomes false →
+    // Update_PerFrame skipped for the actor → AI fully silenced.
+    g_actor_enable_ai = reinterpret_cast<ActorEnableAIFn>(
+        module_base + offsets::ENGINE_ENABLE_AI_RVA);
+
+    // B6.5w4 round 7: atomic teleport (Actor::MoveTo) + SetMotionType
+    // worker. Identified by agent B as the silver bullet — atomic write
+    // through all engine caches, bypassing the 6-round fight.
+    g_actor_atomic_teleport = reinterpret_cast<ActorMoveToFn>(
+        module_base + offsets::ACTOR_ATOMIC_TELEPORT_RVA);
+    g_niav_set_motion_type = reinterpret_cast<NiAVSetMotionTypeFn>(
+        module_base + offsets::NIAV_SET_MOTION_TYPE_RVA);
+
+    // Mint cached BSFixedStrings for the hot anim variables we drive in
+    // w3.b. Wrapped in SEH because BSFixedString minter touches the pool
+    // global allocator — pre-engine-init call would crash. By the time
+    // engine::init() runs the player singleton is populated, so the pool
+    // is alive; still defensive.
+    __try {
+        g_bsfs_make(&g_bs_speed_sampled, "SpeedSampled");
+        g_bsfs_make(&g_bs_direction,     "Direction");
+        g_bsfs_make(&g_bs_anim_driven,   "bAnimationDriven");
+        // Round 8 — humanoid anim suite for per-frame override of AI's
+        // local anim decisions. If an actor's anim graph doesn't have
+        // a given var (e.g. Dogmeat's dog graph), SetGraphVariable
+        // returns false silently — no crash, just wasted call.
+        g_bsfs_make(&g_bs_is_running,    "bIsRunning");
+        g_bsfs_make(&g_bs_is_sprinting,  "bIsSprinting");
+        g_bsfs_make(&g_bs_is_attacking,  "bIsAttacking");
+        g_bsfs_make(&g_bs_is_aiming_gun, "bIsAimingGun");
+        g_bsfs_make(&g_bs_is_blocking,   "bIsBlocking");
+        g_bsfs_make(&g_bs_is_sneaking,   "bIsSneaking");
+        g_bsfs_make(&g_bs_is_dead,       "bIsDead");
+        FW_LOG("engine: BSFixedString cache minted: SpeedSampled=%p Direction=%p "
+               "bAnimationDriven=%p bIsRunning=%p bIsAttacking=%p bIsAimingGun=%p",
+               g_bs_speed_sampled.pool_entry, g_bs_direction.pool_entry,
+               g_bs_anim_driven.pool_entry, g_bs_is_running.pool_entry,
+               g_bs_is_attacking.pool_entry, g_bs_is_aiming_gun.pool_entry);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("engine: BSFixedString mint SEH-faulted — w3.b/w4 setter calls "
+               "will short-circuit until next init");
+        g_bs_speed_sampled.pool_entry = nullptr;
+        g_bs_direction.pool_entry     = nullptr;
+        g_bs_anim_driven.pool_entry   = nullptr;
+        g_bs_is_running.pool_entry    = nullptr;
+        g_bs_is_sprinting.pool_entry  = nullptr;
+        g_bs_is_attacking.pool_entry  = nullptr;
+        g_bs_is_aiming_gun.pool_entry = nullptr;
+        g_bs_is_blocking.pool_entry   = nullptr;
+        g_bs_is_sneaking.pool_entry   = nullptr;
+        g_bs_is_dead.pool_entry       = nullptr;
+    }
 
     // B1.k.2: BGSObjectRefHandle resolver — for ContainerMenu::TransferItem
     // we need to reach the container REFR from `this+1064` (a handle slot).
@@ -1617,6 +1730,287 @@ void* spawn_ghost_actor(std::uint32_t template_form_id) {
            "(TEMPORARY patched)",
            template_form_id, actor, actor_form_id);
     return actor;
+}
+
+// =========================================================================
+// B6.5w3.b \u2014 apply_npc_state_to_engine
+// =========================================================================
+//
+// Called on the MAIN thread (via fw::dispatch::drain_npc_state_apply_queue)
+// for each PendingNPCStateEntry in a drained batch.
+//
+// Pipeline:
+//   1. lookup_by_form_id \u2192 Actor* (null if cell not loaded on this client)
+//   2. SEH-caged write of pos (3 floats at Actor+0xD0) + yaw radians
+//      (1 float at Actor+0xC0 + 8 \u2014 Z component of the rotation triplet).
+//      Pitch (+0xC0+0) and roll (+0xC0+4) left untouched: body yaw is
+//      the only axis the server drives in MVP.
+//   3. Anim graph variable writes (#STATE MINIMAL for now):
+//        IDLE     (0): no-op \u2014 let vanilla idles play
+//        WALKING  (1): SpeedSampled = 100 + Direction = 0
+//        RUNNING  (2): SpeedSampled = 200 + Direction = 0
+//        others     : skipped (covered by B6.5w4 / B6.6)
+//
+// Yaw conversion:
+//   The server brain (server/npc_brain.py) emits yaw in MATH convention
+//   (atan2 of dy/dx, 0 = +X axis, CCW positive) as degrees.
+//   Bethesda actors store yaw in radians with 0 = +Y axis (north),
+//   CW positive. Conversion:
+//
+//       beth_yaw_rad = (pi/2) - yaw_deg_math * (pi/180)
+//                    = (90 - yaw_deg_math) * pi / 180
+//
+// Returns true on lookup + at least pos write success; false on miss/SEH.
+bool apply_npc_state_to_actor(
+    void* actor,
+    float pos_x, float pos_y, float pos_z,
+    float yaw_deg_math,
+    std::uint8_t anim_state,
+    bool skip_anim_graph)
+{
+    if (!actor) return false;
+    if (!g_ready.load(std::memory_order_acquire)) {
+        return false;
+    }
+
+    auto* bytes = reinterpret_cast<std::uint8_t*>(actor);
+
+    // Convert math-degrees \u2192 Bethesda-radians.
+    constexpr float kPi = 3.14159265358979323846f;
+    constexpr float kDegToRad = kPi / 180.0f;
+    const float yaw_beth_rad = (90.0f - yaw_deg_math) * kDegToRad;
+
+    // ---- Direct write of pos + yaw on the Actor struct ------------------
+    // Pure memory writes \u2014 safe from any thread (no engine recursion).
+    bool pos_ok = false;
+    __try {
+        *reinterpret_cast<float*>(bytes + offsets::POS_OFF + 0) = pos_x;
+        *reinterpret_cast<float*>(bytes + offsets::POS_OFF + 4) = pos_y;
+        *reinterpret_cast<float*>(bytes + offsets::POS_OFF + 8) = pos_z;
+        // Only Z component of rotation (yaw). Pitch + roll left alone.
+        *reinterpret_cast<float*>(bytes + offsets::ROT_OFF + 8) = yaw_beth_rad;
+        pos_ok = true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("npc_apply: SEH writing pos/yaw on actor=%p", actor);
+        return false;
+    }
+
+    // ---- B6.5w4 round 3: direct NIF.world.translate write ----------------
+    // Renderer reads world.translate from the actor's BSFadeNode (NIF root).
+    // The engine's NIF sync inside Update_PerFrame uses AI's +0xD0 value,
+    // so by the time we post-overwrite +0xD0, NIF still has AI's pos and
+    // render shows AI's pos. Writing NIF directly here makes the renderer
+    // see our pos this frame. Pointer chain:
+    //   Actor + 0xF0  → LoadedRefData* (NULL if 3D not loaded yet)
+    //   LoadedRefData + 0x08  → NiAVObject* (BSFadeNode root)
+    //   NiAVObject + 0xA0  → world.translate (NiPoint3)
+    __try {
+        void* loaded_ref_data = *reinterpret_cast<void**>(
+            bytes + offsets::LOADED_REF_DATA_OFF);
+        if (loaded_ref_data) {
+            void* nif = *reinterpret_cast<void**>(
+                reinterpret_cast<std::uint8_t*>(loaded_ref_data) +
+                offsets::LOADED_REF_DATA_3D_OFF);
+            if (nif) {
+                auto* nbytes = reinterpret_cast<std::uint8_t*>(nif);
+                // Write world.translate (renderer reads this).
+                *reinterpret_cast<float*>(
+                    nbytes + offsets::NI_AV_WORLD_TRANSLATE_OFF + 0) = pos_x;
+                *reinterpret_cast<float*>(
+                    nbytes + offsets::NI_AV_WORLD_TRANSLATE_OFF + 4) = pos_y;
+                *reinterpret_cast<float*>(
+                    nbytes + offsets::NI_AV_WORLD_TRANSLATE_OFF + 8) = pos_z;
+                // Round 4: ALSO write local.translate. If the engine
+                // recomputes world from local*parent during the frame,
+                // our local write ensures world stays at our value.
+                // For top-level BSFadeNode under cell root (identity
+                // parent transform on exterior cells), local == world.
+                *reinterpret_cast<float*>(
+                    nbytes + offsets::NI_AV_LOCAL_TRANSLATE_OFF + 0) = pos_x;
+                *reinterpret_cast<float*>(
+                    nbytes + offsets::NI_AV_LOCAL_TRANSLATE_OFF + 4) = pos_y;
+                *reinterpret_cast<float*>(
+                    nbytes + offsets::NI_AV_LOCAL_TRANSLATE_OFF + 8) = pos_z;
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        // 3D may not be loaded yet (cell streaming) — silently skip.
+        // pos_ok stays true since the actor pos write succeeded.
+    }
+
+    // ---- Anim graph variable writes (#STATE MINIMAL for now) -----------
+    // Setter takes the IAnimationGraphManagerHolder sub-object pointer
+    // (Actor + 0x48) \u2014 NOT the Actor pointer. MAIN THREAD REQUIRED:
+    // the setter recurses into smart-pointer fetch + dispatch, which
+    // races with scene-graph mutations on the main thread. Caller must
+    // pass skip_anim_graph=true when invoking from off-main-thread.
+    if (!skip_anim_graph &&
+        g_set_graph_var_float &&
+        g_bs_speed_sampled.pool_entry &&
+        g_bs_direction.pool_entry)
+    {
+        auto* holder = bytes + offsets::IANIMGRAPHHOLDER_OFF;
+        float speed_target = -1.0f;
+        switch (anim_state) {
+            case 0: /* IDLE */    speed_target = 0.0f;   break;
+            case 1: /* WALKING */ speed_target = 100.0f; break;
+            case 2: /* RUNNING */ speed_target = 200.0f; break;
+            // AIMING/FIRING/RELOADING/DEAD: layered in by B6.6 + B6.5w4.
+            default:              speed_target = -1.0f;  break;
+        }
+        if (speed_target >= 0.0f) {
+            __try {
+                g_set_graph_var_float(holder, &g_bs_speed_sampled, speed_target);
+                g_set_graph_var_float(holder, &g_bs_direction,     0.0f);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                FW_WRN("npc_apply: SEH in SetGraphVariable* actor=%p anim=%u",
+                       actor, static_cast<unsigned>(anim_state));
+                // pos write already landed; treat as partial success.
+            }
+        }
+
+        // Round 3: kill anim-driven root motion. When bAnimationDriven=1
+        // the engine applies the anim's root-motion displacement to the
+        // actor's pos each frame, fighting our writes. Setting to 0 makes
+        // anim decorative (plays without translating the actor).
+        if (g_set_graph_var_bool && g_bs_anim_driven.pool_entry) {
+            __try {
+                g_set_graph_var_bool(holder, &g_bs_anim_driven,
+                                     static_cast<char>(0));
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                FW_WRN("npc_apply: SEH setting bAnimationDriven=0 actor=%p",
+                       actor);
+            }
+        }
+
+        // Round 8: humanoid anim state suite. Force-write every bool
+        // every frame so vanilla AI's between-frame writes (e.g. its
+        // local decision "bIsAttacking=1 because saw an enemy nearby")
+        // get overwritten back to our server-authoritative value next
+        // frame. The fight is at 60 Hz on both sides — but our writes
+        // are timestamp-stable across clients, AI's are not, so the
+        // visible result converges to ours.
+        if (g_set_graph_var_bool) {
+            const char is_running    = (anim_state == 2) ? 1 : 0;  // RUNNING
+            const char is_sprinting  = 0;
+            const char is_attacking  = (anim_state == 4) ? 1 : 0;  // FIRING
+            const char is_aiming_gun = (anim_state == 3 ||
+                                         anim_state == 4) ? 1 : 0; // AIMING|FIRING
+            const char is_blocking   = 0;
+            const char is_sneaking   = 0;
+            const char is_dead       = (anim_state == 6) ? 1 : 0;  // DEAD
+            __try {
+                if (g_bs_is_running.pool_entry)
+                    g_set_graph_var_bool(holder, &g_bs_is_running, is_running);
+                if (g_bs_is_sprinting.pool_entry)
+                    g_set_graph_var_bool(holder, &g_bs_is_sprinting, is_sprinting);
+                if (g_bs_is_attacking.pool_entry)
+                    g_set_graph_var_bool(holder, &g_bs_is_attacking, is_attacking);
+                if (g_bs_is_aiming_gun.pool_entry)
+                    g_set_graph_var_bool(holder, &g_bs_is_aiming_gun, is_aiming_gun);
+                if (g_bs_is_blocking.pool_entry)
+                    g_set_graph_var_bool(holder, &g_bs_is_blocking, is_blocking);
+                if (g_bs_is_sneaking.pool_entry)
+                    g_set_graph_var_bool(holder, &g_bs_is_sneaking, is_sneaking);
+                if (g_bs_is_dead.pool_entry)
+                    g_set_graph_var_bool(holder, &g_bs_is_dead, is_dead);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                FW_WRN("npc_apply: SEH in humanoid bool suite actor=%p anim=%u",
+                       actor, static_cast<unsigned>(anim_state));
+            }
+        }
+    }
+
+    return pos_ok;
+}
+
+bool apply_npc_state_to_engine(
+    std::uint32_t form_id,
+    float pos_x, float pos_y, float pos_z,
+    float yaw_deg_math,
+    std::uint8_t anim_state,
+    bool skip_anim_graph)
+{
+    void* actor = lookup_by_form_id(form_id);
+    if (!actor) return false;
+    return apply_npc_state_to_actor(actor, pos_x, pos_y, pos_z,
+                                    yaw_deg_math, anim_state, skip_anim_graph);
+}
+
+void set_actor_ai_enabled(void* actor, bool enabled) {
+    if (!actor || !g_actor_enable_ai) return;
+    if (!g_ready.load(std::memory_order_acquire)) return;
+    __try {
+        g_actor_enable_ai(actor,
+                          static_cast<char>(enabled ? 1 : 0),
+                          /*queueEquipChange=*/static_cast<char>(0));
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("engine: SEH in set_actor_ai_enabled actor=%p enabled=%d",
+               actor, enabled ? 1 : 0);
+    }
+}
+
+bool actor_atomic_teleport(void* actor,
+                          float pos_x, float pos_y, float pos_z,
+                          float yaw_rad) {
+    if (!actor || !g_actor_atomic_teleport) return false;
+    if (!g_ready.load(std::memory_order_acquire)) return false;
+    bool ok = false;
+    __try {
+        float pos[3] = { pos_x, pos_y, pos_z };
+        // Round 11 — high-frequency teleport flag set.
+        //   doProcessUpdate=0 : skip AI-process reattachment (cell unchanged)
+        //   skipPlayerCheck=1 : skip "is this the player" branch (we never are)
+        //   skipAreaCheck=1   : skip "is target area loaded" gate
+        // Combined → lightest path through sub_140C60BE0; minimizes the
+        // anim-graph-flush + cell-reattach overhead per call, at the cost
+        // of less safety on cell boundary crossings (acceptable: server
+        // brain is single-cell for MVP).
+        g_actor_atomic_teleport(
+            actor, pos, yaw_rad, 0.0f /*pitch*/,
+            nullptr /*target_cell*/, nullptr /*target_marker*/,
+            /*do_process_update=*/static_cast<char>(0),
+            /*skip_player_check=*/static_cast<char>(1),
+            /*skip_area_check=*/static_cast<char>(1));
+        ok = true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("engine: SEH in actor_atomic_teleport actor=%p pos=(%.1f,%.1f,%.1f)",
+               actor, pos_x, pos_y, pos_z);
+    }
+    return ok;
+}
+
+bool set_actor_motion_keyframed(void* actor) {
+    if (!actor || !g_niav_set_motion_type) return false;
+    if (!g_ready.load(std::memory_order_acquire)) return false;
+    // Fetch the actor's 3D root: Actor + 0xF0 → LoadedRefData* → +0x8 → NiAVObject*
+    void* root3d = nullptr;
+    __try {
+        auto* bytes = reinterpret_cast<std::uint8_t*>(actor);
+        void* loaded_ref_data = *reinterpret_cast<void**>(
+            bytes + offsets::LOADED_REF_DATA_OFF);
+        if (!loaded_ref_data) return false;
+        root3d = *reinterpret_cast<void**>(
+            reinterpret_cast<std::uint8_t*>(loaded_ref_data) +
+            offsets::LOADED_REF_DATA_3D_OFF);
+        if (!root3d) return false;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    bool ok = false;
+    __try {
+        g_niav_set_motion_type(
+            root3d,
+            /*motion_type=*/2 /*Keyframed*/,
+            /*a3=*/static_cast<char>(1),
+            /*a4=*/static_cast<char>(0),
+            /*activate_on_land=*/static_cast<std::uint8_t>(0));
+        ok = true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("engine: SEH in set_actor_motion_keyframed actor=%p root3d=%p",
+               actor, root3d);
+    }
+    return ok;
 }
 
 } // namespace fw::engine

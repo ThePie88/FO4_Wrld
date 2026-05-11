@@ -9,6 +9,8 @@
 #include "worldstate_hook.h"
 #include "door_hook.h"
 #include "lock_hook.h"
+#include "npc_ai_suppress.h" // B6.5w4: Actor::Update_PerFrame detour
+#include "../render/scene_render_hook.h" // B6.5w4 r4: late-frame NPC override
 #include "equip_cycle.h"     // B8: post-LoadGame BipedAnim normalize
 #include "equip_hook.h"      // M9 wedge 1: equipment-event sender hook
 #include "engine_tracer.h"
@@ -46,6 +48,21 @@ InstallSummary install_all(std::uintptr_t module_base,
     s.door_ok        = install_door_hook(module_base);
     // B6.3 v0.5.3: ForceUnlock + ForceLock detours (lock state sync).
     s.lock_ok        = install_lock_hook(module_base);
+    // B6.5w4: Actor::Update_PerFrame@0xC636A0 detour. For form_ids in
+    // the tracked-NPC set (registered by net thread on NPC_STATE_BCAST),
+    // the detour bails before invoking original — vanilla AI does NOT
+    // tick that NPC and our server-authoritative pos/yaw writes win
+    // uncontested. Single funnel for all 3 ProcessLists tier walkers
+    // + forced-tick sites; one hook covers everything.
+    s.npc_ai_suppress_ok = install_npc_ai_suppress(module_base);
+    // B6.5w4 round 4: scene_render hook for LATE-frame NPC pos/NIF
+    // override. Fires once per frame at the trailing edge of the 3D
+    // scene walker — after Havok physics + per-actor NIF sync. Writes
+    // here are the last before renderer reads NIF.world.translate.
+    // Previously installed lazily by body_render's first-frame init;
+    // we now install it unconditionally at boot so NPC sync works even
+    // when no ghost-body is active (single-peer scenarios, etc.).
+    (void)fw::render::install_scene_render_hook(module_base);
     // M9 wedge 1: ActorEquipManager Equip + Unequip detours (OBSERVE-only).
     //   Detect local-player equip changes → broadcast EQUIP_OP. Receivers
     //   in wedge 1 just log RX; wedge 2 will swap visuals on the M8P3

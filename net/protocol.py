@@ -32,7 +32,21 @@ from typing import ClassVar, Union
 # ------------------------------------------------------------------ constants
 
 PROTOCOL_MAGIC: int = 0xFA
-PROTOCOL_VERSION: int = 12
+PROTOCOL_VERSION: int = 13
+# v13 (2026-05-10): B6.5w2 NPC continuous state sync — adds
+# NPC_STATE_BCAST (0x0270). Server-authoritative: the Python brain ticks
+# all tracked NPCs at npc_tick_hz (default 10 Hz) and broadcasts a batched
+# snapshot of (form_id, base_id, cell_id, pos, rot, anim_state, aggro,
+# hp_pct, target, flags, ts) per NPC. Unreliable channel — drops are
+# tolerable since the next tick resends. No peer_id (not relayed peer
+# activity, fully server-authoritative). Wire growth: 53 B/NPC + 4 B
+# header per frame, batched up to MAX_NPC_STATES_PER_FRAME = 26 entries
+# per frame at MTU 1400. Receiver-side apply is B6.5w3 (engine bridge in
+# fw_native using pos_update_seh + IAnimationGraphManagerHolder
+# SetGraphVariable* RVAs from re/B6.5_npc_pipeline_AGENT_B.md). AI tick
+# suppression on the receiver is B6.5w4. The DLL must rebuild + bump
+# CLIENT_VERSION to handle this opcode; the receiver-less Python client
+# parses + logs RX for end-to-end protocol verification.
 # v12 (2026-05-08): B6.3 lock state sync — adds LOCK_OP (0x0240) and
 # LOCK_BCAST (0x0241). Sender hooks engine ForceUnlock / ForceLock,
 # broadcasts (form_id, base_id, cell_id, locked, timestamp_ms).
@@ -144,6 +158,7 @@ class MessageType(IntEnum):
     MESH_BLOB_BCAST  = 0x0251   # M9 w4 v9: server -> peers: chunked mesh blob (peer-attributed)
     LOCK_OP          = 0x0260   # B6.3 v0.5.3: client -> server: lock state changed (locked/unlocked)
     LOCK_BCAST       = 0x0261   # B6.3 v0.5.3: server -> peers: lock state changed
+    NPC_STATE_BCAST  = 0x0270   # B6.5w2 v13: server -> peers: batched NPC pos/anim state (unreliable, ~10 Hz)
 
     # Social (0x03XX) — reliable
     CHAT          = 0x0300
@@ -1996,6 +2011,142 @@ def chunk_mesh_blob(blob_bytes: bytes,
     return out
 
 
+# ============================================================================
+# B6.5w2 (v13) — NPC continuous-state broadcast
+# ============================================================================
+#
+# Server-authoritative NPC sync. The Python brain (server/npc_brain.py) ticks
+# every tracked NPC at npc_tick_hz (default 10) and emits NPC_STATE_BCAST to
+# every connected peer. Receiver looks up the local Actor by form_id and
+# applies pos/rot via the existing pos_update_seh pattern (B6.5w3) and anim
+# graph variables via IAnimationGraphManagerHolder::SetGraphVariable*
+# (RVA 0x818D60/D80/DA0; holder = Actor + 0x48; names from interned pool at
+# qword_1430DBF78[2700..3020] — see re/B6.5_npc_pipeline_AGENT_B.md).
+#
+# Wire layout per entry (53 B, no padding):
+#     u32 form_id           # placed REFR formID — stable across processes
+#     u32 base_id           # TESNPC base — validation hint
+#     u32 cell_id           # parent cell formID
+#     f32 pos_x, pos_y, pos_z
+#     f32 yaw, pitch        # atan2 convention; receiver translates to engine heading
+#     u64 target_id         # B6.6: peer_id-derived hash or target form_id
+#     u64 timestamp_ms      # server tick timestamp
+#     u8  anim_state        # AnimState enum (server/npc_brain.py)
+#     u8  aggro_state       # AggroState enum
+#     u8  hp_pct            # 0..100, server-authoritative
+#     u8  target_kind       # 0=NONE, 1=PEER, 2=NPC
+#     u8  flags             # bit 0 = visible, bit 1 = invulnerable, bit 2 = essential
+#
+# Frame layout:
+#     u16 count             # number of entries (≤ MAX_NPC_STATES_PER_FRAME)
+#     u16 reserved          # 0 — alignment + future flags
+#     count × NPCStateEntry # 53 B each
+#
+# Bandwidth ceiling: at 10 NPC × 10 Hz × 53 B = 5.3 KB/s/peer outbound. At
+# 50 NPC the chunked frames stay under MTU 1400.
+# ============================================================================
+
+
+@dataclass(frozen=True, slots=True)
+class NPCStateEntry:
+    """One NPC's authoritative state. Width = 53 B."""
+    form_id: int
+    base_id: int
+    cell_id: int
+    pos_x: float
+    pos_y: float
+    pos_z: float
+    yaw: float
+    pitch: float
+    target_id: int
+    timestamp_ms: int
+    anim_state: int
+    aggro_state: int
+    hp_pct: int
+    target_kind: int
+    flags: int
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIfffffQQBBBBB")  # 53 B
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.form_id & 0xFFFFFFFF,
+            self.base_id & 0xFFFFFFFF,
+            self.cell_id & 0xFFFFFFFF,
+            self.pos_x, self.pos_y, self.pos_z,
+            self.yaw, self.pitch,
+            self.target_id & 0xFFFFFFFFFFFFFFFF,
+            self.timestamp_ms & 0xFFFFFFFFFFFFFFFF,
+            self.anim_state & 0xFF,
+            self.aggro_state & 0xFF,
+            self.hp_pct & 0xFF,
+            self.target_kind & 0xFF,
+            self.flags & 0xFF,
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "NPCStateEntry":
+        if len(data) != cls._STRUCT.size:
+            raise ProtocolError(
+                f"NPCStateEntry: expected {cls._STRUCT.size} B, got {len(data)}")
+        return cls(*cls._STRUCT.unpack(data))
+
+
+# Cap derived from MTU: header (4) + N × 53 ≤ MAX_PAYLOAD_SIZE (1400).
+MAX_NPC_STATES_PER_FRAME: int = (MAX_PAYLOAD_SIZE - 4) // 53  # = 26
+
+
+@dataclass(frozen=True, slots=True)
+class NPCStateBroadcastPayload:
+    """B6.5w2 — server -> all peers: batched NPC authoritative state.
+
+    Unreliable channel. Server emits at npc_tick_hz; drops are tolerable
+    because the next tick resends. Receivers apply pos/rot/anim to the
+    local Actor identified by ``form_id`` (B6.5w3) and suppress local AI
+    tick for tracked form_ids (B6.5w4).
+
+    Cell-aware filtering / interest management is **not yet** implemented:
+    every peer receives every tracked NPC regardless of cell. Filtering
+    lands in B6.7+.
+    """
+    entries: tuple[NPCStateEntry, ...]
+
+    _HEADER: ClassVar[struct.Struct] = struct.Struct("<HH")   # count, reserved
+
+    def encode(self) -> bytes:
+        if len(self.entries) > MAX_NPC_STATES_PER_FRAME:
+            raise ProtocolError(
+                f"NPCStateBroadcastPayload: too many entries "
+                f"({len(self.entries)} > {MAX_NPC_STATES_PER_FRAME}); "
+                f"caller must chunk")
+        head = self._HEADER.pack(len(self.entries), 0)
+        body = b"".join(e.encode() for e in self.entries)
+        return head + body
+
+    @classmethod
+    def decode(cls, data: bytes) -> "NPCStateBroadcastPayload":
+        if len(data) < cls._HEADER.size:
+            raise ProtocolError("NPC_STATE_BCAST: truncated header")
+        count, _reserved = cls._HEADER.unpack_from(data, 0)
+        if count > MAX_NPC_STATES_PER_FRAME:
+            raise ProtocolError(
+                f"NPC_STATE_BCAST: count {count} > "
+                f"MAX={MAX_NPC_STATES_PER_FRAME}")
+        ent_size = NPCStateEntry._STRUCT.size
+        need = cls._HEADER.size + count * ent_size
+        if len(data) < need:
+            raise ProtocolError(
+                f"NPC_STATE_BCAST: truncated body "
+                f"(need {need} B, got {len(data)})")
+        entries = tuple(
+            NPCStateEntry.decode(
+                data[cls._HEADER.size + i * ent_size :
+                     cls._HEADER.size + (i + 1) * ent_size])
+            for i in range(count)
+        )
+        return cls(entries=entries)
+
+
 @dataclass(frozen=True, slots=True)
 class RawMessage:
     """Fallback for unknown msg_type — preserves payload for forward compat."""
@@ -2019,6 +2170,7 @@ Payload = Union[
     EquipOpPayload, EquipBroadcastPayload,
     MeshBlobChunkPayload, MeshBlobChunkBroadcastPayload,
     LockOpPayload, LockBroadcastPayload,
+    NPCStateEntry, NPCStateBroadcastPayload,
     RawMessage,
 ]
 
@@ -2057,6 +2209,7 @@ _TYPE_TO_PAYLOAD_CLS: dict[int, type] = {
     MessageType.MESH_BLOB_BCAST:       MeshBlobChunkBroadcastPayload,
     MessageType.LOCK_OP:               LockOpPayload,
     MessageType.LOCK_BCAST:            LockBroadcastPayload,
+    MessageType.NPC_STATE_BCAST:       NPCStateBroadcastPayload,
 }
 
 

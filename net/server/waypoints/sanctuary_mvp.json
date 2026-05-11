@@ -1,0 +1,34 @@
+{
+  "cell_name": "Sanctuary / Red Rocket MVP",
+  "cell_id": "0x00000000",
+  "_comment_data_source": "Form_ids + spawn coords cross-referenced from frida/23_dump_placed_actors_v2.js capture (2026-05-11) against fw_native FO4_b/fw_native.log [pos] entries from the local player_pos_hook. Player at (-82000, 85700, 7700) confirms posC=Actor+0xD0 is real world position for any Actor (verified offsets.h::POS_OFF=0xD0).",
+  "_comment_cell_id": "cell_id left as 0 — Frida v2 attempted parentCell at +0x60 which is wrong; offsets.h says PARENT_CELL_OFF=0xB8. Re-capture with the right offset is straightforward but not blocking for MVP (interest management is B6.7+).",
+  "_comment_caveat": "Coords are SNAPSHOTS at capture moment. Patrol waypoints are 1000-unit horizontal segments — the NavMesh may not permit these exact paths (walls, fences, etc.) so NPCs may visually bump or stutter on collisions. Sync correctness across clients is verifiable regardless; smooth navigation needs B6.5w-extra3 (NavMesh extraction).",
+  "_comment_speeds": "walk_speed_ftps is misnamed — the brain multiplies it by dt_s directly to advance world units. 100.0 = 100 units/sec ≈ vanilla walk pace.",
+  "npcs": [
+    {
+      "name": "dogmeat",
+      "form_id": "0x0001D162",
+      "base_id": "0x00000000",
+      "spawn": {"x": -69021.5, "y": 80937.9, "z": 7366.7, "yaw": 0.0},
+      "walk_speed_ftps": 100.0,
+      "arrive_radius_ft": 80.0,
+      "waypoints": [
+        {"x": -68021.5, "y": 80937.9, "z": 7366.7, "yaw":   0.0, "dwell_s": 2.0},
+        {"x": -70021.5, "y": 80937.9, "z": 7366.7, "yaw": 180.0, "dwell_s": 2.0}
+      ]
+    },
+    {
+      "name": "codsworth",
+      "form_id": "0x0001CA7D",
+      "base_id": "0x00000000",
+      "spawn": {"x": -80003.5, "y": 90604.6, "z": 7832.6, "yaw": 0.0},
+      "walk_speed_ftps": 100.0,
+      "arrive_radius_ft": 80.0,
+      "waypoints": [
+        {"x": -79003.5, "y": 90604.6, "z": 7832.6, "yaw":   0.0, "dwell_s": 2.0},
+        {"x": -81003.5, "y": 90604.6, "z": 7832.6, "yaw": 180.0, "dwell_s": 2.0}
+      ]
+    }
+  ]
+}

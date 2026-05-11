@@ -33,6 +33,7 @@ from protocol import (  # noqa: E402
     WorldStatePayload,
     ContainerOpPayload, ContainerBroadcastPayload, ContainerStatePayload,
     ContainerOpKind,
+    NPCStateBroadcastPayload,
     encode_frame, decode_frame,
 )
 from protocol import ActorEventKind  # noqa: E402
@@ -242,6 +243,8 @@ class FalloutWorldClient:
             self._handle_actor_event(payload)
         elif mtype == MessageType.CHAT:
             self._handle_chat(payload)
+        elif mtype == MessageType.NPC_STATE_BCAST:
+            self._handle_npc_state_bcast(payload)
         elif mtype == MessageType.HEARTBEAT:
             pass
         else:
@@ -372,6 +375,31 @@ class FalloutWorldClient:
             payload.rx, payload.ry, payload.rz,
         )
         self.stats["ghost_writes"] += 1
+
+    def _handle_npc_state_bcast(self, payload) -> None:
+        """B6.5w2 — observe NPC state broadcast. No engine apply yet (w3).
+
+        The DLL receiver in fw_native is the production consumer; this
+        Python handler exists only so the test/observation client surfaces
+        the broadcast end-to-end (round-trip protocol verification).
+        Counter exposed via stats so integration tests can assert traffic.
+        """
+        if not isinstance(payload, NPCStateBroadcastPayload):
+            return
+        n = len(payload.entries)
+        self.stats["npc_state_frames_rx"] = (
+            self.stats.get("npc_state_frames_rx", 0) + 1)
+        self.stats["npc_state_entries_rx"] = (
+            self.stats.get("npc_state_entries_rx", 0) + n)
+        if log.isEnabledFor(logging.DEBUG):
+            for e in payload.entries:
+                log.debug(
+                    "  npc form=0x%X cell=0x%X pos=(%.1f,%.1f,%.1f) yaw=%.1f "
+                    "anim=%d aggro=%d hp=%d",
+                    e.form_id, e.cell_id,
+                    e.pos_x, e.pos_y, e.pos_z, e.yaw,
+                    e.anim_state, e.aggro_state, e.hp_pct,
+                )
 
     def _handle_actor_event(self, payload) -> None:
         if not isinstance(payload, ActorEventPayload):

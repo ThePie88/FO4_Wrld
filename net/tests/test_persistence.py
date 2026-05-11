@@ -21,7 +21,7 @@ class TestSnapshot:
         snapshot(s, path)
         assert path.exists()
         data = json.loads(path.read_text())
-        assert data["version"] == 3  # bumped to add container state in v3
+        assert data["version"] == 4  # v3 added containers; v4 adds locks (B6.3)
         assert data["sessions"] == []
         assert data["world_actors"] == []
         assert data["containers"] == []

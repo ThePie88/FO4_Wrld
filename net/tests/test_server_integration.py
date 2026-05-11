@@ -317,3 +317,108 @@ async def test_invalid_speed_rejected(server_port):
         assert protocol.stats()["rejections"] >= 1
     finally:
         transport.close()
+
+
+# ============================================================================
+# B6.5w2 — NPC_STATE_BCAST end-to-end (server brain → wire → fake client)
+# ============================================================================
+
+@pytest.mark.asyncio
+async def test_npc_state_bcast_reaches_connected_peer(server_port):
+    """Server with one tracked NPC must broadcast its state to any peer post-WELCOME.
+
+    Validates the full B6.5w2 emit path:
+      brain.tick() → broadcast_npc_states → channel.send_unreliable →
+      transport.sendto → wire bytes → client.received → decode_frame →
+      NPCStateBroadcastPayload with the right form_id + pos.
+    """
+    from protocol import NPCStateBroadcastPayload
+    from server.npc_brain import NPCBrain, NPCSpec, NPCRuntime, Waypoint, AnimState
+    from server.main import _periodic_npc_brain_tick
+
+    port = server_port + 100   # offset away from other tests
+    state = ServerState(tick_rate_hz=20)
+    loop = asyncio.get_running_loop()
+    transport, protocol = await loop.create_datagram_endpoint(
+        lambda: ServerProtocol(state),
+        local_addr=("127.0.0.1", port),
+    )
+
+    # Hand-build a brain with one NPC at a known pose.
+    brain = NPCBrain()
+    spec = NPCSpec(
+        form_id=0xCAFE0001, base_id=0xCAFE1001, cell_id=0x1234,
+        name="test_raider",
+        waypoints=(Waypoint(x=100.0, y=0.0, z=0.0),),
+        walk_speed_ftps=10.0,
+    )
+    brain.npcs[spec.form_id] = NPCRuntime(
+        spec=spec, pos_x=42.0, pos_y=24.0, pos_z=12.0,
+    )
+
+    # Tick driver + NPC brain task.
+    tick_task = loop.create_task(_periodic_tick_driver(protocol, 20))
+    npc_task = loop.create_task(_periodic_npc_brain_tick(brain, protocol, 10))
+
+    try:
+        client = await _make_client(port)
+        client.send(encode_frame(
+            MessageType.HELLO, 1, HelloPayload("npc_obs", 1, 0)))
+        await _wait_for(client, MessageType.WELCOME)
+
+        # Brain ticks at 10 Hz → first NPC_STATE_BCAST should arrive within ~250 ms.
+        raw = await _wait_for(client, MessageType.NPC_STATE_BCAST, timeout=1.5)
+        frame = decode_frame(raw)
+        assert isinstance(frame.payload, NPCStateBroadcastPayload)
+        assert len(frame.payload.entries) == 1
+
+        e = frame.payload.entries[0]
+        assert e.form_id == 0xCAFE0001
+        assert e.base_id == 0xCAFE1001
+        assert e.cell_id == 0x1234
+        # Brain may have advanced one tick by the time we received → tolerate
+        # up to ~5 ft of progress at 10 ftps × ~0.5s. The X axis steers toward
+        # the waypoint at (100, 0, 0), so pos_x should be ≥ 42.0 (initial) and
+        # ≤ ~50.0; pos_y should be moving toward 0; pos_z toward 0.
+        assert 42.0 <= e.pos_x <= 60.0
+        # anim_state must be WALKING since dist > arrive_radius_ft (default 32).
+        assert e.anim_state == int(AnimState.WALKING)
+        assert e.hp_pct == 100
+    finally:
+        npc_task.cancel()
+        tick_task.cancel()
+        transport.close()
+
+
+@pytest.mark.asyncio
+async def test_npc_state_bcast_skipped_when_no_peers(server_port):
+    """Empty session list ⇒ broadcast is a no-op (no exceptions, no spam)."""
+    from server.npc_brain import NPCBrain, NPCSpec, NPCRuntime, Waypoint
+    from server.main import _periodic_npc_brain_tick
+
+    port = server_port + 101
+    state = ServerState(tick_rate_hz=20)
+    loop = asyncio.get_running_loop()
+    transport, protocol = await loop.create_datagram_endpoint(
+        lambda: ServerProtocol(state),
+        local_addr=("127.0.0.1", port),
+    )
+
+    brain = NPCBrain()
+    spec = NPCSpec(
+        form_id=0xCAFE0002, base_id=0xCAFE1002, cell_id=0x1234,
+        name="lonely",
+        waypoints=(Waypoint(x=10.0, y=0.0, z=0.0),),
+    )
+    brain.npcs[spec.form_id] = NPCRuntime(
+        spec=spec, pos_x=0.0, pos_y=0.0, pos_z=0.0,
+    )
+
+    npc_task = loop.create_task(_periodic_npc_brain_tick(brain, protocol, 50))
+    try:
+        # Let the brain tick a few times with zero peers — must not raise.
+        await asyncio.sleep(0.2)
+        # If we got here without an exception, the no-peers fast-path holds.
+    finally:
+        npc_task.cancel()
+        transport.close()

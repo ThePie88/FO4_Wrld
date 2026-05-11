@@ -35,6 +35,11 @@ SERVER_HOST: str = "127.0.0.1"
 SERVER_PORT: int = 31337
 SERVER_SNAPSHOT: Path = REPO_ROOT / "net" / "state_snapshot.json"
 SERVER_SNAPSHOT_INTERVAL_S: float = 10.0
+# B6.5+: directory of hand-authored NPC waypoint JSONs (one per cell).
+# Server's NPCBrain loads every .json on startup and emits NPC_STATE_BCAST
+# at npc_tick_hz for every tracked NPC.
+SERVER_WAYPOINTS_DIR: Path = REPO_ROOT / "net" / "server" / "waypoints"
+SERVER_NPC_TICK_HZ: int = 10
 
 # ------------------------------------------------------------------ native DLL
 

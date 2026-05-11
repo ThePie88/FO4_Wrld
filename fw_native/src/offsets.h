@@ -933,4 +933,161 @@ constexpr std::size_t BSEXTRADATALIST_HEAD_OFF            = 0x08;
 constexpr std::size_t INV_STACK_NEXT_OFF                  = 0x10;
 constexpr std::size_t INV_STACK_EXTRAS_OFF                = 0x18;
 
+// =========================================================================
+// B6.5w3 — NPC continuous-state apply (animation graph + pos write)
+// =========================================================================
+// Source: re/B6.5_npc_pipeline_AGENT_B.md (RE'd 2026-05-10).
+//
+// `IAnimationGraphManagerHolder` is a sub-object embedded in `Actor` at
+// offset 0x48. The setter functions take a pointer to it (NOT a pointer
+// to the Actor), a `BSFixedString*` name, and a value. The functions
+// internally fetch the actual `BSAnimationGraphManager` smart-pointer
+// from `MiddleProcess + 0x258` and dispatch to its impl.
+//
+// BSFixedString minter (`sub_14167BDC0`) interns an ad-hoc literal into
+// the global string pool and writes the entry pointer into the caller-
+// supplied 8-byte BSFixedString slot. Refcount is bumped on the pool
+// entry; if we cache the minted BSFixedString globally we keep the
+// refcount stable across many setter calls (no leak per apply).
+//
+// Threading: setter routes through the manager's smart-pointer fetch +
+// dispatch — main-thread-only because the manager is rebuilt by
+// scene-graph mutations (cell load, race change, weapon swap, etc).
+constexpr std::size_t    IANIMGRAPHHOLDER_OFF       = 0x48;   // Actor → IAnimationGraphManagerHolder sub-object
+constexpr std::uintptr_t SET_GRAPH_VAR_BOOL_RVA     = 0x00818D60;
+constexpr std::uintptr_t SET_GRAPH_VAR_INT_RVA      = 0x00818D80;
+constexpr std::uintptr_t SET_GRAPH_VAR_FLOAT_RVA    = 0x00818DA0;
+constexpr std::uintptr_t BSFIXEDSTRING_MAKE_RVA     = 0x0167BDC0;
+
+// =========================================================================
+// B6.5w4 — Per-Actor AI tick (suppression target)
+// =========================================================================
+// Source: re/B6.5_npc_pipeline_AGENT_A.md (RE'd 2026-05-10).
+//
+// `Actor::Update_PerFrame` at RVA 0xC636A0 is the SINGLE funnel for all
+// per-Actor AI work each frame. Called by all three ProcessLists tier
+// walkers (Mid/Low/High) + 5 forced-tick sites — hooking this one
+// function with MinHook covers every call path. Signature:
+//
+//   void __fastcall sub_140C636A0(Actor* this, float simTime);
+//
+// Detour reads form_id at Actor+0x14. If form_id ∈ tracked-NPC set
+// (registered via fw::dispatch::register_tracked_npc_form_id), bail
+// out — vanilla AI doesn't run for that NPC, and our server-authoritative
+// pos/yaw/anim writes become uncontested. Otherwise call the original
+// (normal AI tick).
+//
+// Threading: always called from the engine main thread (verified by RE).
+// Our register/is_tracked uses a std::mutex but the critical section is
+// tiny (set lookup over ~2-10 entries for MVP); contention is negligible.
+//
+// Side effects of suppression for tracked NPCs:
+//   - No pathfinding (good — server is the authority)
+//   - No anim graph update by AI (good — server's SetGraphVariable wins)
+//   - No gravity/collision check (cosmetic: NPC may float if terrain Z
+//     doesn't match server's waypoint Z; accept for MVP)
+//   - No combat/dialogue logic (good — B6.6 will drive these via server)
+constexpr std::uintptr_t ACTOR_UPDATE_PERFRAME_RVA = 0x00C636A0;
+
+// =========================================================================
+// B6.5w4 round 3 — Actor → 3D NIF direct write
+// =========================================================================
+// Source: re/B6.5w4_round3_AGENT.md (RE'd 2026-05-11).
+//
+// To bypass the renderer-vs-AI fight, we write the NIF.world.translate
+// directly each frame. The renderer reads from there, so winning the
+// last write to that field = render shows our pos regardless of what
+// Actor+0xD0 (the "logical" pos) holds.
+//
+// Pointer chain (TESObjectREFR::Get3D at RVA 0x0050D9D0 disasm:
+// `mov rax, [rcx+0F0h]; mov rax, [rax+8]; retn`):
+//   Actor + 0xF0  → LoadedRefData* (refcounted, NULL until 3D loaded)
+//   LoadedRefData + 0x08  → NiAVObject* (BSFadeNode root)
+//   NiAVObject + 0xA0  → world.translate (NiPoint3 — the renderer reads HERE)
+//
+// `bAnimationDriven` graph variable index in the pre-interned BSFixedString
+// pool: `qword_1430DBF78[2939]`. We mint our own BSFixedString at init
+// (idempotent against pool dedup) and call SetGraphVariableBool to clear
+// it — disables anim root motion so the actor doesn't displace from
+// walk-cycle animations fighting our pos writes.
+constexpr std::size_t LOADED_REF_DATA_OFF    = 0xF0;  // Actor → LoadedRefData*
+constexpr std::size_t LOADED_REF_DATA_3D_OFF = 0x08;  // LoadedRefData → NiAVObject*
+// (NI_AV_WORLD_TRANSLATE_OFF = 0xA0 already defined above in B5 section)
+// Local NiTransform on NiAVObject: rotation at +0x30, translate at +0x60,
+// scale at +0x6C. Per scene_inject.cpp comments + standard NetImmerse
+// layout (sizeof NiTransform = 0x40, two of them stacked).
+constexpr std::size_t NI_AV_LOCAL_TRANSLATE_OFF = 0x60;
+
+// =========================================================================
+// B6.5w4 round 5 — Actor.EnableAI native (final AI silencer)
+// =========================================================================
+// Source: re/B6.5w4_round3_AGENT.md §"EnableAI" (RE'd 2026-05-11).
+//
+// `Actor.EnableAI(bool enable, bool queueEquipChange)` toggles bit 2 of
+// `actor->actorFlags_720` (at offset 0x2D0) — the SAME bit the
+// ProcessLists tier walkers test in their gate:
+//     `if ((actor.flags_720 & 2) != 0) call Update_PerFrame(actor)`
+// So calling EnableAI(false) makes the walker SKIP this actor entirely —
+// Update_PerFrame never fires, AI never decides, anim graph never
+// transitions on its own. Our scene_render late-frame override
+// remains the sole authority over pos/NIF.world.translate.
+//
+// Signature: char __fastcall(void* actor, char enable, char queue);
+// Side effects: resets movement controller (zeros velocity), dispatches
+// re-equip if Get3D() non-null. Call ONCE per NPC at registration time
+// (not every frame) to avoid re-equip storm.
+constexpr std::uintptr_t ENGINE_ENABLE_AI_RVA = 0x00C76590;
+
+// =========================================================================
+// B6.5w4 round 7 — Atomic teleport silver bullet (4-agent consensus)
+// =========================================================================
+// Source: re/B6.5w4_round7_AGENT_B.md (RE'd 2026-05-11) — agent B of the
+// 4-agent arena identified the canonical engine teleport primitive.
+// Cross-validated by agent D's finding that our current write target
+// (BSFadeNode.world.translate) doesn't drive render, and agent A's
+// skeleton-root chain.
+//
+// `Actor::MoveTo` at RVA 0x00C60BE0 is the Actor-specific atomic teleport
+// that the engine itself uses when scripts call `ObjectReference.MoveTo`.
+// It writes Actor+0xD0, syncs the full NIF world transform tree, syncs
+// the Havok rigid body, syncs the anim graph, AND re-attaches to the
+// cell. ATOMIC = all caches updated in one call. Bypasses the 6-round
+// fight with vanilla AI / Havok / NIF cache.
+//
+// Signature:
+//   char __fastcall sub_140C60BE0(
+//       Actor* this,
+//       float  pos[3],                  // world coords
+//       float  yaw,                     // Bethesda radians (Z-axis)
+//       float  pitch,                   // Bethesda radians (X-axis), 0 for upright
+//       REFR*  target_cell_or_null,     // nullptr to stay in same cell
+//       REFR*  target_marker_or_null,   // nullptr
+//       char   ranInteriorChange,       // pass 1 ("real teleport")
+//       char   skipPlayerCheck,         // pass 0 unless caller is player
+//       char   skipAreaCheck);          // pass 1 to skip "is target area loaded"
+//
+// Estimated cost: ~1.4 µs same-cell. At 10 Hz × 2 NPCs = 28 µs/sec.
+// Safe.
+constexpr std::uintptr_t ACTOR_ATOMIC_TELEPORT_RVA = 0x00C60BE0;
+
+// `NiAVObject::SetMotionType` at RVA 0x018763E0 is the NIF-3D-level
+// worker that walks the NIF subtree finding Havok rigid bodies and
+// calls `hkpRigidBody::setMotionType` on each via a deferred callback.
+//
+// Motion types: 1=Dynamic, 2=Keyframed.
+//
+// We call this with motion_type=2 (Keyframed) once per tracked NPC at
+// first sight. After that, Havok physics treats the body as externally
+// controlled — Havok stops pushing the body around, so our per-tick
+// teleports stick without physics fighting us.
+//
+// Signature:
+//   char __fastcall sub_1418763E0(
+//       NiAVObject* root3d,             // Actor's Get3D() output
+//       int         motionType,         // 1=Dynamic, 2=Keyframed
+//       char        a3,                 // pass 1
+//       char        a4,                 // pass 0
+//       std::uint8_t activateOnLand);   // pass 0
+constexpr std::uintptr_t NIAV_SET_MOTION_TYPE_RVA = 0x018763E0;
+
 } // namespace fw::offsets

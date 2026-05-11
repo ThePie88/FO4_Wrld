@@ -310,7 +310,7 @@ class TestPersistence:
         path = tmp_path / "snap.json"
         snapshot(src, path)
         data = json.loads(path.read_text())
-        assert data["version"] == 3
+        assert data["version"] == 4  # v4 adds locks (B6.3); v3 added containers
         assert len(data["containers"]) == 1
         c = data["containers"][0]
         assert c["base_id"] == f"0x{TRUNK_BASE:X}"

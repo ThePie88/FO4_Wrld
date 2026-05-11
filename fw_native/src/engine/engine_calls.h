@@ -283,6 +283,96 @@ bool read_camera_forward(float out_fwd[3]);
 // Returns false on any null/SEH. Output values in game units.
 bool read_camera_frustum_near_far(float& out_near, float& out_far);
 
+// === B6.5w3.b — NPC continuous-state apply ===============================
+// Receiver-side application of one NPCStateEntry (per-NPC snapshot
+// broadcast by the server brain at 10 Hz). Pipeline per call:
+//   1. lookup_by_form_id(form_id) → local Actor* or null
+//   2. SEH-caged write of pos at Actor+0xD0 and yaw at Actor+0xC0+8
+//      (other rotation axes left untouched — body yaw is what matters
+//      for visible facing direction)
+//   3. // #STATE MINIMAL for now: anim_state → SetGraphVariable* writes
+//      - 0 IDLE     : no-op (let vanilla idle animations play)
+//      - 1 WALKING  : SpeedSampled=100.0 + Direction=0.0
+//      - 2 RUNNING  : SpeedSampled=200.0 + Direction=0.0
+//      - others (AIMING/FIRING/RELOADING/DEAD): not handled in w3.b,
+//        layered in by B6.6 / B6.5w4 (suppression).
+//
+// `yaw_deg_math` is in degrees, math convention (0 = +X, CCW). We
+// convert internally to Bethesda radians (0 = +Y, CW): beth_yaw_rad =
+// (90 - yaw_deg_math) * pi/180.
+//
+// Returns true if Actor was resolved + at least the pos write succeeded;
+// false if lookup_by_form_id returned null (most common — NPC's cell
+// not loaded on this client) or the pos write SEH-faulted.
+//
+// MUST be called from the main thread WHEN `skip_anim_graph` is false.
+// The anim graph setter recurses into the BSAnimationGraphManager
+// smart-pointer fetch, which is rebuilt by scene-graph mutations on the
+// main thread — net thread would race. Always dispatch via
+// fw::dispatch::FW_MSG_NPC_STATE_APPLY for the full apply.
+//
+// `skip_anim_graph=true` makes the call thread-safe (pos/yaw writes are
+// pure memory ops, no engine recursion). Used by the net-thread fallback
+// path when PostMessage to the WndProc fails (e.g. HWND stale during
+// game window recreation on cell transition / menu open). Loses anim
+// state sync but preserves world-pos sync until the WndProc is healthy
+// again — better than no sync at all.
+bool apply_npc_state_to_engine(
+    std::uint32_t form_id,
+    float pos_x, float pos_y, float pos_z,
+    float yaw_deg_math,
+    std::uint8_t anim_state,
+    bool skip_anim_graph = false);
+
+// B6.5w4 round 2: same apply, but takes the Actor* directly (skips the
+// lookup_by_form_id step). Used by the Update_PerFrame detour which
+// already has Actor* from the function arg. Caller must be on main
+// thread when skip_anim_graph=false (typical, since the detour runs on
+// the engine main thread).
+bool apply_npc_state_to_actor(
+    void* actor,
+    float pos_x, float pos_y, float pos_z,
+    float yaw_deg_math,
+    std::uint8_t anim_state,
+    bool skip_anim_graph = false);
+
+// B6.5w4 round 5: silence the actor's AI completely by clearing bit 2 of
+// actor.flags_720 (+0x2D0). The ProcessLists tier walkers gate on this
+// bit before calling Update_PerFrame, so this stops AI from running at
+// all for the actor. Call ONCE per tracked NPC at registration; the
+// engine side-effect (re-equip dispatch) is non-trivial — repeated calls
+// are wasteful, not unsafe. SEH-caged. No-op if actor null or init not
+// complete.
+void set_actor_ai_enabled(void* actor, bool enabled);
+
+// B6.5w4 round 7 — Atomic teleport silver bullet.
+// Calls the engine's own `Actor::MoveTo` worker (RVA 0x00C60BE0) which
+// atomically updates pos + NIF world + Havok body + anim graph + cell
+// attachment. The 6-round fight is bypassed entirely — engine handles
+// all caches itself. Call once per server tick (~10 Hz) per tracked
+// NPC. Returns true on call success, false if actor null / init not
+// ready / SEH fault.
+//
+// `yaw_rad` is in Bethesda convention (radians, 0 = +Y axis, CW).
+// Caller is responsible for the math→bethesda conversion:
+//   yaw_rad = (90.0f - yaw_deg_math) * PI / 180.0f
+//
+// MAIN THREAD ONLY. The teleport reads TLS, touches cell attachment,
+// and walks NIF subtree — all main-thread-affine.
+bool actor_atomic_teleport(void* actor,
+                          float pos_x, float pos_y, float pos_z,
+                          float yaw_rad);
+
+// One-shot per tracked NPC: set the actor's Havok motion type to
+// Keyframed (=2). After this, Havok stops driving the body — our atomic
+// teleport calls become the sole pos authority. Internally:
+//   1. actor->Get3D() to find NIF root
+//   2. sub_1418763E0(root, 2 /*Keyframed*/, 1, 0, 0)
+// Idempotent. SEH-caged.
+//
+// MAIN THREAD ONLY.
+bool set_actor_motion_keyframed(void* actor);
+
 // B5 camera probe (diagnostic): at the first valid player pose we scan
 // the PlayerCamera singleton's first 0x200 bytes for any qword that
 // dereferences to a NiCamera vtable (VA = module_base + 0x267DD50).
