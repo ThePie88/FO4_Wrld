@@ -30,60 +30,71 @@ std::atomic<bool> g_hooked{false};
 std::atomic<std::uint64_t> g_frame_count{0};
 
 void __fastcall detour_scene_walk(void* a1, void* a2, void* a3, void* a4) {
-    // B6.5w4 round 7 — Atomic teleport (silver bullet from agent B).
+    // B6.5w12 deprecation (2026-05-11): rounds 7-11 atomic-teleport
+    // path is CLOSED.
     //
-    // 4-agent RE arena consensus: stop fighting individual fields.
-    // Instead, call the engine's own `Actor::MoveTo` worker per server
-    // tick. It atomically writes pos + NIF.world + Havok + anim graph +
-    // cell attachment. Bypasses ALL the caches and computed transforms
-    // that previous rounds couldn't reach.
+    // Previous logic (round 11): for each tracked NPC, call
+    // Actor::MoveTo every other frame (30 Hz parity gate) with
+    // server-interpolated pos + write humanoid anim graph bool suite
+    // every frame.
     //
-    // Strategy:
-    //   1. On FIRST sight of each tracked NPC: set motion type to
-    //      Keyframed (=2). Havok stops driving the body.
-    //   2. On each cache UPDATE (timestamp change = 10 Hz from server):
-    //      call atomic_teleport with the new pos/yaw. Engine cascades
-    //      the update through every transform.
-    //   3. Between cache updates (~100ms windows): no-op. Engine state
-    //      stays put because Keyframed = no Havok push, no anim driven.
+    // WORKS for pos sync (verified live on Dogmeat + Codsworth at
+    // Sanctuary). FAILS for anim sync: Actor::MoveTo internally flushes
+    // the anim graph every call, so at 30+ Hz the graph never completes
+    // a transition → "Star Citizen NPC" look (glitchy poses, anims
+    // restart constantly). Cannot deliver fluid combat AI at the scale
+    // the survival-MMO vision needs.
     //
-    // No more 60 Hz field-writing fight. Just 10 Hz atomic teleports
-    // per tracked NPC. Estimated cost: ~3 µs × 10 Hz × 2 NPCs = 60 µs/s.
+    // The hook install remains so the file scaffolds future render-
+    // stage work (e.g. body draw at scene-end vs Present, B5 follow-
+    // up) without re-RE'ing the entry point. The original-pass-through
+    // call below preserves vanilla render exactly.
+    //
+    // Next direction: hook AI DECISION POINTS upstream of the per-frame
+    // pipeline ("Ghost AI" pattern — see NPCs.md "Next direction"). The
+    // scene-render hook is not where Ghost AI lives; this file stays
+    // dormant until B5 / depth-buffer work resumes.
 
     if (g_orig_scene_walk) {
         g_orig_scene_walk(a1, a2, a3, a4);
     }
 
-    const auto npcs = fw::dispatch::get_all_cached_npcs();
+#if 0
+    // ===== ROUND 7-11 (CLOSED) — kept for reference =====================
+    //
+    // Do NOT re-enable wholesale. The atomic-teleport @ 30 Hz approach
+    // is architecturally wrong for combat AI sync. See NPCs.md "Session
+    // recap — 2026-05-11" for the 11-round narrative.
+    //
+    // Round 7 silver bullet: call Actor::MoveTo per cache update at
+    // 10 Hz. Engine cascades the update through every transform.
+    // Round 8: added humanoid bool anim graph variable suite (silently
+    // no-ops on Dogmeat/Codsworth which use creature anim graphs).
+    // Round 9: cache prev+current + linear extrapolation at 60 Hz —
+    // pos-only writes to Actor+0xD0 + NIF.world DIDN'T propagate to
+    // render between MoveTo calls (lesson re-learned).
+    // Round 10: atomic teleport at 60 Hz — anim graph flushed every
+    // frame, never completes a transition.
+    // Round 11: 30 Hz parity gate to give anim 33ms breathing room.
+    // Marginal improvement only — structural limit.
 
-    // Per-form_id state: "have we set Keyframed yet" + "last applied timestamp".
+    const auto npcs = fw::dispatch::get_all_cached_npcs();
     static std::mutex                              s_state_mtx;
     static std::unordered_set<std::uint32_t>       s_keyframed_set;
     static std::unordered_map<std::uint32_t,
                               std::uint64_t>       s_last_applied_ts;
-
     constexpr float kPi = 3.14159265358979323846f;
     constexpr float kDegToRad = kPi / 180.0f;
-
     std::size_t teleports_this_frame = 0;
     std::size_t keyframe_inits_this_frame = 0;
-
-    // Round 9: get a local-clock "now" once per frame for interpolation.
     const std::uint64_t now_ms = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
-
-    // Round 11: read+increment frame counter UP FRONT so the parity gate
-    // for 30 Hz teleport (every other frame) can use it inside the loop.
-    // Replaces the old "n = fetch_add at trailing edge" pattern.
-    const auto n = g_frame_count.fetch_add(1, std::memory_order_relaxed);
-    const bool teleport_this_frame_gate = ((n & 1u) == 0);
-
+    const auto n_r11 = g_frame_count.load(std::memory_order_relaxed);
+    const bool teleport_this_frame_gate = ((n_r11 & 1u) == 0);
     for (const auto& [fid, st] : npcs) {
         void* actor = fw::engine::lookup_by_form_id(fid);
         if (!actor) continue;
-
-        // ---- one-shot Keyframed motion type ----
         bool need_keyframe = false;
         {
             std::lock_guard lk(s_state_mtx);
@@ -93,25 +104,9 @@ void __fastcall detour_scene_walk(void* a1, void* a2, void* a3, void* a4) {
             }
         }
         if (need_keyframe) {
-            const bool ok = fw::engine::set_actor_motion_keyframed(actor);
-            FW_LOG("[scene_hook] r7: SetMotionType(Keyframed) form=0x%X actor=%p ok=%d",
-                   fid, actor, ok ? 1 : 0);
+            fw::engine::set_actor_motion_keyframed(actor);
             ++keyframe_inits_this_frame;
         }
-
-        // ---- B6.5w4 round 11: 30 Hz atomic_teleport (every other frame).
-        //
-        // Round 10 was 60 Hz teleport. Functional but anim graph flush
-        // inside Actor::MoveTo fires every frame → no anim transition
-        // ever completes → "Star Citizen NPC" anim look.
-        //
-        // Round 11: every-other-frame teleport. Anim has 33ms between
-        // flushes — enough for short transitions to play. Motion still
-        // smooth at 30 Hz visual rate (well above human flicker fusion).
-        //
-        // Use frame_count parity for the 50% gating. Atomic_teleport
-        // itself runs with the lightest flag set (doProcessUpdate=0,
-        // both skip_*=1, see engine_calls.cpp round 11 flags).
         fw::dispatch::InterpolatedNPCState interp{};
         if (fw::dispatch::get_interpolated_npc_state(fid, now_ms, &interp)) {
             if (teleport_this_frame_gate) {
@@ -120,11 +115,6 @@ void __fastcall detour_scene_walk(void* a1, void* a2, void* a3, void* a4) {
                     actor, interp.pos_x, interp.pos_y, interp.pos_z, yaw_beth_rad);
                 ++teleports_this_frame;
             }
-
-            // Anim graph variable suite — every frame. SetGraphVariable
-            // is idempotent (same value = no transition), so even at
-            // 60 Hz it doesn't flicker. Useful to override AI's between-
-            // frame variable changes.
             fw::engine::apply_npc_state_to_actor(
                 actor,
                 interp.pos_x, interp.pos_y, interp.pos_z,
@@ -132,16 +122,17 @@ void __fastcall detour_scene_walk(void* a1, void* a2, void* a3, void* a4) {
                 /*skip_anim_graph=*/false);
         }
     }
+#endif  // ===== end round 7-11 reference block ============================
 
-    // (frame counter `n` was incremented at the top of the detour for the
-    // round 11 parity gate; we reuse it here for log throttling.)
+    // Frame counter for log heartbeat only (no per-frame work above).
+    const auto n = g_frame_count.fetch_add(1, std::memory_order_relaxed);
     if (n < 5) {
-        FW_LOG("[scene_hook] frame #%llu — round 11 30Hz atomic-teleport "
-               "(%zu tracked, %zu teleports this frame, %zu keyframe inits)",
-               n, npcs.size(), teleports_this_frame, keyframe_inits_this_frame);
+        FW_LOG("[scene_hook] frame #%llu — DEPRECATED PASSTHROUGH "
+               "(rounds 7-11 atomic-teleport closed, awaiting Ghost AI)",
+               static_cast<unsigned long long>(n));
     } else if ((n % 600) == 0) {
-        FW_DBG("[scene_hook] frame #%llu tick (heartbeat, tracked=%zu)",
-               n, npcs.size());
+        FW_DBG("[scene_hook] frame #%llu tick (heartbeat, deprecated passthrough)",
+               static_cast<unsigned long long>(n));
     }
 }
 

@@ -45,34 +45,44 @@ static std::uint32_t safe_read_form_id(const void* actor) noexcept {
 // The detour. Hot path: ~thousands of calls per second across all
 // loaded Actors. Keep it tight.
 //
-// ROUND 2 STRATEGY (post live-test 2026-05-11): instead of bailing
-// before original (which left tracked NPCs frozen visually because the
-// engine's internal NIF-sync was also skipped), we call original FIRST
-// so the engine's housekeeping (NIF sync, anim graph evaluation,
-// collision, etc.) runs normally, then POST-overwrite pos/yaw/anim from
-// our cache. Our writes become the LAST of the frame → renderer sees
-// our state. Vanilla AI still runs but its decisions are immediately
-// overridden each frame.
+// B6.5w12 deprecation (2026-05-11): rounds 1-11 POST-hook
+// apply_npc_state_to_actor path is CLOSED.
+//
+// Previous logic (round 2 strategy): call original FIRST so the engine's
+// housekeeping (NIF sync, anim graph evaluation, collision) ran
+// normally, then POST-overwrite pos/yaw/anim from our cache. The
+// "engine's internal NIF sync" wasn't where the renderer ultimately
+// read from in the way we hoped — the race against engine's own
+// transforms below Update_PerFrame was unwinnable at this level. The
+// MoveTo-based output-override path (scene_render_hook) reached the
+// same dead-end via a different route. See NPCs.md.
+//
+// The hook install + form_id read + tracked-set lookup pattern are
+// kept as scaffolding. Ghost AI hooks (B6.5w12+) will reuse THIS entry
+// point structure but ALSO install separate detours at the decision-
+// point functions upstream — combat target setter, package predicate,
+// movement wrapper, aim writer, anim state transitions, etc.
+//
+// The diagnostic counters keep firing — they're useful for "how many
+// tracked NPCs is the engine ticking per frame on this client" stat.
 void __fastcall detour_actor_update_perframe(void* actor, float sim_time) {
     const std::uint32_t fid = safe_read_form_id(actor);
 
     // Step 1: always call original. The engine needs to run its
-    // per-frame work (NIF sync above all) for the actor to render
-    // properly. Even with our state override happening post-call,
-    // skipping original altogether freezes the actor visually.
+    // per-frame work for the actor (and future Ghost AI hooks rely on
+    // the engine's natural pipeline continuing to fire).
     if (g_orig_actor_update_perframe) {
         g_orig_actor_update_perframe(actor, sim_time);
     }
 
-    // Step 2: SEH-failed form_id read → no override possible.
+    // Step 2: SEH-failed form_id read → no work possible.
     if (fid == 0xFFFFFFFFu) {
         g_seh_failures.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
-    // Step 3: cache lookup. Cache populated by net thread on every
-    // NPC_STATE_BCAST RX (10 Hz). For tracked actors, fetch latest
-    // state and apply.
+    // Step 3: cache lookup for tracked-set membership (diagnostic only
+    // post-deprecation — we no longer apply state here).
     if (fid == 0) {
         g_passthrough_fires.fetch_add(1, std::memory_order_relaxed);
         return;
@@ -84,14 +94,21 @@ void __fastcall detour_actor_update_perframe(void* actor, float sim_time) {
         return;
     }
 
-    // Step 4: POST-overwrite. We're on the main thread (engine called
-    // us). Safe to invoke the anim-graph setters here.
+    // Tracked NPC — diagnostic counter only. Ghost AI substitutes
+    // decision-point inputs upstream; no post-hoc state apply here.
+    g_suppress_fires.fetch_add(1, std::memory_order_relaxed);
+
+#if 0
+    // ===== ROUND 2 (CLOSED) — kept for reference =======================
+    // POST-overwrite of pos/yaw/anim from cache.  Don't re-enable: the
+    // race against engine's own NIF sync is unwinnable at this level.
+    // Architecturally superseded by Ghost AI decision-point hooks.
     fw::engine::apply_npc_state_to_actor(
         actor,
         st.pos_x, st.pos_y, st.pos_z,
         st.yaw_deg_math, st.anim_state,
         /*skip_anim_graph=*/false);
-    g_suppress_fires.fetch_add(1, std::memory_order_relaxed);
+#endif  // ===== end round 2 reference block ===========================
 }
 
 } // namespace
