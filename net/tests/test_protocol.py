@@ -30,6 +30,7 @@ from protocol import (  # noqa: E402
     MESH_BLOB_OP_CHUNK_DATA_MAX, MESH_BLOB_BCAST_CHUNK_DATA_MAX,
     chunk_mesh_blob,
     NPCStateEntry, NPCStateBroadcastPayload, MAX_NPC_STATES_PER_FRAME,
+    pack_loco_state, unpack_loco_state,
     RawMessage,
     encode_header, decode_header, encode_frame, decode_frame,
 )
@@ -807,11 +808,12 @@ class TestMeshBlobE2E:
 # ============================================================================
 
 class TestNPCStateEntry:
-    def test_struct_size_53b(self):
-        """Wire width contract: 53 B per entry, no padding."""
-        assert NPCStateEntry._STRUCT.size == 53
+    def test_struct_size_98b_v14(self):
+        """Wire width contract: 98 B per entry in v14 (53 v13 + 45 v14)."""
+        assert NPCStateEntry._STRUCT.size == 98
 
-    def test_roundtrip(self):
+    def test_roundtrip_v13_fields(self):
+        """v13 fields survive encode/decode with v14 defaults at zero."""
         e = NPCStateEntry(
             form_id=0xDEAD0001, base_id=0xBEEF0001, cell_id=0x00001234,
             pos_x=-10000.5, pos_y=5000.25, pos_z=50.0,
@@ -837,8 +839,71 @@ class TestNPCStateEntry:
         assert e2.hp_pct == e.hp_pct
         assert e2.target_kind == e.target_kind
         assert e2.flags == e.flags
+        # v14 fields default to zero when constructor omits them
+        assert e2.package_form_id == 0
+        assert e2.combat_target_form_id == 0
+        assert e2.aim_x == 0.0 and e2.aim_y == 0.0 and e2.aim_z == 0.0
+        assert e2.velocity_x == 0.0 and e2.velocity_y == 0.0 and e2.velocity_z == 0.0
+        assert e2.weapon_state == 0
+        assert e2.sighted == 0
+        assert e2.sprinting == 0
+        assert e2.sneaking == 0
+        assert e2.gun_down == 0
+        assert e2.aggression == 0
+        assert e2.loco_state_pack == 0
+        assert e2.sandbox_marker_handle == 0
+        assert e2.sandbox_idle_index == 0
+
+    def test_roundtrip_v14_fields(self):
+        """v14 Ghost AI fields roundtrip correctly."""
+        e = NPCStateEntry(
+            # v13 baseline
+            form_id=0x001A6C6F, base_id=0xBEEF0001, cell_id=0x0001D69D,
+            pos_x=1234.5, pos_y=-5678.25, pos_z=99.0,
+            yaw=30.0, pitch=0.0,
+            target_id=0x14, timestamp_ms=999,
+            anim_state=2, aggro_state=2, hp_pct=85,
+            target_kind=1, flags=1,
+            # v14 Ghost AI
+            package_form_id=0x000A0011,
+            combat_target_form_id=0x00000014,
+            aim_x=100.5, aim_y=-200.25, aim_z=50.0,
+            velocity_x=12.0, velocity_y=-3.5, velocity_z=0.0,
+            weapon_state=2,            # drawn
+            sighted=1,
+            sprinting=0,
+            sneaking=0,
+            gun_down=0,
+            aggression=75,
+            loco_state_pack=pack_loco_state(idle_loco=1, turn=2, forward=1,
+                                            strafe=0, jump=0, swim=0),
+            sandbox_marker_handle=0xABCD1234,
+            sandbox_idle_index=7,
+        )
+        e2 = NPCStateEntry.decode(e.encode())
+        # v14 field readback
+        assert e2.package_form_id == 0x000A0011
+        assert e2.combat_target_form_id == 0x00000014
+        assert abs(e2.aim_x - 100.5) < 1e-3
+        assert abs(e2.aim_y - (-200.25)) < 1e-3
+        assert abs(e2.aim_z - 50.0) < 1e-3
+        assert abs(e2.velocity_x - 12.0) < 1e-3
+        assert abs(e2.velocity_y - (-3.5)) < 1e-3
+        assert abs(e2.velocity_z - 0.0) < 1e-3
+        assert e2.weapon_state == 2
+        assert e2.sighted == 1
+        assert e2.sprinting == 0
+        assert e2.sneaking == 0
+        assert e2.gun_down == 0
+        assert e2.aggression == 75
+        # Verify pack/unpack symmetry
+        loco_unpack = unpack_loco_state(e2.loco_state_pack)
+        assert loco_unpack == (1, 2, 1, 0, 0, 0)
+        assert e2.sandbox_marker_handle == 0xABCD1234
+        assert e2.sandbox_idle_index == 7
 
     def test_max_u32_form_id(self):
+        """Boundary: all-bits-set values survive (v13 + v14 fields)."""
         e = NPCStateEntry(
             form_id=0xFFFFFFFF, base_id=0xFFFFFFFF, cell_id=0xFFFFFFFF,
             pos_x=0.0, pos_y=0.0, pos_z=0.0, yaw=0.0, pitch=0.0,
@@ -846,14 +911,47 @@ class TestNPCStateEntry:
             timestamp_ms=0xFFFFFFFFFFFFFFFF,
             anim_state=255, aggro_state=255, hp_pct=255,
             target_kind=255, flags=255,
+            package_form_id=0xFFFFFFFF,
+            combat_target_form_id=0xFFFFFFFF,
+            weapon_state=255, sighted=255, sprinting=255,
+            sneaking=255, gun_down=255, aggression=255,
+            loco_state_pack=0xFFFF,
+            sandbox_marker_handle=0xFFFFFFFF,
+            sandbox_idle_index=255,
         )
         e2 = NPCStateEntry.decode(e.encode())
         assert e2.form_id == 0xFFFFFFFF
         assert e2.target_id == 0xFFFFFFFFFFFFFFFF
+        assert e2.package_form_id == 0xFFFFFFFF
+        assert e2.combat_target_form_id == 0xFFFFFFFF
+        assert e2.loco_state_pack == 0xFFFF
+        assert e2.sandbox_marker_handle == 0xFFFFFFFF
 
     def test_truncated_raises(self):
         with pytest.raises(ProtocolError):
             NPCStateEntry.decode(b"\x00" * 10)
+
+
+class TestLocoStatePack:
+    """v14 helper: pack/unpack the 6 sync ints into u16."""
+
+    def test_zero_round_trip(self):
+        assert pack_loco_state() == 0
+        assert unpack_loco_state(0) == (0, 0, 0, 0, 0, 0)
+
+    def test_all_set_to_max(self):
+        # idle=1, turn=2, forward=1, strafe=2, jump=3, swim=1
+        p = pack_loco_state(idle_loco=1, turn=2, forward=1, strafe=2, jump=3, swim=1)
+        assert unpack_loco_state(p) == (1, 2, 1, 2, 3, 1)
+        # Sanity: pack fits in 9 bits (max 0x1FF = 511)
+        assert p <= 0x1FF
+
+    def test_field_isolation(self):
+        # Each field should not bleed into its neighbours.
+        assert unpack_loco_state(pack_loco_state(turn=2)) == (0, 2, 0, 0, 0, 0)
+        assert unpack_loco_state(pack_loco_state(strafe=2)) == (0, 0, 0, 2, 0, 0)
+        assert unpack_loco_state(pack_loco_state(jump=3)) == (0, 0, 0, 0, 3, 0)
+        assert unpack_loco_state(pack_loco_state(swim=1)) == (0, 0, 0, 0, 0, 1)
 
 
 class TestNPCStateBroadcast:

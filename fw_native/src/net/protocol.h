@@ -24,6 +24,21 @@ namespace fw::net {
 // -------------------------------------------------------------- constants
 
 constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
+// v14: B6.5w12 Ghost AI decision-point sync — extends NPCStateEntry
+//     (53 → 98 B) with AI state the server pre-computes for the DLL's
+//     MinHook detours on engine decision functions to consume:
+//       - package_form_id (u32) → TESPackage::EvaluateConditions @ 0x00768CC0
+//       - combat_target_form_id (u32) → SyncCombatTargetFromAIProcess @ 0x00C5CCE0
+//       - aim_x/y/z (f32×3) → CombatAimController::SetAimTarget @ 0x00E65820
+//       - velocity_x/y/z (f32×3) → TickMovementController @ 0x00C65E20
+//       - weapon_state / sighted / sprinting / sneaking / gun_down /
+//         aggression / loco_state_pack / sandbox_marker_handle /
+//         sandbox_idle_index → 7 anim-graph state-transition entry points.
+//     Replaces the v13-era "override engine output" pattern (B6.5w4
+//     rounds 1-11, closed) with "redirect engine input" so the engine
+//     still does all rendering/anim/IK/physics natively. Wire growth:
+//     +45 B per NPC. MAX_NPC_STATES_PER_FRAME drops 26 → 14 (MTU 1400
+//     still trivial; 4 packets/tick at 50 NPCs).
 // v13: B6.5w2 NPC continuous-state sync — adds NPC_STATE_BCAST (0x0270).
 //     Server-authoritative: the Python NPCBrain (server/npc_brain.py)
 //     ticks all tracked NPCs at npc_tick_hz (default 10 Hz) and
@@ -135,7 +150,7 @@ constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
 //     back in CONTAINER_OP_ACK. Enables sender-side pre-mutation block
 //     (DLL waits on condvar keyed on op_id before letting the engine's
 //     AddObjectToContainer proceed). Closes the container dup race.
-constexpr std::uint8_t  PROTOCOL_VERSION  = 13;
+constexpr std::uint8_t  PROTOCOL_VERSION  = 14;
 constexpr std::size_t   HEADER_SIZE       = 12;
 constexpr std::size_t   MAX_PAYLOAD_SIZE  = 1400;
 constexpr std::size_t   MAX_FRAME_SIZE    = HEADER_SIZE + MAX_PAYLOAD_SIZE;
@@ -608,25 +623,38 @@ constexpr std::size_t  MAX_NIF_PATH_LEN     = 192;   // bytes (not incl null)
 constexpr std::size_t  MAX_NIF_NAME_LEN     = 64;
 constexpr std::uint8_t MAX_NIF_DESCRIPTORS  = 8;
 
-// === B6.5w2 (v13) — NPC continuous-state broadcast =========================
+// === B6.5w12 (v14) — NPC continuous-state broadcast ========================
 // Mirror of protocol.py::NPCStateEntry + NPCStateBroadcastPayload. Wire
-// MUST match byte-for-byte: 53 B per entry, no padding (pack=1). Server
+// MUST match byte-for-byte: 98 B per entry, no padding (pack=1). Server
 // (server/npc_brain.py) emits at 10 Hz. Unreliable channel.
 //
-// Receiver pipeline (w3.b — this DLL revision is w3.a, log-only):
+// Receiver pipeline (Ghost AI, B6.5w12+):
 //   1. lookup_by_form_id(entry.form_id) → local Actor* (or null if not loaded)
-//   2. write pos at Actor+0xD0 (3 floats, world units)
-//   3. write rot at Actor+0xC0 (3 floats, radians)
-//   4. translate anim_state → SetGraphVariable* on
-//      IAnimationGraphManagerHolder at Actor+0x48
-//      (RVA 0x818D60/D80/DA0; re/B6.5_npc_pipeline_AGENT_B.md)
-//      // #STATE MINIMAL for now: only IDLE (no-op) and WALKING/RUNNING
-//      // (SpeedSampled + Direction). AIMING/FIRING/RELOADING/DEAD layer
-//      // in B6.6 + B6.5w4 (suppression).
+//   2. populate per-NPC cache with v14 fields (main_thread_dispatch).
+//   3. MinHook detours on engine decision functions read from the cache
+//      and substitute the server's value for tracked form_ids:
+//        - TESPackage::EvaluateConditions @ 0x00768CC0  → package_form_id
+//        - Actor::SyncCombatTargetFromAIProcess @ 0x00C5CCE0
+//                                                       → combat_target_form_id
+//        - CombatAimController::SetAimTarget   @ 0x00E65820  → aim_x/y/z
+//        - Actor::TickMovementController       @ 0x00C65E20  → velocity_x/y/z
+//        - DrawWeapon dispatch                 @ 0x00C5D080  → weapon_state
+//        - SetSightedState                     @ 0x00CB13F0  → sighted
+//        - SetSprintState                      @ 0x00CA6030  → sprinting
+//        - SetSneakState                       @ 0x00CA6220  → sneaking
+//        - ResolveCombatStance                 @ 0x00CD6870  → gun_down
+//        - LocoEventDispatch                   @ 0x00CEC200  → loco_state_pack
+//        - UpdateAggressionToGraph             @ 0x00E4D8A0  → aggression
+//   4. Engine continues with the server's decision as input — runs
+//      pathfinder, plays anim transition, fires projectiles natively.
+//
+// The legacy v13 receiver pipeline (apply_npc_state_to_engine with
+// Actor::MoveTo every tick) is closed; see B6.5w12 deprecation commit.
 
-constexpr std::uint8_t MAX_NPC_STATES_PER_FRAME = 26;  // (MTU 1400 - 4 hdr) / 53 = 26
+constexpr std::uint8_t MAX_NPC_STATES_PER_FRAME = 14;  // (MTU 1400 - 4 hdr) / 98 = 14
 
 struct NPCStateEntry {
+    // v13 baseline (53 B) ----------------------------------------------
     std::uint32_t form_id;
     std::uint32_t base_id;
     std::uint32_t cell_id;
@@ -642,15 +670,41 @@ struct NPCStateEntry {
     std::uint8_t  hp_pct;
     std::uint8_t  target_kind;
     std::uint8_t  flags;
+    // v14 Ghost AI additions (45 B) ------------------------------------
+    std::uint32_t package_form_id;          // hook: TESPackage::EvaluateConditions
+    std::uint32_t combat_target_form_id;    // hook: SyncCombatTargetFromAIProcess
+    float         aim_x;                    // hook: CombatAimController::SetAimTarget
+    float         aim_y;
+    float         aim_z;
+    float         velocity_x;               // hook: TickMovementController
+    float         velocity_y;
+    float         velocity_z;
+    std::uint8_t  weapon_state;             // hook: DrawWeapon dispatch
+                                            //   0=none/1=drawing/2=drawn/3=holstering
+    std::uint8_t  sighted;                  // hook: SetSightedState (0/1)
+    std::uint8_t  sprinting;                // hook: SetSprintState (0/1)
+    std::uint8_t  sneaking;                 // hook: SetSneakState (0/1)
+    std::uint8_t  gun_down;                 // hook: ResolveCombatStance (0/1)
+    std::uint8_t  aggression;               // hook: UpdateAggressionToGraph (0..100)
+    std::uint16_t loco_state_pack;          // hook: LocoEventDispatch — 6 sync ints:
+                                            //   bit 0    : iSyncIdleLocomotion
+                                            //   bits 1-2 : iSyncTurnState
+                                            //   bit 3    : iSyncForwardState
+                                            //   bits 4-5 : iSyncStrafeState
+                                            //   bits 6-7 : iSyncJumpState
+                                            //   bit 8    : iSyncSwimState
+                                            //   bits 9-15: reserved
+    std::uint32_t sandbox_marker_handle;    // BGSProcedureSandbox state +88 — 0 if unused
+    std::uint8_t  sandbox_idle_index;       // Sandbox state +100/+104 — 0 if unused
 };
-static_assert(sizeof(NPCStateEntry) == 53, "NPCStateEntry size (v13)");
+static_assert(sizeof(NPCStateEntry) == 98, "NPCStateEntry size (v14)");
 
 struct NPCStateBroadcastHeader {
     std::uint16_t num_entries;   // <= MAX_NPC_STATES_PER_FRAME
     std::uint16_t reserved;      // 0 — alignment + future flags
 };
 static_assert(sizeof(NPCStateBroadcastHeader) == 4,
-              "NPCStateBroadcastHeader size (v13)");
+              "NPCStateBroadcastHeader size (v14)");
 
 #pragma pack(pop)
 struct NifDescriptor {

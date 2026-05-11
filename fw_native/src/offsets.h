@@ -1090,4 +1090,58 @@ constexpr std::uintptr_t ACTOR_ATOMIC_TELEPORT_RVA = 0x00C60BE0;
 //       std::uint8_t activateOnLand);   // pass 0
 constexpr std::uintptr_t NIAV_SET_MOTION_TYPE_RVA = 0x018763E0;
 
+// =========================================================================
+// B6.5w12 — Ghost AI decision-point hook RVAs
+//
+// 12 small functions inside Fallout4.exe that the AI brain calls each frame
+// to decide what an Actor should do this frame. We MinHook them and, for
+// form_ids in our tracked-NPC set, substitute the server's decision instead
+// of letting local AI decide. The engine then runs animation, IK, physics,
+// render natively with our value as input. See NPCs.md "Next direction —
+// Ghost AI pattern" + re/B6.5w12_round1_AGENT_{1,2,3,4}.md for the 4-agent
+// RE arena that produced these.
+//
+// Implementation phasing:
+//   Phase 2 step B (now): skeleton hook on PKG_EVAL_CONDITIONS_RVA only,
+//                         log+passthrough. Confirms the hook installs and
+//                         fires under realistic AI activity.
+//   Phase 4 (incremental): per-hook server-decision logic + ramp through
+//                         all 12 RVAs, one at a time with live test
+//                         between each.
+//
+// Each hook is small and clean (per agent dossiers — 0x2A to ~0x800 bytes,
+// most ≤ 0x100). All sit inside a per-frame AI tick pipeline and have
+// signatures observed in the decomp at D:\falloutworld_decomp\out\.
+
+// HOOK #1 — TESPackage::EvaluateConditions (the MVP "predicate" hook).
+//
+// Pure predicate: returns bool. Caller (AIProcess::EvaluatePackages_And_Execute
+// at 0x00CEEC30) loops over candidate packages in priority order, calls
+// this for each. First TRUE wins → engine installs that package + runs the
+// procedure executor natively. The cleanest hook of the 12 because it has
+// ZERO side effects in the engine path — we just return TRUE for the
+// package the server chose, FALSE for the rest.
+//
+// Signature (per agent 3 dossier):
+//   bool __fastcall sub_140768CC0(
+//       __int64*** condition_list_head,   // = pkg + 96
+//       void*      eval_ctx);             // 112-B struct from sub_140768260
+//                                         //   eval_ctx + 8 = Actor* (inferred)
+//
+// Note: the FUNCTION sees the condition list head (pkg+96), not pkg directly.
+// To know which package is being evaluated:
+//   - Back-compute: pkg = (char*)arg1 - 96 = (char*)arg1 - 0x60
+//   - pkg form_id = *(u32*)(pkg + 0x14) = *(u32*)((char*)arg1 - 0x4C)
+//   This is an empirically derived offset; verify at runtime before relying.
+//
+// MVP detour pseudo-code (Phase 4):
+//   actor    = *(Actor**)((char*)eval_ctx + 8);
+//   actor_fid = *(u32*)((char*)actor + 0x14);
+//   if (actor_fid ∈ tracked_set) {
+//       pkg_fid = *(u32*)((char*)condition_list_head - 0x4C);
+//       return pkg_fid == cache[actor_fid].package_form_id;
+//   }
+//   return g_orig(condition_list_head, eval_ctx);
+constexpr std::uintptr_t PKG_EVAL_CONDITIONS_RVA = 0x00768CC0;
+
 } // namespace fw::offsets

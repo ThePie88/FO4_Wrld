@@ -10,6 +10,7 @@
 #include "door_hook.h"
 #include "lock_hook.h"
 #include "npc_ai_suppress.h" // B6.5w4: Actor::Update_PerFrame detour
+#include "ghost_ai_package.h" // B6.5w12 hook #1: TESPackage::EvaluateConditions
 #include "../render/scene_render_hook.h" // B6.5w4 r4: late-frame NPC override
 #include "equip_cycle.h"     // B8: post-LoadGame BipedAnim normalize
 #include "equip_hook.h"      // M9 wedge 1: equipment-event sender hook
@@ -55,6 +56,12 @@ InstallSummary install_all(std::uintptr_t module_base,
     // uncontested. Single funnel for all 3 ProcessLists tier walkers
     // + forced-tick sites; one hook covers everything.
     s.npc_ai_suppress_ok = install_npc_ai_suppress(module_base);
+    // B6.5w12 Ghost AI hook #1: TESPackage::EvaluateConditions detour.
+    //   SKELETON for this step — log + passthrough only. Phase 4 will
+    //   wire the actual "return TRUE iff pkg.form_id == server.package_form_id
+    //   for tracked NPCs" logic. The skeleton's job is to prove the hook
+    //   installs at the right address and fires during live AI activity.
+    s.ghost_ai_package_ok = install_ghost_ai_package(module_base);
     // B6.5w4 round 4: scene_render hook for LATE-frame NPC pos/NIF
     // override. Fires once per frame at the trailing edge of the 3D
     // scene walker — after Havok physics + per-actor NIF sync. Writes
@@ -196,10 +203,13 @@ InstallSummary install_all(std::uintptr_t module_base,
 
     FW_LOG("hooks: install summary kill=%d container=%d put=%d pickup=%d "
            "pos=%d main_menu=%d worldstate=%d door=%d equip=%d "
-           "nif_cache=%d (total %zu/9)",
+           "lock=%d npc_ai_suppress=%d ghost_ai_pkg=%d nif_cache=%d "
+           "(total %zu/12)",
            int(s.kill_ok), int(s.container_ok), int(s.put_ok), int(s.pickup_ok),
            int(s.player_pos_ok), int(s.main_menu_ok), int(s.worldstate_ok),
-           int(s.door_ok), int(s.equip_ok), int(nif_cache_ok),
+           int(s.door_ok), int(s.equip_ok),
+           int(s.lock_ok), int(s.npc_ai_suppress_ok), int(s.ghost_ai_package_ok),
+           int(nif_cache_ok),
            s.success_count());
     return s;
 }

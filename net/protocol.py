@@ -32,7 +32,22 @@ from typing import ClassVar, Union
 # ------------------------------------------------------------------ constants
 
 PROTOCOL_MAGIC: int = 0xFA
-PROTOCOL_VERSION: int = 13
+PROTOCOL_VERSION: int = 14
+# v14 (2026-05-11): B6.5w12 Ghost AI decision-point sync — extends
+# NPCStateEntry (53 → 98 B) with AI state fields the server pre-computes
+# and pushes so the DLL's MinHook detours on engine decision functions
+# (TESPackage::EvaluateConditions, Actor::SyncCombatTargetFromAIProcess,
+# CombatAimController::SetAimTarget, Actor::TickMovementController, and
+# the 7 anim-graph state-transition entry points) can substitute the
+# server's value instead of letting local AI decide. This replaces the
+# v13 "override engine output" pattern (B6.5w4 rounds 1-11, closed) with
+# the inverse "redirect engine input" pattern — the engine still does
+# all rendering, animation, IK, physics, collision natively. Wire growth
+# per NPC: +45 B (package_form_id, combat_target_form_id, aim xyz,
+# velocity xyz, weapon_state, sighted, sprinting, sneaking, gun_down,
+# aggression, loco_state_pack, sandbox_marker_handle, sandbox_idle_index).
+# MAX_NPC_STATES_PER_FRAME drops 26 → 14 (MTU 1400 still trivial; at
+# 50 tracked NPCs the server emits 4 packets/tick instead of 2).
 # v13 (2026-05-10): B6.5w2 NPC continuous state sync — adds
 # NPC_STATE_BCAST (0x0270). Server-authoritative: the Python brain ticks
 # all tracked NPCs at npc_tick_hz (default 10 Hz) and broadcasts a batched
@@ -2023,33 +2038,96 @@ def chunk_mesh_blob(blob_bytes: bytes,
 # (RVA 0x818D60/D80/DA0; holder = Actor + 0x48; names from interned pool at
 # qword_1430DBF78[2700..3020] — see re/B6.5_npc_pipeline_AGENT_B.md).
 #
-# Wire layout per entry (53 B, no padding):
+# Wire layout per entry (98 B in v14, no padding):
+#
+#   v13 baseline (53 B):
 #     u32 form_id           # placed REFR formID — stable across processes
 #     u32 base_id           # TESNPC base — validation hint
 #     u32 cell_id           # parent cell formID
 #     f32 pos_x, pos_y, pos_z
 #     f32 yaw, pitch        # atan2 convention; receiver translates to engine heading
-#     u64 target_id         # B6.6: peer_id-derived hash or target form_id
+#     u64 target_id         # legacy general-purpose target (peer_id hash or form_id)
 #     u64 timestamp_ms      # server tick timestamp
-#     u8  anim_state        # AnimState enum (server/npc_brain.py)
+#     u8  anim_state        # legacy AnimState enum (server/npc_brain.py)
 #     u8  aggro_state       # AggroState enum
 #     u8  hp_pct            # 0..100, server-authoritative
 #     u8  target_kind       # 0=NONE, 1=PEER, 2=NPC
 #     u8  flags             # bit 0 = visible, bit 1 = invulnerable, bit 2 = essential
 #
+#   v14 additions for Ghost AI (45 B):
+#     u32 package_form_id         # server-chosen TESPackage (hook on
+#                                 # TESPackage::EvaluateConditions @ 0x00768CC0)
+#     u32 combat_target_form_id   # combat target form_id (hook on
+#                                 # Actor::SyncCombatTargetFromAIProcess @ 0x00C5CCE0)
+#     f32 aim_x, aim_y, aim_z     # aim world pos (hook on
+#                                 # CombatAimController::SetAimTarget @ 0x00E65820)
+#     f32 velocity_x, _y, _z      # server-decreed velocity (hook on
+#                                 # Actor::TickMovementController @ 0x00C65E20)
+#     u8  weapon_state            # 0=none/1=drawing/2=drawn/3=holstering
+#                                 # (hook on DrawWeapon dispatch @ 0x00C5D080)
+#     u8  sighted                 # 0/1 ADS (hook on SetSightedState @ 0x00CB13F0)
+#     u8  sprinting               # 0/1 (hook on SetSprintState @ 0x00CA6030)
+#     u8  sneaking                # 0/1 (hook on SetSneakState @ 0x00CA6220)
+#     u8  gun_down                # 0/1 gun lowered (hook on ResolveCombatStance @ 0x00CD6870)
+#     u8  aggression              # 0..100 (hook on UpdateAggressionToGraph @ 0x00E4D8A0)
+#     u16 loco_state_pack         # 6 sync ints packed (hook on LocoEventDispatch @ 0x00CEC200):
+#                                 #   bits 0    : iSyncIdleLocomotion (1 bit)
+#                                 #   bits 1-2  : iSyncTurnState      (2 bits, 0..2)
+#                                 #   bits 3    : iSyncForwardState   (1 bit)
+#                                 #   bits 4-5  : iSyncStrafeState    (2 bits, 0..2)
+#                                 #   bits 6-7  : iSyncJumpState      (2 bits, 0/1/3)
+#                                 #   bits 8    : iSyncSwimState      (1 bit)
+#                                 #   bits 9-15 : reserved
+#     u32 sandbox_marker_handle   # Sandbox marker ref handle (BGSProcedureSandbox state +88)
+#                                 # — 0 if NPC not in Sandbox or marker unset
+#     u8  sandbox_idle_index      # Sandbox idle index (state +100/+104), 0 = unused
+#
 # Frame layout:
 #     u16 count             # number of entries (≤ MAX_NPC_STATES_PER_FRAME)
 #     u16 reserved          # 0 — alignment + future flags
-#     count × NPCStateEntry # 53 B each
+#     count × NPCStateEntry # 98 B each (v14)
 #
-# Bandwidth ceiling: at 10 NPC × 10 Hz × 53 B = 5.3 KB/s/peer outbound. At
-# 50 NPC the chunked frames stay under MTU 1400.
+# Bandwidth ceiling: at 10 NPC × 10 Hz × 98 B = 9.8 KB/s/peer outbound. At
+# 50 NPC the chunked frames stay under MTU 1400 (4 packets / tick).
 # ============================================================================
+
+
+# v14 loco_state_pack helpers — pack/unpack the 6 sync ints into 16 bits.
+def pack_loco_state(
+    idle_loco: int = 0,    # 0..1
+    turn: int = 0,         # 0..2
+    forward: int = 0,      # 0..1
+    strafe: int = 0,       # 0..2
+    jump: int = 0,         # 0..3 (engine uses 0/1/3 but 2 bits cover them)
+    swim: int = 0,         # 0..1
+) -> int:
+    """Pack 6 locomotion sync ints into a u16 per v14 wire layout."""
+    return (
+        (idle_loco & 0x1)
+        | ((turn & 0x3) << 1)
+        | ((forward & 0x1) << 3)
+        | ((strafe & 0x3) << 4)
+        | ((jump & 0x3) << 6)
+        | ((swim & 0x1) << 8)
+    ) & 0xFFFF
+
+
+def unpack_loco_state(pack: int) -> tuple[int, int, int, int, int, int]:
+    """Reverse of pack_loco_state. Returns (idle, turn, fwd, strafe, jump, swim)."""
+    return (
+        pack & 0x1,
+        (pack >> 1) & 0x3,
+        (pack >> 3) & 0x1,
+        (pack >> 4) & 0x3,
+        (pack >> 6) & 0x3,
+        (pack >> 8) & 0x1,
+    )
 
 
 @dataclass(frozen=True, slots=True)
 class NPCStateEntry:
-    """One NPC's authoritative state. Width = 53 B."""
+    """One NPC's authoritative state. Width = 98 B (v14)."""
+    # v13 fields ---------------------------------------------------------
     form_id: int
     base_id: int
     cell_id: int
@@ -2065,11 +2143,34 @@ class NPCStateEntry:
     hp_pct: int
     target_kind: int
     flags: int
+    # v14 Ghost AI additions ---------------------------------------------
+    package_form_id: int = 0
+    combat_target_form_id: int = 0
+    aim_x: float = 0.0
+    aim_y: float = 0.0
+    aim_z: float = 0.0
+    velocity_x: float = 0.0
+    velocity_y: float = 0.0
+    velocity_z: float = 0.0
+    weapon_state: int = 0
+    sighted: int = 0
+    sprinting: int = 0
+    sneaking: int = 0
+    gun_down: int = 0
+    aggression: int = 0
+    loco_state_pack: int = 0
+    sandbox_marker_handle: int = 0
+    sandbox_idle_index: int = 0
 
-    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIfffffQQBBBBB")  # 53 B
+    # 53 B v13 prefix + 45 B v14 suffix = 98 B
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct(
+        "<IIIfffffQQBBBBB"          # v13 (53 B)
+        "IIffffffBBBBBBHIB"         # v14 (45 B): pkg/tgt + aim + vel + 6 u8 + u16 + u32 + u8
+    )
 
     def encode(self) -> bytes:
         return self._STRUCT.pack(
+            # v13
             self.form_id & 0xFFFFFFFF,
             self.base_id & 0xFFFFFFFF,
             self.cell_id & 0xFFFFFFFF,
@@ -2082,6 +2183,20 @@ class NPCStateEntry:
             self.hp_pct & 0xFF,
             self.target_kind & 0xFF,
             self.flags & 0xFF,
+            # v14
+            self.package_form_id & 0xFFFFFFFF,
+            self.combat_target_form_id & 0xFFFFFFFF,
+            self.aim_x, self.aim_y, self.aim_z,
+            self.velocity_x, self.velocity_y, self.velocity_z,
+            self.weapon_state & 0xFF,
+            self.sighted & 0xFF,
+            self.sprinting & 0xFF,
+            self.sneaking & 0xFF,
+            self.gun_down & 0xFF,
+            self.aggression & 0xFF,
+            self.loco_state_pack & 0xFFFF,
+            self.sandbox_marker_handle & 0xFFFFFFFF,
+            self.sandbox_idle_index & 0xFF,
         )
 
     @classmethod
@@ -2092,8 +2207,8 @@ class NPCStateEntry:
         return cls(*cls._STRUCT.unpack(data))
 
 
-# Cap derived from MTU: header (4) + N × 53 ≤ MAX_PAYLOAD_SIZE (1400).
-MAX_NPC_STATES_PER_FRAME: int = (MAX_PAYLOAD_SIZE - 4) // 53  # = 26
+# Cap derived from MTU: header (4) + N × 98 ≤ MAX_PAYLOAD_SIZE (1400).
+MAX_NPC_STATES_PER_FRAME: int = (MAX_PAYLOAD_SIZE - 4) // 98  # = 14 (v14)
 
 
 @dataclass(frozen=True, slots=True)
