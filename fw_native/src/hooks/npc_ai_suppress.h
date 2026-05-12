@@ -40,4 +40,75 @@ std::uint64_t get_npc_ai_suppress_fires();
 std::uint64_t get_npc_ai_passthrough_fires();
 std::uint64_t get_npc_ai_seh_failures();
 
+// B6.5w17 v3 — SHARED dynamic bail set.
+// Once an actor was ever auto-bailed (via InCombat-flag detection or
+// any other Path inside npc_ai_suppress.cpp's detour), its form_id is
+// inserted into a process-wide set. This query lets the OTHER ghost-AI
+// hooks (havok_step, actor_setpos, pos_belt, movement) also bail their
+// respective code paths for the same actor — without this, only
+// Update_PerFrame is silenced and Havok/anim/setpos continue to drive
+// the actor visually.
+//
+// Thread-safe (internal std::mutex). Cheap: O(log N) or O(1) hash.
+bool is_actor_bail_tracked(std::uint32_t form_id);
+
+// Count of distinct actors currently in the shared dynamic bail set.
+// Diagnostic, lock-free read of an atomic counter (so it can race
+// slightly behind the set's actual size, but never undercounts what we
+// announced).
+std::uint64_t get_dyn_bail_tracked_count();
+
+// B6.6w0 hook #3 (fire) helper: AIProcess* → form_id reverse map.
+//
+// The fire-decision hook (`ghost_ai_fire.cpp`) walks a TLS chain that
+// lands on the per-actor AIProcess struct (per disasm of sub_14086FCA0:
+// thread+0x158 deref → +0x68 deref = AIProcess). AIProcess does NOT
+// store the owner Actor pointer at any known offset, so we cannot
+// invert "which raider is firing this tick?" from the AIProcess alone.
+//
+// Strategy: `npc_ai_suppress` already fires for EVERY actor on EVERY
+// Update_PerFrame. On each fire we read `Actor+0x328 = AIProcess*` (per
+// disasm of sub_140C5CCE0 = SyncCombatTargetFromAIProcess) and register
+// (aiproc -> form_id) in a process-wide map. The fire hook then queries
+// this map to identify owner. Population is lazy (only actors that
+// actually tick get cached), eviction is implicit (actor destruction
+// stops feeding new entries; stale entries cause MISS → safe
+// passthrough, not false positive).
+//
+// Map is shared-mutex protected; reads dominate writes (writes only
+// once per actor's first tick or when AIProcess pointer changes —
+// engine never moves AIProcess in vanilla, so realistically writes
+// are bounded by total actor count).
+//
+// Returns true if mapped; fills *out_fid only on true. nullptr in
+// aiproc returns false. Lookup is O(1) hash.
+bool get_fid_for_aiproc(const void* aiproc, std::uint32_t* out_fid);
+
+// Diagnostic: how many distinct AIProcess pointers we've mapped.
+std::uint64_t get_aiproc_map_size();
+
+// B6.6w0 unified bail predicate.
+//
+// Returns true if the actor with this form_id should be frozen/silenced
+// by ALL freeze + B6.6 hooks. Consults TWO sources, OR'd:
+//
+//   1. Server-pushed cache (`fw::dispatch::get_cached_npc_state` →
+//      `movement_override != 0`) — populated immediately on
+//      NPC_STATE_BCAST. Catches raiders in `concord_museum_mvp.json`
+//      even before the engine ticks them locally.
+//
+//   2. Local dynamic set (`is_actor_bail_tracked`) — populated by
+//      npc_ai_suppress when InCombat flag (Actor+0x2D0 bit 0x4000)
+//      is detected during Update_PerFrame. Catches raiders that aren't
+//      in server config but became combat-engaged with the local player.
+//
+// The OR is essential: live test 2026-05-12 showed clients sometimes
+// diverge on which raiders enter local InCombat first, leaving the
+// dynamic set out of sync. The server cache is the symmetric ground
+// truth.
+//
+// Used by every freeze + B6.6 attack/movement hook to decide bail.
+// Cheap (atomic size check + at most one shared_lock on miss).
+bool should_freeze_actor(std::uint32_t form_id);
+
 } // namespace fw::hooks

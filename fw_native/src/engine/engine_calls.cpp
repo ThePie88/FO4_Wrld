@@ -1873,6 +1873,8 @@ bool apply_npc_state_to_actor(
         // the engine applies the anim's root-motion displacement to the
         // actor's pos each frame, fighting our writes. Setting to 0 makes
         // anim decorative (plays without translating the actor).
+        // (B6.5w12: same logic also exposed via set_actor_anim_driven()
+        //  for the movement-bail hook.)
         if (g_set_graph_var_bool && g_bs_anim_driven.pool_entry) {
             __try {
                 g_set_graph_var_bool(holder, &g_bs_anim_driven,
@@ -2009,6 +2011,28 @@ bool set_actor_motion_keyframed(void* actor) {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         FW_WRN("engine: SEH in set_actor_motion_keyframed actor=%p root3d=%p",
                actor, root3d);
+    }
+    return ok;
+}
+
+bool set_actor_anim_driven(void* actor, bool value) {
+    if (!actor) return false;
+    if (!g_ready.load(std::memory_order_acquire)) return false;
+    if (!g_set_graph_var_bool || !g_bs_anim_driven.pool_entry) return false;
+
+    // Anim graph holder = Actor + 0x48 (IANIMGRAPHHOLDER_OFF).
+    void* holder = reinterpret_cast<void*>(
+        reinterpret_cast<std::uint8_t*>(actor) +
+        offsets::IANIMGRAPHHOLDER_OFF);
+
+    bool ok = false;
+    __try {
+        g_set_graph_var_bool(holder, &g_bs_anim_driven,
+                             value ? static_cast<char>(1) : static_cast<char>(0));
+        ok = true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("engine: SEH in set_actor_anim_driven actor=%p value=%d",
+               actor, int(value));
     }
     return ok;
 }

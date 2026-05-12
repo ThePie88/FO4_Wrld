@@ -6,6 +6,18 @@ This project uses unconventional approaches in several critical areas (scene gra
 Fallout 4 1.11.191 next-gen — multiplayer mod (FoM-lite framework).
 Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 
+> **Status (2026-05-12):** **B6.5 / B6.6 NPC AI sync infrastructure WIP** —
+> tracked raiders are frozen, immortal, and visually neutral on both
+> peers (no aim, no head tracking, no hostile barks, no hit reaction).
+> 10 MinHook detours cover the NPC AI / combat decision pipeline;
+> Python server-side combat brain scaffold in
+> `net/server/raider_brain.py` (25 passing unit tests). Headline hook:
+> `Actor::vt[255] = sub_140CCFDF0` — bailing this single per-actor
+> per-frame combat orchestrator short-circuits target promotion, fire
+> decide, dispatch attack, and aim update in one shot. Working tree,
+> no tag. Server-driven aggro / damage flow / movement substitution
+> are the next wedges. See [CHANGELOG.md](CHANGELOG.md).
+>
 > **Status (2026-04-27):** ghost player body **animates** in real time —
 > ~31 joints (full body chain incl. head + hands) replicated over network
 > at 20Hz. Walking / running / idle / sneak / turn / jump pose visible
@@ -211,8 +223,8 @@ in real time).
 | ↳ **B6.2** Lights toggle sync (lamps, lanterns, generators) | ⏳ — same Activate worker pattern as doors, formType filter on `0x20` LIGH |
 | ↳ **B6.3** Locks state sync (lockpicked → unlocked cross-client) | ✅ done (v0.5.3, 2026-05-08) — sender hooks `ForceUnlock` (`sub_140563320`) + `ForceLock` (`sub_140563360`); receiver applies via Papyrus `ObjectReference.Lock` binding (`sub_141158640`) with `ai_notify=0` to skip minigame + key consumption. Wire proto v12 ships `(form_id, base_id, cell_id, locked, ts)`. Covers doors, safes, weapon lockers, terminal-linked containers. Server persists per-(base, cell) state + replays on peer-join bootstrap. |
 | ↳ **B6.4** Terminals state sync (hacked / unlocked) | ✅ done (v0.5.6, 2026-05-10) — implicit closure: a successful terminal hack flips `ExtraLock` via the engine's `ForceUnlock` (`sub_140563320`), already detoured by B6.3. Broadcast and receiver-apply paths are identical to those for doors / safes / weapon lockers. Zero new code. Verified live on the Sanctuary terminal-house during the v0.5.6 cell-entry crash fix test pass. |
-| ↳ **B6.5** NPC actor pos + pose sync | ⏳ — extend POSE_BROADCAST to remote actors with authority-per-NPC model. The big one — turns "co-op chat in same world" into "actual multiplayer game" |
-| ↳ **B6.6** NPC combat target + aggro sync | ⏳ — RE `CombatController::SetTarget`, broadcast NPC→target so observers see "raider shoots peer A" not "raider shoots air" |
+| ↳ **B6.5** NPC actor pos + pose sync | 🟡 WIP (2026-05-12) — tracked raiders frozen cross-client via 10-hook AI suppression stack (Update_PerFrame bail, Havok step bail, two pos writers, movement decision funnel, combat orchestrator NUKE on `Actor::vt[255]`); AIProcess→fid reverse map. Server-driven pos / pose substitution still pending. Working tree, no tag. |
+| ↳ **B6.6** NPC combat target + aggro sync | 🟡 WIP (2026-05-12) — 10-agent IDA pair arena ran on the Hex-Rays decomp (dossiers in `re/B6.6w0_pair_AGENT_*.md`); hooks installed at `AIProcess::SetCombatTarget`, `Actor::DispatchAttackAction`, `CombatBehaviorGunFire::DecideAndFire`, central hit applier. NUKE pattern works (tracked NPCs neutralised on both peers, immortal, crash-free under fire). Server-driven substitution + damage flow opcode pending. Python combat brain `raider_brain.py` scaffolded (25 unit tests). |
 | ↳ **B6.7** NPC dialogue state + faction joined | ⏳ — quest-stage adjacent; brainstorm §3.2 says 10 players = 1 entity, simplifies state |
 | ↳ **B6.8** Companion state (recruited / position) | ⏳ — companions are NPCs with extra ownership flag |
 | ↳ **B6.9** Cell-cleared status (no respawn after group clear) | ⏳ — `cleared` flag in cell extra-data, persisted server-side |
@@ -246,6 +258,70 @@ in real time).
 
 Latest 3 patches summarized below. **Full version history in
 [CHANGELOG.md](CHANGELOG.md).**
+
+### B6.5 / B6.6 WIP (2026-05-12) — NPC AI sync infrastructure — UNSTABLE
+
+Working tree, no tag. Cross-client behaviour today: tracked raiders
+are frozen, immortal, and visually neutral on both peers (no aim,
+no head tracking, no hostile barks, no hit reaction). 10 MinHook
+detours cover the NPC AI / combat decision pipeline; a Python
+server-side combat brain scaffold sits in `net/server/raider_brain.py`
+(25 passing unit tests). Server-driven aggression and damage flow
+are the next wedges.
+
+**RE pass.** 10-agent IDA pair arena on the Hex-Rays decomp;
+dossiers under `re/B6.6w0_pair_AGENT_{A1,A2,B1,B2,C1,C2,D1,D2,E1,E2}.md`.
+Two independent analysis paths per hook target. Headline finding:
+the per-actor combat brain entry is `Actor::vt[255] = sub_140CCFDF0`,
+called from `Main::TickFrame` via the AI fan-out chain. Bailing
+this one function for tracked NPCs short-circuits the entire
+combat pipeline — target promotion, fire decide, dispatch attack,
+aim update — in a single hook.
+
+**Unified freeze predicate.** `should_freeze_actor(form_id)` ORs
+two sources: the server cache (`movement_override` pushed via
+`NPC_STATE_BCAST`, symmetric across peers) and a local dynamic
+set auto-populated by `npc_ai_suppress` from the `InCombat` flag
+at `Actor+0x2D0 bit 0x4000`. Required after a B-vs-A asymmetry
+where dyn-set-only checks left some actors uncovered on one peer.
+
+**Hit-applier bail** (`sub_140CD2780`) — closed a deterministic
+crash where damaging a frozen raider AV'd 3 seconds later. Root
+cause: the engine's stagger and hit-react sub-handlers were
+writing into a frozen anim graph and leaving the state machine
+inconsistent for a later access. Bailing the orchestrator
+short-circuits all three downstream handlers; tracked NPCs are
+now invulnerable client-side and crash-free under fire. The
+target Actor was misidentified at `rcx+0x300` in the initial D2
+dossier; live test confirmed `rcx` itself is the target Actor.
+
+**AIProcess→fid reverse map.** Populated lazily by
+`npc_ai_suppress` (every Update_PerFrame fire reads `Actor+0x328`
+and inserts the pair under a shared_mutex). Used by the
+fire-decide and combat-target hooks where AIProcess is reachable
+via a TLS chain but the owner Actor is not directly available.
+
+**Server brain scaffold.** `net/server/raider_brain.py` (~430
+lines, 25 passing unit tests). Combat state machine per raider:
+target selection with hysteresis + lost-target timeout, fire
+cooldown gating, chest-height aim bias, shoot-to-aggro, damage
+application with lethal-tier transition, per-peer projection of
+`combat_target_form_id` / `aim_target_xyz` / `fire_this_tick`
+for each `NPC_STATE_BCAST` entry. Not yet wired into the main
+tick loop.
+
+**Wire proto v14** is already in place from earlier B6.5w12
+work and carries the fields the substitution path needs
+(`combat_target_form_id`, `aim_xyz`, `velocity_xyz`). No bump
+required for the MVP combat substitution.
+
+**Not done.** Server-driven aggro (raider attacks peer A on
+server command — needs conditional bail in `should_freeze_actor`
+plus Phase 2 substitution in `set_combat_target`); damage flow
+opcode (`PEER_HIT_REPORT` C→S + validation +
+`NPC_DAMAGE_TAKEN` BCAST); server-driven movement; `main.py`
+wiring of `raider_brain`. Full per-hook detail in
+[CHANGELOG.md](CHANGELOG.md).
 
 ### B6.4 v0.5.6 (2026-05-10) — interior cell-entry crash fix + B6.4 free closure — HOTFIX
 
@@ -329,43 +405,6 @@ Latest 3 patches summarized below. **Full version history in
   a synced container freezing the taker's main thread. Same root
   cause — B8's corrupted engine state — surfaced via two different
   triggers (bridge cell stream / container auto-equip). Both gone now.
-
-### B6.4-pre v0.5.4 (2026-05-08) — bridge crash fix: B8 disabled — HOTFIX
-
-- **Bridge crash.** Deterministic main-thread freeze when crossing
-  Sanctuary→Red Rocket bridge, both clients, every time. Vanilla FO4
-  walked through cleanly — DLL was at fault. Frida + WinDbg pinned
-  the wedge: main parked forever in
-  `WaitForSingleObjectEx(JobListMgr+0x60, INFINITE)` from
-  `sub_140BD4CA0` (BSJobs serving-thread wait); hung JobList was
-  `PostMainRenderJobList`. A worker had stopped signaling completion.
-- **Bisection eliminated** `FW_LOG`/`FlushFileBuffers` contention,
-  the four M9 wedge-4 worker hooks, Strada B SSN injection, and SPAI
-  weapon prewarm — one by one. Last suspect standing was B8.
-- **Root cause.** `equip_cycle.cpp`'s direct engine call to
-  `ActorEquipManager::Equip` / `Unequip` on the Vault Suit at T+10s
-  post-LoadGame AV'd internally every boot. SEH wrapper hid the AV
-  but the half-completed equip left engine state corrupted at a
-  sub-visible level. Sanctuary indoor cells didn't trigger the bad
-  paths; the bridge's heavy exterior cell-streaming did — one
-  streamed cell re-invoked the auto-equip pipeline on a BSJobs
-  PostMainRender worker with no SEH protection. AV → silent thread
-  termination → JobListMgr never got completion signal → INFINITE
-  wait → frozen process.
-- **Fix.** Disabled both B8 arm sites:
-  `hooks/main_menu_hook.cpp` (boot-time arm) and `net/client.cpp`
-  (peer-join re-arm). `equip_cycle.{h,cpp}` left compiled-but-uninvoked
-  for archeological reference. Live test confirmed: bridge works,
-  modded weapons still display via M9 witness pipeline (event-driven),
-  clothes change still works (the original M8P3 bug B8 was patching
-  has been resolved as a side effect of later M9 / pose-tx evolution).
-- **Side effect.** Apparel passively worn at LoadGame doesn't
-  broadcast to peers anymore (peer ghosts spawn naked until they
-  actively equip something). Replacement scaffolded as
-  `hooks/equip_announce.{h,cpp}` (NON TESTATO, not invoked) for a
-  future minimal apparel-bootstrap broadcast that doesn't go through
-  the engine equip path. Tag
-  `v0.5.4-b6.4-pre-bridge-crash-fix`.
 
 ## Why this exists
 

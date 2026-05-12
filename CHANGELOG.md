@@ -5,6 +5,204 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## B6.5 / B6.6 WIP — NPC AI sync infrastructure (2026-05-12) — UNSTABLE
+
+Working tree, no tag. The pieces below land in the working tree but
+the cross-client experience is "tracked raiders are frozen, immortal,
+and visually neutral"; server-driven aggression / movement / damage
+flow is the next wedge.
+
+### Achieved cross-client
+
+Both clients show identical state for tracked raiders (14 placed in
+the Concord Museum cluster): position frozen, no combat behaviour
+(no aim, no head tracking, no hostile barks, no hit reaction),
+invulnerable to local player attacks (no hit reaction, no HP
+decrement, no ragdoll on death). Knockdown anim still plays on
+takedown via an engine sub-path independent of the hooked
+orchestrator, but the NPC re-emerges in passive state and stays
+cross-client consistent. Verified live on both peers.
+
+### RE pass — 10-agent IDA pair arena
+
+Ran on the full Hex-Rays decomp at `D:\falloutworld_decomp\out\`.
+Each candidate hook target attacked from two independent paths
+(downstream-from-output and upstream-from-projectile, for example)
+to cross-check. Dossiers in
+`re/B6.6w0_pair_AGENT_{A1,A2,B1,B2,C1,C2,D1,D2,E1,E2}.md`.
+
+Headline findings:
+
+- **Combat brain entry per-actor per-frame:**
+  `Actor::vt[255] = sub_140CCFDF0`, called from
+  `Main::TickFrame → sub_140ED2280 (AI fan-out) → sub_140ED4760
+  (task thunk) → Actor::vt[255]`. Bailing this single function
+  for tracked NPCs short-circuits the entire downstream pipeline
+  (target promotion, fire decide, dispatch attack, aim update).
+- **Real combat-target writer:** `sub_140C5CCE0` (mirror, our
+  previous hook target) is a pure copy
+  `AIProcess+0x6C → Actor+0x380`; the AI's actual reads come
+  from `AIProcess+0x6C`, written by
+  `AIProcess::SetCombatTarget @ sub_14087AB30(AIProcess* rcx,
+  Actor* rdx)` per A1+A2 convergence. The new hook is on
+  `sub_14087AB30`; the old mirror hook stays installed as a
+  diagnostic but no longer drives substitution.
+- **Universal attack-action funnel:**
+  `Actor::DispatchAttackAction @ sub_140E6F830(Actor*, action_id, flags)`.
+  C1+C2 convergence. Covers single-shot, burst, suppressive,
+  suppressive-burst, melee, power attack. Bailing here silences
+  everything in one hook (the leaf-level
+  `CombatBehaviorGunFire::DecideAndFire @ sub_14086FCA0` covers
+  single-shot only).
+- **Movement decision funnel:**
+  `AIProcess::ProcessPackages_Movement @ sub_140CEEC30(AIProcess*, Actor*, char)`
+  per B1. Sits upstream of all pos writers already hooked.
+- **Central hit applier orchestrator:**
+  `sub_140CD2780(__m128* a1, __m128* a2)`. D2 dossier mis-typed
+  the target Actor location as `*(a1+0x300)`; live test showed
+  `a1` itself is the target Actor — pseudo-C reads `a1[13]` as
+  the NiPoint3 world pos (= `Actor+0xD0`), confirming. Hook
+  reads form_id at `a1+0x14`.
+- **C1 mis-identification corrected:** `sub_140479680` was
+  labelled "Actor::FireWeapon" in the C1 dossier. Live test
+  proved `rcx` at entry is a stack pointer (~`0x000000F9XXX`
+  range, not heap range), and pseudo-C confirmed the signature
+  is `(__int64* stack_buf, __m128* arg2, ...)` — utility, not
+  Actor::FireWeapon. Dropped that hook target.
+
+### Hooks installed (10 total)
+
+| Module | RVA / target | Role |
+|---|---|---|
+| `npc_ai_suppress` | `0xC636A0` | `Actor::Update_PerFrame` bail. Also populates the `AIProcess* → form_id` reverse map by reading `Actor+0x328` on every fire. |
+| `ghost_ai_havok_step` | `0x18B9790` | `bhkCharRigidBodyController::FinishPhysicsStep` bail. Owner Actor at `controller+0x3E0`. |
+| `ghost_ai_pos_belt` | `0x513A80` | `SetPosition_NiPoint3` bail. |
+| `ghost_ai_actor_setpos` | Actor vt[202] | Full bail of the SetPosition path + the direct `NIF+0x60` write that bypasses `ghost_ai_pos_belt`. |
+| `ghost_ai_fire` | `0x86FCA0` | `CombatBehaviorGunFire::DecideAndFire` bail. Single-shot only; burst/suppressive caught by `dispatch_attack`. Owner Actor identified via the TLS chain `*((TLS_array[*(u32*)0x143E5C658] + 0x8F0)) → +0x158 → +0x68` (yields AIProcess) plus the AIProcess→fid map. |
+| `ghost_ai_dispatch_attack` | `0xE6F830` | `Actor::DispatchAttackAction` bail. Universal attack-action funnel. Actor* in `rcx`. |
+| `ghost_ai_process_movement` | `0xCEEC30` | `AIProcess::ProcessPackages_Movement` bail. Actor* in `rdx`. |
+| `ghost_ai_set_combat_target` | `0x87AB30` | `AIProcess::SetCombatTarget(AIProcess*, Actor*)` — diagnostic-only this iteration, ready for Phase 2 server-driven target substitution. Owner Actor resolved via the AIProcess→fid map. |
+| `ghost_ai_hit_applier` | `0xCD2780` | Central hit applier orchestrator BAIL. Skips stagger applier + hit-react animator + HP write + ragdoll setup. Crash-prevention critical: tracked NPCs are now invulnerable client-side and crash-free under fire. |
+| `ghost_ai_combat_orchestrator` | `0xCCFDF0` | `Actor::vt[255]` per-actor combat brain BAIL. The NUKE — short-circuits the entire per-actor per-frame combat pipeline. |
+
+Existing diagnostic-only hooks left installed: `ghost_ai_aim`,
+`ghost_ai_package`, `ghost_ai_combat_target` (the old mirror — not
+the new `set_combat_target`).
+
+### Unified freeze predicate
+
+`should_freeze_actor(form_id)` consolidates two sources, OR'd:
+
+1. **Server cache** — `fw::dispatch::get_cached_npc_state` reads
+   `movement_override`, set from `NPC_STATE_BCAST`. Symmetric
+   across peers because both receive the same broadcast and apply
+   it identically.
+2. **Local dynamic set** — `is_actor_bail_tracked` reads an
+   `unordered_set<u32>` auto-populated by `npc_ai_suppress` when
+   the `InCombat` flag (`Actor+0x2D0 bit 0x4000`) is observed
+   during Update_PerFrame. Asymmetric: only catches actors the
+   local engine has ticked into combat with the local player.
+
+The OR is required after a live B-vs-A asymmetry: client B
+auto-tracked only 13 raiders by the time client A had auto-tracked
+16, leaving three Concord raiders un-bailed on B and free to
+attack. The server-cache source closes that gap because the
+14 raiders in `concord_museum_mvp.json` are pushed with
+`movement_override=1` to every connected peer.
+
+Used by every B6.5 freeze + B6.6 combat hook to decide bail.
+
+### AIProcess → form_id reverse map
+
+`npc_ai_suppress` populates a process-wide
+`unordered_map<const void*, u32>` lazily: every Update_PerFrame
+fire reads `Actor+0x328` (= AIProcess*) and inserts the pair
+under a `shared_mutex`. Used by the fire-decide and
+combat-target hooks where AIProcess is reachable (via a TLS
+chain or as a direct arg) but the owner Actor is not. The
+reverse map is asymmetric across clients (lazy from local
+ticks), but the unified predicate compensates via the symmetric
+server cache.
+
+### Server brain scaffold
+
+`net/server/raider_brain.py` — ~430 lines, 25 passing unit
+tests (`net/tests/test_raider_brain.py`). Combat state machine
+per raider:
+
+- Target selection with hysteresis (`swap_hysteresis_ft`) +
+  lost-target timeout (`target_loss_ms`).
+- Fire cooldown gating per weapon (`fire_cooldown_ms`).
+- Chest-height aim bias (`AIM_VERTICAL_OFFSET_FT = 70`).
+- Shoot-to-aggro: damage from a peer immediately makes that peer
+  the aggro target even if not previously selected.
+- Damage application with lethal-tier transition.
+- Per-peer projection: `project_for_peer(form_id, peer_id)`
+  generates per-peer `combat_target_form_id` /
+  `aim_target_xyz` / `fire_this_tick` fields. The
+  `combat_target_form_id` substitution is per-peer (each
+  client's own local `PlayerCharacter.formID = 0x14` for the
+  chosen target peer, `0` for others); the aim point and fire
+  timing are world-frame and identical across peers.
+
+Not yet wired into `net/server/main.py`'s periodic tick loop.
+
+### Wire proto v14
+
+Already in place from earlier B6.5w12 work and unchanged here.
+`NPCStateEntry` is 98 bytes and carries `package_form_id`,
+`combat_target_form_id`, `aim_xyz`, `velocity_xyz`,
+`weapon_state`, plus 6 1-bit locomotion fields packed into a
+u16 `loco_state_pack`. No protocol bump required for the MVP
+combat substitution.
+
+### Not done
+
+- **Server-driven aggro** (raider attacks peer A on server
+  command). Requires inverting `should_freeze_actor` to return
+  `false` when the server cache has an active opinion
+  (`combat_target_form_id != 0`), plus Phase 2 substitution in
+  `ghost_ai_set_combat_target` to swap `rdx` Actor* for the
+  server-chosen target. With both in place the engine handles
+  aim and fire automatically using the substituted target.
+- **Damage flow opcode**: `PEER_HIT_REPORT(npc_form_id,
+  weapon_form, dmg_claimed, hit_zone, ts)` C→S, server
+  validation via `raider_brain.apply_damage`, server BCAST
+  `NPC_DAMAGE_TAKEN(form_id, dmg, source, ts)`, client applies
+  HP via the engine path. Tracked NPCs are currently
+  unconditionally immortal client-side because `hit_applier`
+  bails all damage processing.
+- **Server-driven movement** (raider takes cover, advances).
+  Requires conditional bail in `process_movement` plus
+  per-peer velocity broadcast (the field exists in proto v14
+  already). Navmesh remains deferred per the NPCs.md
+  "Option B asymmetric peer query" plan.
+- **`main.py` wiring** of `raider_brain` into the periodic
+  tick loop, plus building the `peers` snapshot from
+  `ServerState`.
+
+### Notable iteration costs
+
+- The first fire-suppression hook target (`sub_140479680`,
+  labelled "Actor::FireWeapon" by C1) turned out to take a
+  stack-buffer first arg, not Actor*. Spent an iteration
+  debugging garbage form_ids (`0x178` every fire — the heap
+  base prefix of a stack pointer read at `+0x14`). Pseudo-C
+  inspection of the actual signature would have caught this
+  upfront. Lesson logged inline in `offsets.h`.
+- D2 dossier's "target Actor at hit_data+0x300" — wrong. Live
+  test showed `rcx` itself is the target Actor; `+0x300` is an
+  internal sub-component (MiddleProcess?). Pseudo-C
+  `a1[13].m128_f32[0]` = `a1+0xD0` = NiPoint3 read confirmed
+  `a1` is Actor. Lesson logged inline.
+- C1's `bool sub_14086FCA0(void)` zero-arg signature with hidden
+  TLS chain caught me out at first — the function reads a
+  process-wide tlsIdx and indexes the per-thread TLS array.
+  Sanity-checking `tls_idx == 0` as garbage was wrong (the
+  engine's index legitimately starts at 0 in 1.11.191).
+
+---
+
 ## B6.4 v0.5.6 — Interior cell-entry crash fix + B6.4 implicit closure (2026-05-10) — HOTFIX
 
 Deterministic crash on a peer's machine when another peer crossed into

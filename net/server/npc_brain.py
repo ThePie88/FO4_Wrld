@@ -144,6 +144,14 @@ class NPCRuntime:
     last_tick_ms: float = 0.0
     last_change_ms: float = 0.0           # last anim_state transition
 
+    # B6.5w12 v14 — Ghost AI server-authoritative decisions.
+    # Default 0 = "no override, pass through to vanilla AI logic" (the
+    # client's MinHook detour checks for non-zero before substituting).
+    # Phase 3 step A: field exists, brain still emits 0 (plumbing only).
+    # Phase 3 step B+: brain decides actual values per NPC.
+    package_form_id: int = 0              # hook: TESPackage::EvaluateConditions
+    combat_target_form_id: int = 0        # hook: SyncCombatTargetFromAIProcess
+
 
 class NPCBrain:
     """Authoritative NPC state machine + waypoint patroller.
@@ -212,10 +220,19 @@ class NPCBrain:
                 pz = float(spawn["z"])
                 yaw = float(spawn.get("yaw", 0.0))
 
+            # B6.5w12 v14 Ghost AI per-NPC overrides (optional in JSON).
+            # Each field if present forces the engine's corresponding
+            # decision-point hook to substitute the server's value for
+            # this NPC. Default 0 = "no override; vanilla AI decides".
+            package_fid = _parse_hex(n.get("package_form_id", 0))
+            combat_tgt_fid = _parse_hex(n.get("combat_target_form_id", 0))
+
             runtime = NPCRuntime(
                 spec=spec,
                 pos_x=px, pos_y=py, pos_z=pz,
                 yaw=yaw,
+                package_form_id=package_fid,
+                combat_target_form_id=combat_tgt_fid,
             )
             if spec.form_id in self.npcs:
                 log.warning(

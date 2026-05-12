@@ -976,6 +976,9 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 hp_pct=r.hp_pct,
                 target_kind=r.target_kind,
                 flags=1,  # bit 0 = visible (always, for now)
+                # B6.5w12 v14 Ghost AI fields
+                package_form_id=r.package_form_id,
+                combat_target_form_id=r.combat_target_form_id,
             )
             for r in npcs
         ]

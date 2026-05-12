@@ -1190,41 +1190,63 @@ void Client::dispatch(const Delivered& d) {
             break;
         }
 
-        std::vector<fw::dispatch::PendingNPCStateEntry> batch;
-        batch.reserve(hdr.num_entries);
+        // B6.5w12 deprecation: the OLD per-BCAST apply pipeline
+        // (enqueue → PostMessage FW_MSG_NPC_STATE_APPLY → drain →
+        // apply_npc_state_to_engine writing pos/yaw/anim onto Actor) is
+        // CLOSED. It was the third write path of the rounds 1-11 output-
+        // override approach; missed during the initial deprecation pass
+        // (only scene_render_hook and npc_ai_suppress detour bodies were
+        // commented). With it still active, every 10 Hz BCAST teleported
+        // the actor to the server's pos field — and since the server
+        // hasn't been rewritten yet to broadcast meaningful pos for
+        // companion-class NPCs (Codsworth/Dogmeat use script-driven AI,
+        // not package selector), the BCAST pos was effectively a static
+        // spawn-point, causing the actor to flicker between its local AI
+        // pose and the server's stale snapshot.
+        //
+        // Ghost AI does NOT apply pos via per-BCAST writes. Pos changes
+        // come from the engine's natural movement integration after our
+        // hook on Actor::TickMovementController (Phase 4) substitutes
+        // velocity. Until that hook lands, tracked NPCs simply move via
+        // vanilla AI — same as untracked NPCs. The cache is still kept
+        // updated below for the Ghost AI hooks that consume v14 fields
+        // (package_form_id is wired now; combat target / aim / velocity
+        // / anim states wire in subsequent phases).
         const std::uint8_t* p = d.payload.data() + sizeof(hdr);
         for (std::uint16_t i = 0; i < hdr.num_entries; ++i) {
             NPCStateEntry wire{};
             std::memcpy(&wire, p + i * sizeof(NPCStateEntry), sizeof(wire));
-            fw::dispatch::PendingNPCStateEntry pe{};
-            pe.form_id      = wire.form_id;
-            pe.pos_x        = wire.pos_x;
-            pe.pos_y        = wire.pos_y;
-            pe.pos_z        = wire.pos_z;
-            pe.yaw_deg_math = wire.yaw;     // brain emits degrees, math conv
-            pe.anim_state   = wire.anim_state;
-            batch.push_back(pe);
-
-            // B6.5w4 round 2: update the per-NPC cache. The main-thread
-            // suppression detour reads this on each Actor::Update_PerFrame
-            // fire (~60 Hz) and POST-overwrites pos/yaw/anim from cache so
-            // the engine's NIF sync runs (renderer sees our pos) but our
-            // writes become authoritative on each frame.
+            // Phase 4 hook #4: derive `movement_override` from the server's
+            // movement intent. For the MVP visible test (raiders freeze)
+            // we use the bit "server has combat_target_form_id non-zero"
+            // as the gate AND wait for an explicit flag in v15. For now,
+            // we drive movement_override directly from combat_target_form_id
+            // != 0 — tracked combat raiders freeze, untracked stay vanilla.
+            const std::uint8_t mov_override =
+                (wire.combat_target_form_id != 0) ? 1u : 0u;
             fw::dispatch::update_npc_cache(
                 wire.form_id,
                 wire.pos_x, wire.pos_y, wire.pos_z,
-                wire.yaw, wire.anim_state);
+                wire.yaw, wire.anim_state,
+                wire.package_form_id,
+                wire.combat_target_form_id,
+                wire.velocity_x, wire.velocity_y, wire.velocity_z,
+                mov_override);
         }
-        fw::dispatch::enqueue_npc_state_apply(batch);
         // Spot-check log of the first entry — useful for confirming the
         // pipeline is live without spamming at 10 Hz.
-        FW_DBG("net: NPC_STATE_BCAST count=%u first formid=0x%X pos=(%.1f,%.1f,%.1f) "
-               "yaw=%.2f anim=%u enqueued for main-thread apply",
-               static_cast<unsigned>(hdr.num_entries),
-               batch[0].form_id,
-               batch[0].pos_x, batch[0].pos_y, batch[0].pos_z,
-               batch[0].yaw_deg_math,
-               static_cast<unsigned>(batch[0].anim_state));
+        if (hdr.num_entries > 0) {
+            NPCStateEntry first{};
+            std::memcpy(&first, p, sizeof(first));
+            FW_DBG("net: NPC_STATE_BCAST count=%u first formid=0x%X pos=(%.1f,%.1f,%.1f) "
+                   "yaw=%.2f anim=%u pkg=0x%X — cache updated, no per-BCAST apply",
+                   static_cast<unsigned>(hdr.num_entries),
+                   first.form_id,
+                   first.pos_x, first.pos_y, first.pos_z,
+                   first.yaw,
+                   static_cast<unsigned>(first.anim_state),
+                   first.package_form_id);
+        }
         break;
     }
 

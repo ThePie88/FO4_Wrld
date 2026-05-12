@@ -271,14 +271,51 @@ struct CachedNPCState {
     float          yaw_deg_math;  // server brain emits in math conv (atan2 deg)
     std::uint8_t   anim_state;    // AnimState enum (server/npc_brain.py)
     std::uint64_t  last_update_ms;
+
+    // B6.5w12 v14 — Ghost AI server-authoritative state.
+    // Each field has a corresponding MinHook detour in hooks/ghost_ai_*.cpp
+    // that reads from this cache (via get_cached_npc_state) and substitutes
+    // the server's value for tracked NPCs. Zero = "server has no opinion;
+    // pass through to vanilla AI logic".
+    std::uint32_t  package_form_id;        // hook: TESPackage::EvaluateConditions
+    std::uint32_t  combat_target_form_id;  // hook: SyncCombatTargetFromAIProcess
+    float          velocity_x;             // hook: Actor::TickMovementController
+    float          velocity_y;
+    float          velocity_z;
+    std::uint8_t   movement_override;      // 1 = bail movement (use server velocity);
+                                           // 0 = vanilla movement
 };
 
 // Net thread (client.cpp NPC_STATE_BCAST handler): cache the latest server
 // state for one NPC. Idempotent on repeats; just overwrites the entry.
+//
+// `package_form_id` (B6.5w12 v14): if non-zero, the Ghost AI predicate hook
+// will force the engine to select this specific TESPackage for the actor
+// (assuming the package is in the actor's candidate list). Zero leaves the
+// vanilla AI selection untouched.
+//
+// `combat_target_form_id` (B6.5w12 v14): if non-zero, the Ghost AI combat-
+// target hook will write this form_id into Actor+0x380 and force the
+// InCombat flag, instead of letting AIProcess+0x6C drive it. Zero leaves
+// the engine's natural combat-target tracking untouched.
+//
+// `velocity_x/y/z` (B6.5w12 v14): server's velocity vector for the actor.
+// Consumed by the movement hook when `movement_override` is non-zero.
+//
+// `movement_override` (B6.5w12 v14): if non-zero, the movement hook
+// BAILS the engine's TickMovementController for this actor — pos is
+// expected to be driven elsewhere (server pos write or velocity-integration
+// in the hook itself; current MVP uses BAIL + freeze for visual verify).
 void update_npc_cache(std::uint32_t form_id,
                      float pos_x, float pos_y, float pos_z,
                      float yaw_deg_math,
-                     std::uint8_t anim_state);
+                     std::uint8_t anim_state,
+                     std::uint32_t package_form_id = 0,
+                     std::uint32_t combat_target_form_id = 0,
+                     float velocity_x = 0.0f,
+                     float velocity_y = 0.0f,
+                     float velocity_z = 0.0f,
+                     std::uint8_t movement_override = 0);
 
 // Main thread (suppression detour): fetch the latest cached state for
 // one form_id. Returns true if present (= tracked); fills `*out` only on

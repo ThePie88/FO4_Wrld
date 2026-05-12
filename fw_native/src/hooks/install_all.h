@@ -31,6 +31,13 @@ struct InstallSummary {
     bool lock_ok        = false;    // B6.3 v0.5.3: ForceUnlock + ForceLock detours
     bool npc_ai_suppress_ok = false; // B6.5w4: Actor::Update_PerFrame detour (per-NPC AI skip)
     bool ghost_ai_package_ok = false; // B6.5w12 hook #1: TESPackage::EvaluateConditions
+    bool ghost_ai_combat_target_ok = false; // B6.5w12 hook #2: SyncCombatTargetFromAIProcess
+    bool ghost_ai_aim_ok = false; // B6.5w12 hook #3: CombatAimController::SetAimTarget
+    bool ghost_ai_movement_ok = false; // B6.5w12 hook #4: Actor::TickMovementController
+    bool ghost_ai_pos_belt_ok = false; // B6.5w13 hook #5: SetPosition_NiPoint3 (belt-and-braces)
+    bool ghost_ai_actor_setpos_ok = false; // B6.5w14 hook #6: vt[202] Actor::SetPosition (catches NIF+0x60 bypass)
+    bool ghost_ai_havok_step_ok = false;   // B6.5w15 hook #7: bhkCharRigidBodyController::FinishPhysicsStep (DIAGNOSTIC ONLY)
+    bool ghost_ai_fire_ok = false;         // B6.6w0 hook #3: CombatBehaviorGunFire::DecideAndFire (DIAGNOSTIC in Phase A)
 
     [[nodiscard]] std::size_t success_count() const noexcept {
         return (kill_ok ? 1u : 0u)
@@ -44,7 +51,14 @@ struct InstallSummary {
              + (equip_ok ? 1u : 0u)
              + (lock_ok ? 1u : 0u)
              + (npc_ai_suppress_ok ? 1u : 0u)
-             + (ghost_ai_package_ok ? 1u : 0u);
+             + (ghost_ai_package_ok ? 1u : 0u)
+             + (ghost_ai_combat_target_ok ? 1u : 0u)
+             + (ghost_ai_aim_ok ? 1u : 0u)
+             + (ghost_ai_movement_ok ? 1u : 0u)
+             + (ghost_ai_pos_belt_ok ? 1u : 0u)
+             + (ghost_ai_actor_setpos_ok ? 1u : 0u)
+             + (ghost_ai_havok_step_ok ? 1u : 0u)
+             + (ghost_ai_fire_ok ? 1u : 0u);
     }
 };
 

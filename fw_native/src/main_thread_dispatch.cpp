@@ -72,6 +72,15 @@ struct CachedNPCStateImpl {
     float prev_yaw_deg_math;
     std::uint64_t prev_update_ms;
     bool has_prev;
+    // B6.5w12 v14 — Ghost AI server-authoritative state. Flat (no
+    // prev/current pair) — these are discrete decisions, not
+    // interpolatable. Hooks read latest only.
+    std::uint32_t package_form_id;
+    std::uint32_t combat_target_form_id;
+    float         velocity_x;
+    float         velocity_y;
+    float         velocity_z;
+    std::uint8_t  movement_override;
 };
 std::mutex g_npc_cache_mtx;
 std::unordered_map<std::uint32_t, CachedNPCStateImpl> g_npc_cache;
@@ -1258,7 +1267,13 @@ void drain_npc_state_apply_queue_pos_only() {
 void update_npc_cache(std::uint32_t form_id,
                      float pos_x, float pos_y, float pos_z,
                      float yaw_deg_math,
-                     std::uint8_t anim_state) {
+                     std::uint8_t anim_state,
+                     std::uint32_t package_form_id,
+                     std::uint32_t combat_target_form_id,
+                     float velocity_x,
+                     float velocity_y,
+                     float velocity_z,
+                     std::uint8_t movement_override) {
     if (form_id == 0) return;
     bool inserted_now = false;
     std::size_t new_size = 0;
@@ -1278,6 +1293,12 @@ void update_npc_cache(std::uint32_t form_id,
             fresh.anim_state = anim_state;
             fresh.last_update_ms = now_ms;
             fresh.has_prev = false;
+            fresh.package_form_id = package_form_id;
+            fresh.combat_target_form_id = combat_target_form_id;
+            fresh.velocity_x = velocity_x;
+            fresh.velocity_y = velocity_y;
+            fresh.velocity_z = velocity_z;
+            fresh.movement_override = movement_override;
             g_npc_cache[form_id] = fresh;
         } else {
             // Round 9: shift current → prev BEFORE writing new current,
@@ -1295,12 +1316,18 @@ void update_npc_cache(std::uint32_t form_id,
             it->second.yaw_deg_math = yaw_deg_math;
             it->second.anim_state = anim_state;
             it->second.last_update_ms = now_ms;
+            it->second.package_form_id = package_form_id;
+            it->second.combat_target_form_id = combat_target_form_id;
+            it->second.velocity_x = velocity_x;
+            it->second.velocity_y = velocity_y;
+            it->second.velocity_z = velocity_z;
+            it->second.movement_override = movement_override;
         }
         new_size = g_npc_cache.size();
     }
     if (inserted_now) {
         FW_LOG("dispatch: tracked NPC registered form_id=0x%X (cache size=%zu) — "
-               "Update_PerFrame detour will now POST-overwrite state for this form",
+               "Ghost AI hooks will now consult server state for this form",
                form_id, new_size);
     }
 }
@@ -1317,6 +1344,12 @@ bool get_cached_npc_state(std::uint32_t form_id, CachedNPCState* out) {
         out->yaw_deg_math = it->second.yaw_deg_math;
         out->anim_state = it->second.anim_state;
         out->last_update_ms = it->second.last_update_ms;
+        out->package_form_id = it->second.package_form_id;
+        out->combat_target_form_id = it->second.combat_target_form_id;
+        out->velocity_x = it->second.velocity_x;
+        out->velocity_y = it->second.velocity_y;
+        out->velocity_z = it->second.velocity_z;
+        out->movement_override = it->second.movement_override;
     }
     return true;
 }
@@ -1338,6 +1371,12 @@ std::vector<std::pair<std::uint32_t, CachedNPCState>> get_all_cached_npcs() {
         s.yaw_deg_math = st.yaw_deg_math;
         s.anim_state = st.anim_state;
         s.last_update_ms = st.last_update_ms;
+        s.package_form_id = st.package_form_id;
+        s.combat_target_form_id = st.combat_target_form_id;
+        s.velocity_x = st.velocity_x;
+        s.velocity_y = st.velocity_y;
+        s.velocity_z = st.velocity_z;
+        s.movement_override = st.movement_override;
         out.emplace_back(fid, s);
     }
     return out;

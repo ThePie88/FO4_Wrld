@@ -373,6 +373,16 @@ bool actor_atomic_teleport(void* actor,
 // MAIN THREAD ONLY.
 bool set_actor_motion_keyframed(void* actor);
 
+// B6.5w12 hook #4: write `bAnimationDriven` graph variable on the actor's
+// anim graph holder (= actor + 0x48). Setting to false prevents the anim
+// graph's root motion from translating the actor — without this, running
+// animations would still move the actor forward even though the movement
+// integrator is bailed by hook #4. SEH-caged. Returns true on success.
+//
+// Cheap to call per-frame (idempotent: same value = no anim transition).
+// MAIN THREAD ONLY (anim graph setter has internal locking).
+bool set_actor_anim_driven(void* actor, bool value);
+
 // B5 camera probe (diagnostic): at the first valid player pose we scan
 // the PlayerCamera singleton's first 0x200 bytes for any qword that
 // dereferences to a NiCamera vtable (VA = module_base + 0x267DD50).

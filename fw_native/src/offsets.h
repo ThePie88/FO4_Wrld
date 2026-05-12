@@ -1113,6 +1113,27 @@ constexpr std::uintptr_t NIAV_SET_MOTION_TYPE_RVA = 0x018763E0;
 // most ≤ 0x100). All sit inside a per-frame AI tick pipeline and have
 // signatures observed in the decomp at D:\falloutworld_decomp\out\.
 
+// HOOK #1 OUTER — AIProcess::EvaluatePackages_And_Execute (the SELECTOR).
+//
+// The selector iterates an Actor's candidate packages and calls
+// TESPackage::EvaluateConditions for each. We hook ENTRY ONLY (read arg2
+// = Actor*, stash form_id in thread_local, tail-call original — we do NOT
+// touch the body to avoid the package-selection TLS lock that agent 3
+// flagged as deadlock-risky for mid-body detours).
+//
+// The thread_local captured here is then read inside the inner
+// EvaluateConditions detour to know which Actor's packages are being
+// evaluated this frame. Cleaner than guessing offsets inside the
+// stack-allocated eval_ctx buffer (round 1/2/3 of runtime probing failed
+// to identify a stable Actor* offset within eval_ctx).
+//
+// Signature (per agent 3 dossier):
+//   bool __fastcall sub_140CEEC30(
+//       AIProcess* aiproc,
+//       Actor*     actor,
+//       char       force_eval);
+constexpr std::uintptr_t PKG_SELECTOR_RVA = 0x00CEEC30;
+
 // HOOK #1 — TESPackage::EvaluateConditions (the MVP "predicate" hook).
 //
 // Pure predicate: returns bool. Caller (AIProcess::EvaluatePackages_And_Execute
@@ -1143,5 +1164,391 @@ constexpr std::uintptr_t NIAV_SET_MOTION_TYPE_RVA = 0x018763E0;
 //   }
 //   return g_orig(condition_list_head, eval_ctx);
 constexpr std::uintptr_t PKG_EVAL_CONDITIONS_RVA = 0x00768CC0;
+
+// HOOK #2 — Actor::SyncCombatTargetFromAIProcess (the combat-target SETTER).
+//
+// Per agent 1 dossier (re/B6.5w12_round1_AGENT_1.md): 0x74 bytes. Called
+// per-actor per-frame from inside Actor::Update_PerFrame. Mirrors the
+// combat target form_id from AIProcess+0x6C to Actor+0x380 and toggles
+// the InCombat flag bit 0x4000 in Actor+0x2D0 based on a hostility
+// predicate. This is THE field Papyrus reads via GetCombatTarget (per
+// agent 1 cross-check with sub_1405CD830).
+//
+// Body sketch (annotated):
+//   char sub_140C5CCE0(__int64 actor) {
+//     char result = (*vt[+0x7F0])(actor);    // some gate predicate
+//     if (result) {
+//       v3 = *(QWORD*)(actor + 808);         // = AIProcess-linked controller
+//       if (v3) {
+//         *(DWORD*)(actor + 896) =           // = Actor + 0x380 = combat_target_form_id
+//             *(DWORD*)(v3 + 108);           // AIProcess + 0x6C
+//         result = sub_14087A8E0(v3);        // is hostile? → result
+//         if (result) *(DWORD*)(actor+720) |= 0x4000;      // set InCombat
+//         else        *(DWORD*)(actor+720) &= 0xFFFFBFFF;  // clear InCombat
+//       }
+//     } else {
+//       *(DWORD*)(actor + 720) &= ~0x4000u;
+//       *(DWORD*)(actor + 896) = 0;
+//     }
+//     return result;
+//   }
+//
+// Ghost AI substitution (Phase 4 step B):
+//   if (actor_fid ∈ tracked_set && cache[fid].combat_target_form_id != 0) {
+//     *(DWORD*)(actor + 896) = cache[fid].combat_target_form_id;
+//     *(DWORD*)(actor + 720) |= 0x4000;      // force InCombat
+//     return 1;                              // skip original
+//   }
+//   else { call_original(); }
+constexpr std::uintptr_t COMBAT_TARGET_SETTER_RVA = 0x00C5CCE0;
+
+// Actor field offsets exposed by hook #2 substitution.
+constexpr std::size_t    ACTOR_COMBAT_TARGET_FORMID_OFF = 0x380;   // u32 form_id
+constexpr std::size_t    ACTOR_FLAGS_720_OFF            = 0x2D0;   // u32 flags, bit 0x4000 = InCombat
+
+// HOOK #3 — CombatAimController::SetAimTarget (the aim-vector WRITER).
+//
+// Per agent 1 dossier (re/B6.5w12_round1_AGENT_1.md): tiny function (0x2A
+// bytes) that writes the aim target world-space position (NiPoint3) into
+// the CombatAimController at offsets +24/+28/+32 (3 floats), sets a flag
+// bit at +52, and stamps +56 with the current time.
+//
+// Signature:
+//   void __fastcall sub_140E65820(CombatAimController* self,
+//                                 NiPoint3* target_pos);
+//
+// CHALLENGE: self is CombatAimController, NOT Actor directly. To filter
+// by tracked NPC form_id we need to walk the chain: self → ?? → Actor.
+// Agent 1 said `self + 16` = owning CombatController*, and noted
+// CombatController+104 / +128 / +376 are TARGET pointers (not owner). The
+// OWNER Actor offset on CombatController is not yet documented — Phase
+// 4 hook #3 SKELETON will dump candidate offsets in the log so we can
+// identify it empirically from live data.
+//
+// Ghost AI substitution (Phase 4 hook #3 step B, deferred until owner
+// resolved):
+//   if (owner_actor_fid ∈ tracked_set && cache.aim_xyz non-zero):
+//     target_pos->x = cache.aim_x;
+//     target_pos->y = cache.aim_y;
+//     target_pos->z = cache.aim_z;
+//   ... then call original so it writes our coords into self+24/28/32.
+constexpr std::uintptr_t AIM_SET_TARGET_RVA = 0x00E65820;
+
+// HOOK #4 — Actor::TickMovementController (per-actor wrapper).
+//
+// Tortuous history (in order):
+//   v1 (2026-05-11 early): RVA 0x00C65E20 (this function). Live test
+//   showed 0 fires. Concluded: Update_PerFrame body INLINES the wrapper
+//   (lines 8169-8186 — confirmed in decomp), so this path isn't called
+//   from per-frame ticks of most actors → wrong target.
+//
+//   v2 (2026-05-11 mid): switched to MovementControllerNPC::Tick
+//   (vt[8]) @ RVA 0x1E44660. Used Update_PerFrame bridge atomic to
+//   identify Actor. Live test: 110k fires, 870 bails. Looked OK but
+//   wasn't — false positive (user was in TCL noclip → raiders not in
+//   combat → wouldn't have moved anyway).
+//
+//   v3 (NOW, B6.5w13 root analysis): SWITCH BACK to wrapper 0x00C65E20.
+//   Re-analysis (re/B6.5w13_root_AGENT_2.md): the wrapper IS called
+//   from the OTHER two paths we missed before:
+//     - Tier walker sub_140DA9B30 (PlayerCharacter::Update chain)
+//     - CombatManager::Update sub_140ED1BB0 per combat participant
+//   These are exactly the paths combat raiders use. Update_PerFrame's
+//   inline copy is just one of three, and not even the dominant one
+//   for combat actors. The wrapper covers all paths AND has Actor* as
+//   arg1 directly — no bridge needed.
+//
+// Signature:
+//   void __fastcall sub_140C65E20(_QWORD *actor, float dt);
+//
+// Ghost AI substitution:
+//   If actor is tracked AND cache.movement_override != 0:
+//     - BAIL (don't call original)
+//     - Also write bAnimationDriven=0 on the anim graph so root motion
+//       doesn't translate the actor via anim
+//     - Engine's MovementControllerNPC::Tick (via vt[8]) doesn't fire
+//   Otherwise: passthrough.
+constexpr std::uintptr_t MOVEMENT_TICK_RVA = 0x00C65E20;
+
+// HOOK #5 — TESObjectREFR::SetPosition_NiPoint3 (BELT-AND-BRACES).
+//
+// Per re/B6.5w13_root_AGENT_2.md: this is the SINGLE FUNNEL for all
+// Actor+0xD0 writes. 82 distinct callers across the engine. Of note,
+// AIPackage executor sub_140CEEC30 has 8 separate direct calls for
+// warp/idle packages — these BYPASS MovementController entirely, so
+// hook #4 alone wouldn't catch them.
+//
+// Signature:
+//   void __fastcall sub_140513A80(TESObjectREFR* refr, float pos[3]);
+//
+// Ghost AI substitution: same gate as hook #4 — for tracked NPCs with
+// movement_override, BAIL. The actor won't get pos-written via any
+// engine path. Combined with hook #4 wrapper bail, this should yield
+// full freeze for tracked combat raiders.
+constexpr std::uintptr_t SETPOSITION_NIPOINT3_RVA = 0x00513A80;
+
+// HOOK #6 — Actor::SetPosition full (vt[202], slot offset 0x650 from Actor
+// vtable base). Per re/B6.5w14_pair_AGENT_1A.md (95% conf): this is the
+// real choke point for "translate this actor". Body:
+//   1. Calls sub_140513A80(actor, pos) — our HOOK #5 catches and bails this
+//   2. CONTINUES past the call, fetches NIF root via vt[1120] Get3D
+//   3. Writes NIF+0x60/+0x64/+0x68 (NIF.local.translate) DIRECTLY
+//      (disasm citation: text_0137.asm:9052 `mov [rbx+60h], ecx`)
+// Step 3 BYPASSES our SetPosition_NiPoint3 hook. Hook #5 alone doesn't
+// freeze the actor because NIF.local gets written here, then UpdateWorldData
+// propagates parent.world × local → NIF.world (+0xA0), then renderer
+// reads NIF.world.
+//
+// Bailing this WHOLE function at entry prevents BOTH the SetPosition
+// call AND the NIF+0x60 direct write. Per agent 1A: 4 per-frame call
+// sites in sub_140D11AF0 (procedure executor), called for combat raider
+// AIPackage path-step / warp / idle marker.
+//
+// Signature:
+//   void __fastcall sub_140C60630(Actor* actor, float pos[3]);
+constexpr std::uintptr_t ACTOR_SETPOS_VT202_RVA = 0x00C60630;
+
+// HOOK #7 — bhkCharRigidBodyController FinishPhysicsStep (Havok per-frame).
+//
+// Per re/B6.5w14_pair_AGENT_5A.md (80% conf): this is the TRUE Havok→engine
+// pos sync, fires per-controller per frame. Bypasses SetPosition_NiPoint3
+// because it dispatches via BSTEventSource at controller+48 to the actor's
+// vtable slot 1 (Havok-pos-event sink). NO call to sub_140513A80 in this
+// chain. Reads Havok body world pos, scales by 69.991249 (hk-units →
+// game-units), then dispatches the pos event.
+//
+// Profiler tag: "TtRB-FinishPhysicsStep". Called per-controller from
+// sub_1418C1B70 (bhkCharRigidBodyManager-AfterWholePhysicsUpdate).
+//
+// Pair 5A finding: owner Actor accessible via *(controller+32) back-ptr.
+//
+// THIS STEP (B6.5w15 Phase A): DIAGNOSTIC-ONLY. Install hook, log first
+// N fires with controller pointer + read of +32 + form_id at +0x14. NO
+// bail, NO substitution. Goal: empirically verify (a) function actually
+// fires per-frame at expected rate during combat, (b) +32 read returns
+// plausible Actor*, (c) form_id matches a tracked raider when those
+// raiders are running.
+//
+// Signature (per pair 5A):
+//   void __fastcall sub_1418B9790(bhkCharRigidBodyController* self);
+constexpr std::uintptr_t BHK_CHAR_FINISH_STEP_RVA = 0x018B9790;
+
+
+// ============================================================================
+// B6.6w0 RE Arena results (2026-05-12, 10-agent pair, 95% confidence) —
+// Ghost AI substitution hooks for combat behavior.
+//
+// All hooks below are NEW post-MVP-freeze targets. Each is independently
+// validated by a pair of RE agents working from opposite ends (downstream
+// vs upstream). Dossier `re/B6.6w0_pair_AGENT_*.md` per pair.
+// ============================================================================
+
+// Hook #3 (fire) — REPLACED 2026-05-12 evening.
+//
+// First attempt: `CombatBehaviorGunFire::DecideAndFire` at RVA 0x86FCA0
+// (kept as named constant for archaeology). Live test 2026-05-12
+// confirmed C1 dossier's open question Q1: this is the leaf-decide
+// function for SINGLE-SHOT `GunFire` ONLY. BurstFire / SuppressiveFire
+// / SuppressiveBurstFire have their own leaf decides → bypass our
+// hook. At Concord (Phase B test): only 10 fires logged in 30 sec for
+// fid 0x46458 (a single-shot weapon raider); all bailed; raiders
+// shooting auto weapons were untouched. Replaced by ACTOR_FIRE_WEAPON_RVA
+// below (universal funnel).
+constexpr std::uintptr_t COMBAT_GUNFIRE_DECIDE_RVA = 0x0086FCA0;
+
+// Hook #3 v2 (fire weapon) — `Actor::FireWeapon` at RVA 0x479680.
+//
+// Per C1 §3 chain: ANY fire path (single-shot, burst, suppressive,
+// suppressive-burst, even melee/spell projectiles) eventually funnels
+// through this function. It's the universal projectile-spawn entry:
+//
+//   ConcreteFormFactory<BGSProjectile> → Projectile alloc
+//   → Havok body Add → projectile in flight
+//
+// Critically: signature has `Actor* this` in rcx (first arg). NO TLS
+// chain needed — we read formID from `Actor+0x14` directly. Confirmed
+// in disasm at text_0047.asm:18406 (`mov r13, rcx`).
+//
+// Function signature (per disasm of first ~30 instructions):
+//   void __fastcall sub_140479680(Actor* actor, void* arg2, int arg3, void* arg4);
+//   - rcx = Actor* (the firing NPC, or PlayerCharacter for player input)
+//   - rdx = some pointer (TESObjectREFR target? weapon ref?) — not used by us
+//   - r8d = u32 (action ID? flags?) — not used by us
+//   - r9 = pointer — not used by us
+//
+// SUBSTITUTION strategy: if Actor is tracked AND not player (form_id
+// 0x14), bail before original runs → no projectile, no anim event
+// secondaries, no ammo deduction. AI state "thinks it fired" but
+// projectile never materialises. This causes AI-side desync (cooldown
+// thinks shot happened) which is acceptable for MVP because the
+// freeze still works.
+//
+// C1 marked this as "TOO LATE TO HOOK" because hooking here means
+// projectile is already constructed if we DON'T bail. But we DO bail,
+// so the construction is skipped entirely. The "AI thinks fired"
+// concern is moot for our visual-sync MVP.
+//
+// Confidence: HIGH (signature verified in disasm; Actor* directly in
+// rcx; called for every weapon fire by every actor including player).
+constexpr std::uintptr_t ACTOR_FIRE_WEAPON_RVA = 0x00479680;
+
+// ============================================================================
+// B6.6w0 "all hooks" batch (2026-05-12 evening) — install everything from
+// the 10-agent arena that has clear Actor* arg, debug from there.
+// ============================================================================
+
+// Hook #1 (combat target writer) — pair A1+A2 dossier.
+// `AIProcess::SetCombatTarget(AIProcess* rcx, Actor* rdx)` — writes
+// `*(AIProcess+0x6C) = target.formID`. Per A1 disasm at text_0093.asm:688-691:
+//   mov ecx, [rcx+68h]       ; ECX = old target u32
+//   mov r15, [rsi+178h]      ; r15 = override target ptr (AIProcess+0x178)
+// Both A1 and A2 agree this is the canonical writer. Owner Actor of
+// the AI process is NOT in args here — we resolve via aiproc→fid map
+// (populated by npc_ai_suppress at Actor+0x328).
+//
+// Substitution strategy: replace rdx (new target Actor*) with server-
+// chosen target. For Phase 1 we DIAGNOSTIC ONLY: log first N fires
+// to confirm hook semantics + fid identification.
+constexpr std::uintptr_t AIPROCESS_SET_COMBAT_TARGET_RVA = 0x0087AB30;
+
+// Hook #2 v2 (movement intent decision funnel) — pair B1 dossier.
+// `AIProcess::ProcessPackages_Movement(AIProcess* rcx, Actor* rdx, char a3)`
+// — iterates AIPackages, switches on package type, calls
+// `sub_140513A80(actor, target_pos)` to write Actor+0xD0/0xD4/0xD8.
+// Size 0x844. NON-inlined (B1 caller chain confirmed).
+//
+// Owner Actor* is rdx (2nd arg) — direct read possible.
+//
+// BAIL strategy: if rdx-Actor is tracked, skip original → no movement
+// decision processed for this actor this frame → pos stays put.
+// Belt-and-braces with our existing pos_belt / actor_setpos hooks.
+constexpr std::uintptr_t AIPROCESS_PROCESS_MOVEMENT_RVA = 0x00CEEC30;
+
+// Hook #3 alternative (dispatch attack action) — C1 chain @ §3 line 286.
+// `Actor::DispatchAttackAction(Actor* rcx, int action_id rdx, int a3 r8)`
+// per pseudo-C `__int64 __fastcall sub_140E6F830(__int64 a1, int a2, int a3)`.
+//
+// Called AFTER any CBT leaf decides to fire, BEFORE the anim event
+// dispatcher → before WeaponFireHandler → before projectile spawn.
+// Constructs BGSActionData on stack and vfcalls vt+40 → "WeaponFire"
+// anim event.
+//
+// This is the UNIVERSAL ATTACK FUNNEL — single-shot, burst, suppressive,
+// melee, power attack all go through here. Bailing this with Actor*
+// in rcx directly identifiable is the cleanest "stop attacks" hook.
+//
+// Common action IDs (per C1 dossier §3):
+//   0x3D = ActionAttackSighted
+//   0x3E = ActionAttackSightedPower
+//   0x23 = ActionAttack
+//   0x27 = ActionAttackPower
+//   12, 14, 15, 16, 17, 18, 19, 20, 26, 36, 40 = various attacks
+//
+// BAIL strategy: if Actor* in rcx is tracked && not player, return 0.
+// Caller treats as "action failed", retries next tick.
+constexpr std::uintptr_t ACTOR_DISPATCH_ATTACK_ACTION_RVA = 0x00E6F830;
+
+// Hook #5 (hit applier orchestrator) — `sub_140CD2780`. Per D2 dossier
+// this is the CENTRAL FUNNEL for projectile + melee + explosion hit
+// processing. Inside, it calls in order: stagger applier
+// (sub_140C92350), hit-reaction animator (sub_140C88950), HP decrement
+// (sub_140CC9650), and (if HP=0) ragdoll setup (sub_140CA7880).
+//
+// Signature per pseudo-C (funcs_0307.md:6911):
+//   __int64 __fastcall sub_140CD2780(__m128 *a1, __m128 *a2);
+//
+// Args are IDA-typed as __m128* (packed-vector structs). a1 is a
+// HIT-DATA / HIT-EVENT struct with:
+//   a1[48].m128_u64[0]  (= a1+0x300) = TARGET ACTOR POINTER ← THE VICTIM
+//
+// Confirmed via disasm at text_0142.asm:7491-7492:
+//   cmp [rcx+300h], r12     ; r12=0 → checking target_actor == null
+//   jz  loc_140CD4B90       ; bail if null (early-exit branch)
+//
+// So *(rcx + 0x300) is the target Actor*. Read its form_id at +0x14.
+//
+// BAIL strategy: if target is tracked (frozen), bail this orchestrator
+// entirely → no stagger anim applied to frozen anim graph, no hit
+// reaction, no HP decrement, no ragdoll. Critical for crash prevention:
+// the crash 2026-05-12 evening "user attacks friendly NPC → crash 3s
+// later" matches exactly this code path — engine tries to apply
+// stagger/hit anim to a frozen anim graph, leaves it in inconsistent
+// state, subsequent access AVs.
+//
+// Confidence: HIGH on RVA + a1+0x300 = target Actor (disasm verified).
+// MEDIUM-HIGH on bail behavior (cleanest place to short-circuit; the
+// caller is the dispatcher case 14 path in sub_140C4CE00 which
+// already handles "case did nothing" gracefully).
+constexpr std::uintptr_t ACTOR_HIT_APPLIER_RVA = 0x00CD2780;
+
+// Offset to target Actor within the hit-data struct passed as 1st arg.
+constexpr std::size_t HIT_DATA_TARGET_ACTOR_OFFSET = 0x300;
+
+// Hook #4 (HP writer) — still deferred. `sub_140CC9650` signature is
+// `(_QWORD *AVO_view, int=2 for HP, __int64 healthForm, float delta,
+// __int64 source)`. The victim Actor is reachable via AVO_view → owner
+// chain but exact offset not yet RE'd. Bailing sub_140CD2780 above
+// short-circuits BEFORE sub_140CC9650 is called for tracked NPCs, so
+// HP authority can stay deferred for the MVP.
+
+
+// ============================================================================
+// B6.6w0 NUKE — per-actor combat orchestrator (the TOP-LEVEL hook).
+//
+// 2026-05-12 live test feedback: with 6 hooks installed (Update_PerFrame
+// bail, havok step, pos belt, actor setpos, dispatch_attack BAIL, fire
+// decide BAIL, hit_applier BAIL), NPCs are FROZEN + IMMORTAL + can't
+// attack, BUT still visually "angry" — aim animation, head tracking,
+// hostile barks. User: "stiamo sbagliando hooks".
+//
+// Root insight: we've been suppressing OUTPUTS one-by-one (fire decide,
+// attack action, hit response, movement). The COMBAT PIPELINE still
+// thinks every frame. The orchestrator decides every frame "what
+// combat work should this actor do" and dispatches everything.
+//
+// Per A1 chain (re/B6.6w0_pair_AGENT_A1.md):
+//   Main::TickFrame
+//     → sub_140ED2280 (per-frame AI fan-out)
+//       → sub_140ED4760(form_id) (task thunk)
+//         → Actor::vt[255] = sub_140CCFDF0 (per-actor orchestrator) ← HERE
+//           → sub_14087B080 (promoter) → sub_14087AB30 (combat target write)
+//           → ... (every other combat decision)
+//
+// Bailing sub_140CCFDF0 for tracked actors prevents ALL combat work for
+// that actor — no target promotion, no fire decide chain, no dispatch
+// attack, no aim update. Anim graph stays in whatever pose it was at
+// freeze time (still potentially "combat ready") but no NEW combat
+// reasoning happens.
+//
+// Signature per pseudo-C (funcs_0307.md:4668):
+//   char __fastcall sub_140CCFDF0(__int64 a1, __int64 a2);
+//   - a1 = Actor* (rcx) — the actor being orchestrated
+//   - a2 = ??? (rdx) — probably state/flag arg, we pass through
+// Returns char (bool). Returning 0 ≡ "no combat work this frame".
+//
+// Confidence: HIGH on RVA + Actor* in rcx (disasm verified: rsi=actor
+// saved at function start, then reads +0x10/0x300/0x100/0x43C etc.).
+//
+// THIS IS THE NUKE — combined with existing freeze + immortality hooks
+// this should give us totally neutral, non-aggressive tracked NPCs.
+constexpr std::uintptr_t ACTOR_COMBAT_ORCHESTRATOR_RVA = 0x00CCFDF0;
+
+// .data slot holding the tlsIndex used by sub_14086FCA0 to find the
+// per-thread CombatBehaviorThread. ABSOLUTE address per dossier:
+// 0x143E5C658 → RVA 0x03E5C658.
+//
+// The slot contains a `u32 tlsIndex` (Windows TLS slot index). To read
+// the per-thread CombatBehaviorThread pointer:
+//   u32 idx  = *(u32*)(module_base + 0x03E5C658);
+//   void* p  = ((void**)NtCurrentTeb()->ThreadLocalStoragePointer)[idx];
+//   // p is the CombatBehaviorThread's TLS-resident process-block holder
+constexpr std::uintptr_t BEHAVIOR_THREAD_HOLDER_TLSIDX_RVA = 0x03E5C658;
+
+// Inner offsets in the TLS-walk chain (constants pulled from the
+// pseudo-code at the head of sub_14086FCA0). Kept as named constants
+// rather than magic numbers so the chain reads cleanly in the detour.
+constexpr std::size_t BEHAVIOR_HOLDER_OFFSET            = 0x8F0;   // 2288
+constexpr std::size_t BEHAVIOR_THREAD_PROCESS_OFFSET    = 0x158;   // 344
+constexpr std::size_t BEHAVIOR_AIPROCESS_ACTOR_OFFSET   = 0x68;    // 104
 
 } // namespace fw::offsets

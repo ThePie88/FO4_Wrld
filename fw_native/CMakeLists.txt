@@ -33,6 +33,18 @@ add_library(fw_native SHARED
     src/hooks/lock_hook.cpp         # B6.3: ForceUnlock + ForceLock detours
     src/hooks/npc_ai_suppress.cpp   # B6.5w4: Actor::Update_PerFrame suppression for tracked NPCs
     src/hooks/ghost_ai_package.cpp  # B6.5w12 hook #1: TESPackage::EvaluateConditions (server picks active package)
+    src/hooks/ghost_ai_combat_target.cpp  # B6.5w12 hook #2: SyncCombatTargetFromAIProcess (server picks combat target)
+    src/hooks/ghost_ai_aim.cpp            # B6.5w12 hook #3: CombatAimController::SetAimTarget (server picks aim vector)
+    src/hooks/ghost_ai_movement.cpp       # B6.5w12 hook #4: Actor::TickMovementController (server BAILs movement when override set)
+    src/hooks/ghost_ai_pos_belt.cpp       # B6.5w13 hook #5: SetPosition_NiPoint3 (belt-and-braces for AIPackage warp paths)
+    src/hooks/ghost_ai_actor_setpos.cpp   # B6.5w14 hook #6: vt[202] Actor::SetPosition full (catches NIF+0x60 bypass per agent 1A)
+    src/hooks/ghost_ai_havok_step.cpp     # B6.5w15 hook #7: bhkCharRigidBodyController FinishPhysicsStep DIAGNOSTIC (per agent 5A)
+    src/hooks/ghost_ai_fire.cpp           # B6.6w0 hook #3 (fire decision): CombatBehaviorGunFire::DecideAndFire (Phase B bail tracked, single-shot only)
+    src/hooks/ghost_ai_dispatch_attack.cpp    # B6.6w0 (dispatch attack) — universal attack action funnel per C1
+    src/hooks/ghost_ai_process_movement.cpp   # B6.6w0 (movement intent) — AIProcess::ProcessPackages_Movement per B1
+    src/hooks/ghost_ai_set_combat_target.cpp  # B6.6w0 (combat target writer DIAG) — AIProcess::SetCombatTarget per A1+A2
+    src/hooks/ghost_ai_hit_applier.cpp        # B6.6w0 (hit applier orchestrator BAIL) — sub_140CD2780 per D2 — prevents crash on damage to frozen
+    src/hooks/ghost_ai_combat_orchestrator.cpp # B6.6w0 NUKE (top-level combat orchestrator BAIL) — sub_140CCFDF0 = Actor::vt[255] per A1
     src/hooks/equip_cycle.cpp       # B8  : post-LoadGame BipedAnim normalize (DISABLED 2026-05-08, see equip_announce.h)
     src/hooks/equip_announce.cpp    # B8 successor (NON TESTATO): apparel bootstrap broadcast — Option B scaffold
     src/hooks/equip_hook.cpp        # M9 w1: equipment-event sender hook
