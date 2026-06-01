@@ -1,3 +1,43 @@
+// ============================================================================
+// DIAGNOSTIC ONLY — 2026-05-17. Hook installed (install_all.cpp:239) but
+// detour is pure passthrough. Detour logs the first 5 fires for owner-Actor
+// offset discovery, then heartbeat every 1000 calls. NO substitution.
+//
+// LOG PROOF: Client A `fw_native.log` 17:29-17:39 has 0× `[ghost_ai_aim]` lines.
+// That means CombatAimController::SetAimTarget (sub_140E65820) is NEVER called
+// in current architecture — because:
+//   - Engine calls SetAimTarget inside the combat orchestrator's aim-update
+//     chain, which only runs when raider has a valid combat_target (aiproc+
+//     0x6C resolves to a real Actor).
+//   - For server-aggro'd raiders with target=ghost, aiproc+0x6C never gets
+//     set to ghost_handle (Fixed selector dormant, RDX-swap disabled).
+//   - For naturally-aggro'd raiders (target=player_A), the aim chain runs
+//     vanilla and we observe NO log here either — suggesting the hook
+//     installation may have failed silently (no `[ghost_ai_aim] hook
+//     installed at` line in log).
+//
+// VERIFY: check install_all summary in log:
+//   `hooks: install summary ... ghost_ai_aim=1 ...` — install reports OK.
+//   But still 0 fires. Suggests sub_140E65820 isn't hit on these raiders.
+//
+// WHY IT MATTERS FOR THE PUPPET-FIRE STRATEGY:
+//   re/AI_pipeline/section_08 §0 prescribes calling sub_140E65820 directly
+//   from C++ to write aim before each NPC_FIRE event. To do that we need:
+//     (a) the CombatAimController pointer for the raider — likely at
+//         AIProcess+0xN (TBD, need RE pass);
+//     (b) the function pointer for sub_140E65820 (RVA = 0x00E65820 per
+//         re/AI_pipeline/section_06 §C, address fw::offsets::AIM_SET_TARGET_RVA
+//         already defined).
+//   This file's DIAG dump (first 5 fires) was DESIGNED to discover the
+//   owner Actor offset chain. Since it never fires, we can't extract that
+//   from runtime — must come from static RE.
+//
+// KEEP-AS-IS RATIONALE:
+//   The instrumented detour is the right tool to discover offsets if/when
+//   sub_140E65820 ever starts firing on tracked raiders. Counters + first-N
+//   logging are zero-cost when fires=0.
+// ============================================================================
+
 #include "ghost_ai_aim.h"
 
 #include <windows.h>

@@ -41,6 +41,14 @@ constexpr UINT FW_MSG_STRADAB_INJECT     = WM_APP + 0x45;
 constexpr UINT FW_MSG_STRADAB_POS_UPDATE = WM_APP + 0x46;
 constexpr UINT FW_MSG_STRADAB_BONE_TICK  = WM_APP + 0x47;
 constexpr UINT FW_MSG_STRADAB_POSE_APPLY = WM_APP + 0x48;
+//   c.37.0 NPC pose apply. NOTE: 0x49 is already FW_MSG_DOOR_APPLY
+//   (main_thread_dispatch.h) — 0x42..0x55 are all taken across the various
+//   headers, so this uses 0x56 (first free slot) to avoid the WndProc
+//   collision that silently routed our PostMessage to the door handler.
+constexpr UINT FW_MSG_STRADAB_NPC_POSE_APPLY = WM_APP + 0x56;
+//   v16 ghost crouch apply. 0x42..0x56 are all taken across the various
+//   headers (see grep of "WM_APP + 0x"); 0x57 is the first free slot.
+constexpr UINT FW_MSG_STRADAB_CROUCH_APPLY   = WM_APP + 0x57;
 
 // Arm a worker thread that, after delay_ms milliseconds, PostMessages
 // FW_MSG_STRADAB_INJECT to the main FO4 window. The WndProc subclass
@@ -94,6 +102,68 @@ void store_remote_pose(std::uint64_t ts_ms,
                        const void* quats_buf,
                        std::size_t bone_count);
 void on_pose_apply_message();
+
+// v16 — ghost crouch. SEPARATE additive channel beside the rotation pose
+// above. The rotation pose carries bone ROTATIONS; this carries the vertical
+// COM/Pelvis LOCAL TRANSLATION (the body lowering on crouch), keyed by the
+// SAME shared canonical bone index. Same net→main handoff machinery:
+//
+//   store_remote_crouch()          — net thread, on POSE_CROUCH_BROADCAST:
+//     stashes {bone_index, tx, ty, tz} entries in a mutex-protected slot and
+//     posts FW_MSG_STRADAB_CROUCH_APPLY to the FO4 main window.
+//
+//   on_pose_crouch_apply_message() — main thread (WndProc): writes each
+//     entry's translate into the matching ghost bone's +0x60 and re-bakes.
+//
+// `entries_buf` is the wire PoseCrouchEntry[] (passed as void* to keep this
+// header decoupled from protocol.h). count ≤ MAX_POSE_CROUCH_BONES.
+void store_remote_crouch(std::uint64_t ts_ms,
+                         const void* entries_buf,
+                         std::size_t count);
+void on_pose_crouch_apply_message();
+
+// c.37.0 — full NPC pose replication (owner → mirror). Same machinery as
+// the player→ghost pose path above, but keyed by NPC form_id so it drives
+// real mirror Actors instead of the single ghost body.
+//
+//   capture_and_send_npc_pose() — OWNER side. Called from the per-actor
+//     owner-capture site (npc_ai_suppress) for each owned NPC. Walks the
+//     NPC's render skeleton, reads canonical joints' m_kLocal as quats,
+//     enqueues NPC_POSE_FROM_OWNER. Self-throttled to ~15-20 Hz per fid.
+//
+//   store_remote_npc_pose() — MIRROR side, net thread. Stashes the quats
+//     into a per-fid slot and posts FW_MSG_STRADAB_NPC_POSE_APPLY.
+//
+//   on_npc_pose_apply_message() — MIRROR side, main thread (WndProc).
+//     For each pending fid: lookup_by_form_id → Get3D → walk → write each
+//     canonical bone's m_kLocal → UpdateDownwardPass. SEH-isolated.
+void capture_and_send_npc_pose(void* actor, std::uint32_t form_id);
+void store_remote_npc_pose(std::uint32_t form_id,
+                           std::uint64_t ts_ms,
+                           const void* quats_buf,
+                           std::size_t bone_count);
+void on_npc_pose_apply_message();  // c.37.0 message-pump apply (retired by c.37.1)
+
+// c.37.1 — drive ONE mirror NPC's skeleton from its latest relayed pose.
+// Call from detour_actor_update_perframe POST-orig for a non-owner tracked
+// NPC: overwrites the bones the engine's anim graph just wrote, so our pose
+// is the last writer before the render bake (kills the 60Hz/16Hz flicker).
+// Self-gates on freshness; no-op if no fresh pose for this fid. SEH-caged.
+void apply_npc_pose_to_actor(void* actor, std::uint32_t form_id);
+
+// NPC crouch — the NPC analogue of store_remote_crouch (ghost crouch), but
+// keyed by NPC form_id. The owner captures its raider's COM/Pelvis +0x60
+// LOCAL TRANSLATION in capture_and_send_npc_pose and ships NPC_CROUCH_FROM_OWNER;
+// the net thread stashes the entries here into a per-fid cache. There is NO
+// separate window message — the apply runs inside apply_npc_pose_to_actor
+// (the 60 Hz POST-orig drive), which writes the translation last (after the
+// engine anim overwrites bone transforms every frame) so the body actually
+// lowers instead of the feet flying. `entries_buf` is the wire PoseCrouchEntry[]
+// (void* to keep this header decoupled from protocol.h). count ≤
+// MAX_POSE_CROUCH_BONES.
+void store_npc_crouch(std::uint32_t form_id,
+                      const void* entries_buf,
+                      std::size_t count);
 
 // Called from DLL_PROCESS_DETACH. Stops the arm worker thread (if still
 // sleeping), then calls detach_debug_node(). Idempotent.
@@ -746,5 +816,18 @@ void* get_debug_node();
 // Useful for the live test — we expect monotone growth as we cross
 // worldspace boundaries.
 unsigned int get_attach_count();
+
+// B6.6w5 Build 8b — getter for the body renderer ghost's BSFadeNode root.
+//
+// Returns the same value stored in g_injected_cube (the body NIF root
+// attached to SSN by inject_debug_cube). Used by engine_calls::spawn_ghost_player's
+// custom vtable to redirect the duplicate's Get3D (vtable slot 140) to
+// the body ghost — when the engine's raider AI resolves the duplicate's
+// 3D representation (for aim, distance, scene-position queries), it gets
+// the body ghost which IS at the peer's world position.
+//
+// Acquire-ordered atomic read. Safe from any thread. Returns nullptr if
+// the body has not yet been injected (arm_worker grace pre-T+30s).
+void* get_injected_body_ghost() noexcept;
 
 } // namespace fw::native

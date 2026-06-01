@@ -1,3 +1,23 @@
+// ============================================================================
+// DIAGNOSTIC ONLY — 2026-05-17. Hook installed (install_all.cpp:238) but
+// substitution PERMANENTLY DISABLED (B6.5w13 root analysis, inline comment
+// at lines 95-114): "sub_140C5CCE0 is a PURE MIRROR — copies AIProcess+0x6C
+// → Actor+0x380. Writing the mirror is a functional no-op for combat
+// behavior. This hook stays installed as scaffolding + diag counter but
+// doesn't substitute (no point)."
+//
+// LOG PROOF: Client A `fw_native.log` 17:29-17:39 has the install line at
+// boot but no `[ghost_ai_combat] fire #N` lines after that — counter is
+// effectively 0 in production (sub_140C5CCE0 only fires when raider's
+// combat tier transitions, which doesn't happen for cross-peer ghost aggro).
+//
+// KEEP-AS-IS RATIONALE:
+//   Scaffolding is correct. If a redesign ever needs the mirror update
+//   (e.g. for Papyrus GetCombatTarget queries on the raider to return
+//   ghost.form_id), substitution branch is one CAS away from being live.
+//   Zero overhead at fires=0.
+// ============================================================================
+
 #include "ghost_ai_combat_target.h"
 
 #include <windows.h>

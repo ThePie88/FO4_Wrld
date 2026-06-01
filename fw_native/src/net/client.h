@@ -118,6 +118,38 @@ public:
                             const PoseBoneEntry* bones,
                             std::size_t bone_count);
 
+    // v16 — ghost crouch. SEPARATE additive channel beside enqueue_pose_state:
+    // carries the vertical COM/Pelvis local translations (PoseCrouchEntry,
+    // keyed by canonical bone index). Server fans out as POSE_CROUCH_BROADCAST.
+    // Unreliable. Drops if disconnected or queue saturated.
+    void enqueue_pose_crouch_state(const PoseCrouchEntry* entries,
+                                   std::size_t count,
+                                   std::uint64_t header_ts_ms);
+
+    // c.37.0 — per-bone rotation snapshot for ONE owned NPC, keyed by
+    // form_id. Same quaternion format as enqueue_pose_state; the server
+    // validates ownership and fans NPC_POSE_FROM_OWNER out to non-owners,
+    // who drive their mirror copy of this NPC. Unreliable.
+    void enqueue_npc_pose_state(std::uint32_t form_id,
+                                std::uint64_t header_ts_ms,
+                                const PoseBoneEntry* bones,
+                                std::size_t bone_count);
+
+    // NPC crouch — COM/Pelvis LOCAL TRANSLATION snapshot for ONE owned NPC,
+    // keyed by form_id. The NPC analogue of enqueue_pose_crouch_state; same
+    // PoseCrouchEntry payload (keyed by canonical bone index), prefixed with
+    // form_id. The server validates ownership and fans NPC_CROUCH_FROM_OWNER
+    // out to non-owners, who lower their mirror copy of this NPC. Unreliable.
+    void enqueue_npc_crouch(std::uint32_t form_id,
+                            const PoseCrouchEntry* entries,
+                            std::size_t count,
+                            std::uint64_t header_ts_ms);
+
+    // c.39b — report that the local player dealt `amount` damage to NPC
+    // `form_id`. Accumulates per fid and self-throttles to ~6 Hz/fid (sends
+    // the batched amount), so rapid-fire weapons don't flood. Unreliable.
+    void enqueue_npc_damage_claim(std::uint32_t form_id, float amount);
+
     // Reliable.
     void enqueue_actor_event(const ActorEventPayload& a);
 
@@ -154,6 +186,81 @@ public:
                          std::uint32_t lock_cell_id,
                          bool          locked,
                          std::uint64_t timestamp_ms);
+
+    // B6.6w2: reliable NPC_DISCOVER — sender emits when its
+    // npc_ai_suppress detour first auto-tracks a hostile NPC (vanilla
+    // AI set the InCombat flag bit 0x4000 at Actor+0x2D0). Server
+    // dynamically registers the actor into raider_brain so combat
+    // sync covers raiders not present in the waypoint JSON seed.
+    // Idempotent server-side (duplicates ignored), but reliable to
+    // avoid the case where a single dropped packet means the server
+    // never knows this raider exists.
+    void enqueue_npc_discover(std::uint32_t form_id,
+                              std::uint32_t base_id,
+                              std::uint32_t cell_id,
+                              float pos_x, float pos_y, float pos_z);
+
+    // B6.6w5: reliable PEER_GHOST_REGISTER — sender emits after its
+    // local ghost-actor (the engine REFR that represents the other
+    // peer on its screen) has been spawned. The form_id is dynamic
+    // per-client (engine-allocated at PlaceAtMe time). Server stores
+    // and uses in project_for_peer so the raider's combat target
+    // points at the correct local actor on each viewer.
+    void enqueue_peer_ghost_register(std::uint32_t ghost_form_id);
+
+    // Build 65 — owner-driven NPC sync (Solver 2) TX entry points.
+    //
+    // NPC_OBSERVED (reliable): the suppression detour saw a new NPC and
+    // tells the server about it. Server's OwnershipRegistry elects an
+    // owner (cell-first + closeness + 3s stickiness). Deduplication is
+    // the caller's responsibility — `ownership_manager::notify_observation`
+    // wraps this with a per-(fid) once-per-session filter.
+    void enqueue_npc_observed(std::uint32_t form_id,
+                              std::uint32_t base_id,
+                              std::uint32_t cell_id,
+                              float pos_x, float pos_y, float pos_z,
+                              float observer_distance_sq);
+
+    // NPC_OWNER_HEARTBEAT (unreliable, batched). Periodically (~2 Hz)
+    // proves to the server that we still own + know the current epoch
+    // of every NPC in our owned set. Server's health-gate releases any
+    // owner stale > 2.5s.
+    void enqueue_npc_owner_heartbeat(const NPCOwnerHeartbeatEntry* entries,
+                                     std::size_t count);
+
+    // NPC_STATE_FROM_OWNER (unreliable, batched). Periodically (~10 Hz)
+    // owner emits authoritative state for its owned NPCs. Server
+    // validates ownership + epoch then relays to non-owners. Each entry
+    // carries pos/yaw/anim/aim/velocity in 76 B (see protocol.h).
+    void enqueue_npc_state_from_owner(const NPCOwnerStateEntry* entries,
+                                      std::size_t count);
+
+    // NPC_FIRE_FROM_OWNER (unreliable, event-driven). Build 65.c.16 —
+    // owner-side GunFire DecideAndFire detour calls this when the engine
+    // decides to fire for an NPC we own. Server validates ownership
+    // and relays to non-owner peers, who replay via
+    // engine::fire_actor_weapon (projectile + muzzle flash + audio).
+    void enqueue_npc_fire_from_owner(const NPCFireFromOwnerPayload& p);
+
+    // NPC_DEATH_FROM_OWNER (RELIABLE, event-driven). Build 65.c.47 WEDGE3 —
+    // owner-side kill_hook::detour_kill calls this when the engine kills an
+    // NPC we own. Server validates ownership and relays to NON-OWNER peers
+    // (main.py:1422), who corpse their mirror via engine::kill_actor. Reliable
+    // because a dropped death = a permanent live-mirror-of-a-dead-entity = the
+    // @0xC0F510 use-after-free when that mirror is shot. This is THE fix.
+    void enqueue_npc_death_from_owner(const NPCDeathFromOwnerPayload& p);
+
+    // NPC_ENGAGEMENT_CLAIM (unreliable, ~1 Hz max per fid). Build 65.c.23 —
+    // npc_ai_suppress detour calls this when LOCAL engine has InCombat
+    // flag (Actor+0x2D0 bit 0x4000) set on a TRACKED non-owned NPC. The
+    // signal tells the server "my player is the actual combat opponent
+    // of this raider; if the current owner isn't engaging it, hand off
+    // to me". Server rules in ownership.on_engagement_claim() prevent
+    // ping-pong via COMBAT_HANDOFF_STICKINESS_MS.
+    //
+    // Internal dedup: per-fid 2 s cooldown (anti-flood). Returns true if
+    // the claim was actually sent; false if rate-limited or no peer_id.
+    bool enqueue_engagement_claim_dedup(std::uint32_t form_id);
 
     // M9 wedge 1: reliable EQUIP_OP — fire-and-forget. Sender hooks
     // ActorEquipManager::Equip/UnequipObject in the engine and forwards

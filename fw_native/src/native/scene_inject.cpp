@@ -23,6 +23,7 @@
 #include "skin_rebind.h"
 #include "weapon_witness.h"  // read_parent_pub for detach-via-parent helper
 #include "synthetic_refr.h"  // M9 closure (2026-05-07): synthetic REFR weapon assembly
+#include "../ghost/actor_hijack.h"  // B6.6w5 Build 5: piggyback engine-native ghost spawn on the body inject event
 
 #include <windows.h>
 #include <atomic>
@@ -42,6 +43,7 @@
 #include "../main_thread_dispatch.h"
 #include "../net/client.h"
 #include "../offsets.h"   // M9 wedge 2: TESObjectARMO/ARMA + lookup_by_form_id RVAs
+#include "../engine/engine_calls.h"  // c.37.0: lookup_by_form_id (mirror resolution)
 
 namespace fw::native {
 
@@ -2581,6 +2583,86 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
                "world=(%.1f, %.1f, %.1f) scale=%.3f  SSN.child_count=%u",
                x, y, z, wt[0], wt[1], wt[2], ws, ssn_child_cnt);
 
+        // Build 16 Fix 2 (debate winner Pair A — A2 mechanism) — attach
+        // empty child NiNodes named "WEAPON", "MagicEffectsNode",
+        // "FireNode" to the body root.
+        //
+        // Per re/B6.6w5_debate_A2_hit_collision.md (88% confidence):
+        // when a raider fires at the engine-native ghost duplicate (the
+        // memcpy'd PlayerCharacter from B6.6w5), engine resolves
+        // `duplicate.Get3D()` via our vtable[140] hook → returns this
+        // body ghost (skel_root). The combat action dispatcher in
+        // sub_14086DC80 (funcs_0239.md:5315) then routes through
+        // sub_140E6F830 → BGSActionData::Execute which calls
+        // sub_1417A0A30 (FindNodeByName) on the body ghost looking for
+        // animgraph-injected nodes: "WEAPON", "MagicEffectsNode",
+        // "FireNode" (animation-bound projectile origins, effect mount
+        // points). A real PlayerCharacter has these injected at runtime
+        // by BSAnimationGraph::OnAttach. The body ghost — being a raw
+        // NIF load via try_inject_body_nif — lacks them. FindNodeByName
+        // returns NULL → engine falls through to vt[46] on the NULL
+        // pointer with unexpected args → corrupts state → SEH next tick
+        // → cumulative SEHs crash the client (Build 15 live test
+        // 2026-05-13 06:16:35).
+        //
+        // Attaching empty NiNodes (just transform + name, no geometry,
+        // no children) gives FindNodeByName non-NULL results to return.
+        // Engine continues without faulting. Visually invisible (the
+        // nodes have no geometry and aren't in the render hierarchy
+        // proper; they're just lookup-targets for combat code).
+        //
+        // 3 names per A2 (could expand: "AnimObject<0..9>" if more
+        // SEH cases surface). Cost: 3 × 0x140 bytes = 960 bytes per
+        // body ghost (one-time alloc at body inject).
+        {
+            constexpr const char* kSinkNodeNames[] = {
+                "WEAPON",
+                "MagicEffectsNode",
+                "FireNode",
+            };
+            for (const char* node_name : kSinkNodeNames) {
+                __try {
+                    void* child = g_r.allocate(
+                        g_r.pool, NINODE_SIZEOF, NINODE_ALIGN, true);
+                    if (!child) {
+                        FW_WRN("[native] inject_body_nif: failed to alloc "
+                               "child '%s' for combat-sink anti-SEH",
+                               node_name);
+                        continue;
+                    }
+                    g_r.ninode_ctor(child, /*capacity=*/0);
+
+                    std::uint64_t name_h = 0;
+                    g_r.fs_create(&name_h, node_name);
+                    if (name_h) {
+                        g_r.set_name(
+                            child, reinterpret_cast<void*>(name_h));
+                        g_r.fs_release(&name_h);
+                    }
+
+                    // Pre-bump refcount before AttachChild (standard
+                    // engine pattern: AttachChild's Inc/Dec pair leaves
+                    // parent with +1 net; we hold +1 own ref pre-call to
+                    // avoid the micro-window refcount-zero race).
+                    auto* rcp = reinterpret_cast<long*>(
+                        reinterpret_cast<char*>(child) + NIAV_REFCOUNT_OFF);
+                    _InterlockedIncrement(rcp);
+
+                    g_r.attach_child_direct(
+                        skel_root, child, /*reuseFirstEmpty=*/0);
+
+                    FW_LOG("[native] inject_body_nif: attached empty child "
+                           "'%s' @ %p to skel_root (Build 16 Fix 2 — "
+                           "engine FindNodeByName non-NULL anti-SEH)",
+                           node_name, child);
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    FW_ERR("[native] inject_body_nif: SEH attaching empty "
+                           "child '%s' — combat-sink anti-SEH partial",
+                           node_name);
+                }
+            }
+        }
+
         // v16: out_body = skel_root (the tracked node).
         *out_body = skel_root;
         FW_LOG("[native] inject_body_nif: SUCCESS — skeleton.nif (with body+"
@@ -2711,6 +2793,12 @@ void* get_debug_node() {
 
 unsigned int get_attach_count() {
     return g_attach_count.load(std::memory_order_relaxed);
+}
+
+// B6.6w5 Build 8b — body ghost getter for the engine-native duplicate's
+// Get3D vtable hook. See scene_inject.h for full rationale.
+void* get_injected_body_ghost() noexcept {
+    return g_injected_cube.load(std::memory_order_acquire);
 }
 
 // --- M9 wedge 3 — body geom cache populator ------------------------------
@@ -10648,6 +10736,34 @@ void on_pos_update_message() {
     const auto snap = fw::net::client().get_remote_snapshot();
     if (!snap.has_state) return;
 
+    // c.41e DIAG — settle the "ghost runs backward-diagonal" with DATA. Compares
+    // the actual MOVEMENT direction (from worldspace pos deltas, network-driven,
+    // ground truth) against the YAW we apply as facing. If move_dir≈yaw the
+    // facing matches the movement (issue is the POSE); if they differ by a
+    // constant, the YAW/convention is wrong. Move forward in a straight line.
+    {
+        static float s_lx = 0.0f, s_ly = 0.0f;
+        static bool  s_have = false;
+        const float dx = snap.pos[0] - s_lx, dy = snap.pos[1] - s_ly;
+        const float dist = std::sqrt(dx * dx + dy * dy);
+        if (s_have && dist > 4.0f) {  // only log when actually moving
+            const float kRad2Deg = 57.29578f;
+            const float move_deg = std::atan2(dy, dx) * kRad2Deg;
+            const float yaw_deg  = snap.rot[2] * kRad2Deg;
+            float diff = move_deg - yaw_deg;
+            while (diff > 180.0f)  diff -= 360.0f;
+            while (diff < -180.0f) diff += 360.0f;
+            static std::atomic<std::uint64_t> s_n{0};
+            const auto nn = s_n.fetch_add(1, std::memory_order_relaxed);
+            if (nn < 60 || (nn % 15) == 0)
+                FW_LOG("[ghost-dir-diag] move_dir=%.0f yaw=%.0f DIFF=%.0f "
+                       "(dx=%.0f dy=%.0f) pitch=%.2f roll=%.2f",
+                       move_deg, yaw_deg, diff, dx, dy,
+                       snap.rot[0], snap.rot[1]);
+        }
+        s_lx = snap.pos[0]; s_ly = snap.pos[1]; s_have = true;
+    }
+
     // B6 prologue (v0.6.0, 2026-05-08) — coord-bind ghost, no manual hide.
     //
     // We always write peer's broadcast coords to the ghost, regardless of
@@ -10758,6 +10874,58 @@ bool write_local_3x3(void* bone, const float mat3[9]) {
         p[4]  = mat3[3]; p[5]  = mat3[4]; p[6]  = mat3[5]; p[7]  = 0;
         p[8]  = mat3[6]; p[9]  = mat3[7]; p[10] = mat3[8]; p[11] = 0;
         // Mark dirty so engine's UpdateDownwardPass recomputes m_kWorld.
+        std::uint64_t* flags = reinterpret_cast<std::uint64_t*>(
+            reinterpret_cast<char*>(bone) + NIAV_FLAGS_OFF);
+        *flags |= 0x2;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// c.41 — read NiAVObject.m_kLocal.translate (offset 0x60, vec3 f32) into t3.
+// The crouch/sneak vertical drop lives HERE (COM/Pelvis translate down). c.37
+// + the player-ghost replicated only the rotation (+0x30), so the crouch
+// height was lost → the mirror kept every bone at standing height while the
+// knee rotations folded → feet "flew" toward the high hips. Scale at +0x6C is
+// NOT read. (Offset is 0x60, NOT 0x54 — the +0x54 in ni_offsets.h prose is a
+// stale, self-corrected note; NiMatrix3 is SIMD-padded to 0x30 → translate at
+// +0x30+0x30.)
+bool read_local_translate(void* bone, float t3[3]) {
+    if (!bone) return false;
+    __try {
+        const float* p = reinterpret_cast<const float*>(
+            reinterpret_cast<char*>(bone) + 0x60);
+        t3[0] = p[0]; t3[1] = p[1]; t3[2] = p[2];
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// c.41 — write NiAVObject.m_kLocal.translate (offset 0x60). Sets the SAME
+// dirty bit as write_local_3x3 so UpdateDownwardPass re-bakes m_kWorld from
+// the full local transform (rot+translate). NEVER call on the skeleton ROOT
+// node — the pos channel (pos_update_seh / apply_npc_pos) owns the root's
+// +0x60 (= worldspace feet); writing the bone-local crouch translate there
+// would double-apply worldspace and teleport the body. Caller MUST guard the
+// root (index 0 / canonical root name).
+bool write_local_translate(void* bone, const float t3[3]) {
+    if (!bone) return false;
+    __try {
+        float* p = reinterpret_cast<float*>(
+            reinterpret_cast<char*>(bone) + 0x60);
+        // v16 — write ALL 3 components. This is now an ISOLATED channel
+        // (POSE_CROUCH): it targets ONLY the COM/Pelvis bones, never the
+        // skeleton root, so writing X/Y here does NOT touch the worldspace
+        // frame the pos channel owns. The bone-local crouch translate for
+        // COM/Pelvis is essentially a pure vertical drop in bind space; faithf-
+        // ully copying the sender's full vec3 keeps the mirror identical to
+        // the sender for these bones. (The earlier Z-only restriction existed
+        // when this helper was shared with the root-motion-bearing pose loop;
+        // that coupling is gone.)
+        p[0] = t3[0]; p[1] = t3[1]; p[2] = t3[2];
+        // scale at +0x6C left untouched.
         std::uint64_t* flags = reinterpret_cast<std::uint64_t*>(
             reinterpret_cast<char*>(bone) + NIAV_FLAGS_OFF);
         *flags |= 0x2;
@@ -11157,6 +11325,45 @@ void on_bone_tick_message() {
         FW_LOG("[pose-tx] sent %zu joints (matched=%d missing=%d)",
                n, hits, missing);
     }
+
+    // === v16 ghost crouch capture (SEPARATE additive channel) ============
+    // NON-invasive: runs AFTER the rotation capture/enqueue above, reusing
+    // the already-built `canonical` list and `player_map` (local PC bones by
+    // name). For a FIXED set of crouch bones, read the LOCAL player's bone
+    // m_kLocal.translate (+0x60, via the read_local_translate helper) and
+    // ship it keyed by the bone's canonical index — the SAME index the
+    // rotation pose aligns on. This carries the vertical COM/Pelvis drop the
+    // rotation-only pose could not. Cheap (2 bones); sent every broadcast
+    // tick like the rotation pose.
+    {
+        static const char* const kCrouchBones[] = { "COM", "Pelvis" };
+        fw::net::PoseCrouchEntry crouch[fw::net::MAX_POSE_CROUCH_BONES] = {};
+        std::size_t crouch_n = 0;
+        for (const char* bname : kCrouchBones) {
+            if (crouch_n >= fw::net::MAX_POSE_CROUCH_BONES) break;
+            // Find this bone's index in the canonical list.
+            std::size_t idx = canonical.size();
+            for (std::size_t i = 0; i < canonical.size(); ++i) {
+                if (canonical[i] == bname) { idx = i; break; }
+            }
+            if (idx >= canonical.size()) continue;        // not in canonical
+            auto it = player_map.find(bname);
+            if (it == player_map.end() || !it->second) continue;  // not in local tree
+            float t3[3];
+            if (!read_local_translate(it->second, t3)) continue;
+            crouch[crouch_n].bone_index = static_cast<std::uint16_t>(idx);
+            crouch[crouch_n].tx = t3[0];
+            crouch[crouch_n].ty = t3[1];
+            crouch[crouch_n].tz = t3[2];
+            ++crouch_n;
+        }
+        if (crouch_n > 0) {
+            fw::net::client().enqueue_pose_crouch_state(crouch, crouch_n, now_ms);
+        }
+        if (log_now) {
+            FW_LOG("[crouch-tx] sent %zu crouch bones", crouch_n);
+        }
+    }
 }
 
 // ---- M8P3.15 net→main pose handoff impl ------------------------------
@@ -11237,6 +11444,668 @@ void on_pose_apply_message() {
         FW_LOG("[pose-rx] applied %d/%zu bones (skipped %d sentinels) "
                "to ghost=%p",
                wrote, apply_n, skipped_sentinel, ghost);
+    }
+}
+
+// ======================================================================
+// v16 — ghost crouch (SEPARATE additive channel beside the rotation pose).
+//
+// The rotation pose above (store_remote_pose / on_pose_apply_message) drives
+// each ghost bone's m_kLocal ROTATION (+0x30). This channel additionally
+// drives the COM/Pelvis m_kLocal TRANSLATION (+0x60) so the ghost body
+// LOWERS when the peer crouches — the rotation pose bent the legs but left
+// the body at standing height, so the feet "flew". Entries are keyed by the
+// SAME shared canonical bone index, so g_ghost_bone_ptrs[idx] is the right
+// ghost bone (the rotation pose uses the identical mapping).
+//
+// KILL-SWITCH: set kGhostCrouchEnabled=false + rebuild to instantly disable
+// this channel's apply if it ever regresses the ghost. The capture side
+// keeps sending (harmless), but no ghost bone is touched.
+// ======================================================================
+struct RemoteCrouchSlot {
+    bool                          has_data = false;
+    std::uint64_t                 ts_ms = 0;
+    std::uint8_t                  count = 0;
+    fw::net::PoseCrouchEntry      entries[fw::net::MAX_POSE_CROUCH_BONES] = {};
+};
+std::mutex        g_remote_crouch_mutex;
+RemoteCrouchSlot  g_remote_crouch;
+
+void store_remote_crouch(std::uint64_t ts_ms,
+                         const void* entries_buf,
+                         std::size_t count)
+{
+    if (!entries_buf) count = 0;
+    if (count > fw::net::MAX_POSE_CROUCH_BONES) count = fw::net::MAX_POSE_CROUCH_BONES;
+    {
+        std::lock_guard<std::mutex> lk(g_remote_crouch_mutex);
+        g_remote_crouch.has_data = true;
+        g_remote_crouch.ts_ms    = ts_ms;
+        g_remote_crouch.count    = static_cast<std::uint8_t>(count);
+        if (count > 0) {
+            std::memcpy(g_remote_crouch.entries, entries_buf,
+                        count * sizeof(fw::net::PoseCrouchEntry));
+        }
+    }
+    // Wake main thread.
+    const HWND h = fw::dispatch::get_target_hwnd();
+    if (h) PostMessageW(h, FW_MSG_STRADAB_CROUCH_APPLY, 0, 0);
+}
+
+void on_pose_crouch_apply_message() {
+    // KILL-SWITCH: flip to false + rebuild to instantly disable the crouch
+    // apply (e.g. if it ever regresses the ghost orientation/position).
+    static const bool kGhostCrouchEnabled = true;
+    if (!kGhostCrouchEnabled) return;
+
+    void* ghost = g_injected_cube.load(std::memory_order_acquire);
+    if (!ghost) return;
+
+    // Snapshot ghost bone pointers (same array the rotation pose aligns on —
+    // index i corresponds to canonical[i]).
+    std::vector<void*> ptrs;
+    {
+        std::lock_guard<std::mutex> lk(g_canonical_mutex);
+        ptrs = g_ghost_bone_ptrs;
+    }
+    if (ptrs.empty()) return;
+
+    // Snapshot the received crouch entries under their own mutex.
+    fw::net::PoseCrouchEntry entries[fw::net::MAX_POSE_CROUCH_BONES];
+    std::uint8_t cnt = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_remote_crouch_mutex);
+        if (!g_remote_crouch.has_data || g_remote_crouch.count == 0) return;
+        cnt = g_remote_crouch.count;
+        std::memcpy(entries, g_remote_crouch.entries,
+                    cnt * sizeof(fw::net::PoseCrouchEntry));
+    }
+
+    int wrote = 0;
+    for (std::uint8_t i = 0; i < cnt; ++i) {
+        const std::size_t idx = entries[i].bone_index;
+        if (idx >= ptrs.size()) continue;
+        void* bone = ptrs[idx];
+        if (!bone) continue;
+        const float t3[3] = { entries[i].tx, entries[i].ty, entries[i].tz };
+        if (write_local_translate(bone, t3)) ++wrote;
+    }
+
+    // Re-bake the ghost subtree (same SEH-caged helper the rotation pose uses).
+    update_downward_safe(ghost);
+
+    static int s_decim = 0;
+    if (++s_decim >= 30) {
+        s_decim = 0;
+        FW_LOG("[crouch-rx] applied %d/%u crouch bones to ghost=%p",
+               wrote, static_cast<unsigned>(cnt), ghost);
+    }
+}
+
+// ======================================================================
+// c.37.0 — Full NPC pose replication (owner → mirror), keyed by form_id.
+//
+// Reuses the player→ghost pose machinery verbatim — read_local_3x3 /
+// write_local_3x3 / mat3_to_quat / quat_to_mat3 / update_downward_safe /
+// walk_player_nested / g_canonical_names — but drives REAL mirror Actors
+// resolved by form_id instead of the single ghost body. Raiders share the
+// human skeleton schema of the ghost, so the canonical joint-name list
+// aligns index-for-index between owner and mirror with zero per-race work.
+//
+// All engine memory is touched ONLY through the SEH-caged helpers above
+// (no raw deref in these functions → no C2712 vs the std:: containers).
+// ======================================================================
+namespace {
+
+// c.42 — ~30 Hz per fid (was 60ms/~16Hz). The owner-capture site fires ~60 Hz;
+// we self-throttle so each NPC's pose costs one tree-walk every ~33 ms. Denser
+// capture keeps the receiver nlerp chasing a FRESH target every ~2 frames so it
+// never converges-then-freezes between samples (the "slide w/ frozen anim").
+// User OK'd 30Hz explicitly ([68692] "cosa ci vuole a ridurlo a 30-20").
+constexpr std::uint64_t kNpcPoseCapturePeriodMs = 33;
+
+// c.42 — quality FLOOR lowered 16→1. A near/loaded human skeleton matches
+// ~24-32 canonical joints; a distant/culled LOD-stub owner matches far fewer.
+// OLD (16): such an owner sent ZERO frames → the close NON-owner viewer's
+// mirror NEVER got a pose → it glided along the owner's pos with its own local
+// anim = the "slide / tronco di legno" the user reported ([70269]). NEW (1):
+// send the PARTIAL pose; unmatched joints ship the kSentinelQw sentinel and the
+// apply SKIPS them (keeps the native bone), so a partial relay only improves the
+// matched gross-body bones and never overwrites a good bone with garbage.
+// (hits==0 still drops — a pure-sentinel packet is wasted bytes.)
+constexpr int kNpcPoseMinMatch = 1;
+
+// c.37.1 — drop a relayed pose this many ms after it arrived (LOCAL receipt
+// clock, no cross-machine skew). When the owner stops streaming (handoff,
+// death, walked away), the mirror falls back to its native anim after this.
+constexpr std::uint64_t kNpcPoseStaleMs = 300;
+
+struct RemoteNpcPoseSlot {
+    std::uint64_t          ts_ms = 0;          // owner wall-clock (diag only)
+    std::uint64_t          local_recv_ms = 0;  // c.37.1 steady_clock at store
+    std::uint16_t          bone_count = 0;
+    fw::net::PoseBoneEntry quats[fw::net::MAX_POSE_BONES] = {};
+    // c.42 — previous sample (prev/cur extrapolation, mirrors the pos path).
+    // store_remote_npc_pose shifts cur→prev on each new arrival; the 60Hz apply
+    // extrapolates cur forward by (cur-prev)*t so the pose keeps MOVING between
+    // sparse RX instead of the nlerp converging-then-freezing on a static target.
+    std::uint64_t          prev_recv_ms = 0;
+    std::uint16_t          prev_bone_count = 0;
+    bool                   has_prev = false;
+    fw::net::PoseBoneEntry  prev_quats[fw::net::MAX_POSE_BONES] = {};
+};
+std::mutex                                            g_remote_npc_pose_mutex;
+std::unordered_map<std::uint32_t, RemoteNpcPoseSlot>  g_remote_npc_pose;  // fid → latest
+
+// c.37.1 — per-fid cache of canonical-aligned bone pointers for the mirror
+// drive. MAIN-THREAD ONLY (built + read from detour_actor_update_perframe),
+// so no mutex. Rebuilt when the actor's Get3D root changes (3D reload).
+struct NpcBoneCache {
+    void*              root = nullptr;   // Get3D(actor) when ptrs were built
+    std::vector<void*> ptrs;             // ptrs[i] ↔ canonical[i] (may be null)
+    // c.38 — per-bone last-applied quaternion (nlerp smoothing state). We
+    // glide each bone toward the latest relayed pose instead of snapping, so
+    // a late/lost packet's correction becomes a fast slide, not a 1-frame jump.
+    std::vector<fw::net::PoseBoneEntry> applied;
+    bool primed = false;                 // false → first frame snaps (no glide-in)
+};
+std::unordered_map<std::uint32_t, NpcBoneCache> g_npc_bone_cache;
+
+// NPC crouch — per-fid cache of the owner's latest COM/Pelvis translations
+// (the NPC analogue of g_remote_crouch for the ghost). Net thread writes via
+// store_npc_crouch; the 60 Hz post-orig drive (apply_npc_pose_to_actor) reads
+// it and writes the translate LAST so the body lowers. Same staleness policy
+// as the rotation pose: drop after kNpcPoseStaleMs (LOCAL receipt clock).
+struct RemoteNpcCrouchSlot {
+    std::uint64_t            local_recv_ms = 0;  // steady_clock at store
+    std::uint8_t             count = 0;
+    fw::net::PoseCrouchEntry entries[fw::net::MAX_POSE_CROUCH_BONES] = {};
+};
+std::mutex                                              g_remote_npc_crouch_mutex;
+std::unordered_map<std::uint32_t, RemoteNpcCrouchSlot>  g_remote_npc_crouch;  // fid → latest
+
+// c.38 — fraction of the remaining gap closed per 60Hz frame when smoothing
+// the mirror pose toward the latest relayed sample. ~0.35 ≈ converge in ~80ms:
+// kills the anim "teleport" (snap) while staying responsive.
+constexpr float kNpcPoseSmooth = 0.35f;
+
+// c.42 — receiver-side pose interpolation (mirrors the pos path's
+// get_interpolated_owner_state). The nlerp above smooths applied→target, but
+// when `target` is the single static latest sample it CONVERGES then FREEZES
+// until the next RX (the "gela tra RX sparsi"). Instead we make `target` the
+// cur sample EXTRAPOLATED forward by its angular velocity (cur-prev)*t, so the
+// nlerp always chases a MOVING target → continuous motion between sparse RX.
+// kNpcPoseMaxExtrap caps the forward prediction (same 1.5 as the pos path).
+// KILL-SWITCH: kNpcPoseInterpEnabled=false → target=latest (exact pre-c.42).
+constexpr bool  kNpcPoseInterpEnabled = true;
+constexpr float kNpcPoseMaxExtrap     = 1.5f;
+
+// Generic Get3D: Actor +0xF0 (LoadedRefData*) → +0x08 (root NiNode).
+// Same path as find_local_player_3d's path A, for an arbitrary actor.
+void* get_actor_3d(void* actor) {
+    if (!actor) return nullptr;
+    __try {
+        void* lrd = *reinterpret_cast<void**>(
+            reinterpret_cast<char*>(actor) + 0xF0);
+        if (!lrd) return nullptr;
+        return *reinterpret_cast<void**>(
+            reinterpret_cast<char*>(lrd) + 0x08);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
+} // namespace
+
+void capture_and_send_npc_pose(void* actor, std::uint32_t form_id) {
+    if (!actor || form_id == 0 || form_id == 0xFFFFFFFFu) return;
+
+    // Self-throttle to ~kNpcPoseCapturePeriodMs per fid.
+    {
+        using namespace std::chrono;
+        const std::uint64_t now = duration_cast<milliseconds>(
+            steady_clock::now().time_since_epoch()).count();
+        static std::mutex s_throttle_mtx;
+        static std::unordered_map<std::uint32_t, std::uint64_t> s_last_ms;
+        std::lock_guard<std::mutex> lk(s_throttle_mtx);
+        auto it = s_last_ms.find(form_id);
+        if (it != s_last_ms.end()
+            && (now - it->second) < kNpcPoseCapturePeriodMs) {
+            return;
+        }
+        s_last_ms[form_id] = now;
+    }
+
+    // Shared canonical joint-name list (human skeleton, from ghost skel.nif).
+    std::vector<std::string> canonical;
+    {
+        std::lock_guard<std::mutex> lk(g_canonical_mutex);
+        canonical = g_canonical_names;
+    }
+    if (canonical.empty()) return;
+
+    void* a3d = get_actor_3d(actor);
+    if (!a3d) return;
+
+    // Walk the NPC's render skeleton → name→node map (SEH-caged internally).
+    bone_copy::g_verbose_player_walk = false;  // never flood from here
+    std::unordered_map<std::string, void*> bone_map;
+    bone_copy::walk_player_nested(a3d, 0, bone_map);
+    if (bone_map.empty()) return;
+
+    const std::size_t n = std::min<std::size_t>(
+        canonical.size(),
+        static_cast<std::size_t>(fw::net::MAX_POSE_BONES));
+
+    constexpr float kSentinelQw = 2.0f;  // "joint absent on owner" → rx skips
+    fw::net::PoseBoneEntry quats[fw::net::MAX_POSE_BONES] = {};
+    int hits = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        auto it = bone_map.find(canonical[i]);
+        if (it == bone_map.end()) {
+            quats[i].qx = 0; quats[i].qy = 0; quats[i].qz = 0;
+            quats[i].qw = kSentinelQw;
+            continue;
+        }
+        float m3[9];
+        if (!read_local_3x3(it->second, m3)) {
+            quats[i].qx = 0; quats[i].qy = 0; quats[i].qz = 0;
+            quats[i].qw = kSentinelQw;
+            continue;
+        }
+        float q[4];
+        mat3_to_quat(m3, q);
+        quats[i].qx = q[0]; quats[i].qy = q[1];
+        quats[i].qz = q[2]; quats[i].qw = q[3];
+        ++hits;
+    }
+
+    // Quality gate — drop poses captured from a coarse/distant owner-copy.
+    if (hits < kNpcPoseMinMatch) {
+        static std::atomic<std::uint64_t> s_skip{0};
+        const auto sc = s_skip.fetch_add(1, std::memory_order_relaxed);
+        if (sc < 20 || (sc % 600) == 0) {
+            FW_LOG("[npc-pose-tx] fid=0x%08X SKIP low-match (matched=%d < %d) "
+                   "a3d=%p — owner copy too coarse", form_id, hits,
+                   kNpcPoseMinMatch, a3d);
+        }
+        return;
+    }
+
+    using namespace std::chrono;
+    const std::uint64_t now_ms = duration_cast<milliseconds>(
+        system_clock::now().time_since_epoch()).count();
+    fw::net::client().enqueue_npc_pose_state(form_id, now_ms, quats, n);
+
+    static std::atomic<std::uint64_t> s_cap{0};
+    const auto c = s_cap.fetch_add(1, std::memory_order_relaxed);
+    if (c < 20 || (c % 600) == 0) {
+        FW_LOG("[npc-pose-tx] fid=0x%08X sent %zu joints (matched=%d) a3d=%p",
+               form_id, n, hits, a3d);
+    }
+
+    // === NPC crouch capture (SEPARATE additive channel) ==================
+    // ISOLATED block: runs AFTER the rotation capture/enqueue above, reusing
+    // the already-built `canonical` list and `bone_map` (the raider's render-
+    // skeleton bones by name). For the FIXED crouch bones, read the NPC's bone
+    // m_kLocal.translate (+0x60, via read_local_translate) and ship it keyed by
+    // the bone's canonical index — the SAME index the rotation pose aligns on.
+    // This carries the vertical COM/Pelvis drop the rotation-only pose can't,
+    // so the raider's body lowers instead of its feet flying. Mirrors the
+    // ghost-crouch capture in capture_and_send_pose, but form_id-keyed.
+    {
+        static const char* const kCrouchBones[] = { "COM", "Pelvis" };
+        fw::net::PoseCrouchEntry crouch[fw::net::MAX_POSE_CROUCH_BONES] = {};
+        std::size_t crouch_n = 0;
+        for (const char* bname : kCrouchBones) {
+            if (crouch_n >= fw::net::MAX_POSE_CROUCH_BONES) break;
+            // Find this bone's index in the canonical list.
+            std::size_t idx = canonical.size();
+            for (std::size_t i = 0; i < canonical.size(); ++i) {
+                if (canonical[i] == bname) { idx = i; break; }
+            }
+            if (idx >= canonical.size()) continue;        // not in canonical
+            auto it = bone_map.find(bname);
+            if (it == bone_map.end() || !it->second) continue;  // not in NPC tree
+            float t3[3];
+            if (!read_local_translate(it->second, t3)) continue;
+            crouch[crouch_n].bone_index = static_cast<std::uint16_t>(idx);
+            crouch[crouch_n].tx = t3[0];
+            crouch[crouch_n].ty = t3[1];
+            crouch[crouch_n].tz = t3[2];
+            ++crouch_n;
+        }
+        if (crouch_n > 0) {
+            fw::net::client().enqueue_npc_crouch(form_id, crouch, crouch_n, now_ms);
+        }
+    }
+}
+
+void store_remote_npc_pose(std::uint32_t form_id,
+                           std::uint64_t ts_ms,
+                           const void* quats_buf,
+                           std::size_t bone_count) {
+    if (form_id == 0 || form_id == 0xFFFFFFFFu) return;
+    if (!quats_buf) bone_count = 0;
+    if (bone_count > fw::net::MAX_POSE_BONES) bone_count = fw::net::MAX_POSE_BONES;
+    using namespace std::chrono;
+    const std::uint64_t recv_ms = duration_cast<milliseconds>(
+        steady_clock::now().time_since_epoch()).count();
+    {
+        std::lock_guard<std::mutex> lk(g_remote_npc_pose_mutex);
+        RemoteNpcPoseSlot& slot = g_remote_npc_pose[form_id];
+        // c.42 — shift the current sample into prev (for receiver extrapolation)
+        // BEFORE overwriting it. Only when cur is a real sample; first arrival
+        // leaves has_prev=false → apply HOLDs the single sample (pre-c.42).
+        if (slot.bone_count > 0) {
+            slot.prev_recv_ms    = slot.local_recv_ms;
+            slot.prev_bone_count = slot.bone_count;
+            std::memcpy(slot.prev_quats, slot.quats,
+                        slot.bone_count * sizeof(fw::net::PoseBoneEntry));
+            slot.has_prev = true;
+        }
+        slot.ts_ms = ts_ms;
+        slot.local_recv_ms = recv_ms;
+        slot.bone_count = static_cast<std::uint16_t>(bone_count);
+        if (bone_count > 0) {
+            std::memcpy(slot.quats, quats_buf,
+                        bone_count * sizeof(fw::net::PoseBoneEntry));
+        }
+    }
+    // c.37.1 — NO PostMessage. The mirror drive now runs per-frame inside
+    // detour_actor_update_perframe (post-orig, 60Hz) via apply_npc_pose_to_actor,
+    // so OUR write is the last one before the render bake and beats the engine's
+    // 60Hz anim-graph. The old 16Hz message-pump apply lost the write-last race.
+}
+
+// NPC crouch — net thread. Stash the owner's COM/Pelvis translations into the
+// per-fid slot. NO PostMessage: the apply runs inside apply_npc_pose_to_actor
+// (60 Hz post-orig drive) so OUR translate write is the last one before the
+// render bake — exactly the same write-last reasoning as store_remote_npc_pose.
+void store_npc_crouch(std::uint32_t form_id,
+                      const void* entries_buf,
+                      std::size_t count) {
+    if (form_id == 0 || form_id == 0xFFFFFFFFu) return;
+    if (!entries_buf) count = 0;
+    if (count > fw::net::MAX_POSE_CROUCH_BONES) count = fw::net::MAX_POSE_CROUCH_BONES;
+    using namespace std::chrono;
+    const std::uint64_t recv_ms = duration_cast<milliseconds>(
+        steady_clock::now().time_since_epoch()).count();
+    {
+        std::lock_guard<std::mutex> lk(g_remote_npc_crouch_mutex);
+        RemoteNpcCrouchSlot& slot = g_remote_npc_crouch[form_id];
+        slot.local_recv_ms = recv_ms;
+        slot.count = static_cast<std::uint8_t>(count);
+        if (count > 0) {
+            std::memcpy(slot.entries, entries_buf,
+                        count * sizeof(fw::net::PoseCrouchEntry));
+        }
+    }
+}
+
+// c.37.1 — drive ONE mirror NPC's skeleton from its latest relayed pose.
+//
+// Called from detour_actor_update_perframe POST-orig (i.e. AFTER the engine's
+// Update_PerFrame → sub_140CE1720 wrote this actor's bone+0x30 from its local
+// anim graph). We overwrite those bones with the owner's relayed rotations so
+// OUR write is the last one before the render bake → no 60Hz-vs-16Hz flicker.
+//
+// MAIN-THREAD ONLY (the detour). Bone pointers are cached per fid and only
+// re-walked when the actor's Get3D root changes (3D reload). Every engine
+// deref goes through the SEH-caged helpers, so no C2712 vs the std:: locals.
+void apply_npc_pose_to_actor(void* actor, std::uint32_t form_id) {
+    if (!actor || form_id == 0 || form_id == 0xFFFFFFFFu) return;
+
+    // Snapshot the latest pose for this fid (net thread writes it).
+    RemoteNpcPoseSlot slot;
+    {
+        std::lock_guard<std::mutex> lk(g_remote_npc_pose_mutex);
+        auto it = g_remote_npc_pose.find(form_id);
+        if (it == g_remote_npc_pose.end()) return;
+        slot = it->second;  // POD copy (quats[80] + meta)
+    }
+    if (slot.bone_count == 0) return;
+
+    // Freshness via LOCAL receipt clock (no cross-machine skew). When the
+    // owner stops streaming, fall back to the mirror's native anim.
+    using namespace std::chrono;
+    const std::uint64_t now = duration_cast<milliseconds>(
+        steady_clock::now().time_since_epoch()).count();
+    if (now - slot.local_recv_ms > kNpcPoseStaleMs) return;
+
+    void* a3d = get_actor_3d(actor);
+    if (!a3d) return;
+
+    // Resolve / refresh the canonical-aligned bone-ptr cache for this fid.
+    NpcBoneCache& cache = g_npc_bone_cache[form_id];
+    if (cache.root != a3d || cache.ptrs.empty()) {
+        std::vector<std::string> canonical;
+        {
+            std::lock_guard<std::mutex> lk(g_canonical_mutex);
+            canonical = g_canonical_names;
+        }
+        if (canonical.empty()) return;
+        bone_copy::g_verbose_player_walk = false;
+        std::unordered_map<std::string, void*> bone_map;
+        bone_copy::walk_player_nested(a3d, 0, bone_map);
+        if (bone_map.empty()) return;
+        const std::size_t n = std::min<std::size_t>(
+            canonical.size(), static_cast<std::size_t>(fw::net::MAX_POSE_BONES));
+        cache.ptrs.assign(n, nullptr);
+        for (std::size_t i = 0; i < n; ++i) {
+            auto mit = bone_map.find(canonical[i]);
+            cache.ptrs[i] = (mit != bone_map.end()) ? mit->second : nullptr;
+        }
+        cache.root = a3d;
+        cache.primed = false;   // c.38 — snap once after a (re)build
+    }
+
+    // c.38 — keep the nlerp state buffer aligned to the ptr layout.
+    if (cache.applied.size() != cache.ptrs.size()) {
+        cache.applied.assign(cache.ptrs.size(),
+                             fw::net::PoseBoneEntry{0.f, 0.f, 0.f, 1.f});
+        cache.primed = false;
+    }
+    // First frame after a (re)build snaps (factor 1.0) so we don't glide in
+    // from identity; afterwards glide toward the latest pose.
+    const float smooth = cache.primed ? kNpcPoseSmooth : 1.0f;
+
+    // c.42 — receiver pose extrapolation factor (computed ONCE; mirrors
+    // get_interpolated_owner_state). t = (now - cur_recv)/(cur_recv - prev_recv),
+    // capped at kNpcPoseMaxExtrap. We already passed the kNpcPoseStaleMs gate
+    // above, so dt_now ∈ [0, 300]. do_interp=false → per-bone target stays the
+    // latest sample = exact pre-c.42 behaviour (kill-switch or no prev yet).
+    bool  do_interp = false;
+    float interp_t  = 0.0f;
+    if (kNpcPoseInterpEnabled && slot.has_prev && slot.prev_bone_count > 0
+        && slot.local_recv_ms > slot.prev_recv_ms) {
+        const std::uint64_t dt_now = (now >= slot.local_recv_ms)
+            ? (now - slot.local_recv_ms) : 0ULL;
+        const std::uint64_t dt_pc = slot.local_recv_ms - slot.prev_recv_ms;
+        interp_t = static_cast<float>(dt_now) / static_cast<float>(dt_pc);
+        if (interp_t > kNpcPoseMaxExtrap) interp_t = kNpcPoseMaxExtrap;
+        do_interp = true;
+    }
+
+    const std::size_t apply_n = std::min<std::size_t>(
+        slot.bone_count, cache.ptrs.size());
+    int wrote = 0;
+    for (std::size_t i = 0; i < apply_n; ++i) {
+        void* bone = cache.ptrs[i];
+        if (!bone) continue;
+        const fw::net::PoseBoneEntry& e = slot.quats[i];
+        if (e.qw > 1.5f) continue;  // sentinel → keep native bone
+        const float ml = e.qx*e.qx + e.qy*e.qy + e.qz*e.qz + e.qw*e.qw;
+        if (ml < 0.5f) continue;    // degenerate quat guard
+
+        // c.42 — target = cur, optionally extrapolated forward by (cur-prev)*t
+        // so the nlerp below chases a MOVING target (no converge-then-freeze).
+        float bx = e.qx, by = e.qy, bz = e.qz, bw = e.qw;
+        if (do_interp && i < slot.prev_bone_count) {
+            const fw::net::PoseBoneEntry& p = slot.prev_quats[i];
+            const float pl = p.qx*p.qx + p.qy*p.qy + p.qz*p.qz + p.qw*p.qw;
+            if (!(p.qw > 1.5f) && pl > 0.5f) {  // prev valid (not sentinel/degenerate)
+                float px = p.qx, py = p.qy, pz = p.qz, pw = p.qw;
+                if (px*bx + py*by + pz*bz + pw*bw < 0.f) {  // shortest arc prev→cur
+                    px = -px; py = -py; pz = -pz; pw = -pw;
+                }
+                float ex = bx + (bx - px) * interp_t;
+                float ey = by + (by - py) * interp_t;
+                float ez = bz + (bz - pz) * interp_t;
+                float ew = bw + (bw - pw) * interp_t;
+                const float el = std::sqrt(ex*ex + ey*ey + ez*ez + ew*ew);
+                if (el > 1e-6f) { bx = ex/el; by = ey/el; bz = ez/el; bw = ew/el; }
+            }
+        }
+
+        // nlerp last-applied → target (shortest arc), then renormalize.
+        fw::net::PoseBoneEntry& a = cache.applied[i];
+        const float dot = a.qx*bx + a.qy*by + a.qz*bz + a.qw*bw;
+        if (dot < 0.f) { bx = -bx; by = -by; bz = -bz; bw = -bw; }
+        float nx = a.qx + (bx - a.qx) * smooth;
+        float ny = a.qy + (by - a.qy) * smooth;
+        float nz = a.qz + (bz - a.qz) * smooth;
+        float nw = a.qw + (bw - a.qw) * smooth;
+        const float nl = std::sqrt(nx*nx + ny*ny + nz*nz + nw*nw);
+        if (nl < 1e-6f) continue;
+        nx /= nl; ny /= nl; nz /= nl; nw /= nl;
+        a.qx = nx; a.qy = ny; a.qz = nz; a.qw = nw;
+
+        const float q[4] = { nx, ny, nz, nw };
+        float m3[9];
+        quat_to_mat3(q, m3);
+        if (write_local_3x3(bone, m3)) ++wrote;
+    }
+    cache.primed = true;
+
+    // === NPC crouch apply (SEPARATE additive channel) ===================
+    // CRITICAL: this MUST run here, in the 60 Hz POST-orig drive — NOT in a
+    // one-shot handler — because the raider's engine anim overwrites bone
+    // transforms every frame; only the post-orig write-last persists. After
+    // the rotation loop above, overwrite the COM/Pelvis +0x60 LOCAL TRANSLATE
+    // with the owner's relayed drop so the body lowers (the rotation pose only
+    // bends the legs → without this the feet fly). Reuses the SAME canonical-
+    // index→mirror-bone mapping (cache.ptrs[idx]) the rotation loop just used.
+    // KILL-SWITCH: flip kNpcCrouchEnabled=false + rebuild to disable instantly.
+    static const bool kNpcCrouchEnabled = true;
+    int crouch_wrote = 0;
+    if (kNpcCrouchEnabled) {
+        RemoteNpcCrouchSlot cslot;
+        bool have_crouch = false;
+        {
+            std::lock_guard<std::mutex> lk(g_remote_npc_crouch_mutex);
+            auto cit = g_remote_npc_crouch.find(form_id);
+            if (cit != g_remote_npc_crouch.end()) {
+                cslot = cit->second;  // POD copy
+                have_crouch = true;
+            }
+        }
+        // Same freshness gate as the rotation pose (LOCAL receipt clock).
+        if (have_crouch && cslot.count > 0
+            && (now - cslot.local_recv_ms) <= kNpcPoseStaleMs) {
+            for (std::uint8_t i = 0; i < cslot.count; ++i) {
+                const std::size_t idx = cslot.entries[i].bone_index;
+                if (idx >= cache.ptrs.size()) continue;
+                void* bone = cache.ptrs[idx];
+                if (!bone) continue;
+                const float t3[3] = { cslot.entries[i].tx,
+                                      cslot.entries[i].ty,
+                                      cslot.entries[i].tz };
+                if (write_local_translate(bone, t3)) ++crouch_wrote;
+            }
+        }
+    }
+
+    // Re-bake if EITHER channel wrote (crouch-only must still re-bake).
+    if (wrote > 0 || crouch_wrote > 0) update_downward_safe(a3d);
+
+    static std::atomic<std::uint64_t> s_drv{0};
+    const auto c = s_drv.fetch_add(1, std::memory_order_relaxed);
+    if (c < 10 || (c % 600) == 0) {
+        FW_LOG("[npc-pose-drive] fid=0x%08X wrote=%d/%zu crouch=%d (60Hz post-orig) a3d=%p",
+               form_id, wrote, apply_n, crouch_wrote, a3d);
+    }
+}
+
+void on_npc_pose_apply_message() {
+    { static std::atomic<std::uint64_t> s_en{0};
+      const auto ec = s_en.fetch_add(1, std::memory_order_relaxed);
+      if (ec < 10 || (ec % 200) == 0) {
+          std::size_t msz, csz;
+          { std::lock_guard<std::mutex> lk(g_remote_npc_pose_mutex);
+            msz = g_remote_npc_pose.size(); }
+          { std::lock_guard<std::mutex> lk(g_canonical_mutex);
+            csz = g_canonical_names.size(); }
+          FW_LOG("[npc-pose-net] APPLY enter mapsize=%zu canonical=%zu",
+                 msz, csz);
+      } }
+    // Snapshot + clear all pending NPC poses under lock.
+    std::vector<std::pair<std::uint32_t, RemoteNpcPoseSlot>> pending;
+    {
+        std::lock_guard<std::mutex> lk(g_remote_npc_pose_mutex);
+        if (g_remote_npc_pose.empty()) return;
+        pending.reserve(g_remote_npc_pose.size());
+        for (auto& kv : g_remote_npc_pose) {
+            pending.emplace_back(kv.first, kv.second);
+        }
+        g_remote_npc_pose.clear();
+    }
+
+    std::vector<std::string> canonical;
+    {
+        std::lock_guard<std::mutex> lk(g_canonical_mutex);
+        canonical = g_canonical_names;
+    }
+    if (canonical.empty()) return;
+
+    bone_copy::g_verbose_player_walk = false;
+
+    int applied_actors = 0, total_wrote = 0, resolved = 0;
+    for (const auto& pr : pending) {
+        const std::uint32_t fid = pr.first;
+        const RemoteNpcPoseSlot& slot = pr.second;
+        if (slot.bone_count == 0) continue;
+
+        // Resolve OUR local copy of this NPC (the mirror). The server never
+        // echoes a pose to its own owner, so this is always a non-owned
+        // mirror Actor on our client.
+        void* actor = fw::engine::lookup_by_form_id(fid);
+        if (!actor) continue;  // NPC not loaded in our cell — skip
+        ++resolved;
+
+        void* a3d = get_actor_3d(actor);
+        if (!a3d) continue;
+
+        std::unordered_map<std::string, void*> bone_map;
+        bone_copy::walk_player_nested(a3d, 0, bone_map);
+        if (bone_map.empty()) continue;
+
+        const std::size_t apply_n = std::min<std::size_t>(
+            slot.bone_count, canonical.size());
+        int wrote = 0;
+        for (std::size_t i = 0; i < apply_n; ++i) {
+            const fw::net::PoseBoneEntry& e = slot.quats[i];
+            if (e.qw > 1.5f) continue;  // sentinel → keep bind pose
+            const float ml = e.qx*e.qx + e.qy*e.qy + e.qz*e.qz + e.qw*e.qw;
+            if (ml < 0.5f) continue;    // degenerate quat guard
+            auto it = bone_map.find(canonical[i]);
+            if (it == bone_map.end() || !it->second) continue;
+            const float q[4] = { e.qx, e.qy, e.qz, e.qw };
+            float m3[9];
+            quat_to_mat3(q, m3);
+            if (write_local_3x3(it->second, m3)) ++wrote;
+        }
+        // Recompute world transforms for the whole NPC subtree (SEH-caged).
+        update_downward_safe(a3d);
+        if (wrote > 0) { ++applied_actors; total_wrote += wrote; }
+    }
+
+    static std::atomic<std::uint64_t> s_app{0};
+    const auto c = s_app.fetch_add(1, std::memory_order_relaxed);
+    if (c < 20 || (c % 300) == 0) {
+        FW_LOG("[npc-pose-rx] pending=%zu resolved=%d applied=%d actors, "
+               "%d bones", pending.size(), resolved, applied_actors,
+               total_wrote);
     }
 }
 
@@ -11371,6 +12240,28 @@ void on_inject_message() {
         FW_LOG("[native] M5 BODY via NIF loader: success — MaleBody.nif "
                "attached to SSN at remote player position. T-pose until "
                "M4 wires up animation driver.");
+
+        // B6.6w5 Build 5 — piggyback the engine-native PlayerCharacter
+        // ghost spawn on the body inject event.
+        //
+        // Why here: the body inject already implements the right timing
+        // (arm_worker's 30s grace + local_player_in_world() check + remote
+        // snapshot poll). All four LoadGame teardown windows are over by
+        // the time inject_debug_cube succeeds. Earlier B6.6w5 builds
+        // triggered spawn from the POS_BROADCAST handler with our own
+        // weaker gate (parentCell != null only); spawn fired DURING the
+        // LoadGame transition and the engine crashed on uninit ghost
+        // fields ~7s later. Piggybacking on the body inject event guarantees
+        // we spawn AFTER the engine is fully stable.
+        //
+        // We call on_spawn_message directly (not request_spawn) because
+        // we're already on the main WndProc thread (this function IS the
+        // FW_MSG_STRADAB_INJECT handler). on_spawn_message is idempotent
+        // (g_ghost_actor atomic), so it's safe even if the POS_BROADCAST
+        // path also fires later.
+        FW_LOG("[ghost] inject hook: body OK — triggering engine-native "
+               "PlayerCharacter spawn on the same main-thread tick");
+        fw::ghost::on_spawn_message();
     } else {
         FW_WRN("[native] M5 BODY via NIF loader: failed");
     }

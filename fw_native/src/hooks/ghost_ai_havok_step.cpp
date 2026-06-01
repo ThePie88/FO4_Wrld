@@ -1,3 +1,34 @@
+// ============================================================================
+// NOT INSTALLED — 2026-05-17. install_all.cpp:245 has only `(void)install_ghost_ai_havok_step;`
+// for ODR; actual install call is OUT (see install_all.cpp:233-235 comment block
+// "STILL DISABLED — too invasive for diag pass").
+//
+// LOG PROOF: `[ghost_ai_havok]` strings absent from both client logs.
+//
+// WHY DISABLED:
+//   This hook detours `bhkCharRigidBodyController::FinishPhysicsStep`
+//   (sub_1418B9790). Bailing it freezes the Havok body's position-sync
+//   broadcast → tracked NPC's rigid body stops integrating motion. Useful
+//   for the position-freeze cascade (paired with ghost_ai_movement +
+//   ghost_ai_pos_belt + ghost_ai_actor_setpos), but per B6.6w4 PHASE A
+//   architectural pivot: position freeze is delegated to MovementController
+//   disable (set MovementController+0x1A1 = 1) inside ghost_ai_movement's
+//   own path. The Havok layer freeze is REDUNDANT in that design.
+//
+//   Plus: physics-thread detours are intrinsically more risky than main-
+//   thread ones (different thread → SEH cage protects but race windows
+//   harder to reason about). When freeze stops being needed (puppet fire
+//   pivot freezes ZERO actors — they just stand and shoot), this whole
+//   sub-system becomes pure dead weight.
+//
+// KEEP-AS-IS RATIONALE:
+//   Detour body is correct (B6.5w16 verified +0x3E0 owner-Actor offset).
+//   Re-enable IF the puppet-fire pivot still needs raider freeze (e.g.,
+//   to prevent raider from wandering away from their fire position).
+//   But in that case ghost_ai_movement's MovementController disable is
+//   probably sufficient.
+// ============================================================================
+
 #include "ghost_ai_havok_step.h"
 
 #include <windows.h>
@@ -9,6 +40,8 @@
 #include "../offsets.h"
 #include "../main_thread_dispatch.h"
 #include "npc_ai_suppress.h"  // B6.5w17 v3: is_actor_bail_tracked()
+#include "ownership_manager.h"  // Build 65: owner-driven predicate
+#include "../engine/engine_calls.h"  // Build 62.9: native_combat_fid_exists
 
 namespace fw::hooks {
 
@@ -101,6 +134,25 @@ void __fastcall detour_havok_step(void* self) {
             {
                 should_bail = true;
             } else if (fw::hooks::is_actor_bail_tracked(fid)) {
+                should_bail = true;
+            }
+
+            // Build 62.9 (2026-05-25) — UNGATE for raiders in native combat
+            // tier. Once trigger_npc_perception SUCCESS path runs for this
+            // fid, the engine OWNS the rigid body integration; bailing
+            // here would re-freeze it every Havok step → "raider stationary
+            // like a log even with red marker" (Build 62.7 test feedback).
+            if (should_bail && fw::engine::native_combat_fid_exists(fid)) {
+                should_bail = false;
+            }
+
+            // Build 65 — owner-driven override (with fallback).
+            //   Owner of this NPC      → force RUN vanilla (we're authority).
+            //   Non-owner of an NPC    → force BAIL (mirror via STATE_FROM_OWNER).
+            //   Untracked / map empty  → leave should_bail as decided above.
+            if (fw::ownership::is_owner_of(fid)) {
+                should_bail = false;
+            } else if (fw::ownership::is_non_owner_tracked(fid)) {
                 should_bail = true;
             }
 

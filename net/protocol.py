@@ -32,7 +32,17 @@ from typing import ClassVar, Union
 # ------------------------------------------------------------------ constants
 
 PROTOCOL_MAGIC: int = 0xFA
-PROTOCOL_VERSION: int = 14
+PROTOCOL_VERSION: int = 16
+# v16 (2026-05-31): ghost crouch — adds POSE_CROUCH_STATE (0x028E, C->S) and
+# POSE_CROUCH_BROADCAST (0x028F, S->peers). A SEPARATE, additive channel
+# alongside the working POSE_STATE/POSE_BROADCAST rotation pose: it replicates
+# the vertical COM/Pelvis LOCAL TRANSLATION that a crouch produces (the body
+# lowering), which the rotation-only pose could not carry (legs bent but body
+# stayed at standing height → ghost feet "flew"). PoseCrouchEntry is
+# {u16 bone_index; f32 tx,ty,tz} = 14 B, keyed on the SAME shared canonical
+# bone index as the rotation pose. Tiny count (<=8, just COM + Pelvis). Does
+# NOT touch PoseBoneEntry, the canonical bone filter, or the rotation
+# capture/apply loops.
 # v14 (2026-05-11): B6.5w12 Ghost AI decision-point sync — extends
 # NPCStateEntry (53 → 98 B) with AI state fields the server pre-computes
 # and pushes so the DLL's MinHook detours on engine decision functions
@@ -143,6 +153,7 @@ class MessageType(IntEnum):
     PEER_LEAVE    = 0x0004   # server -> client: peer gone
     HEARTBEAT     = 0x0005   # client <-> server: keepalive
     DISCONNECT    = 0x0006   # either side: graceful close
+    PEER_GHOST_REGISTER = 0x0007  # B6.6w5: client -> server: my local ghost-actor form_id (= the actor that represents the OTHER peer on my screen). Used by project_for_peer to substitute combat_target with the right local fid per-viewer.
 
     # Reliability
     ACK           = 0x0010   # server/client: acknowledges reliable frames
@@ -174,6 +185,36 @@ class MessageType(IntEnum):
     LOCK_OP          = 0x0260   # B6.3 v0.5.3: client -> server: lock state changed (locked/unlocked)
     LOCK_BCAST       = 0x0261   # B6.3 v0.5.3: server -> peers: lock state changed
     NPC_STATE_BCAST  = 0x0270   # B6.5w2 v13: server -> peers: batched NPC pos/anim state (unreliable, ~10 Hz)
+    NPC_FIRE         = 0x0271   # B6.6w1 v15: server -> peers: "this raider fires its equipped weapon NOW" (event-driven)
+    NPC_DISCOVER     = 0x0272   # B6.6w2 v16: client -> server: "I auto-tracked hostile NPC X (form+base+cell+pos)" (reliable, event-driven)
+    NPC_PERCEPTION_TRIGGER = 0x0273  # Build 62 v17: server -> peers: "NPC X perceives peer Y's ghost — invoke CCF810 locally" (reliable, server-side sphere debounced 5s)
+
+    # Build 65 — Owner-driven NPC sync (Solver 2 in re/agents_20/SOLVER_02_owner_driven.md).
+    # Server elects one peer as the owner of each NPC. Owner runs full vanilla
+    # engine AI; non-owners suppress local Update_PerFrame and apply the owner's
+    # broadcast state. Wire opcodes ride alongside v15 — Phase A (server-only)
+    # adds infrastructure that doesn't fire until Phase B (DLL) is matched.
+    NPC_OWNERSHIP_BCAST           = 0x0280  # S→peer: bootstrap ownership snapshot (reliable, chunked) — sent on peer-join
+    NPC_OWNERSHIP_HANDOFF_PHASE_1 = 0x0281  # S→old+new owner: release request for one NPC (reliable)
+    NPC_OWNERSHIP_RELEASE_ACK     = 0x0282  # C→S: old owner acknowledges release (reliable)
+    NPC_OWNERSHIP_HANDOFF_PHASE_2 = 0x0283  # S→all: new owner active for one NPC (reliable)
+    NPC_OWNER_HEARTBEAT           = 0x0284  # C→S: list of fids+epochs we still own (unreliable, 2 Hz proof-of-life)
+    NPC_STATE_FROM_OWNER          = 0x0285  # C→S→all: owner's authoritative state batch (unreliable, ~20-30 Hz)
+    NPC_OBSERVED                  = 0x0286  # C→S: "I see NPC X at pos P, distance D" — election input (reliable)
+    NPC_UNLOAD                    = 0x0287  # C→S: "NPC X left my loaded cell" — owner release / non-owner forget (reliable)
+    NPC_FIRE_FROM_OWNER           = 0x0288  # C→S→all: owner's fire event (unreliable, replaces server-driven NPC_FIRE)
+    NPC_DEATH_FROM_OWNER          = 0x0289  # C→S→all: owner's death event (reliable)
+    NPC_DAMAGE_FROM_OWNER         = 0x028A  # C→S→all: owner's hit-applier event (unreliable, for ragdoll dir + visual cues)
+    NPC_ENGAGEMENT_CLAIM          = 0x028B  # Build 65.c.23 — C→S: non-owner peer reports its local engine has InCombat flag set on a tracked NPC. Server uses this to force handoff if current owner hasn't reported engagement in last 3s. Fixes "wrong owner" architectural mismatch where first-observer wins but isn't the actual fighter.
+    NPC_POSE_FROM_OWNER           = 0x028C  # c.37.0 — C→S→all: owner's per-bone rotation snapshot for ONE owned NPC, keyed by form_id. Full pose replication (like player→ghost) so the mirror animates bone-by-bone instead of the coarse pos/yaw/anim-enum relay. Unreliable, ~15-20 Hz per NPC.
+    NPC_DAMAGE_CLAIM              = 0x028D  # c.39b — C→S: "my local player dealt D damage to NPC X". Drives damage-based ownership/aggro (chi fa più danno possiede). Unreliable, client-throttled ~6 Hz/fid.
+    NPC_CROUCH_FROM_OWNER         = 0x0290  # NPC crouch — C→S→all: owner's COM/Pelvis LOCAL TRANSLATION snapshot for ONE owned NPC, keyed by form_id. The NPC analogue of POSE_CROUCH (rotation pose bends the raider's legs but leaves the body at standing height → feet "fly"; this carries the vertical drop). Unreliable, ~same rate as NPC_POSE_FROM_OWNER.
+
+    # v16 — ghost crouch. SEPARATE additive channel beside POSE_STATE/BROADCAST.
+    # Replicates the vertical COM/Pelvis local translation a crouch produces
+    # (rotation-only pose left the body at standing height → feet flew).
+    POSE_CROUCH_STATE     = 0x028E  # v16: client -> server: my crouch bone translations (COM/Pelvis +0x60 local translate)
+    POSE_CROUCH_BROADCAST = 0x028F  # v16: server -> other peers: peer X's crouch bone translations
 
     # Social (0x03XX) — reliable
     CHAT          = 0x0300
@@ -269,23 +310,35 @@ class HelloPayload:
     client_id: str            # ASCII max 15
     client_version_major: int # u8
     client_version_minor: int # u8
+    steam_id: int = 0         # u64; 0 = unavailable (B6.6w5+)
 
-    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<BB")
+    _STRUCT_HEAD: ClassVar[struct.Struct] = struct.Struct("<BB")
+    _STRUCT_TAIL: ClassVar[struct.Struct] = struct.Struct("<Q")
 
     def encode(self) -> bytes:
         return (
             _encode_fixed_string(self.client_id, MAX_CLIENT_ID_LEN)
-            + self._STRUCT.pack(self.client_version_major, self.client_version_minor)
+            + self._STRUCT_HEAD.pack(
+                self.client_version_major, self.client_version_minor)
+            + self._STRUCT_TAIL.pack(self.steam_id & 0xFFFFFFFFFFFFFFFF)
         )
 
     @classmethod
     def decode(cls, data: bytes) -> "HelloPayload":
-        off = MAX_CLIENT_ID_LEN + 1
-        if len(data) < off + cls._STRUCT.size:
-            raise ProtocolError("HELLO truncated")
+        off = MAX_CLIENT_ID_LEN + 1   # 16
+        head_size = cls._STRUCT_HEAD.size   # 2
+        tail_size = cls._STRUCT_TAIL.size   # 8
+        if len(data) < off + head_size:
+            raise ProtocolError("HELLO truncated (head)")
         cid = _decode_fixed_string(data, MAX_CLIENT_ID_LEN)
-        vma, vmi = cls._STRUCT.unpack_from(data, off)
-        return cls(cid, vma, vmi)
+        vma, vmi = cls._STRUCT_HEAD.unpack_from(data, off)
+        # B6.6w5: steam_id tail is OPTIONAL for backwards compat.
+        # Legacy 18-byte HELLO from old clients → steam_id defaults to 0.
+        steam_id = 0
+        if len(data) >= off + head_size + tail_size:
+            (steam_id,) = cls._STRUCT_TAIL.unpack_from(
+                data, off + head_size)
+        return cls(cid, vma, vmi, steam_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -531,6 +584,238 @@ class PoseBroadcastPayload:
             for i in range(n)
         )
         return cls(pid, ts, quats)
+
+
+# ---- v16 POSE_CROUCH replication -------------------------------------------
+# A SEPARATE, additive channel beside POSE_STATE/POSE_BROADCAST. The rotation
+# pose (PoseBoneEntry, 16 B) is unchanged and keeps working; this channel only
+# carries the vertical COM/Pelvis LOCAL TRANSLATION that a crouch produces.
+# Each entry is keyed on the SAME shared canonical bone index as the rotation
+# pose (both clients walk the identical, sorted, UNFILTERED canonical list, so
+# the index is a reliable cross-client key). count is tiny (<= 8 — just COM
+# and Pelvis today).
+#
+# Header (STATE): <Q B = 9 bytes (timestamp_ms, count)
+# Header (BCAST): FixedString(15+1) + <Q B = 25 bytes (peer_id, ts, count)
+# Entry:          <H fff = 14 bytes (bone_index, tx, ty, tz)
+
+MAX_POSE_CROUCH_BONES = 8
+
+
+@dataclass(frozen=True, slots=True)
+class PoseCrouchStatePayload:
+    """Per-bone local-translation snapshot (crouch) of the local player.
+
+    Unreliable. entries[i] = (bone_index, tx, ty, tz) where bone_index is the
+    canonical index shared with the rotation pose. Mirrors the
+    PoseStatePayload -> PoseBroadcastPayload server fan-out pattern.
+    """
+    timestamp_ms: int          # u64
+    entries: tuple[tuple[int, float, float, float], ...]
+    # entries[i] = (bone_index, tx, ty, tz)
+
+    _HEADER: ClassVar[struct.Struct] = struct.Struct("<QB")
+    _ENTRY:  ClassVar[struct.Struct] = struct.Struct("<Hfff")
+
+    def encode(self) -> bytes:
+        if len(self.entries) > MAX_POSE_CROUCH_BONES:
+            raise ProtocolError(f"too many crouch bones: {len(self.entries)}")
+        head = self._HEADER.pack(self.timestamp_ms, len(self.entries))
+        body = b''.join(self._ENTRY.pack(*e) for e in self.entries)
+        return head + body
+
+    @classmethod
+    def decode(cls, data: bytes) -> "PoseCrouchStatePayload":
+        if len(data) < cls._HEADER.size:
+            raise ProtocolError("POSE_CROUCH_STATE truncated header")
+        ts, n = cls._HEADER.unpack_from(data, 0)
+        if n > MAX_POSE_CROUCH_BONES:
+            raise ProtocolError(f"POSE_CROUCH_STATE count too high: {n}")
+        need = cls._HEADER.size + n * cls._ENTRY.size
+        if len(data) < need:
+            raise ProtocolError("POSE_CROUCH_STATE truncated body")
+        entries = tuple(
+            cls._ENTRY.unpack_from(data, cls._HEADER.size + i * cls._ENTRY.size)
+            for i in range(n)
+        )
+        return cls(ts, entries)
+
+
+@dataclass(frozen=True, slots=True)
+class PoseCrouchBroadcastPayload:
+    """Crouch bone translations of a remote peer, relayed by server.
+
+    Extends PoseCrouchStatePayload with peer_id (mirrors PoseBroadcastPayload).
+    """
+    peer_id: str
+    timestamp_ms: int
+    entries: tuple[tuple[int, float, float, float], ...]
+
+    _HEADER: ClassVar[struct.Struct] = struct.Struct("<QB")
+    _ENTRY:  ClassVar[struct.Struct] = struct.Struct("<Hfff")
+
+    def encode(self) -> bytes:
+        if len(self.entries) > MAX_POSE_CROUCH_BONES:
+            raise ProtocolError(f"too many crouch bones: {len(self.entries)}")
+        return (
+            _encode_fixed_string(self.peer_id, MAX_CLIENT_ID_LEN)
+            + self._HEADER.pack(self.timestamp_ms, len(self.entries))
+            + b''.join(self._ENTRY.pack(*e) for e in self.entries)
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "PoseCrouchBroadcastPayload":
+        off = MAX_CLIENT_ID_LEN + 1
+        if len(data) < off + cls._HEADER.size:
+            raise ProtocolError("POSE_CROUCH_BROADCAST truncated header")
+        pid = _decode_fixed_string(data, MAX_CLIENT_ID_LEN)
+        ts, n = cls._HEADER.unpack_from(data, off)
+        if n > MAX_POSE_CROUCH_BONES:
+            raise ProtocolError(f"POSE_CROUCH_BROADCAST count too high: {n}")
+        need = off + cls._HEADER.size + n * cls._ENTRY.size
+        if len(data) < need:
+            raise ProtocolError("POSE_CROUCH_BROADCAST truncated body")
+        entries = tuple(
+            cls._ENTRY.unpack_from(data, off + cls._HEADER.size + i * cls._ENTRY.size)
+            for i in range(n)
+        )
+        return cls(pid, ts, entries)
+
+
+@dataclass(frozen=True, slots=True)
+class NPCPoseFromOwnerPayload:
+    """c.37.0 — owner's per-bone rotation snapshot for ONE owned NPC.
+
+    C→S→all (relayed unchanged). Same quaternion bone format as POSE_STATE,
+    prefixed with the NPC's form_id so the receiver resolves the mirror
+    actor via lookup_by_form_id and drives ITS skeleton exactly like the
+    player→ghost pose path. Bone i aligns by the shared canonical joint-name
+    list (identical human skeleton on both clients). Sentinel qw=2.0 means
+    "joint absent on owner" → receiver skips that bone (keeps bind pose).
+
+    Server validates the sender owns `form_id`, then fans the SAME frame out
+    to every non-owner. No epoch gate: pose is cosmetic best-effort, a few
+    stale frames during a handoff are invisible under the new owner's stream.
+
+    Wire: 14 (header) + N × 16.
+    """
+    form_id: int
+    timestamp_ms: int
+    quats: tuple[tuple[float, float, float, float], ...]
+
+    _HEADER: ClassVar[struct.Struct] = struct.Struct("<IQH")  # form_id, ts, bone_count
+    _ENTRY:  ClassVar[struct.Struct] = struct.Struct("<ffff")
+
+    def encode(self) -> bytes:
+        if len(self.quats) > MAX_POSE_BONES:
+            raise ProtocolError(f"NPC_POSE too many bones: {len(self.quats)}")
+        head = self._HEADER.pack(
+            self.form_id & 0xFFFFFFFF,
+            self.timestamp_ms & 0xFFFFFFFFFFFFFFFF,
+            len(self.quats),
+        )
+        body = b''.join(self._ENTRY.pack(*q) for q in self.quats)
+        return head + body
+
+    @classmethod
+    def decode(cls, data: bytes) -> "NPCPoseFromOwnerPayload":
+        if len(data) < cls._HEADER.size:
+            raise ProtocolError("NPC_POSE truncated header")
+        fid, ts, n = cls._HEADER.unpack_from(data, 0)
+        if n > MAX_POSE_BONES:
+            raise ProtocolError(f"NPC_POSE bone_count too high: {n}")
+        need = cls._HEADER.size + n * cls._ENTRY.size
+        if len(data) < need:
+            raise ProtocolError("NPC_POSE truncated body")
+        quats = tuple(
+            cls._ENTRY.unpack_from(data, cls._HEADER.size + i * cls._ENTRY.size)
+            for i in range(n)
+        )
+        return cls(fid, ts, quats)
+
+
+@dataclass(frozen=True, slots=True)
+class NPCCrouchFromOwnerPayload:
+    """NPC crouch — owner's COM/Pelvis LOCAL TRANSLATION snapshot for ONE owned NPC.
+
+    C→S→all (relayed unchanged). The NPC analogue of PoseCrouchStatePayload:
+    same {bone_index, tx, ty, tz} entry format (the +0x60 m_kLocal.translate of
+    the COM/Pelvis bones), prefixed with the NPC's form_id so the receiver
+    resolves the mirror actor via lookup_by_form_id and lowers ITS skeleton —
+    exactly like NPCPoseFromOwnerPayload does for the rotation pose. The
+    rotation pose (NPC_POSE_FROM_OWNER) bends the legs but leaves the body at
+    standing height; this carries the vertical drop so the raider's feet stop
+    "flying". Entries keyed on the SAME shared canonical bone index as the
+    rotation pose. count is tiny (<= MAX_POSE_CROUCH_BONES; COM + Pelvis today).
+
+    Server validates the sender owns `form_id`, then fans the SAME frame out to
+    every non-owner (mirrors `_handle_npc_pose_from_owner`). No epoch gate.
+
+    Wire: 13 (header <IQB) + N × 14 (entry <Hfff).
+    """
+    form_id: int
+    timestamp_ms: int
+    entries: tuple[tuple[int, float, float, float], ...]
+    # entries[i] = (bone_index, tx, ty, tz)
+
+    _HEADER: ClassVar[struct.Struct] = struct.Struct("<IQB")  # form_id, ts, count
+    _ENTRY:  ClassVar[struct.Struct] = struct.Struct("<Hfff")
+
+    def encode(self) -> bytes:
+        if len(self.entries) > MAX_POSE_CROUCH_BONES:
+            raise ProtocolError(
+                f"NPC_CROUCH too many bones: {len(self.entries)}")
+        head = self._HEADER.pack(
+            self.form_id & 0xFFFFFFFF,
+            self.timestamp_ms & 0xFFFFFFFFFFFFFFFF,
+            len(self.entries),
+        )
+        body = b''.join(self._ENTRY.pack(*e) for e in self.entries)
+        return head + body
+
+    @classmethod
+    def decode(cls, data: bytes) -> "NPCCrouchFromOwnerPayload":
+        if len(data) < cls._HEADER.size:
+            raise ProtocolError("NPC_CROUCH truncated header")
+        fid, ts, n = cls._HEADER.unpack_from(data, 0)
+        if n > MAX_POSE_CROUCH_BONES:
+            raise ProtocolError(f"NPC_CROUCH count too high: {n}")
+        need = cls._HEADER.size + n * cls._ENTRY.size
+        if len(data) < need:
+            raise ProtocolError("NPC_CROUCH truncated body")
+        entries = tuple(
+            cls._ENTRY.unpack_from(data, cls._HEADER.size + i * cls._ENTRY.size)
+            for i in range(n)
+        )
+        return cls(fid, ts, entries)
+
+
+@dataclass(frozen=True, slots=True)
+class NPCDamageClaimPayload:
+    """c.39b — C→S: the local player dealt `amount` damage to NPC `form_id`.
+
+    Used by the threat table to make ownership/aggro follow the real fighter:
+    the server accumulates a per-peer decayed damage sum per NPC, and the peer
+    with the most recent damage wins ownership (even if both peers are engaged,
+    which the combat-target signal alone can't disambiguate). Unreliable;
+    client throttles to ~6 Hz/fid (accumulating between sends).
+
+    Wire: 8 bytes.
+    """
+    form_id: int
+    amount: float
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<If")  # form_id, amount
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(self.form_id & 0xFFFFFFFF, float(self.amount))
+
+    @classmethod
+    def decode(cls, data: bytes) -> "NPCDamageClaimPayload":
+        if len(data) < cls._STRUCT.size:
+            raise ProtocolError("NPC_DAMAGE_CLAIM truncated")
+        fid, amount = cls._STRUCT.unpack_from(data, 0)
+        return cls(form_id=fid, amount=amount)
 
 
 class ActorEventKind(IntEnum):
@@ -2263,6 +2548,835 @@ class NPCStateBroadcastPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class PeerGhostRegisterPayload:
+    """B6.6w5 — client tells server its local ghost-actor form_id.
+
+    The "ghost" is the engine-spawned Actor that represents the OTHER
+    peer on this client's screen (currently a single global ghost; 2-peer
+    MVP assumption). The form_id is dynamic per-client (allocated by
+    PlaceAtMe at spawn). Server uses this to substitute the combat
+    target in NPC_STATE_BCAST per-viewer: when a raider's aggro target
+    is a remote peer, the broadcast carries the VIEWER's local ghost
+    form_id so the engine targets the right thing visually.
+
+    Send-side: client calls this once after ghost spawn succeeds.
+    Server-side: latest registration wins (e.g., on re-spawn after
+    cell reload).
+
+    Wire: 4 bytes (u32 form_id).
+    """
+    ghost_form_id: int
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<I")
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(self.ghost_form_id & 0xFFFFFFFF)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "PeerGhostRegisterPayload":
+        if len(data) < cls._STRUCT.size:
+            raise ProtocolError(
+                f"PEER_GHOST_REGISTER: expected {cls._STRUCT.size} B, "
+                f"got {len(data)}")
+        (fid,) = cls._STRUCT.unpack_from(data, 0)
+        return cls(ghost_form_id=fid)
+
+
+@dataclass(frozen=True, slots=True)
+class NPCDiscoverPayload:
+    """B6.6w2 — client -> server: "I auto-tracked hostile NPC X".
+
+    Emitted by the client when its npc_ai_suppress detour first
+    auto-tracks an actor (Path 2: vanilla AI set the InCombat flag bit
+    0x4000 on the actor). The client reads identity + position off the
+    Actor* directly via the stable offsets:
+
+      form_id  = *(u32*)(actor + 0x14)
+      base_id  = *(u32*)(*(TESForm**)(actor + 0xE0) + 0x14)
+      cell_id  = *(u32*)(*(REFR**)(actor + 0xB8) + 0x14)
+      pos_x/y/z = (float*)(actor + 0xD0)[0..2]
+
+    Server uses this to register the raider dynamically in raider_brain
+    so it participates in aggro selection + fire timing + sync without
+    needing to be in the waypoint JSON.
+
+    Reliable channel: discovery should not be dropped. Server is
+    idempotent — duplicate discoveries are ignored.
+
+    Wire: 24 bytes.
+    """
+    form_id: int
+    base_id: int
+    cell_id: int
+    pos_x: float
+    pos_y: float
+    pos_z: float
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIfff")
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.form_id & 0xFFFFFFFF,
+            self.base_id & 0xFFFFFFFF,
+            self.cell_id & 0xFFFFFFFF,
+            float(self.pos_x),
+            float(self.pos_y),
+            float(self.pos_z),
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "NPCDiscoverPayload":
+        if len(data) < cls._STRUCT.size:
+            raise ProtocolError(
+                f"NPC_DISCOVER: expected {cls._STRUCT.size} B, "
+                f"got {len(data)}")
+        fid, bid, cid, x, y, z = cls._STRUCT.unpack_from(data, 0)
+        return cls(form_id=fid, base_id=bid, cell_id=cid,
+                   pos_x=x, pos_y=y, pos_z=z)
+
+
+@dataclass(frozen=True, slots=True)
+class NPCPerceptionTriggerPayload:
+    """Build 62 (2026-05-24) — server -> all peers: "NPC X perceives
+    peer Y's ghost — invoke CCF810 locally so engine allocates combat
+    tier naturally."
+
+    Emitted by the server's proximity-sphere check when a peer's pos
+    enters an NPC's effective perception sphere (base 1024 units,
+    scaled by peer posture: sneak=0.4x, walk=0.7x, stand/run=1.0x,
+    sprint=1.3x). Server-side debounce: 5s per (npc_fid, peer_id) pair
+    to prevent re-trigger spam.
+
+    Receiver (each client):
+      observer = lookup_by_form_id(npc_fid)
+      target   = peer_registry.get_ghost_actor_for_peer(peer_id)
+                 (or local PC if peer_id == self)
+      trigger_npc_perception(observer, target)
+        -> engine sub_140CCF810 allocates HighProcess+CombatController+
+           AddTarget in 1 frame.
+
+    Reliable channel: do not drop. Idempotent on engine side (re-call
+    routes through merge path sub_140ED2490).
+
+    Wire: 8 bytes (2 × u32).
+    """
+    npc_fid: int          # OBSERVER (the NPC that should perceive)
+    peer_id: int          # TARGET   (peer whose ghost is the threat)
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<II")
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.npc_fid & 0xFFFFFFFF,
+            self.peer_id & 0xFFFFFFFF,
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "NPCPerceptionTriggerPayload":
+        if len(data) < cls._STRUCT.size:
+            raise ProtocolError(
+                f"NPC_PERCEPTION_TRIGGER: expected {cls._STRUCT.size} B, "
+                f"got {len(data)}")
+        nfid, pid = cls._STRUCT.unpack_from(data, 0)
+        return cls(npc_fid=nfid, peer_id=pid)
+
+
+@dataclass(frozen=True, slots=True)
+class NPCFirePayload:
+    """B6.6w1 — server -> all peers: "this raider fires its equipped
+    weapon NOW".
+
+    Emitted by the server's raider_brain when an aggro'd raider's fire
+    cooldown elapses + a player is in line-of-sight + visible. Both peers
+    receive the same event so the muzzle flash + projectile + audio +
+    damage all play synchronously.
+
+    Build 55a (proto v15, 2026-05-23) — adds `target_kind` byte. Server
+    picks per-raider per-window (3-8 sec) whether the raider's current
+    fire is aimed at LOCAL (= peer's natural target, vanilla AI handles)
+    or at GHOST (= the cross-peer ghost; puppet-fire path on client).
+    Eliminates the dual-target flicker where engine vanilla AI was
+    competing with our puppet-fire on the same actor rotation field.
+
+    Wire: 13 bytes (3 × u32 + 1 × u8).
+    """
+    TARGET_LOCAL: ClassVar[int] = 0
+    TARGET_GHOST: ClassVar[int] = 1
+
+    raider_form_id: int
+    target_form_id: int   # 0x14 = player; 0 = unknown
+    flags: int            # reserved (0); future: burst count / weapon hint
+    target_kind: int = 0  # 0=LOCAL (vanilla AI), 1=GHOST (client puppet-fire)
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIB")
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.raider_form_id & 0xFFFFFFFF,
+            self.target_form_id & 0xFFFFFFFF,
+            self.flags & 0xFFFFFFFF,
+            self.target_kind & 0xFF,
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "NPCFirePayload":
+        if len(data) < cls._STRUCT.size:
+            raise ProtocolError(
+                f"NPC_FIRE: expected {cls._STRUCT.size} B, got {len(data)}")
+        r, t, f, tk = cls._STRUCT.unpack_from(data, 0)
+        return cls(raider_form_id=r, target_form_id=t,
+                   flags=f, target_kind=tk)
+
+
+# ============================================================================
+# Build 65 — Owner-driven NPC sync payloads (Solver 2 design).
+#
+# All 11 opcodes (0x0280-0x028A) introduced here. C++ mirrors at
+# `fw_native/src/net/protocol.h`. Phase A ships these data structures +
+# server-side registry; Phase B wires DLL handlers.
+#
+# Sizing kept compact; all u32 fids, ts_ms as u64 monotonic, peer_id as
+# 16-byte FixedClientId (matches PeerJoinPayload).
+# ============================================================================
+
+PEER_ID_BYTES: int = 16  # FixedClientId byte length (matches PeerJoinPayload)
+
+
+@dataclass(frozen=True, slots=True)
+class NPCObservedPayload:
+    """C→S: "I see NPC X at pos P". Election input — server uses
+    reporter distance + cell load timing to decide ownership.
+
+    Wire: 28 bytes (3 × u32 + 4 × f32).
+    """
+    form_id: int
+    base_id: int
+    cell_id: int
+    pos_x: float
+    pos_y: float
+    pos_z: float
+    observer_distance_sq: float   # server short-circuits election compute
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIffff")
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.form_id & 0xFFFFFFFF,
+            self.base_id & 0xFFFFFFFF,
+            self.cell_id & 0xFFFFFFFF,
+            self.pos_x, self.pos_y, self.pos_z,
+            self.observer_distance_sq,
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "NPCObservedPayload":
+        if len(data) < cls._STRUCT.size:
+            raise ProtocolError(
+                f"NPC_OBSERVED: expected {cls._STRUCT.size} B, got {len(data)}")
+        f, b, c, px, py, pz, d = cls._STRUCT.unpack_from(data, 0)
+        return cls(form_id=f, base_id=b, cell_id=c,
+                   pos_x=px, pos_y=py, pos_z=pz,
+                   observer_distance_sq=d)
+
+
+@dataclass(frozen=True, slots=True)
+class NPCUnloadPayload:
+    """C→S: "NPC X left my loaded cell — I'm no longer eligible to own it".
+    Triggers owner release (if reporter was owner) and forgets the NPC on
+    the non-owner side.
+
+    Wire: 26 bytes (2 × u32 + 4 × f32 + 2 × u8).
+    """
+    form_id: int
+    epoch: int                  # proof-of-ownership at unload time
+    last_pos_x: float
+    last_pos_y: float
+    last_pos_z: float
+    last_yaw: float
+    last_anim_state: int        # u8
+    last_hp_pct: int            # u8
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIffffBB")
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.form_id & 0xFFFFFFFF,
+            self.epoch & 0xFFFFFFFF,
+            self.last_pos_x, self.last_pos_y, self.last_pos_z,
+            self.last_yaw,
+            self.last_anim_state & 0xFF,
+            self.last_hp_pct & 0xFF,
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "NPCUnloadPayload":
+        if len(data) < cls._STRUCT.size:
+            raise ProtocolError(
+                f"NPC_UNLOAD: expected {cls._STRUCT.size} B, got {len(data)}")
+        f, e, px, py, pz, yaw, anim, hp = cls._STRUCT.unpack_from(data, 0)
+        return cls(form_id=f, epoch=e,
+                   last_pos_x=px, last_pos_y=py, last_pos_z=pz,
+                   last_yaw=yaw,
+                   last_anim_state=anim, last_hp_pct=hp)
+
+
+@dataclass(frozen=True, slots=True)
+class NPCOwnerHeartbeatEntry:
+    """Single (fid, epoch) tuple in NPC_OWNER_HEARTBEAT body."""
+    form_id: int
+    epoch: int
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<II")
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.form_id & 0xFFFFFFFF,
+            self.epoch & 0xFFFFFFFF,
+        )
+
+    @classmethod
+    def decode(cls, data: bytes, offset: int = 0) -> "NPCOwnerHeartbeatEntry":
+        if len(data) - offset < cls._STRUCT.size:
+            raise ProtocolError("HeartbeatEntry: truncated")
+        f, e = cls._STRUCT.unpack_from(data, offset)
+        return cls(form_id=f, epoch=e)
+
+
+@dataclass(frozen=True, slots=True)
+class NPCOwnerHeartbeatPayload:
+    """C→S: "I still own these fids at these epochs". 2 Hz from every
+    peer for every NPC it owns. Server uses last-seen ts as health-gate
+    input. Unreliable — drop tolerance is generous (next tick recovers).
+
+    Wire: 4 (header: num_entries u16 + reserved u16) + N × 8.
+    """
+    entries: tuple[NPCOwnerHeartbeatEntry, ...]
+
+    _HEADER: ClassVar[struct.Struct] = struct.Struct("<HH")
+
+    MAX_ENTRIES: ClassVar[int] = 170   # 4 + 170*8 = 1364 ≤ MTU 1400
+
+    def encode(self) -> bytes:
+        if len(self.entries) > self.MAX_ENTRIES:
+            raise ProtocolError(
+                f"NPC_OWNER_HEARTBEAT: {len(self.entries)} > "
+                f"max {self.MAX_ENTRIES} entries")
+        buf = bytearray(self._HEADER.pack(len(self.entries), 0))
+        for e in self.entries:
+            buf.extend(e.encode())
+        return bytes(buf)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "NPCOwnerHeartbeatPayload":
+        if len(data) < cls._HEADER.size:
+            raise ProtocolError("NPC_OWNER_HEARTBEAT: truncated header")
+        num, _reserved = cls._HEADER.unpack_from(data, 0)
+        entry_size = NPCOwnerHeartbeatEntry._STRUCT.size
+        if len(data) < cls._HEADER.size + num * entry_size:
+            raise ProtocolError(
+                f"NPC_OWNER_HEARTBEAT: truncated body "
+                f"(num={num}, len={len(data)})")
+        out: list[NPCOwnerHeartbeatEntry] = []
+        off = cls._HEADER.size
+        for _ in range(num):
+            out.append(NPCOwnerHeartbeatEntry.decode(data, off))
+            off += entry_size
+        return cls(entries=tuple(out))
+
+
+@dataclass(frozen=True, slots=True)
+class NPCOwnershipHandoffPhase1Payload:
+    """S→old+new owners: release request for one NPC. Reliable.
+
+    The OLD owner must respond with NPC_OWNERSHIP_RELEASE_ACK before
+    `deadline_ms`; the NEW owner waits silently until phase 2 announces it
+    can start broadcasting state.
+
+    Wire: 4 + 4 + 16 + 16 + 8 = 48 bytes.
+    """
+    form_id: int
+    old_epoch: int
+    old_owner_peer_id: bytes    # 16 B FixedClientId
+    new_owner_peer_id: bytes    # 16 B
+    deadline_ms: int            # u64 monotonic ms — hard ACK cutoff
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<II16s16sQ")
+
+    def __post_init__(self) -> None:
+        if len(self.old_owner_peer_id) != 16:
+            raise ProtocolError("PHASE1: old_owner_peer_id must be 16B")
+        if len(self.new_owner_peer_id) != 16:
+            raise ProtocolError("PHASE1: new_owner_peer_id must be 16B")
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.form_id & 0xFFFFFFFF,
+            self.old_epoch & 0xFFFFFFFF,
+            self.old_owner_peer_id,
+            self.new_owner_peer_id,
+            self.deadline_ms & 0xFFFFFFFFFFFFFFFF,
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "NPCOwnershipHandoffPhase1Payload":
+        if len(data) < cls._STRUCT.size:
+            raise ProtocolError(
+                f"PHASE1: expected {cls._STRUCT.size} B, got {len(data)}")
+        f, oe, ooid, noid, dl = cls._STRUCT.unpack_from(data, 0)
+        return cls(form_id=f, old_epoch=oe,
+                   old_owner_peer_id=ooid, new_owner_peer_id=noid,
+                   deadline_ms=dl)
+
+
+@dataclass(frozen=True, slots=True)
+class NPCOwnershipReleaseAckPayload:
+    """C→S: old owner acknowledges release. Reliable.
+
+    Wire: 4 + 4 + 16 + 8 = 32 bytes.
+    """
+    form_id: int
+    old_epoch: int
+    acker_peer_id: bytes        # 16 B — must match registered old owner
+    ack_ts_ms: int              # u64
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<II16sQ")
+
+    def __post_init__(self) -> None:
+        if len(self.acker_peer_id) != 16:
+            raise ProtocolError("RELEASE_ACK: acker_peer_id must be 16B")
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.form_id & 0xFFFFFFFF,
+            self.old_epoch & 0xFFFFFFFF,
+            self.acker_peer_id,
+            self.ack_ts_ms & 0xFFFFFFFFFFFFFFFF,
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "NPCOwnershipReleaseAckPayload":
+        if len(data) < cls._STRUCT.size:
+            raise ProtocolError(
+                f"RELEASE_ACK: expected {cls._STRUCT.size} B, got {len(data)}")
+        f, oe, pid, ts = cls._STRUCT.unpack_from(data, 0)
+        return cls(form_id=f, old_epoch=oe,
+                   acker_peer_id=pid, ack_ts_ms=ts)
+
+
+@dataclass(frozen=True, slots=True)
+class NPCOwnershipHandoffPhase2Payload:
+    """S→all: new owner active for one NPC. All peers update their local
+    g_owner_map[fid] = new_owner_peer_id, epoch = new_epoch. Reliable.
+
+    Wire: 4 + 4 + 16 + 8 = 32 bytes.
+    """
+    form_id: int
+    new_epoch: int
+    new_owner_peer_id: bytes
+    handed_off_at_ms: int
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<II16sQ")
+
+    def __post_init__(self) -> None:
+        if len(self.new_owner_peer_id) != 16:
+            raise ProtocolError("PHASE2: new_owner_peer_id must be 16B")
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.form_id & 0xFFFFFFFF,
+            self.new_epoch & 0xFFFFFFFF,
+            self.new_owner_peer_id,
+            self.handed_off_at_ms & 0xFFFFFFFFFFFFFFFF,
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "NPCOwnershipHandoffPhase2Payload":
+        if len(data) < cls._STRUCT.size:
+            raise ProtocolError(
+                f"PHASE2: expected {cls._STRUCT.size} B, got {len(data)}")
+        f, ne, pid, ts = cls._STRUCT.unpack_from(data, 0)
+        return cls(form_id=f, new_epoch=ne,
+                   new_owner_peer_id=pid, handed_off_at_ms=ts)
+
+
+@dataclass(frozen=True, slots=True)
+class NPCOwnershipBcastEntry:
+    """Single (fid, epoch, owner_peer_id) entry in OWNERSHIP_BCAST."""
+    form_id: int
+    epoch: int
+    owner_peer_id: bytes        # 16 B; all-zero = unowned (server-relayed)
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<II16s")
+
+    def encode(self) -> bytes:
+        if len(self.owner_peer_id) != 16:
+            raise ProtocolError("OWNERSHIP_BCAST entry: peer_id must be 16B")
+        return self._STRUCT.pack(
+            self.form_id & 0xFFFFFFFF,
+            self.epoch & 0xFFFFFFFF,
+            self.owner_peer_id,
+        )
+
+    @classmethod
+    def decode(cls, data: bytes, offset: int = 0) -> "NPCOwnershipBcastEntry":
+        if len(data) - offset < cls._STRUCT.size:
+            raise ProtocolError("OWNERSHIP_BCAST entry: truncated")
+        f, e, pid = cls._STRUCT.unpack_from(data, offset)
+        return cls(form_id=f, epoch=e, owner_peer_id=pid)
+
+
+@dataclass(frozen=True, slots=True)
+class NPCOwnershipBcastPayload:
+    """S→peer (bootstrap on connect) or S→all (post-handoff cleanup).
+    Carries up to ~50 ownership records per frame. Reliable.
+
+    Wire: 4 + N × 24.
+    """
+    entries: tuple[NPCOwnershipBcastEntry, ...]
+
+    _HEADER: ClassVar[struct.Struct] = struct.Struct("<HH")
+
+    MAX_ENTRIES: ClassVar[int] = 57   # 4 + 57*24 = 1372 ≤ MTU 1400
+
+    def encode(self) -> bytes:
+        if len(self.entries) > self.MAX_ENTRIES:
+            raise ProtocolError(
+                f"OWNERSHIP_BCAST: {len(self.entries)} > max {self.MAX_ENTRIES}")
+        buf = bytearray(self._HEADER.pack(len(self.entries), 0))
+        for e in self.entries:
+            buf.extend(e.encode())
+        return bytes(buf)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "NPCOwnershipBcastPayload":
+        if len(data) < cls._HEADER.size:
+            raise ProtocolError("OWNERSHIP_BCAST: truncated header")
+        num, _reserved = cls._HEADER.unpack_from(data, 0)
+        es = NPCOwnershipBcastEntry._STRUCT.size
+        if len(data) < cls._HEADER.size + num * es:
+            raise ProtocolError(
+                f"OWNERSHIP_BCAST: truncated body (num={num}, len={len(data)})")
+        out: list[NPCOwnershipBcastEntry] = []
+        off = cls._HEADER.size
+        for _ in range(num):
+            out.append(NPCOwnershipBcastEntry.decode(data, off))
+            off += es
+        return cls(entries=tuple(out))
+
+
+@dataclass(frozen=True, slots=True)
+class NPCOwnerStateEntry:
+    """Single NPC state record inside NPC_STATE_FROM_OWNER.
+
+    Same field set as NPCStateEntry (Build 55a v15) plus `epoch` for
+    non-owner gating. Sized to keep batched packets MTU-safe.
+
+    Wire: 76 bytes.
+    """
+    form_id: int
+    epoch: int
+    pos_x: float
+    pos_y: float
+    pos_z: float
+    yaw_rad: float
+    pitch_rad: float
+    combat_target_fid: int      # owner's local AI's current combat target
+    aim_x: float
+    aim_y: float
+    aim_z: float
+    velocity_x: float
+    velocity_y: float
+    velocity_z: float
+    anim_state: int             # u8
+    aggro_state: int            # u8
+    hp_pct: int                 # u8
+    weapon_state: int           # u8 (bit 3 = fire_this_tick)
+    sighted: int                # u8
+    sprinting: int              # u8
+    sneaking: int               # u8
+    gun_down: int               # u8
+    aggression: int             # u8
+    _pad: int = 0               # u8 padding to align ts_ms
+    loco_state_pack: int = 0    # u16
+    ts_ms: int = 0              # u64 owner's monotonic ms
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct(
+        "<II"          # form_id, epoch
+        "fff"          # pos xyz
+        "ff"           # yaw, pitch
+        "I"            # combat_target_fid
+        "fff"          # aim xyz
+        "fff"          # velocity xyz
+        "BBBBBBBBB"    # anim, aggro, hp, weapon, sighted, sprint, sneak, gun_down, aggression
+        "B"            # pad
+        "H"            # loco_state_pack
+        "Q"            # ts_ms
+    )
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.form_id & 0xFFFFFFFF, self.epoch & 0xFFFFFFFF,
+            self.pos_x, self.pos_y, self.pos_z,
+            self.yaw_rad, self.pitch_rad,
+            self.combat_target_fid & 0xFFFFFFFF,
+            self.aim_x, self.aim_y, self.aim_z,
+            self.velocity_x, self.velocity_y, self.velocity_z,
+            self.anim_state & 0xFF, self.aggro_state & 0xFF,
+            self.hp_pct & 0xFF, self.weapon_state & 0xFF,
+            self.sighted & 0xFF, self.sprinting & 0xFF,
+            self.sneaking & 0xFF, self.gun_down & 0xFF,
+            self.aggression & 0xFF, self._pad & 0xFF,
+            self.loco_state_pack & 0xFFFF,
+            self.ts_ms & 0xFFFFFFFFFFFFFFFF,
+        )
+
+    @classmethod
+    def decode(cls, data: bytes, offset: int = 0) -> "NPCOwnerStateEntry":
+        if len(data) - offset < cls._STRUCT.size:
+            raise ProtocolError("NPCOwnerStateEntry: truncated")
+        unpacked = cls._STRUCT.unpack_from(data, offset)
+        (f, ep, px, py, pz, yaw, pitch, ctf,
+         ax, ay, az, vx, vy, vz,
+         anim, aggro, hp, ws, sight, spr, sne, gd, ag, pad,
+         loco, ts) = unpacked
+        return cls(form_id=f, epoch=ep,
+                   pos_x=px, pos_y=py, pos_z=pz,
+                   yaw_rad=yaw, pitch_rad=pitch,
+                   combat_target_fid=ctf,
+                   aim_x=ax, aim_y=ay, aim_z=az,
+                   velocity_x=vx, velocity_y=vy, velocity_z=vz,
+                   anim_state=anim, aggro_state=aggro,
+                   hp_pct=hp, weapon_state=ws,
+                   sighted=sight, sprinting=spr, sneaking=sne,
+                   gun_down=gd, aggression=ag, _pad=pad,
+                   loco_state_pack=loco, ts_ms=ts)
+
+
+@dataclass(frozen=True, slots=True)
+class NPCStateFromOwnerPayload:
+    """C→S→all (relayed): owner's authoritative state batch. Unreliable.
+
+    Owner client emits at 20-30 Hz. Server validates ownership + epoch,
+    fans out the filtered entries to every non-owner. Receivers gate on
+    `entry.epoch >= local_epoch[fid]` and drop stale entries.
+
+    Wire: 4 (header) + N × 80.
+    """
+    entries: tuple[NPCOwnerStateEntry, ...]
+
+    _HEADER: ClassVar[struct.Struct] = struct.Struct("<HH")
+
+    MAX_ENTRIES: ClassVar[int] = 17   # 4 + 17*80 = 1364 ≤ MTU 1400
+
+    def encode(self) -> bytes:
+        if len(self.entries) > self.MAX_ENTRIES:
+            raise ProtocolError(
+                f"NPC_STATE_FROM_OWNER: {len(self.entries)} > max "
+                f"{self.MAX_ENTRIES}")
+        buf = bytearray(self._HEADER.pack(len(self.entries), 0))
+        for e in self.entries:
+            buf.extend(e.encode())
+        return bytes(buf)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "NPCStateFromOwnerPayload":
+        if len(data) < cls._HEADER.size:
+            raise ProtocolError("NPC_STATE_FROM_OWNER: truncated header")
+        num, _reserved = cls._HEADER.unpack_from(data, 0)
+        es = NPCOwnerStateEntry._STRUCT.size
+        if len(data) < cls._HEADER.size + num * es:
+            raise ProtocolError(
+                f"NPC_STATE_FROM_OWNER: truncated body "
+                f"(num={num}, len={len(data)})")
+        out: list[NPCOwnerStateEntry] = []
+        off = cls._HEADER.size
+        for _ in range(num):
+            out.append(NPCOwnerStateEntry.decode(data, off))
+            off += es
+        return cls(entries=tuple(out))
+
+
+@dataclass(frozen=True, slots=True)
+class NPCFireFromOwnerPayload:
+    """C→S→all: owner's fire event. Unreliable.
+
+    Replaces server-driven NPC_FIRE. Owner reports a single weapon
+    discharge with a target hint. Receivers spawn muzzle flash + projectile
+    + audio on the local replica.
+
+    Wire: 4 + 4 + 4 + 12 + 8 = 32 bytes (form, target_fid, weapon_form,
+    aim_xyz, ts_ms).
+    """
+    form_id: int               # raider
+    target_form_id: int        # target hint (0x14 = local PC; 0 = unknown)
+    weapon_form_id: int
+    aim_x: float
+    aim_y: float
+    aim_z: float
+    ts_ms: int                 # u64 owner monotonic ms
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIfffQ")
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.form_id & 0xFFFFFFFF,
+            self.target_form_id & 0xFFFFFFFF,
+            self.weapon_form_id & 0xFFFFFFFF,
+            self.aim_x, self.aim_y, self.aim_z,
+            self.ts_ms & 0xFFFFFFFFFFFFFFFF,
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "NPCFireFromOwnerPayload":
+        if len(data) < cls._STRUCT.size:
+            raise ProtocolError(
+                f"NPC_FIRE_FROM_OWNER: expected {cls._STRUCT.size} B, "
+                f"got {len(data)}")
+        f, tf, wf, ax, ay, az, ts = cls._STRUCT.unpack_from(data, 0)
+        return cls(form_id=f, target_form_id=tf, weapon_form_id=wf,
+                   aim_x=ax, aim_y=ay, aim_z=az, ts_ms=ts)
+
+
+@dataclass(frozen=True, slots=True)
+class NPCDeathFromOwnerPayload:
+    """C→S→all: owner's death event. Reliable.
+
+    When the owner's vanilla AI observes HP reaching zero (or scripted
+    kill), it reports the death. Non-owners apply `Actor::Kill` locally.
+
+    Wire: 4 + 4 + 12 + 12 + 4 + 1 + 1 + 2 + 8 = 48 bytes.
+    """
+    form_id: int
+    killer_form_id: int          # 0 = environmental
+    pos_x: float                 # last-seen pos
+    pos_y: float
+    pos_z: float
+    ragdoll_x: float
+    ragdoll_y: float
+    ragdoll_z: float
+    damage: float
+    hit_zone: int                # u8
+    flags: int                   # u8 reserved (silent_kill etc.)
+    _pad: int = 0                # u16 align
+    ts_ms: int = 0               # u64
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct(
+        "<IIfffffffBBHQ")
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.form_id & 0xFFFFFFFF,
+            self.killer_form_id & 0xFFFFFFFF,
+            self.pos_x, self.pos_y, self.pos_z,
+            self.ragdoll_x, self.ragdoll_y, self.ragdoll_z,
+            self.damage,
+            self.hit_zone & 0xFF,
+            self.flags & 0xFF,
+            self._pad & 0xFFFF,
+            self.ts_ms & 0xFFFFFFFFFFFFFFFF,
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "NPCDeathFromOwnerPayload":
+        if len(data) < cls._STRUCT.size:
+            raise ProtocolError(
+                f"NPC_DEATH_FROM_OWNER: expected {cls._STRUCT.size} B, "
+                f"got {len(data)}")
+        (f, k, px, py, pz, rx, ry, rz, dmg,
+         hz, fl, pad, ts) = cls._STRUCT.unpack_from(data, 0)
+        return cls(form_id=f, killer_form_id=k,
+                   pos_x=px, pos_y=py, pos_z=pz,
+                   ragdoll_x=rx, ragdoll_y=ry, ragdoll_z=rz,
+                   damage=dmg, hit_zone=hz, flags=fl,
+                   _pad=pad, ts_ms=ts)
+
+
+@dataclass(frozen=True, slots=True)
+class NPCDamageFromOwnerPayload:
+    """C→S→all: owner's hit-applier event. Unreliable (purely cosmetic —
+    HP authority is the owner; this is for receiver-side hit-react +
+    ragdoll-direction visuals).
+
+    Wire: 4 + 4 + 4 + 4 + 1 + 1 + 2 + 8 = 28 bytes.
+    """
+    form_id: int                 # victim
+    attacker_form_id: int        # who hit them (0 = unknown)
+    weapon_form_id: int
+    damage: float
+    hit_zone: int                # u8
+    flags: int                   # u8 reserved
+    _pad: int = 0                # u16 align
+    ts_ms: int = 0               # u64
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIfBBHQ")
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.form_id & 0xFFFFFFFF,
+            self.attacker_form_id & 0xFFFFFFFF,
+            self.weapon_form_id & 0xFFFFFFFF,
+            self.damage,
+            self.hit_zone & 0xFF,
+            self.flags & 0xFF,
+            self._pad & 0xFFFF,
+            self.ts_ms & 0xFFFFFFFFFFFFFFFF,
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "NPCDamageFromOwnerPayload":
+        if len(data) < cls._STRUCT.size:
+            raise ProtocolError(
+                f"NPC_DAMAGE_FROM_OWNER: expected {cls._STRUCT.size} B, "
+                f"got {len(data)}")
+        f, a, w, d, hz, fl, pad, ts = cls._STRUCT.unpack_from(data, 0)
+        return cls(form_id=f, attacker_form_id=a, weapon_form_id=w,
+                   damage=d, hit_zone=hz, flags=fl, _pad=pad, ts_ms=ts)
+
+
+@dataclass(frozen=True, slots=True)
+class NPCEngagementClaimPayload:
+    """Build 65.c.23 — C→S: peer claims engagement with NPC.
+
+    Sent by a non-owner peer when its LOCAL engine has the InCombat flag
+    (bit 0x4000 at Actor+0x2D0) set on a tracked NPC. This is the engine's
+    own evidence that the peer's player IS the natural combat opponent
+    of that NPC — not a server prediction, not a heuristic.
+
+    Server uses this to force handoff if the current owner has not been
+    reporting engagement (i.e. their last STATE_FROM_OWNER carried
+    anim_state < 3 for >= ENGAGEMENT_OWNERSHIP_GRACE_MS = 3000 ms).
+    Fixes the "wrong owner" mismatch where first-observer claims a raider
+    but isn't the one actually fighting it.
+
+    Anti-spam: client dedups per fid with a 2 s cooldown. Server further
+    rejects claims when handoff stickiness floor is not yet elapsed.
+
+    Wire: 4 + 4 + 8 = 16 bytes (form_id, peer_id_hash, ts_ms).
+    """
+    form_id: int                # NPC the peer's engine has in combat
+    peer_id_hash: int           # FNV-1a 32-bit of local peer_id (sanity)
+    ts_ms: int                  # peer monotonic ms; for diag only
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIQ")
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.form_id & 0xFFFFFFFF,
+            self.peer_id_hash & 0xFFFFFFFF,
+            self.ts_ms & 0xFFFFFFFFFFFFFFFF,
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "NPCEngagementClaimPayload":
+        if len(data) < cls._STRUCT.size:
+            raise ProtocolError(
+                f"NPC_ENGAGEMENT_CLAIM: expected {cls._STRUCT.size} B, "
+                f"got {len(data)}")
+        f, h, ts = cls._STRUCT.unpack_from(data, 0)
+        return cls(form_id=f, peer_id_hash=h, ts_ms=ts)
+
+
+@dataclass(frozen=True, slots=True)
 class RawMessage:
     """Fallback for unknown msg_type — preserves payload for forward compat."""
     msg_type: int
@@ -2286,6 +3400,18 @@ Payload = Union[
     MeshBlobChunkPayload, MeshBlobChunkBroadcastPayload,
     LockOpPayload, LockBroadcastPayload,
     NPCStateEntry, NPCStateBroadcastPayload,
+    NPCFirePayload, NPCDiscoverPayload,
+    NPCPerceptionTriggerPayload,
+    # Build 65 owner-driven (Solver 2)
+    NPCObservedPayload, NPCUnloadPayload,
+    NPCOwnerHeartbeatPayload,
+    NPCOwnershipHandoffPhase1Payload, NPCOwnershipReleaseAckPayload,
+    NPCOwnershipHandoffPhase2Payload, NPCOwnershipBcastPayload,
+    NPCStateFromOwnerPayload,
+    NPCFireFromOwnerPayload, NPCDeathFromOwnerPayload,
+    NPCDamageFromOwnerPayload,
+    NPCEngagementClaimPayload,   # Build 65.c.23 — combat-driven handoff
+    PeerGhostRegisterPayload,
     RawMessage,
 ]
 
@@ -2302,6 +3428,8 @@ _TYPE_TO_PAYLOAD_CLS: dict[int, type] = {
     MessageType.POS_BROADCAST:    PosBroadcastPayload,
     MessageType.POSE_STATE:       PoseStatePayload,
     MessageType.POSE_BROADCAST:   PoseBroadcastPayload,
+    MessageType.POSE_CROUCH_STATE:     PoseCrouchStatePayload,      # v16
+    MessageType.POSE_CROUCH_BROADCAST: PoseCrouchBroadcastPayload,  # v16
     MessageType.ACTOR_EVENT:      ActorEventPayload,
     MessageType.CHAT:             ChatPayload,
     MessageType.WORLD_STATE:      WorldStatePayload,
@@ -2325,6 +3453,26 @@ _TYPE_TO_PAYLOAD_CLS: dict[int, type] = {
     MessageType.LOCK_OP:               LockOpPayload,
     MessageType.LOCK_BCAST:            LockBroadcastPayload,
     MessageType.NPC_STATE_BCAST:       NPCStateBroadcastPayload,
+    MessageType.NPC_FIRE:              NPCFirePayload,
+    MessageType.NPC_DISCOVER:          NPCDiscoverPayload,
+    MessageType.NPC_PERCEPTION_TRIGGER: NPCPerceptionTriggerPayload,  # Build 62 v17
+    # Build 65 — owner-driven NPC sync (Solver 2)
+    MessageType.NPC_OBSERVED:                   NPCObservedPayload,
+    MessageType.NPC_UNLOAD:                     NPCUnloadPayload,
+    MessageType.NPC_OWNER_HEARTBEAT:            NPCOwnerHeartbeatPayload,
+    MessageType.NPC_OWNERSHIP_HANDOFF_PHASE_1:  NPCOwnershipHandoffPhase1Payload,
+    MessageType.NPC_OWNERSHIP_RELEASE_ACK:      NPCOwnershipReleaseAckPayload,
+    MessageType.NPC_OWNERSHIP_HANDOFF_PHASE_2:  NPCOwnershipHandoffPhase2Payload,
+    MessageType.NPC_OWNERSHIP_BCAST:            NPCOwnershipBcastPayload,
+    MessageType.NPC_STATE_FROM_OWNER:           NPCStateFromOwnerPayload,
+    MessageType.NPC_FIRE_FROM_OWNER:            NPCFireFromOwnerPayload,
+    MessageType.NPC_DEATH_FROM_OWNER:           NPCDeathFromOwnerPayload,
+    MessageType.NPC_DAMAGE_FROM_OWNER:          NPCDamageFromOwnerPayload,
+    MessageType.NPC_ENGAGEMENT_CLAIM:           NPCEngagementClaimPayload,
+    MessageType.NPC_POSE_FROM_OWNER:            NPCPoseFromOwnerPayload,
+    MessageType.NPC_CROUCH_FROM_OWNER:          NPCCrouchFromOwnerPayload,
+    MessageType.NPC_DAMAGE_CLAIM:               NPCDamageClaimPayload,
+    MessageType.PEER_GHOST_REGISTER:   PeerGhostRegisterPayload,
 }
 
 

@@ -70,14 +70,17 @@ compute, no I/O.
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import Optional
+from pathlib import Path
+from typing import ClassVar, Optional
 
 from .npc_brain import (
     AggroState,
     AnimState,
+    NPCBrain,
     NPCRuntime,
     NPCSpec,
     Waypoint,
@@ -95,7 +98,14 @@ log = logging.getLogger("raider_brain")
 # Default values for raiders. Per-NPC overrides can be supplied in the
 # waypoint JSON under a ``combat`` sub-object.
 
-DEFAULT_DETECTION_RANGE_FT = 4000.0        # ≈ 60 m (1 unit ≈ 1.5 cm)
+DEFAULT_DETECTION_RANGE_FT = 30000.0       # ≈ 430 m (1 unit ≈ 1.42 cm) — bumped
+                                            # 2026-05-12 for MVP testing: player
+                                            # spawning at Concord exterior is
+                                            # typically 300-400 m from the
+                                            # raider cluster (~-76000, 88800).
+                                            # Original 4000 (~57 m) was too tight
+                                            # — required the player to be in the
+                                            # raider's face to aggro.
 DEFAULT_WEAPON_RANGE_FT    = 2500.0        # ≈ 37 m
 DEFAULT_FIRE_COOLDOWN_MS   = 800.0         # 1.25 shots / sec
 DEFAULT_SWAP_HYSTERESIS_FT = 200.0         # ~3 m new-target advantage required
@@ -189,8 +199,73 @@ class RaiderBrain:
       (peer, raider) when composing NPC_STATE_BCAST.
     """
 
+    # Build 62 (2026-05-24) — proximity sphere perception trigger config.
+    #
+    # Per re/arena_synthesis/SUPERVISOR_SYNTHESIS.md: when a peer's pos
+    # enters an NPC's effective perception sphere, the server emits one
+    # NPC_PERCEPTION_TRIGGER per (npc, peer) pair (server-side debounced).
+    # Receiving clients invoke trigger_npc_perception(npc, peer_ghost),
+    # which calls engine sub_140CCF810 to naturally allocate combat tier.
+    #
+    # Tunables:
+    #   PERCEPTION_BASE_RADIUS = base sphere radius in game units.
+    #     1024 ≈ vanilla "alerted at gunshot" range. 1600 ≈ vanilla combat
+    #     range for ranged weapons. Start conservative at 1024 to avoid
+    #     spam; live-test and tune.
+    #   PERCEPTION_DEBOUNCE_MS = re-emit cooldown per (npc_fid, peer_id).
+    #     Once engine allocates HighProcess via CCF810, subsequent calls
+    #     hit the existing controller (idempotent merge). 5s avoids spam
+    #     during ongoing combat without missing post-decay re-engagement.
+    #   POSTURE_RADIUS_MULT = per-peer-posture scaler. Sneak shrinks the
+    #     sphere (stealth), sprint expands it (loud footsteps).
+    PERCEPTION_BASE_RADIUS: ClassVar[float] = 1024.0
+    PERCEPTION_DEBOUNCE_MS: ClassVar[float] = 5000.0
+
+    # Build 62.4 (2026-05-24) — server-authoritative range/acquisition gates.
+    #
+    # Hard range ceiling: ABOVE this distance, no perception trigger
+    # is ever emitted, regardless of sphere-multiplier math. This
+    # prevents the Build 62.3 freeze where Concord raiders entered
+    # combat tier with Sanctuary peers (~30000 units away) — engine
+    # combat pathfinder hangs trying to navigate to an unreachable
+    # cross-cell target during cell load.
+    #
+    # 4000 units ≈ 57m, generous for raider weapon engagement.
+    # Concord MQ102 cell is ≤ 3000 units across; Sanctuary core
+    # is ~25000 units from Concord. A 4000 cap cleanly separates them.
+    PERCEPTION_HARD_RANGE: ClassVar[float] = 4000.0
+
+    # Acquired-hold debounce: once a (npc, peer) pair has fired a trigger
+    # (CCF810 allocated HighProcess + CombatController + added target),
+    # the engine sustains combat tier naturally. Re-emitting the trigger
+    # only causes install_fixed_selector_on_raider re-runs which inflate
+    # known_targets[] entries and corrupt CombatController state.
+    #
+    # 60 seconds is long enough to cover a typical engagement; if the
+    # peer escapes and combat decays naturally, the engine clears
+    # +0x328 and the next trigger will re-acquire fresh.
+    #
+    # Note: this is COMPLEMENTARY to PERCEPTION_DEBOUNCE_MS (5s). The
+    # 5s value is still used as the "still in sphere, keep heartbeat"
+    # cadence; the 60s value is the AFTER-FIRST-ACQUISITION cooldown.
+    # Acquisition is cleared when peer leaves hysteresis radius (2x base)
+    # so re-engagement triggers fresh.
+    PERCEPTION_ACQUIRED_HOLD_MS: ClassVar[float] = 60_000.0
+
+    POSTURE_RADIUS_MULT: ClassVar[dict[int, float]] = {
+        0: 1.00,   # Stand
+        1: 0.40,   # Sneak
+        2: 0.70,   # Walk
+        3: 1.00,   # Run
+        4: 1.30,   # Sprint
+    }
+
     def __init__(self) -> None:
         self.raiders: dict[int, RaiderRuntime] = {}     # form_id -> RaiderRuntime
+        # Build 62 — debounce tracker: (npc_fid, peer_id) -> last emit ms.
+        # Cleared lazily when (npc, peer) distance exceeds sphere
+        # (with hysteresis margin) so re-engagement post-decay re-fires.
+        self._perception_emit_ms: dict[tuple[int, str], float] = {}
 
     # ------------------------------------------------------------------- load
 
@@ -206,6 +281,60 @@ class RaiderBrain:
                 form_id,
             )
         self.raiders[form_id] = RaiderRuntime(ai=runtime, spec=spec)
+
+    def load_cell(self, json_path: Path, npc_brain: NPCBrain) -> int:
+        """Walk one waypoint JSON; register every NPC whose entry has
+        a `combat` sub-object OR `combat_target_form_id` set.
+
+        Mirrors the eligibility hint already present in the Concord
+        catalog (`concord_museum_mvp.json`). Sanctuary/Drumlin JSONs
+        without these fields are skipped — Codsworth and Dogmeat
+        remain pure waypoint patrollers driven by `NPCBrain` only.
+
+        ``npc_brain`` must already have ``load_cell``'d the same path
+        (the brain owns the NPCRuntime instances; we just borrow
+        references for combat mutation).
+
+        Returns count registered.
+        """
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            log.warning(
+                "raider_brain: failed to parse %s (%s); skipping",
+                json_path.name, e,
+            )
+            return 0
+
+        added = 0
+        for entry in data.get("npcs", []):
+            has_combat_sub = isinstance(entry.get("combat"), dict)
+            combat_target = entry.get("combat_target_form_id")
+            has_combat_target = (
+                combat_target is not None
+                and _parse_hex(combat_target) != 0
+            )
+            if not (has_combat_sub or has_combat_target):
+                continue
+
+            fid = _parse_hex(entry["form_id"])
+            runtime = npc_brain.npc_for(fid)
+            if runtime is None:
+                log.warning(
+                    "raider_brain: NPCRuntime for fid=0x%X missing "
+                    "(npc_brain.load_cell not run yet?) — skipping",
+                    fid,
+                )
+                continue
+
+            self.load_from_json_dict(entry, runtime)
+            added += 1
+
+        log.info(
+            "raider_brain: loaded %d combat-eligible NPC(s) from %s",
+            added, json_path.name,
+        )
+        return added
 
     def load_from_json_dict(
         self,
@@ -233,6 +362,70 @@ class RaiderBrain:
                 "flee_hp_threshold", DEFAULT_FLEE_HP_THRESHOLD)),
         )
         self.load_runtime(runtime, spec)
+
+    def register_dynamic(
+        self,
+        *,
+        npc_brain: NPCBrain,
+        form_id: int,
+        base_id: int,
+        cell_id: int,
+        pos_x: float,
+        pos_y: float,
+        pos_z: float,
+        reporter_peer_id: str = "",
+    ) -> None:
+        """B6.6w2 — register a raider discovered at runtime via NPC_DISCOVER.
+
+        Adds the actor to BOTH brains:
+          - ``npc_brain.npcs[form_id]`` so it appears in NPC_STATE_BCAST.
+          - ``self.raiders[form_id]`` so the combat tick processes it.
+
+        All combat parameters use defaults (detection range, fire
+        cooldown, etc). No waypoint patrol (raider stays at discovery
+        pos unless combat AI overrides).
+
+        Idempotent: caller should pre-check ``raider_for(form_id) is None``;
+        this method warns + skips on duplicate.
+        """
+        if form_id in self.raiders:
+            log.warning(
+                "raider_brain: register_dynamic form=0x%X already "
+                "tracked — skipping (reporter=%s)",
+                form_id, reporter_peer_id,
+            )
+            return
+
+        # Build NPCSpec + NPCRuntime + add to npc_brain.
+        spec = NPCSpec(
+            form_id=form_id,
+            base_id=base_id,
+            cell_id=cell_id,
+            name=f"dyn_raider_0x{form_id:X}",
+            waypoints=tuple(),     # no patrol path; raider stays put
+            walk_speed_ftps=4.0,
+            arrive_radius_ft=32.0,
+        )
+        runtime = NPCRuntime(
+            spec=spec,
+            pos_x=float(pos_x),
+            pos_y=float(pos_y),
+            pos_z=float(pos_z),
+        )
+        npc_brain.npcs[form_id] = runtime
+
+        # Default combat spec — same as a JSON entry without `combat`
+        # sub-object.
+        combat_spec = RaiderCombatSpec(
+            detection_range_ft=DEFAULT_DETECTION_RANGE_FT,
+            weapon_range_ft=DEFAULT_WEAPON_RANGE_FT,
+            fire_cooldown_ms=DEFAULT_FIRE_COOLDOWN_MS,
+            swap_hysteresis_ft=DEFAULT_SWAP_HYSTERESIS_FT,
+            target_loss_ms=DEFAULT_TARGET_LOSS_MS,
+            alert_window_ms=DEFAULT_ALERT_WINDOW_MS,
+            flee_hp_threshold=DEFAULT_FLEE_HP_THRESHOLD,
+        )
+        self.load_runtime(runtime, combat_spec)
 
     # ------------------------------------------------------------------- tick
 
@@ -268,6 +461,103 @@ class RaiderBrain:
             self._tick_one(raider, now_ms, dt_s, peers)
             n += 1
         return n
+
+    # ============================================================================
+    # Build 62 (2026-05-24) — Proximity sphere perception trigger.
+    #
+    # Architectural pivot. Replaces synth/Tier1/Tier2/walker fragile code with
+    # engine-native CCF810 EnterCombat. Server detects when a peer enters an
+    # NPC's perception sphere; client invokes sub_140CCF810(observer, target)
+    # which makes engine allocate HighProcess+CombatController+AddTarget
+    # naturally in 1 frame.
+    #
+    # Per arena synthesis §5.1: this runs AFTER tick() each cycle. Returns the
+    # list of (npc_fid, peer_id) pairs that crossed sphere boundary THIS tick.
+    # Caller (main.py) packages each into MSG_NPC_PERCEPTION_TRIGGER and
+    # broadcasts to all peers (each peer's client decides if it has the NPC
+    # locally loaded, otherwise drops silently).
+    #
+    # Posture handling: peer_postures is optional dict {peer_id: posture_byte}.
+    # 0=Stand, 1=Sneak, 2=Walk, 3=Run, 4=Sprint. Unknown peer defaults to Stand.
+    # Wire integration (POS_BROADCAST posture byte) lands in a follow-up build;
+    # Build 62 ships with posture wiring stubbed (everyone == Stand → 1.0 mult).
+    # ============================================================================
+
+    def compute_perception_triggers(
+        self,
+        now_ms: float,
+        peers: dict[str, tuple[float, float, float, bool]],
+        peer_postures: dict[str, int] | None = None,
+    ) -> list[tuple[int, str]]:
+        """Per-tick proximity sphere check. Returns list of (npc_fid, peer_id)
+        pairs that crossed into perception range and are NOT debounced.
+
+        Cost: O(N_raiders × N_peers). For 17 raiders × 2 peers = 34 dist
+        computations / tick (10 Hz) = 340 ops/sec. Negligible.
+        """
+        if peer_postures is None:
+            peer_postures = {}
+
+        triggers: list[tuple[int, str]] = []
+
+        # Build 62.4 — pre-compute hard-range² once (used in inner loop).
+        hard_r_sq = (
+            self.PERCEPTION_HARD_RANGE * self.PERCEPTION_HARD_RANGE
+        )
+
+        for raider in self.raiders.values():
+            if raider.ai.hp_pct <= 0:
+                continue  # dead raider: never perceives anything
+            rx, ry, rz = raider.ai.pos_x, raider.ai.pos_y, raider.ai.pos_z
+            fid = raider.ai.spec.form_id
+
+            for peer_id, (px, py, pz, alive) in peers.items():
+                if not alive:
+                    continue
+
+                dx = px - rx
+                dy = py - ry
+                dz = pz - rz
+                dist_sq = dx * dx + dy * dy + dz * dz
+                key = (fid, peer_id)
+
+                # ---- Build 62.4 — HARD range ceiling (cross-cell gate). ----
+                # Above this distance NEVER emit, regardless of sphere/posture.
+                # Drop any prior acquisition so when peer re-enters range
+                # we re-emit fresh (engine combat tier may have decayed in
+                # the meantime).
+                if dist_sq > hard_r_sq:
+                    if key in self._perception_emit_ms:
+                        del self._perception_emit_ms[key]
+                    continue
+
+                posture = peer_postures.get(peer_id, 0)  # default Stand
+                mult = self.POSTURE_RADIUS_MULT.get(posture, 1.0)
+                eff_radius = self.PERCEPTION_BASE_RADIUS * mult
+                eff_r_sq = eff_radius * eff_radius
+                last_emit = self._perception_emit_ms.get(key, 0.0)
+
+                if dist_sq < eff_r_sq:
+                    # In sphere. Emit trigger if ACQUIRED-HOLD window expired.
+                    # Build 62.4 — switched from 5s debounce to 60s
+                    # acquired-hold. Engine combat tier persists naturally
+                    # once allocated; spamming re-triggers inflates
+                    # known_targets[] and starves the AI tick (verified
+                    # Build 62.3 freeze: 13 re-triggers × install_fixed_selector
+                    # = client hang during cell load).
+                    if (now_ms - last_emit) > self.PERCEPTION_ACQUIRED_HOLD_MS:
+                        triggers.append(key)
+                        self._perception_emit_ms[key] = now_ms
+                else:
+                    # Outside posture sphere but still within hard range.
+                    # Hysteresis: if peer is past 1.2× sphere edge, forget
+                    # the acquisition so re-entry re-fires the trigger.
+                    hyst_r_sq = (eff_radius * 1.2) ** 2
+                    if (dist_sq > hyst_r_sq
+                            and key in self._perception_emit_ms):
+                        del self._perception_emit_ms[key]
+
+        return triggers
 
     def _tick_one(
         self,
@@ -325,15 +615,13 @@ class RaiderBrain:
         # 5) Anim state (visible posture).
         self._update_anim_state(raider, prev_aggro, now_ms)
 
-        # 6) Mirror brain decisions to NPCRuntime fields (= wire payload).
-        # combat_target_form_id is per-peer (each peer's local 0x14),
-        # so we set a SENTINEL value here (= LOCAL_PLAYER_FORM_ID if any
-        # target acquired, else 0). main.py's ``project_for_peer`` will
-        # turn it into 0x14 only for the chosen peer, 0 for others.
-        if chosen_aggro_id is not None:
-            raider.ai.combat_target_form_id = LOCAL_PLAYER_FORM_ID
-        else:
-            raider.ai.combat_target_form_id = 0
+        # 6) NPCRuntime.combat_target_form_id stays at 0 here. The wire
+        # payload's combat_target is PER-PEER and resolved at broadcast
+        # time via `project_for_peer` (= LOCAL_PLAYER_FORM_ID only for
+        # the chosen target peer, 0 for the others). Writing a stale
+        # placeholder onto NPCRuntime would leak into the non-projected
+        # path used for Dogmeat / Codsworth.
+        raider.ai.combat_target_form_id = 0
 
     # ----------------------------------------------------- target selection
 
@@ -467,6 +755,8 @@ class RaiderBrain:
         self,
         form_id: int,
         peer_id: str,
+        *,
+        viewer_ghost_form_id: int = 0,
     ) -> dict:
         """Return per-peer override fields for the wire payload.
 
@@ -474,15 +764,22 @@ class RaiderBrain:
         (both pos vectors and fire timing are world-frame), but the
         ``combat_target_form_id`` substitution is per-peer:
 
-        - If this raider's brain aggro_peer == ``peer_id``: this peer is
-          THE TARGET → combat_target_form_id = 0x14 (their local player).
+        - If this raider's brain aggro_peer == ``peer_id``: this viewer
+          IS the target → combat_target_form_id = 0x14 (their local player).
+        - Else if the aggro_peer is a DIFFERENT live peer AND the viewer
+          has registered a local ghost-actor (B6.6w5 PEER_GHOST_REGISTER):
+          → combat_target_form_id = viewer's local ghost fid. On the
+          viewer's screen this is the actor that represents the remote
+          aggro target visually, so the raider's hook substitutes the
+          combat target to the right local Actor → both clients see the
+          raider attacking the SAME conceptual peer.
         - Else: combat_target_form_id = 0 (no override; vanilla AI on
-          this client decides — likely no aggro since v5 freeze suppresses
-          local AI tick anyway, but kept clean for symmetry).
+          this client keeps its own target — likely the local player
+          since it's the closest hostile).
 
         ``aim_target_xyz`` is the same world position for every peer —
         each client renders the raider aiming/firing at that world coord,
-        which is where peer A actually is (broadcast via pos_bcast).
+        which is where the aggro peer actually is (broadcast via pos_bcast).
 
         Returns ``{"combat_target_form_id": int, "aim_target_x/y/z": float,
         "fire_this_tick": bool}``.
@@ -496,10 +793,19 @@ class RaiderBrain:
                 "aim_target_z": 0.0,
                 "fire_this_tick": False,
             }
-        is_target = (raider.aggro_peer_id == peer_id)
+        # Decide combat target form_id for THIS viewer.
+        combat_target = 0
+        if raider.aggro_peer_id is not None:
+            if raider.aggro_peer_id == peer_id:
+                # Viewer IS the aggro target.
+                combat_target = LOCAL_PLAYER_FORM_ID
+            elif viewer_ghost_form_id != 0:
+                # Viewer is OTHER peer; use their local ghost fid for
+                # the remote aggro target representation.
+                combat_target = viewer_ghost_form_id
+            # else: ghost not registered yet → leave at 0 (no override).
         return {
-            "combat_target_form_id":
-                LOCAL_PLAYER_FORM_ID if is_target else 0,
+            "combat_target_form_id": combat_target,
             "aim_target_x": raider.aim_target_x,
             "aim_target_y": raider.aim_target_y,
             "aim_target_z": raider.aim_target_z,

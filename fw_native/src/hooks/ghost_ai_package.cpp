@@ -1,3 +1,33 @@
+// ============================================================================
+// DIAGNOSTIC ONLY — 2026-05-17. Installed at install_all.cpp:237. Detour
+// passthrough; substitution branch only fires if
+// `server.package_form_id != 0` for a tracked actor, which is NEVER set
+// in current `raider_brain.py` (raider_brain emits combat_target_form_id
+// + movement_override, not package_form_id).
+//
+// LOG PROOF: Client A `fw_native.log` has the DIAG5 dumps from the first
+// 5 inner-predicate fires for offset discovery, then heartbeats. ZERO
+// `[ghost_ai_pkg] SUBSTITUTE` lines. ZERO `[ghost_ai_pkg] TRACKED_FIRE`
+// lines (= predicate fired with tls_actor_fid in tracked set AND a
+// candidate package — but server.package_form_id stays 0, so no substitution
+// is even attempted).
+//
+// WHY KEEP RUNNING:
+//   The OUTER selector detour populates the tls_actor_fid bridge that's
+//   used by ANY downstream package query inside the AI tick. Even though
+//   inner substitution is dormant, the bridge has zero overhead and stays
+//   useful as scaffolding for a future redesign that would use
+//   server.package_form_id to force tracked NPCs to run server-chosen
+//   AI packages (e.g., force a raider to run AI_CombatTakingCover.pkg
+//   even if vanilla selection wouldn't pick it).
+//
+// KEEP-AS-IS RATIONALE:
+//   Hook infrastructure is correct. Bridge atomic + inner detour pair
+//   is the right mechanism for AI package overrides. Server side just
+//   doesn't emit package_form_id today. When/if needed, a single line
+//   change in raider_brain.py turns this on.
+// ============================================================================
+
 #include "ghost_ai_package.h"
 
 #include <windows.h>

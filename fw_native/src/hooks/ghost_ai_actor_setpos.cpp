@@ -9,6 +9,9 @@
 #include "../offsets.h"
 #include "../main_thread_dispatch.h"
 #include "npc_ai_suppress.h"  // B6.5w17 v3: is_actor_bail_tracked()
+#include "ownership_manager.h"  // Build 65: owner-driven predicate
+#include "container_hook.h"   // B6.6w5: tls_applying_remote for engine::apply_npc_pos bypass
+#include "../engine/engine_calls.h"  // Build 62.9: native_combat_fid_exists
 
 namespace fw::hooks {
 
@@ -63,6 +66,13 @@ void __fastcall detour_actor_setpos(void* actor, void* pos) {
         }
 
         if (fid != PLAYER_FORM_ID && fid != 0 && fid != 0xFFFFFFFFu) {
+            // B6.6w5: receiver-side engine::apply_npc_pos sets this TLS
+            // flag so OUR detour passthroughs and the write goes through.
+            if (fw::hooks::tls_applying_remote) {
+                if (g_orig_actor_setpos) g_orig_actor_setpos(actor, pos);
+                return;
+            }
+
             bool should_bail = false;
             fw::dispatch::CachedNPCState st{};
             if (fw::dispatch::get_cached_npc_state(fid, &st)
@@ -72,6 +82,19 @@ void __fastcall detour_actor_setpos(void* actor, void* pos) {
             } else if (fw::hooks::is_actor_bail_tracked(fid)) {
                 // B6.5w17 v3 — also bail for combat-detected actors not in
                 // the server-tracked cache.
+                should_bail = true;
+            }
+
+            // Build 62.9 — UNGATE for raiders in native combat tier.
+            // See ghost_ai_havok_step for rationale.
+            if (should_bail && fw::engine::native_combat_fid_exists(fid)) {
+                should_bail = false;
+            }
+
+            // Build 65 — owner-driven override (with fallback).
+            if (fw::ownership::is_owner_of(fid)) {
+                should_bail = false;
+            } else if (fw::ownership::is_non_owner_tracked(fid)) {
                 should_bail = true;
             }
 

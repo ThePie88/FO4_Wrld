@@ -80,6 +80,19 @@ class PeerSession:
     total_pos_updates: int = 0
     total_events: int = 0
 
+    # B6.6w5 — Steam ID auth scaffolding. Populated from HELLO.steam_id
+    # when the client connects. 0 = unavailable (legacy client OR Steam
+    # SDK not loaded on client at HELLO time). Future: validate against
+    # a whitelist + use as canonical peer identity instead of peer_id.
+    steam_id: int = 0
+
+    # B6.6w5 — local form_id of the engine ghost-actor that represents
+    # the OTHER peer on this client's screen. Sent by the client via
+    # PEER_GHOST_REGISTER after spawn. Used in raider_brain.project_for_peer
+    # so combat_target_form_id substitution targets the right local fid
+    # per viewer. 0 = unregistered (ghost not spawned yet, or spawn failed).
+    ghost_form_id: int = 0
+
     def touch(self, now_ms: float) -> None:
         self.last_seen_ms = now_ms
 

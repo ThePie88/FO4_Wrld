@@ -127,7 +127,13 @@ class TestTargetSelection:
         r = brain.raider_for(rt.spec.form_id)
         assert r.aggro_peer_id == "peerA"
         assert rt.aggro_state == int(AggroState.COMBAT)
-        assert rt.combat_target_form_id == LOCAL_PLAYER_FORM_ID
+        # combat_target_form_id is PER-PEER (resolved at broadcast
+        # time via project_for_peer), not stored on the NPCRuntime.
+        # The runtime field stays 0 to avoid leaking into the
+        # non-projected (Dogmeat/Codsworth) broadcast path.
+        assert rt.combat_target_form_id == 0
+        proj = brain.project_for_peer(rt.spec.form_id, "peerA")
+        assert proj["combat_target_form_id"] == LOCAL_PLAYER_FORM_ID
 
     def test_picks_closest_of_two(self):
         brain = RaiderBrain()

@@ -68,14 +68,12 @@ std::int64_t __fastcall detour_dispatch_attack(void* actor, int action_id,
                        g_bails.load(std::memory_order_relaxed)));
         }
 
-        // BAIL: tracked NPC tries to dispatch any attack action.
-        // Uses unified should_freeze_actor which OR's server cache
-        // (movement_override) with local dynamic set. Live test
-        // 2026-05-12: B vs A asymmetry (B had 3 fewer auto-tracks)
-        // proved that dyn-set-only check leaves uncovered actors on
-        // one client.
+        // BAIL when server has NO active combat opinion. Server-driven
+        // combat: when cache.combat_target_form_id != 0 the predicate
+        // flips and the attack action passes through, letting the
+        // engine fire the weapon.
         if (plausible && fid != PLAYER_FORM_ID
-            && fw::hooks::should_freeze_actor(fid))
+            && fw::hooks::should_silence_combat(fid))
         {
             const auto bn = g_bails.fetch_add(
                 1, std::memory_order_relaxed);

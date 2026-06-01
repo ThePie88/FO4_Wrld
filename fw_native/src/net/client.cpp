@@ -2,15 +2,21 @@
 
 #include <windows.h>
 #include <chrono>
+#include <cmath>
 #include <cstring>
+#include <mutex>
 #include <thread>
+#include <tuple>
+#include <unordered_map>
 
 #include "../log.h"
 #include "../engine/engine_calls.h"
 #include "../ghost/actor_hijack.h"
 #include "../hooks/container_hook.h"
+#include "../steam/steam_id.h"      // B6.6w5: local Steam ID for HELLO auth scaffolding
 #include "../hooks/equip_cycle.h"   // M9 v0.3.x: re-arm cycle on PEER_JOIN
 #include "../hooks/npc_ai_suppress.h" // B6.5w4: suppress/passthrough counters
+#include "../hooks/ownership_manager.h" // Build 65: NPC owner-driven sync
 #include "../main_thread_dispatch.h"
 #include "../native/scene_inject.h"
 
@@ -100,6 +106,130 @@ void Client::enqueue_pose_state(std::uint64_t header_ts_ms,
         std::memcpy(q.payload_bytes.data() + sizeof(hdr),
                     bones, bone_count * sizeof(PoseBoneEntry));
     }
+    {
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+}
+
+void Client::enqueue_pose_crouch_state(const PoseCrouchEntry* entries,
+                                       std::size_t count,
+                                       std::uint64_t header_ts_ms)
+{
+    if (!connected_.load() || stopping_.load()) return;
+    if (count > MAX_POSE_CROUCH_BONES) count = MAX_POSE_CROUCH_BONES;
+
+    QueuedSend q;
+    q.msg_type = MessageType::POSE_CROUCH_STATE;
+    q.reliable = false;
+    const std::size_t total = sizeof(PoseCrouchStateHeader)
+                            + count * sizeof(PoseCrouchEntry);
+    q.payload_bytes.resize(total);
+
+    PoseCrouchStateHeader hdr{};
+    hdr.timestamp_ms = header_ts_ms;
+    hdr.count        = static_cast<std::uint8_t>(count);
+    std::memcpy(q.payload_bytes.data(), &hdr, sizeof(hdr));
+    if (count > 0 && entries != nullptr) {
+        std::memcpy(q.payload_bytes.data() + sizeof(hdr),
+                    entries, count * sizeof(PoseCrouchEntry));
+    }
+    {
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+}
+
+void Client::enqueue_npc_pose_state(std::uint32_t form_id,
+                                    std::uint64_t header_ts_ms,
+                                    const PoseBoneEntry* bones,
+                                    std::size_t bone_count)
+{
+    if (!connected_.load() || stopping_.load()) return;
+    if (bone_count > MAX_POSE_BONES) bone_count = MAX_POSE_BONES;
+
+    QueuedSend q;
+    q.msg_type = MessageType::NPC_POSE_FROM_OWNER;
+    q.reliable = false;
+    const std::size_t total = sizeof(NpcPoseHeader)
+                            + bone_count * sizeof(PoseBoneEntry);
+    q.payload_bytes.resize(total);
+
+    NpcPoseHeader hdr{};
+    hdr.form_id      = form_id;
+    hdr.timestamp_ms = header_ts_ms;
+    hdr.bone_count   = static_cast<std::uint16_t>(bone_count);
+    std::memcpy(q.payload_bytes.data(), &hdr, sizeof(hdr));
+    if (bone_count > 0 && bones != nullptr) {
+        std::memcpy(q.payload_bytes.data() + sizeof(hdr),
+                    bones, bone_count * sizeof(PoseBoneEntry));
+    }
+    {
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+}
+
+void Client::enqueue_npc_crouch(std::uint32_t form_id,
+                                const PoseCrouchEntry* entries,
+                                std::size_t count,
+                                std::uint64_t header_ts_ms)
+{
+    if (!connected_.load() || stopping_.load()) return;
+    if (count > MAX_POSE_CROUCH_BONES) count = MAX_POSE_CROUCH_BONES;
+
+    QueuedSend q;
+    q.msg_type = MessageType::NPC_CROUCH_FROM_OWNER;
+    q.reliable = false;
+    const std::size_t total = sizeof(NpcCrouchHeader)
+                            + count * sizeof(PoseCrouchEntry);
+    q.payload_bytes.resize(total);
+
+    NpcCrouchHeader hdr{};
+    hdr.form_id      = form_id;
+    hdr.timestamp_ms = header_ts_ms;
+    hdr.count        = static_cast<std::uint8_t>(count);
+    std::memcpy(q.payload_bytes.data(), &hdr, sizeof(hdr));
+    if (count > 0 && entries != nullptr) {
+        std::memcpy(q.payload_bytes.data() + sizeof(hdr),
+                    entries, count * sizeof(PoseCrouchEntry));
+    }
+    {
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+}
+
+void Client::enqueue_npc_damage_claim(std::uint32_t form_id, float amount) {
+    if (!connected_.load() || stopping_.load()) return;
+    if (form_id == 0 || form_id == 0xFFFFFFFFu || amount <= 0.0f) return;
+
+    // Accumulate per fid; flush at most ~6 Hz/fid (batch rapid-fire hits).
+    float to_send = 0.0f;
+    {
+        using namespace std::chrono;
+        const std::uint64_t now = duration_cast<milliseconds>(
+            steady_clock::now().time_since_epoch()).count();
+        static std::mutex s_dmg_mtx;
+        static std::unordered_map<std::uint32_t,
+                                  std::pair<float, std::uint64_t>> s_accum;
+        std::lock_guard lk(s_dmg_mtx);
+        auto& e = s_accum[form_id];          // (sum, last_send_ms), zero-init
+        e.first += amount;
+        if (now - e.second >= 160ULL) {      // ~6 Hz/fid; first hit sends now
+            to_send = e.first;
+            e.first = 0.0f;
+            e.second = now;
+        }
+    }
+    if (to_send <= 0.0f) return;
+
+    QueuedSend q;
+    q.msg_type = MessageType::NPC_DAMAGE_CLAIM;
+    q.reliable = false;
+    NpcDamageClaim p{ form_id, to_send };
+    q.payload_bytes.resize(sizeof(p));
+    std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
     {
         std::lock_guard lk(queue_mutex_);
         queue_.push_back(std::move(q));
@@ -205,6 +335,237 @@ void Client::enqueue_lock_op(std::uint32_t lock_form_id,
         std::lock_guard lk(queue_mutex_);
         queue_.push_back(std::move(q));
     }
+}
+
+void Client::enqueue_peer_ghost_register(std::uint32_t ghost_form_id) {
+    if (!connected_.load() || stopping_.load()) return;
+    if (ghost_form_id == 0 || ghost_form_id == 0xFFFFFFFFu) return;
+
+    PeerGhostRegisterPayload p{};
+    p.ghost_form_id = ghost_form_id;
+
+    QueuedSend q;
+    q.msg_type = MessageType::PEER_GHOST_REGISTER;
+    q.reliable = true;
+    q.payload_bytes.resize(sizeof(p));
+    std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
+    {
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+}
+
+void Client::enqueue_npc_discover(std::uint32_t form_id,
+                                  std::uint32_t base_id,
+                                  std::uint32_t cell_id,
+                                  float pos_x, float pos_y, float pos_z)
+{
+    if (!connected_.load() || stopping_.load()) return;
+    if (form_id == 0 || form_id == 0xFFFFFFFFu || form_id == 0x14u) return;
+
+    NPCDiscoverPayload p{};
+    p.form_id = form_id;
+    p.base_id = base_id;
+    p.cell_id = cell_id;
+    p.pos_x   = pos_x;
+    p.pos_y   = pos_y;
+    p.pos_z   = pos_z;
+
+    QueuedSend q;
+    q.msg_type = MessageType::NPC_DISCOVER;
+    q.reliable = true;
+    q.payload_bytes.resize(sizeof(p));
+    std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
+    {
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+}
+
+// === Build 65 — owner-driven TX entry points ==============================
+
+void Client::enqueue_npc_observed(std::uint32_t form_id,
+                                  std::uint32_t base_id,
+                                  std::uint32_t cell_id,
+                                  float pos_x, float pos_y, float pos_z,
+                                  float observer_distance_sq)
+{
+    if (!connected_.load() || stopping_.load()) return;
+    if (form_id == 0 || form_id == 0xFFFFFFFFu || form_id == 0x14u) return;
+
+    NPCObservedPayload p{};
+    p.form_id              = form_id;
+    p.base_id              = base_id;
+    p.cell_id              = cell_id;
+    p.pos_x                = pos_x;
+    p.pos_y                = pos_y;
+    p.pos_z                = pos_z;
+    p.observer_distance_sq = observer_distance_sq;
+
+    QueuedSend q;
+    q.msg_type = MessageType::NPC_OBSERVED;
+    q.reliable = true;
+    q.payload_bytes.resize(sizeof(p));
+    std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
+    {
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+}
+
+void Client::enqueue_npc_owner_heartbeat(
+    const NPCOwnerHeartbeatEntry* entries, std::size_t count)
+{
+    if (!connected_.load() || stopping_.load()) return;
+    if (entries == nullptr || count == 0) return;
+    if (count > MAX_HEARTBEAT_ENTRIES) count = MAX_HEARTBEAT_ENTRIES;
+
+    // Wire: u16 num + u16 reserved + N * NPCOwnerHeartbeatEntry.
+    NPCOwnerHeartbeatHeader hdr{};
+    hdr.num_entries = static_cast<std::uint16_t>(count);
+    hdr.reserved    = 0;
+
+    QueuedSend q;
+    q.msg_type = MessageType::NPC_OWNER_HEARTBEAT;
+    q.reliable = false;
+    q.payload_bytes.resize(sizeof(hdr) + count * sizeof(*entries));
+    std::memcpy(q.payload_bytes.data(), &hdr, sizeof(hdr));
+    std::memcpy(q.payload_bytes.data() + sizeof(hdr),
+                entries, count * sizeof(*entries));
+    {
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+}
+
+void Client::enqueue_npc_state_from_owner(
+    const NPCOwnerStateEntry* entries, std::size_t count)
+{
+    if (!connected_.load() || stopping_.load()) return;
+    if (entries == nullptr || count == 0) return;
+    if (count > MAX_OWNER_STATES_PER_FRAME) count = MAX_OWNER_STATES_PER_FRAME;
+
+    NPCStateFromOwnerHeader hdr{};
+    hdr.num_entries = static_cast<std::uint16_t>(count);
+    hdr.reserved    = 0;
+
+    QueuedSend q;
+    q.msg_type = MessageType::NPC_STATE_FROM_OWNER;
+    q.reliable = false;
+    q.payload_bytes.resize(sizeof(hdr) + count * sizeof(*entries));
+    std::memcpy(q.payload_bytes.data(), &hdr, sizeof(hdr));
+    std::memcpy(q.payload_bytes.data() + sizeof(hdr),
+                entries, count * sizeof(*entries));
+    {
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+}
+
+void Client::enqueue_npc_fire_from_owner(const NPCFireFromOwnerPayload& p)
+{
+    if (!connected_.load() || stopping_.load()) return;
+    if (p.form_id == 0 || p.form_id == 0xFFFFFFFFu) return;
+
+    QueuedSend q;
+    q.msg_type = MessageType::NPC_FIRE_FROM_OWNER;
+    q.reliable = false;   // event-driven cosmetic; one dropped frame =
+                          // one missed muzzle flash, not a desync.
+    q.payload_bytes.resize(sizeof(p));
+    std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
+    {
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+}
+
+void Client::enqueue_npc_death_from_owner(const NPCDeathFromOwnerPayload& p)
+{
+    if (!connected_.load() || stopping_.load()) return;
+    if (p.form_id == 0 || p.form_id == 0xFFFFFFFFu) return;
+
+    QueuedSend q;
+    q.msg_type = MessageType::NPC_DEATH_FROM_OWNER;
+    q.reliable = true;    // Build 65.c.47 WEDGE3 — death MUST arrive: a dropped
+                          // death leaves a live mirror of a dead-on-owner entity
+                          // → @0xC0F510 use-after-free when it's shot.
+    q.payload_bytes.resize(sizeof(p));
+    std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
+    {
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+}
+
+// Build 65.c.23 — FNV-1a 32-bit (matches Python `fnv1a_hash` used server-
+// side for peer_id hashing). Constants per RFC: offset=2166136261,
+// prime=16777619. Loop over raw bytes.
+static std::uint32_t fnv1a_32(const std::string& s) noexcept {
+    std::uint32_t h = 0x811C9DC5u;
+    for (char c : s) {
+        h ^= static_cast<std::uint8_t>(c);
+        h *= 0x01000193u;
+    }
+    return h;
+}
+
+bool Client::enqueue_engagement_claim_dedup(std::uint32_t form_id)
+{
+    if (!connected_.load() || stopping_.load()) return false;
+    if (form_id == 0 || form_id == 0xFFFFFFFFu) return false;
+    if (form_id == 0x00000014u) return false;   // never claim on player
+
+    // Per-fid dedup: 2s cooldown. The npc_ai_suppress detour runs at the
+    // engine's Update_PerFrame rate (~60 Hz per tracked actor) and reads
+    // the InCombat bit on every fire. Without dedup we'd flood the
+    // server with ~60 Hz × N raiders claims — Hz-scale waste.
+    //
+    // 2s strikes the balance: long enough to not flood, short enough
+    // to react to "owner just stopped engaging, I should take over"
+    // within one ENGAGEMENT_OWNERSHIP_GRACE_MS window (= 3s, server-side).
+    static std::mutex                                  s_dedup_mtx;
+    static std::unordered_map<std::uint32_t, std::uint64_t> s_last_sent_ms;
+    constexpr std::uint64_t kClaimCooldownMs = 2000;
+
+    const auto now_ms = static_cast<std::uint64_t>(GetTickCount64());
+    {
+        std::lock_guard lk(s_dedup_mtx);
+        auto it = s_last_sent_ms.find(form_id);
+        if (it != s_last_sent_ms.end() &&
+            now_ms - it->second < kClaimCooldownMs)
+        {
+            return false;
+        }
+        s_last_sent_ms[form_id] = now_ms;
+    }
+
+    NPCEngagementClaimPayload p{};
+    p.form_id      = form_id;
+    p.peer_id_hash = fnv1a_32(cfg_.client_id);
+    p.ts_ms        = now_ms;
+
+    QueuedSend q;
+    q.msg_type = MessageType::NPC_ENGAGEMENT_CLAIM;
+    q.reliable = false;   // ~1 claim per 2s per fid; loss is fine — the
+                          // next fire that re-passes the 2s window
+                          // triggers a resend, and InCombat persists as
+                          // long as the engine sees a target.
+    q.payload_bytes.resize(sizeof(p));
+    std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
+    {
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+
+    static std::atomic<std::uint64_t> g_claims_sent{0};
+    const auto n = g_claims_sent.fetch_add(1, std::memory_order_relaxed);
+    if (n < 20 || (n % 200) == 0) {
+        FW_LOG("net: NPC_ENGAGEMENT_CLAIM tx #%llu fid=0x%08X "
+               "peer_hash=0x%08X (Build 65.c.23 combat-driven handoff)",
+               static_cast<unsigned long long>(n), form_id,
+               p.peer_id_hash);
+    }
+    return true;
 }
 
 void Client::enqueue_equip_op(std::uint32_t item_form_id,
@@ -680,6 +1041,14 @@ bool Client::do_handshake() {
     h.client_id.set(cfg_.client_id);
     h.client_version_major = 1;
     h.client_version_minor = 0;
+    // B6.6w5 — local Steam ID (real Steam returns user's account ID;
+    // Goldberg emulator returns the configured ID from steam_settings/).
+    // 0 = unavailable (steam_api64.dll not loaded by host process yet).
+    h.steam_id = fw::steam::get_local_steam_id();
+    FW_LOG("net: HELLO with client_id='%s' steam_id=%llu (0x%llX)",
+           cfg_.client_id.c_str(),
+           static_cast<unsigned long long>(h.steam_id),
+           static_cast<unsigned long long>(h.steam_id));
 
     auto frame = channel_.send_reliable(
         MessageType::HELLO, &h, sizeof(h));
@@ -736,6 +1105,11 @@ bool Client::do_handshake() {
             }
             session_id_.store(w.session_id);
             connected_.store(true);
+            // Build 65 — once the server has accepted us, hand our
+            // canonical peer_id to the ownership manager so PHASE_2
+            // payloads can be compared byte-for-byte against the
+            // 16 B FixedClientId encoding the server uses on the wire.
+            fw::ownership::set_local_peer_id(cfg_.client_id);
             FW_LOG("net: WELCOME session_id=%u server=%u.%u tick=%uHz",
                    w.session_id, w.server_version_major, w.server_version_minor,
                    w.tick_rate_hz);
@@ -847,6 +1221,11 @@ void Client::run_loop() {
             next_heartbeat = now + HEARTBEAT_INTERVAL;
         }
 
+        // -------- 5.b Build 65 — owner-driven periodic emit ----------
+        // Internally rate-limited (HEARTBEAT 2 Hz, STATE 10 Hz).
+        // Cheap when ownership map is empty (no allocations).
+        fw::ownership::tick_periodic(now_ms_wall());
+
         // -------- 6. Periodic stats log --------
         if (now >= next_stats) {
             FW_LOG("net: stats  pos_sent=%llu  pos_bcast=%llu  "
@@ -936,6 +1315,64 @@ void Client::dispatch(const Delivered& d) {
         break;
     }
 
+    // v16 — ghost crouch. SEPARATE additive channel beside POSE_BROADCAST.
+    // Server relays a peer's COM/Pelvis local translations; stash + post
+    // FW_MSG_STRADAB_CROUCH_APPLY so the main thread lowers the ghost body.
+    case static_cast<std::uint16_t>(MessageType::POSE_CROUCH_BROADCAST): {
+        if (d.payload.size() < sizeof(PoseCrouchBroadcastHeader)) break;
+        PoseCrouchBroadcastHeader hdr{};
+        std::memcpy(&hdr, d.payload.data(), sizeof(hdr));
+        if (hdr.count > MAX_POSE_CROUCH_BONES) break;
+        const std::size_t need = sizeof(hdr)
+                                 + hdr.count * sizeof(PoseCrouchEntry);
+        if (d.payload.size() < need) break;
+        const PoseCrouchEntry* entries = reinterpret_cast<const PoseCrouchEntry*>(
+            d.payload.data() + sizeof(hdr));
+        fw::native::store_remote_crouch(hdr.timestamp_ms, entries, hdr.count);
+        break;
+    }
+
+    // c.37.0 — full NPC pose replication. Server relays the owner's
+    // per-bone snapshot for one NPC (keyed by form_id). Stash into a
+    // per-fid slot + post WM_APP; main thread drives the mirror Actor.
+    case static_cast<std::uint16_t>(MessageType::NPC_POSE_FROM_OWNER): {
+        { static std::atomic<std::uint64_t> s_d{0};
+          const auto dc = s_d.fetch_add(1, std::memory_order_relaxed);
+          if (dc < 10 || (dc % 200) == 0)
+            FW_LOG("[npc-pose-net] DISPATCH recv payloadsz=%zu hdr=%zu",
+                   d.payload.size(), sizeof(NpcPoseHeader)); }
+        if (d.payload.size() < sizeof(NpcPoseHeader)) break;
+        NpcPoseHeader hdr{};
+        std::memcpy(&hdr, d.payload.data(), sizeof(hdr));
+        if (hdr.bone_count > MAX_POSE_BONES) break;
+        const std::size_t need = sizeof(hdr)
+                                 + hdr.bone_count * sizeof(PoseBoneEntry);
+        if (d.payload.size() < need) break;
+        const PoseBoneEntry* bones = reinterpret_cast<const PoseBoneEntry*>(
+            d.payload.data() + sizeof(hdr));
+        fw::native::store_remote_npc_pose(
+            hdr.form_id, hdr.timestamp_ms, bones, hdr.bone_count);
+        break;
+    }
+
+    // NPC crouch — owner's COM/Pelvis translation for one NPC (keyed by
+    // form_id). NO separate window message (unlike the ghost crouch): the
+    // apply happens in the 60 Hz post-orig drive (apply_npc_pose_to_actor),
+    // so we just stash into the per-fid cache here.
+    case static_cast<std::uint16_t>(MessageType::NPC_CROUCH_FROM_OWNER): {
+        if (d.payload.size() < sizeof(NpcCrouchHeader)) break;
+        NpcCrouchHeader hdr{};
+        std::memcpy(&hdr, d.payload.data(), sizeof(hdr));
+        if (hdr.count > MAX_POSE_CROUCH_BONES) break;
+        const std::size_t need = sizeof(hdr)
+                                 + hdr.count * sizeof(PoseCrouchEntry);
+        if (d.payload.size() < need) break;
+        const PoseCrouchEntry* entries = reinterpret_cast<const PoseCrouchEntry*>(
+            d.payload.data() + sizeof(hdr));
+        fw::native::store_npc_crouch(hdr.form_id, entries, hdr.count);
+        break;
+    }
+
     case static_cast<std::uint16_t>(MessageType::POS_BROADCAST): {
         stats_.pos_broadcast_received.fetch_add(1);
         if (d.payload.size() < sizeof(PosBroadcastPayload)) break;
@@ -986,15 +1423,29 @@ void Client::dispatch(const Delivered& d) {
         // injected yet or WndProc not subclassed.
         fw::native::notify_remote_pos_changed();
 
-        // Z.2d (Path B) — DEAD. Re-tested 2026-04-26 in 1.11.191 next-gen:
-        // PlaceAtMe SEH reproduces identically to 2026-04-22. Heap state
-        // corrupts even with __try/__except (Side B crashes, Side A
-        // limps until later). Definitive verdict: hijack via PlaceAtMe
-        // from WndProc thread is impossible in this game version.
-        // Pivoting to Plan A: build 3D from scratch via M8P2 sub_140458390
-        // entry point. fw_native/src/ghost/* kept as archeology.
+        // B6.6w5 Build 9 — sync the engine-native ghost duplicate's pos
+        // to the peer's pos. The duplicate is invisible to engine
+        // iteration (no ProcessLists, no cell list); its only consumer
+        // is raider AI reading combat_target.pos for aim. Pure field
+        // write — safe from net thread. No-op until duplicate is spawned
+        // (post-T+30s body inject piggyback).
+        fw::engine::apply_ghost_pos(p.x, p.y, p.z);
+
+        // B6.6w5 Build 5 — spawn trigger MOVED to scene_inject's
+        // on_inject_message. The POS_BROADCAST path triggered spawn the
+        // moment the player's parentCell became non-null, which happens
+        // MID-LoadGame (the engine populates parentCell before finishing
+        // the cell-attach + autosave sweep). Spawning then registered the
+        // ghost into a transient world state and the engine crashed ~7s
+        // later (Build 3 live test 2026-05-13 01:57).
         //
-        // fw::ghost::request_spawn();
+        // The body renderer's inject path already implements the right
+        // timing (arm_worker 30s grace + local_player_in_world() check +
+        // remote snapshot poll). Tying our engine-native spawn to the
+        // same event guarantees the engine is fully stable when we run
+        // the PlayerCharacter ctor. See scene_inject.cpp on_inject_message.
+        //
+        // fw::ghost::request_spawn();  // disabled — see comment above
         break;
     }
 
@@ -1213,17 +1664,17 @@ void Client::dispatch(const Delivered& d) {
         // (package_form_id is wired now; combat target / aim / velocity
         // / anim states wire in subsequent phases).
         const std::uint8_t* p = d.payload.data() + sizeof(hdr);
+        std::vector<fw::dispatch::PendingNPCStateEntry> to_apply;
+        to_apply.reserve(hdr.num_entries);
         for (std::uint16_t i = 0; i < hdr.num_entries; ++i) {
             NPCStateEntry wire{};
             std::memcpy(&wire, p + i * sizeof(NPCStateEntry), sizeof(wire));
-            // Phase 4 hook #4: derive `movement_override` from the server's
-            // movement intent. For the MVP visible test (raiders freeze)
-            // we use the bit "server has combat_target_form_id non-zero"
-            // as the gate AND wait for an explicit flag in v15. For now,
-            // we drive movement_override directly from combat_target_form_id
-            // != 0 — tracked combat raiders freeze, untracked stay vanilla.
+            // B6.6w0 (2026-05-12): `movement_override` now derives from
+            // `flags` bit 1 (= is_raider_tracked) which the server sets
+            // unconditionally for every raider registered in
+            // `raider_brain`.
             const std::uint8_t mov_override =
-                (wire.combat_target_form_id != 0) ? 1u : 0u;
+                (wire.flags & 0x02) ? 1u : 0u;
             fw::dispatch::update_npc_cache(
                 wire.form_id,
                 wire.pos_x, wire.pos_y, wire.pos_z,
@@ -1232,6 +1683,90 @@ void Client::dispatch(const Delivered& d) {
                 wire.combat_target_form_id,
                 wire.velocity_x, wire.velocity_y, wire.velocity_z,
                 mov_override);
+            // B6.6w5 — enqueue pos apply for tracked NPCs.
+            //
+            // Guards:
+            //   1. SKIP (0,0,0) sentinel — JSON entries without verified
+            //      coords; broadcasting/applying these teleports raiders
+            //      to origin and they "disappear".
+            //   2. Dedup against cached previous pos — if server's pos
+            //      for this fid matches what we already applied (within
+            //      1 unit per axis), skip enqueue. Avoids 10Hz cell-
+            //      tracking churn inside vt[202] which displaces raiders.
+            //
+            // Build 12 (Fix 1) — orthogonal combat_target enqueue. Even
+            // when pos isn't apply-ready (deduped, sentinel, or
+            // movement_override clear), if the server has a combat_target
+            // opinion (combat_target_form_id != 0) we still enqueue so
+            // the main-thread drain applies it via engine SetCombatTarget.
+            std::uint8_t apply_flags = 0;
+            if (mov_override != 0 && wire.form_id != 0) {
+                const bool is_zero_sentinel =
+                    wire.pos_x == 0.0f && wire.pos_y == 0.0f &&
+                    wire.pos_z == 0.0f;
+                if (!is_zero_sentinel) {
+                    // Per-fid last-applied memo to dedup repeats.
+                    static std::mutex s_last_applied_mtx;
+                    static std::unordered_map<
+                        std::uint32_t,
+                        std::tuple<float, float, float>>
+                        s_last_applied;
+                    bool should_apply = false;
+                    {
+                        std::lock_guard lk(s_last_applied_mtx);
+                        const auto it = s_last_applied.find(wire.form_id);
+                        if (it == s_last_applied.end()) {
+                            should_apply = true;
+                        } else {
+                            const auto& [lx, ly, lz] = it->second;
+                            const float dx = std::abs(wire.pos_x - lx);
+                            const float dy = std::abs(wire.pos_y - ly);
+                            const float dz = std::abs(wire.pos_z - lz);
+                            if (dx > 1.0f || dy > 1.0f || dz > 1.0f) {
+                                should_apply = true;
+                            }
+                        }
+                        if (should_apply) {
+                            s_last_applied[wire.form_id] = {
+                                wire.pos_x, wire.pos_y, wire.pos_z};
+                        }
+                    }
+                    if (should_apply) {
+                        apply_flags |= 0x01;  // bit 0 = apply pos
+                    }
+                }
+            }
+            // Build 64 (2026-05-25) — combat_target apply BUILD64_DISABLED.
+            //
+            // Under the MVP-A strategy (re/BUILD64_strategy/STRATEGY.md)
+            // each client runs vanilla engine AI for combat. Server's
+            // combat_target_form_id field stays in the cache (might be
+            // read by future hooks for telemetry) but we never call
+            // engine::apply_npc_combat_target from the BCAST path.
+            //
+            // Previous behavior (Build 12+): set apply_flags |= 0x02
+            // when server had a non-zero target, drain calls
+            // SetCombatTarget on the engine. That path is part of the
+            // cross-peer aggro experiment that the 13 builds (62.x → 63)
+            // proved architecturally unstable. Removing the trigger
+            // here is belt-and-braces — the engine fn pointer call site
+            // in drain_npc_state_apply_queue is also commented out.
+            (void)0;  // apply_flags |= 0x02 intentionally skipped
+            if (apply_flags != 0) {
+                fw::dispatch::PendingNPCStateEntry pe{};
+                pe.form_id               = wire.form_id;
+                pe.pos_x                 = wire.pos_x;
+                pe.pos_y                 = wire.pos_y;
+                pe.pos_z                 = wire.pos_z;
+                pe.yaw_deg_math          = wire.yaw;
+                pe.anim_state            = wire.anim_state;
+                pe.combat_target_form_id = wire.combat_target_form_id;
+                pe.apply_flags           = apply_flags;
+                to_apply.push_back(pe);
+            }
+        }
+        if (!to_apply.empty()) {
+            fw::dispatch::enqueue_npc_state_apply(to_apply);
         }
         // Spot-check log of the first entry — useful for confirming the
         // pipeline is live without spamming at 10 Hz.
@@ -1247,6 +1782,313 @@ void Client::dispatch(const Delivered& d) {
                    static_cast<unsigned>(first.anim_state),
                    first.package_form_id);
         }
+        break;
+    }
+
+    case static_cast<std::uint16_t>(MessageType::NPC_FIRE): {
+        // B6.6w1 — server-driven shoot. Server raider_brain decided this
+        // raider should fire NOW (cooldown elapsed + target in range +
+        // line of sight). Both peers receive the same message, look up
+        // their local Actor* for raider_form_id, and trigger
+        // engine::fire_actor_weapon → projectile + muzzle flash + audio
+        // + damage. Visuals stay in sync because the same event fires
+        // on both clients.
+        if (d.payload.size() < sizeof(NPCFirePayload)) {
+            FW_DBG("net: NPC_FIRE undersized payload=%zu < %zu",
+                   d.payload.size(), sizeof(NPCFirePayload));
+            break;
+        }
+        NPCFirePayload pay{};
+        std::memcpy(&pay, d.payload.data(), sizeof(pay));
+        if (pay.raider_form_id == 0 || pay.raider_form_id == 0xFFFFFFFFu) {
+            FW_DBG("net: NPC_FIRE invalid raider_form_id=0x%X — drop",
+                   pay.raider_form_id);
+            break;
+        }
+        FW_DBG("net: NPC_FIRE raider=0x%X target=0x%X flags=0x%X kind=%u "
+               "— enqueueing",
+               pay.raider_form_id, pay.target_form_id, pay.flags,
+               static_cast<unsigned>(pay.target_kind));
+        fw::dispatch::PendingNPCFire op{
+            pay.raider_form_id,
+            pay.target_form_id,
+            pay.flags,
+            pay.target_kind,
+        };
+        fw::dispatch::enqueue_npc_fire(op);
+        break;
+    }
+
+    case static_cast<std::uint16_t>(MessageType::NPC_PERCEPTION_TRIGGER): {
+        // Build 62 (2026-05-24) — sphere-proximity perception trigger.
+        //
+        // Per re/arena_synthesis/SUPERVISOR_SYNTHESIS.md: server's
+        // proximity-sphere check fired this when ghost.pos entered NPC's
+        // perception range. Receiver invokes engine sub_140CCF810
+        // (Actor::EnterCombat) which allocates HighProcess +
+        // CombatController + AddTarget natively in 1 frame.
+        //
+        // Wire payload: 8 bytes (npc_fid u32, peer_id u32 hashed).
+        // The peer_id field is hash(peer_id_string) at server side. On
+        // each client, we compare against hash(local_peer_id) to decide
+        // if target is the LOCAL PC or the OTHER peer's ghost duplicate.
+        if (d.payload.size() < sizeof(NpcPerceptionTriggerPayload)) {
+            FW_DBG("net: NPC_PERCEPTION_TRIGGER undersized payload=%zu < %zu",
+                   d.payload.size(), sizeof(NpcPerceptionTriggerPayload));
+            break;
+        }
+        NpcPerceptionTriggerPayload pay{};
+        std::memcpy(&pay, d.payload.data(), sizeof(pay));
+        if (pay.npc_fid == 0 || pay.npc_fid == 0xFFFFFFFFu) {
+            FW_DBG("net: NPC_PERCEPTION_TRIGGER invalid npc_fid=0x%X — drop",
+                   pay.npc_fid);
+            break;
+        }
+        FW_DBG("net: NPC_PERCEPTION_TRIGGER npc_fid=0x%X peer_id_hash=0x%X "
+               "— enqueueing for main-thread dispatch",
+               pay.npc_fid, pay.peer_id);
+        fw::dispatch::PendingNPCPerceptionTrigger op{
+            pay.npc_fid,
+            pay.peer_id,
+        };
+        fw::dispatch::enqueue_npc_perception_trigger(op);
+        break;
+    }
+
+    // === Build 65 — owner-driven NPC sync RX handlers =====================
+    //
+    // Phase A scope (Build 65.c): the DLL only mirrors server-pushed
+    // ownership state into `fw::ownership` and parses/validates the new
+    // payload classes. No engine behavior change yet — the predicate flip
+    // that lets non-owners stop running vanilla AI lands in 65.d together
+    // with the dead-hook cleanup.
+    //
+    // For state/fire/death/damage relays we drop entries whose epoch
+    // doesn't match our local view (catches stale post-handoff packets).
+
+    case static_cast<std::uint16_t>(MessageType::NPC_OWNERSHIP_BCAST): {
+        if (d.payload.size() < sizeof(NPCOwnershipBcastHeader)) {
+            FW_DBG("net: NPC_OWNERSHIP_BCAST truncated hdr (%zu)",
+                   d.payload.size());
+            break;
+        }
+        NPCOwnershipBcastHeader hdr{};
+        std::memcpy(&hdr, d.payload.data(), sizeof(hdr));
+        const std::size_t expected =
+            sizeof(hdr) + std::size_t(hdr.num_entries) * sizeof(NPCOwnershipBcastEntry);
+        if (d.payload.size() < expected) {
+            FW_DBG("net: NPC_OWNERSHIP_BCAST truncated body got=%zu want=%zu",
+                   d.payload.size(), expected);
+            break;
+        }
+        if (hdr.num_entries > MAX_OWNERSHIP_BCAST_ENTRIES) {
+            FW_WRN("net: NPC_OWNERSHIP_BCAST count=%u > max %u — clamp",
+                   hdr.num_entries, MAX_OWNERSHIP_BCAST_ENTRIES);
+        }
+        const auto count = std::min<std::uint16_t>(
+            hdr.num_entries, MAX_OWNERSHIP_BCAST_ENTRIES);
+        const auto* entries = reinterpret_cast<const NPCOwnershipBcastEntry*>(
+            d.payload.data() + sizeof(hdr));
+        fw::ownership::on_bcast(entries, count);
+        break;
+    }
+
+    case static_cast<std::uint16_t>(MessageType::NPC_OWNERSHIP_HANDOFF_PHASE_2): {
+        if (d.payload.size() < sizeof(NPCOwnershipHandoffPhase2Payload)) {
+            FW_DBG("net: PHASE_2 undersized payload=%zu", d.payload.size());
+            break;
+        }
+        NPCOwnershipHandoffPhase2Payload pay{};
+        std::memcpy(&pay, d.payload.data(), sizeof(pay));
+        fw::ownership::on_phase2(pay);
+        break;
+    }
+
+    case static_cast<std::uint16_t>(MessageType::NPC_OWNERSHIP_HANDOFF_PHASE_1): {
+        // Phase A: server never emits this. Log if it ever appears so we
+        // notice when Phase B (full two-phase handoff) ships.
+        FW_DBG("net: PHASE_1 received (Phase A no-op) size=%zu",
+               d.payload.size());
+        break;
+    }
+
+    case static_cast<std::uint16_t>(MessageType::NPC_OWNERSHIP_RELEASE_ACK): {
+        // Phase A: client never emits this (server too). Silent drop.
+        break;
+    }
+
+    case static_cast<std::uint16_t>(MessageType::NPC_STATE_FROM_OWNER): {
+        // Owner-authoritative state batch relayed by server. Receiver
+        // applies each entry whose epoch matches the local view. The
+        // actual engine-side apply (vt[202] pos write, anim graph vars,
+        // etc.) lands in 65.c.2; here we parse + epoch-gate + count.
+        if (d.payload.size() < sizeof(NPCStateFromOwnerHeader)) {
+            FW_DBG("net: NPC_STATE_FROM_OWNER truncated hdr (%zu)",
+                   d.payload.size());
+            break;
+        }
+        NPCStateFromOwnerHeader hdr{};
+        std::memcpy(&hdr, d.payload.data(), sizeof(hdr));
+        const std::size_t expected =
+            sizeof(hdr) + std::size_t(hdr.num_entries) * sizeof(NPCOwnerStateEntry);
+        if (d.payload.size() < expected) {
+            FW_DBG("net: NPC_STATE_FROM_OWNER truncated body got=%zu want=%zu",
+                   d.payload.size(), expected);
+            break;
+        }
+        if (hdr.num_entries > MAX_OWNER_STATES_PER_FRAME) {
+            FW_WRN("net: NPC_STATE_FROM_OWNER count=%u > max %u",
+                   hdr.num_entries, MAX_OWNER_STATES_PER_FRAME);
+        }
+        const auto count = std::min<std::uint16_t>(
+            hdr.num_entries, MAX_OWNER_STATES_PER_FRAME);
+        const auto* entries = reinterpret_cast<const NPCOwnerStateEntry*>(
+            d.payload.data() + sizeof(hdr));
+
+        // Build 65.c.10 — collect valid entries and enqueue them for
+        // main-thread apply via engine::apply_npc_pos. Anim/aim/velocity
+        // capture deferred — pos write alone is enough to stop the
+        // "raider stuck at last engine pos" symptom on non-owner peers.
+        std::vector<fw::dispatch::PendingNPCOwnerState> apply_batch;
+        apply_batch.reserve(count);
+        for (std::uint16_t i = 0; i < count; ++i) {
+            const auto& e = entries[i];
+            std::uint32_t local_epoch = 0;
+            if (!fw::ownership::epoch_for(e.form_id, &local_epoch)) {
+                // We don't know about this NPC yet — skip (we'll catch
+                // up via PHASE_2 / BCAST bootstrap on the next tick).
+                continue;
+            }
+            if (e.epoch != local_epoch) {
+                // Stale owner state — server should have dropped it but
+                // belt-and-braces here too.
+                continue;
+            }
+            if (fw::ownership::is_owner_of(e.form_id)) {
+                // Defence in depth: server already filters owner self-
+                // relay, but during handoff transients we might receive
+                // one of our own packets bounced back. Drop silently.
+                continue;
+            }
+            fw::dispatch::PendingNPCOwnerState p{};
+            p.form_id    = e.form_id;
+            p.epoch      = e.epoch;
+            p.pos_x      = e.pos_x;
+            p.pos_y      = e.pos_y;
+            p.pos_z      = e.pos_z;
+            p.yaw_rad    = e.yaw_rad;       // Build 65.c.14
+            p.anim_state = e.anim_state;    // Build 65.c.18
+            apply_batch.push_back(p);
+        }
+        if (!apply_batch.empty()) {
+            fw::dispatch::enqueue_npc_owner_state_apply(apply_batch);
+        }
+        break;
+    }
+
+    case static_cast<std::uint16_t>(MessageType::NPC_FIRE_FROM_OWNER): {
+        if (d.payload.size() < sizeof(NPCFireFromOwnerPayload)) {
+            FW_DBG("net: NPC_FIRE_FROM_OWNER undersized (%zu)", d.payload.size());
+            break;
+        }
+        NPCFireFromOwnerPayload pay{};
+        std::memcpy(&pay, d.payload.data(), sizeof(pay));
+        std::uint32_t local_epoch = 0;
+        if (!fw::ownership::epoch_for(pay.form_id, &local_epoch)) {
+            FW_DBG("ownership: FIRE for unknown fid=0x%X — drop", pay.form_id);
+            break;
+        }
+        if (fw::ownership::is_owner_of(pay.form_id)) {
+            // Defence-in-depth: server should already filter owner self-
+            // relay, but a handoff transient could leak one packet back.
+            // Don't double-fire on the authority side.
+            break;
+        }
+        // Build 65.c.16 — dispatch to main thread, replay the shot via
+        // engine::fire_actor_weapon. Reuse the existing PendingNPCFire
+        // queue + drain (Build 60-era, well-tested) so we don't ship a
+        // new dispatch lane for a single new opcode.
+        FW_DBG("ownership: FIRE fid=0x%X target=0x%X aim=(%.1f,%.1f,%.1f)",
+               pay.form_id, pay.target_form_id,
+               pay.aim_x, pay.aim_y, pay.aim_z);
+        fw::dispatch::PendingNPCFire op{};
+        op.raider_form_id = pay.form_id;
+        op.target_form_id = pay.target_form_id;
+        op.flags          = 0;
+        // Build 65.c.27 — FIX target_kind LOCAL → GHOST.
+        //
+        // We reach this branch only when `!is_owner_of(pay.form_id)` (the
+        // owner self-relay guard above already returned). So WE are the
+        // NON-OWNER of this raider. The owner's raider is attacking the
+        // OWNER's local player. On OUR screen that player is rendered by
+        // the local ghost proxy. Therefore the muzzle flash + projectile
+        // must point at the GHOST, not at our local player.
+        //
+        // Pre-c.27 this was hardcoded LOCAL → drain_npc_fire_queue's
+        // `target_kind==LOCAL` branch SKIPPED the puppet-fire entirely
+        // (expecting OUR vanilla AI to fire the raider at us). But the
+        // raider is a non-owner puppet here — its vanilla fire is bailed
+        // (ghost_ai_fire) and its aim is overridden by the owner's yaw via
+        // c.23 INTERP-APPLY. So LOCAL meant "nobody fires" → the shots A
+        // emitted never rendered on B (confirmed c.26 forensics: B logged
+        // `kind=LOCAL — skipping puppet`, A's 10 OWNER-EMITs lost).
+        //
+        // GHOST routes to `npc_fire_with_ghost_aim(refr)` which spawns the
+        // muzzle flash + projectile toward get_ghost_actor()'s position =
+        // exactly where the owner's player is rendered locally. Bidirectional
+        // by construction: A-owned raider fires at ghost_A on B; B-owned
+        // raider fires at ghost_B on A.
+        op.target_kind    = NPC_FIRE_TARGET_GHOST;
+        fw::dispatch::enqueue_npc_fire(op);
+        break;
+    }
+
+    case static_cast<std::uint16_t>(MessageType::NPC_DEATH_FROM_OWNER): {
+        if (d.payload.size() < sizeof(NPCDeathFromOwnerPayload)) {
+            FW_DBG("net: NPC_DEATH_FROM_OWNER undersized (%zu)", d.payload.size());
+            break;
+        }
+        NPCDeathFromOwnerPayload pay{};
+        std::memcpy(&pay, d.payload.data(), sizeof(pay));
+
+        // Build 65.c.47 WEDGE3 — corpse the local mirror so there's never a
+        // live mirror of a dead-on-owner entity to shoot (= the @0xC0F510
+        // use-after-free root cause). The server only relays this to NON-
+        // OWNERS (main.py:1422), and we WERE the non-owner at kill time. We
+        // do NOT add the FIRE-path owner self-relay guard here: a death is
+        // sticky/idempotent (drain dedups via killed_fids), so even if a
+        // handoff transient delivered one packet to a peer who just became
+        // owner, the worst case is a harmless idempotent corpse — strictly
+        // safer than risking a missed death (which is the crash).
+        FW_LOG("ownership: DEATH fid=0x%X killer=0x%X pos=(%.1f,%.1f,%.1f) dmg=%.1f hz=%u",
+               pay.form_id, pay.killer_form_id,
+               pay.pos_x, pay.pos_y, pay.pos_z, pay.damage,
+               static_cast<unsigned>(pay.hit_zone));
+
+        // Dispatch to the main thread: lookup → mark_dying → un-keyframe →
+        // place at synced pos → engine Actor::Kill (under ApplyingRemoteGuard).
+        // Engine death handler is main-thread-affine (cell/anim/Havok).
+        fw::dispatch::PendingNPCDeath dop{};
+        dop.form_id        = pay.form_id;
+        dop.killer_form_id = pay.killer_form_id;
+        dop.pos_x          = pay.pos_x;
+        dop.pos_y          = pay.pos_y;
+        dop.pos_z          = pay.pos_z;
+        fw::dispatch::enqueue_npc_death_apply(dop);
+        break;
+    }
+
+    case static_cast<std::uint16_t>(MessageType::NPC_DAMAGE_FROM_OWNER): {
+        if (d.payload.size() < sizeof(NPCDamageFromOwnerPayload)) {
+            FW_DBG("net: NPC_DAMAGE_FROM_OWNER undersized (%zu)", d.payload.size());
+            break;
+        }
+        NPCDamageFromOwnerPayload pay{};
+        std::memcpy(&pay, d.payload.data(), sizeof(pay));
+        // Pure cosmetic — 65.c.2 will dispatch to engine::play_hit_react.
+        FW_DBG("ownership: DAMAGE fid=0x%X attacker=0x%X wpn=0x%X dmg=%.1f",
+               pay.form_id, pay.attacker_form_id,
+               pay.weapon_form_id, pay.damage);
         break;
     }
 

@@ -6,6 +6,24 @@ This project uses unconventional approaches in several critical areas (scene gra
 Fallout 4 1.11.191 next-gen — multiplayer mod (FoM-lite framework).
 Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 
+> **Status (2026-06-01):** **N1 / N2 — owner-driven NPC combat sync.** My
+> first iteration on the game's AI. Hostile raiders (the Concord cluster)
+> now fight both players together, synced across clients: world position,
+> full-body pose/animation, aggro ownership with live hand-off, and death
+> (ragdoll + corpse). Each raider is owned by exactly one client whose
+> vanilla engine runs its AI and streams its pos + pose at ~30 Hz; the
+> other client mirrors it — position-pinned, Havok-keyframed — and corpses
+> it on a relayed kill. The Python server holds the ownership / threat
+> table and elects the owner from whoever the raiders natively aggro
+> (noise / line of sight), so both players are real threats. This work
+> started as the B6.5 / B6.6 wedges of the B6 world-state epic, but it grew
+> large enough to graduate into its own milestone branch (N) — and it
+> replaces that earlier stack, where raiders were frozen and immortal.
+> Scope today is hostile raiders only; other creatures and a shared-HP
+> boss are the next wedges. Working tree, first commit of the N branch
+> (v0.6.0); shared authoritative HP and the ~1 s aggro-switch idle are not
+> done yet. See [CHANGELOG.md](CHANGELOG.md).
+>
 > **Status (2026-05-12):** **B6.5 / B6.6 NPC AI sync infrastructure WIP** —
 > tracked raiders are frozen, immortal, and visually neutral on both
 > peers (no aim, no head tracking, no hostile barks, no hit reaction).
@@ -17,108 +35,6 @@ Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 > decide, dispatch attack, and aim update in one shot. Working tree,
 > no tag. Server-driven aggro / damage flow / movement substitution
 > are the next wedges. See [CHANGELOG.md](CHANGELOG.md).
->
-> **Status (2026-04-27):** ghost player body **animates** in real time —
-> ~31 joints (full body chain incl. head + hands) replicated over network
-> at 20Hz. Walking / running / idle / sneak / turn / jump pose visible
-> end-to-end (peer A moves → peer B's ghost-of-A mirrors). Body+head+hands
-> all skin-swapped to shared skel hierarchy. Fingers stay at natural
-> rest pose (no joints in render-scene tree → sentinel-skip avoids
-> T-pose contagion). 1P sender → V/T-pose stub on ghost (deferred).
->
-> **B6 wedge 1 shipped** — **door open/close sync** across peers:
-> peer A presses E on a door, peer B sees the same door swing open in real
-> time (and vice versa). First true world-state replication beyond the
-> player avatar + inventory. Sender hooks engine `Activate worker`
-> (`sub_140514180`); receiver re-invokes the same function on its local
-> REFR via main-thread queue + `ApplyingRemoteGuard` feedback-loop guard.
-> Toggle semantics — both clients converge from the same `world_base`
-> save without server-side state tracking.
->
-> **M9 wedge 1+2 PoC shipped** — **clothing sync between peers** [video coming
-> soon]. Peer A equips Vault Suit / Raider outfit → Peer B sees the same
-> clothing on A's ghost body, animated with A's pose. Sender hooks
-> `ActorEquipManager::EquipObject/UnequipObject`, receiver walks
-> `TESObjectARMO → TESObjectARMA → TESModel` to resolve the 3rd-person NIF
-> path, loads the NIF, attaches it to the ghost, and re-binds the armor's
-> skin to the shared skel.nif so animation propagates. Path scoring picks
-> male 3rd-person variant over 1st-person/female fallbacks. Per-peer
-> pending queue handles the boot-time race when ghost spawns after the
-> peer's force-equip-cycle. Combat / outfit z-fight closed by M9.w3 body
-> cull (v0.4.1, 2026-05-03). Vault Suit equip-cycle SEH crash + post-cycle
-> body invisible / ghost armor disappears / T-pose closed by M9 v0.4.2
-> (2026-05-04) via path-routed deep clone of the VS NIF subtree.
->
-> **M9 v0.5.0 shipped (2026-05-07)** — **modded weapon visuals replicated
-> on the ghost** for pistols. As far as I can tell this is the first time
-> it has been done in the FO4 multiplayer modding scene: peer A equips a
-> 10mm with reflex sight, suppressor, heavy receiver, and extended mag,
-> and peer B sees the exact same configuration in A's ghost hand,
-> animated with A's pose. The receiver runs the engine's own per-OMOD
-> attach helper (`sub_140434DA0`), which internally matches mod sub-NIFs
-> to the base via the BSConnectPoint extra-data system baked into the
-> NIF files. Sender fires a tiny re-equip cycle 50 ms after each user
-> equip to work around a first-equip render lag I couldn't fix on the
-> receiver alone.
-> [Demo (clothes + armor + modded firearms)](https://youtu.be/r34D4IL7wAk).
-> See [CHANGELOG.md](CHANGELOG.md).
->
-> **M9 v0.5.1 — M9 closed (2026-05-08).** Full pass on the weapon
-> roster: pistols (10mm, handmade), sniper rifle, assault rifle, hunting
-> rifle, combat shotgun, combat rifle, minigun, Fat Man, laser, plasma —
-> all render correctly on the ghost with mods applied. The "rifles
-> render invisible" caveat in v0.5.0 was a testing gap, not a code
-> issue; the v0.5.0 BSConnectPoint pipeline already covered everything.
-> No code changes in v0.5.1. M9 is closed, 5/5 wedges done across all
-> firearms.
->
-> **B6.1 v0.5.2 — Cell-aware ghost transitions (2026-05-08).** When a
-> peer crosses a cell boundary (entering an interior, fast-travel,
-> worldspace switch), the ghost on the remote client now stays synced.
-> Co-op inside the same interior works too — both peers see each other's
-> ghost in the same room. Wire proto v11 adds `cell_id` to the pos
-> payloads; the server validator now accepts cross-cell teleports as a
-> baseline reset instead of rejecting them as 2.4 M u/s "cheat" speed
-> spikes. See [CHANGELOG.md](CHANGELOG.md).
->
-> **B6.3 v0.5.3 — Lock state sync (2026-05-08).** When peer A picklocks
-> a door, safe, weapon locker, or terminal-linked container, peer B's
-> matching REFR unlocks too — no minigame prompt on B's side. Wire
-> proto v12 adds `LOCK_OP` / `LOCK_BCAST`; sender hooks `ForceUnlock`
-> (`sub_140563320`) + `ForceLock` (`sub_140563360`); receiver applies
-> via the Papyrus `ObjectReference.Lock` binding (`sub_141158640`)
-> with `ai_notify=0` to skip the minigame and key consumption. Server
-> persists per-(base, cell) lock state and replays it to peers joining
-> mid-session. See [CHANGELOG.md](CHANGELOG.md).
->
-> **B6.4-pre v0.5.4 — Bridge crash fix (2026-05-08).** Disabled the B8
-> force-equip-cycle workaround (`hooks/equip_cycle.cpp`) which AV'd
-> internally on every boot inside `ActorEquipManager::Equip` and left
-> engine state subtly corrupted. The corruption was dormant during
-> normal play but surfaced as a deterministic main-thread freeze when
-> crossing the Sanctuary→Red Rocket bridge — heavy exterior cell-stream
-> re-triggered the corrupted auto-equip on a BSJobs PostMainRender
-> worker, which AV'd silently and wedged the JobListMgr forever. Two
-> wins: bridge works, and the original M8P3 "clothes-change crash" B8
-> was patching is also gone (later M9 / pose-tx evolution fixed the
-> root cause). Side effect: peer ghosts spawn naked at startup until
-> they actively equip something — replacement scaffolded as
-> `equip_announce.{h,cpp}` (NON TESTATO).
-> See [CHANGELOG.md](CHANGELOG.md).
->
-> **B6.3.1 v0.5.5 — Lock bootstrap flush fix (2026-05-09).** Latent
-> oversight in B6.3: `set_target_hwnd` in `main_thread_dispatch.cpp`
-> flushes the container / door / equip / mesh-blob queues but forgot
-> the lock queue. Server peer-join bootstrap `LOCK_BCAST` arrives
-> ~8 s before the WndProc subclass install, so it queued without a
-> wake-up PostMessage and was never drained. Combined with the server
-> dedup logic ("skip rebroadcast if state matches stored") this looked
-> like "lock sync broken" on every reconnect once the server had
-> persisted state. One-block fix in `set_target_hwnd` adds the missing
-> lock flush. Bonus discovery: the v0.5.4 B8 disable also incidentally
-> fixed the B6.3 "Known residual" — taking a weapon out of a synced
-> lockable container no longer crashes (same engine state corruption
-> root cause). See [CHANGELOG.md](CHANGELOG.md).
 >
 > **B6.4 v0.5.6 — Interior cell-entry crash fix + B6.4 implicit
 > closure (2026-05-10).** Closes the deterministic crash when a
@@ -211,7 +127,7 @@ in real time).
 | **M8P2** RE BSGeometry skin instance offsets | ✅ done — `+0x140` confirmed |
 | **M8P3** Skin pipeline RE + per-bone pose replication | ✅ M8P3.23 — body+head+hands animated, see [CHANGELOG.md](CHANGELOG.md) |
 | **B5** D3D11 custom render | 🗿 not needed — Strada B native injection replaced |
-| **B6** World-state sync expansion *(composite — 13 wedges, multi-month epic)* | 🟡 3/13 done |
+| **B6** World-state sync expansion *(composite epic; NPC pos/pose + combat split out to the N branch)* | 🟡 4/12 wedges done (doors, cell-transitions, locks, terminals) |
 | ↳ **B6.0** Door open/close sync | ✅ done — `sub_140514180` Activate worker hook + dual-agent RE convergence, [30s demo](https://youtu.be/T8wLZmCqjxw), see [CHANGELOG.md](CHANGELOG.md) |
 | ↳ **B6.1** Cell-aware ghost transitions (interior / fast-travel / worldspace switch) | ✅ done (v0.5.2, 2026-05-08) — wire proto v11 ships `cell_id` in pos payloads; server validator accepts cross-cell teleport as baseline reset instead of rejecting it at the 2500 u/s speed gate. Receiver is a plain coord-bind: cross-cell distance (~120k units) puts the ghost outside the local frustum naturally; same-interior co-op puts both peers in the same coord frame. |
 | **M9** Equipment sync between peers *(clothing + armor + weapon visual replication)* | ✅ done (v0.5.1, 2026-05-08) — 5/5 wedges across **all firearm families**: pistols (10mm, handmade), sniper rifle, assault rifle, hunting rifle, combat shotgun, combat rifle, minigun, Fat Man, laser, plasma — all visible with mods on the remote ghost via engine BSConnectPoint pairing. Plus clothing + body cull + OMOD-driven ARMA tier + Vault Suit cycle stable. |
@@ -223,8 +139,6 @@ in real time).
 | ↳ **B6.2** Lights toggle sync (lamps, lanterns, generators) | ⏳ — same Activate worker pattern as doors, formType filter on `0x20` LIGH |
 | ↳ **B6.3** Locks state sync (lockpicked → unlocked cross-client) | ✅ done (v0.5.3, 2026-05-08) — sender hooks `ForceUnlock` (`sub_140563320`) + `ForceLock` (`sub_140563360`); receiver applies via Papyrus `ObjectReference.Lock` binding (`sub_141158640`) with `ai_notify=0` to skip minigame + key consumption. Wire proto v12 ships `(form_id, base_id, cell_id, locked, ts)`. Covers doors, safes, weapon lockers, terminal-linked containers. Server persists per-(base, cell) state + replays on peer-join bootstrap. |
 | ↳ **B6.4** Terminals state sync (hacked / unlocked) | ✅ done (v0.5.6, 2026-05-10) — implicit closure: a successful terminal hack flips `ExtraLock` via the engine's `ForceUnlock` (`sub_140563320`), already detoured by B6.3. Broadcast and receiver-apply paths are identical to those for doors / safes / weapon lockers. Zero new code. Verified live on the Sanctuary terminal-house during the v0.5.6 cell-entry crash fix test pass. |
-| ↳ **B6.5** NPC actor pos + pose sync | 🟡 WIP (2026-05-12) — tracked raiders frozen cross-client via 10-hook AI suppression stack (Update_PerFrame bail, Havok step bail, two pos writers, movement decision funnel, combat orchestrator NUKE on `Actor::vt[255]`); AIProcess→fid reverse map. Server-driven pos / pose substitution still pending. Working tree, no tag. |
-| ↳ **B6.6** NPC combat target + aggro sync | 🟡 WIP (2026-05-12) — 10-agent IDA pair arena ran on the Hex-Rays decomp (dossiers in `re/B6.6w0_pair_AGENT_*.md`); hooks installed at `AIProcess::SetCombatTarget`, `Actor::DispatchAttackAction`, `CombatBehaviorGunFire::DecideAndFire`, central hit applier. NUKE pattern works (tracked NPCs neutralised on both peers, immortal, crash-free under fire). Server-driven substitution + damage flow opcode pending. Python combat brain `raider_brain.py` scaffolded (25 unit tests). |
 | ↳ **B6.7** NPC dialogue state + faction joined | ⏳ — quest-stage adjacent; brainstorm §3.2 says 10 players = 1 entity, simplifies state |
 | ↳ **B6.8** Companion state (recruited / position) | ⏳ — companions are NPCs with extra ownership flag |
 | ↳ **B6.9** Cell-cleared status (no respawn after group clear) | ⏳ — `cleared` flag in cell extra-data, persisted server-side |
@@ -232,6 +146,11 @@ in real time).
 | ↳ **B6.11** Time of day + weather sync | ⏳ — GlobalVar `GameHour` + Sky weather state |
 | ↳ **B6.12** Workshop / settlement build state sync | ⏳ — major epic; build/scrap/move workshop refs + furniture |
 | ↳ **B6.13** Power Armor frame + worn-state sync | ⏳ — chassis is a REFR with its own state (location, per-piece HP, fusion core); player-in-PA = chassis attached to player. Both visibilities require sync. Re-scoped from M9 to B6 (2026-05-04) — fundamentally world-state, not an equip event |
+| **N** NPC co-op combat *(split out from B6.5 / B6.6 — grew into its own epic; my first iteration on the game's AI)* | 🟡 N1 + N2 done for hostile raiders; shared-HP, player-death, and the rest of the creature roster pending |
+| ↳ **N1** NPC actor pos + pose sync (owner-driven) | ✅ done (v0.6.0, 2026-06-01) — each raider is owned by one client whose vanilla engine runs its AI and streams pos + full-body pose (~30 Hz); the non-owner mirrors it (pos-pinned, Havok-keyframed). Teleport-on-handoff fixed by committing the synced pose to the new owner's engine via `Actor::MoveTo` (doProcessUpdate=1). Replaces the old B6.5 frozen-suppression stack. |
+| ↳ **N2** NPC combat target + aggro + death sync (owner-driven threat table) | ✅ done (v0.6.0, 2026-06-01) — the Python server holds a threat table and elects the owner from whoever the raiders natively aggro (engine-native: noise / line of sight), with hysteresis anti-thrash; live aggro hand-off; bidirectional death-sync (corpse + ragdoll at the synced pos, either client's kill propagates). Scope: hostile raiders. |
+| ↳ **N3** Shared authoritative HP / damage | ⏳ — both clients deplete one server-held HP pool (required for a ~20k-HP boss). Hit-claim infra exists; needs server HP authority + an `NPC_HP_STATE` opcode. |
+| ↳ **N4** Player death + respawn sync | ⏳ — the ghost dies / ragdolls / respawns on the peer; part of the boss-fight loop (deaths + respawns). |
 | **B7** Rust server port | ⏳ |
 
 ## Major RE achievements
@@ -258,6 +177,48 @@ in real time).
 
 Latest 3 patches summarized below. **Full version history in
 [CHANGELOG.md](CHANGELOG.md).**
+
+### N1 / N2 (2026-06-01) — owner-driven NPC co-op combat — WIP
+
+My first iteration on the game's AI. Hostile raiders (the Concord
+Museum cluster) now fight both players together and stay consistent
+across clients — position, full-body animation, aggro, and death. This
+started as the B6.5 / B6.6 wedges but grew large enough to become its
+own milestone branch (N), and it replaces that earlier suppression
+stack, where raiders were frozen and immortal on both peers.
+
+**Ownership model.** Every tracked raider is owned by exactly one
+client. The owner runs the raider's vanilla engine AI untouched and
+streams its authoritative state; the non-owner suppresses its own AI for
+that raider and mirrors the owner — position pinned to the relayed
+coords, the Havok body keyframed, and the full per-bone pose replayed at
+~30 Hz so the raider animates correctly instead of sliding as a frozen
+prop. The Python server is the single ownership authority; the DLL only
+mirrors what the server elects (`is_owner_of` / `is_non_owner_tracked`
+predicates drive every AI/motion hook).
+
+**Aggro (engine-native).** The server keeps a per-raider threat table
+and elects the owner from whoever the raiders actually aggro — the same
+noise / line-of-sight perception the vanilla engine already runs — so
+both players are real threats and ownership follows the fight. A
+hysteresis band (minimum hold + flip margin + commitment window) stops
+the owner from thrashing when both players trade fire.
+
+**Death sync.** A kill on either client propagates to the other, which
+corpses its mirror at the synced position (ragdoll + body stays down) —
+no more "dead on one client, alive on the other" or vanishing corpses.
+
+**Teleport fix.** The long-standing bug where a raider snapped to a
+stale position the instant ownership changed is closed: at hand-off I
+commit the synced pose into the new owner's engine ground-truth via
+`Actor::MoveTo` (doProcessUpdate = 1), so the engine state and the
+visible position no longer diverge.
+
+Scope today is hostile raiders only; other creatures and a shared-HP
+boss come later. Not done yet: shared authoritative HP (both clients
+deplete one server-held pool — required for a high-HP boss) and the ~1 s
+idle on aggro hand-off. Full per-hook / per-opcode detail in
+[CHANGELOG.md](CHANGELOG.md).
 
 ### B6.5 / B6.6 WIP (2026-05-12) — NPC AI sync infrastructure — UNSTABLE
 
@@ -367,45 +328,6 @@ wiring of `raider_brain`. Full per-hook detail in
   to done with zero new code. Tag
   `v0.5.6-b6.4-interior-crash-fix`.
 
-### B6.3.1 v0.5.5 (2026-05-09) — lock bootstrap flush fix — HOTFIX
-
-- **Symptom.** After v0.5.4 landed, lock sync looked broken on retest:
-  picklock a safe on client A, client B's safe stayed visually locked.
-  First instinct was a B8-removal regression — it wasn't. Latent B6.3
-  bug, exposed by retesting with state already persisted server-side.
-- **Investigation.** Steam-side log showed the server's peer-join
-  bootstrap `LOCK_BCAST` arrived correctly at boot, but ~8 s before
-  `set_target_hwnd` was called. `post_wakeup_lock` short-circuits
-  with `if (!h) return;` when hwnd is null, so the wake-up
-  `PostMessage` was silently dropped. The op stayed queued. When the
-  WndProc subclass install finally ran, `set_target_hwnd` flushed
-  container / door / equip / mesh-blob queues — but **forgot the lock
-  queue**. The B6.3 ship had simply skipped that flush block.
-- **Compounded by server dedup.** First failed bootstrap left the
-  receiver's engine stale (safe shows locked even though server
-  thinks unlocked). When the sender re-picked the lock at runtime,
-  the new `LOCK_OP` matched the server's stored state → server dedup
-  kicked in → no rebroadcast → receiver never got a runtime fix
-  opportunity. Bootstrap swallowed + runtime dedup'd = zero
-  `LOCK_BCAST` entries on receiver after a fresh unlock.
-- **Why the original B6.3 demo passed.** First live test happened to
-  pick the lock *after* the WndProc subclass was installed, so the
-  runtime LOCK_BCAST hit the queue with a valid hwnd and drained
-  normally. Bootstrap path wasn't exercised because the server had no
-  stored state on first run. Once state accumulated across sessions,
-  every subsequent peer connect tried to bootstrap and silently failed.
-- **Fix.** Appended the same flush block already used for container /
-  door / equip / mesh-blob queues. ~12 lines in
-  `main_thread_dispatch.cpp`. No behavior change to other paths. Live
-  re-test: bootstrap applies cleanly, runtime sync works, antidupe
-  (server-validated container ack chain) confirmed under spam. Tag
-  `v0.5.5-b6.3.1-lock-bootstrap-flush`.
-- **Bonus discovery during this hotfix.** The v0.5.4 B8 disable also
-  incidentally fixed the B6.3 "Known residual" about TAKE-weapon from
-  a synced container freezing the taker's main thread. Same root
-  cause — B8's corrupted engine state — surfaced via two different
-  triggers (bridge cell stream / container auto-equip). Both gone now.
-
 ## Why this exists
 
 I've been waiting ~10 years for someone to ship Fallout 4 multiplayer.
@@ -482,6 +404,36 @@ that should be most reusable for anyone else attempting the same thing.
   visible). A non-engine-call apparel bootstrap broadcast is
   scaffolded in `fw_native/src/hooks/equip_announce.{h,cpp}` for
   future implementation when the BipedAnim layout is RE'd.
+- **NPC co-op (N1 / N2) is scoped to hostile raiders** — only the Concord
+  Museum raider cluster is synced today. Other creatures and the rest of
+  the actor roster aren't wired in yet; this is my first AI iteration, not
+  a finished system.
+- **A raider occasionally doesn't join the fight on the non-owner** —
+  non-deterministic and rare. Aggro on noise / line of sight works as
+  designed, but every so often one raider stays idle on the client that
+  doesn't own it. Tolerated for now.
+- **Pure-melee enemies aren't observed yet** — ownership election only
+  picks a raider up once the engine flags it in combat or it fires a
+  shot. A hostile that only ever melees and never trips the
+  combat-controller flag is never observed, so it's never owned or synced.
+  Fine for ranged raiders; needs a hostile-baseform-bounded perception
+  gate before a melee boss.
+- **~1 s idle on aggro hand-off** — when ownership switches to the player
+  a raider just turned on, it can stand idle for about a second before
+  facing the new target. The instant-switch fix exists but is disabled
+  pending a safer guard.
+- **No shared HP yet** — each client tracks a tracked NPC's HP locally
+  (its own hits only), so a high-HP enemy has to be brought down by one
+  client's own damage; the two clients don't yet pool damage into a single
+  server-held pool. Main blocker for a co-op boss and the next wedge (N3).
+- **Raider appearance and loot diverge per client** — the Concord raiders
+  are placed leveled refs, so the form_id matches across clients (pos /
+  aggro / death sync all work), but each client's engine rolls a different
+  NPC variant, outfit, weapon, and mods from the leveled lists with its
+  own RNG. The same raider therefore looks different and drops different
+  loot on each screen. Parked: a clean fix needs either an ESL of fixed
+  content or a seeded-RNG / capture-replicate hook, and I'm deliberately
+  staying engine-native (no ESL, no Creation Kit) for now.
 
 ## Reverse-engineering target
 

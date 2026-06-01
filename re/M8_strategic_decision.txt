@@ -90,7 +90,7 @@
 ================================================================================
 
   C1 (chosen):
-    - Use an existing humanoid TESNPC from the ESM (e.g. generic settler)
+    - Use an existing humanoid TESNPC from the base game (e.g. generic settler)
     - PlaceAtMe with that formID
     - Pro: ZERO base-form authoring required. Engine handles everything.
     - Pro: Fast to validate (~2-3 evenings to get something on screen)

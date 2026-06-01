@@ -78,6 +78,12 @@ void __fastcall detour_movement_tick(void* actor, float dt) {
                 should_bail = true;
             }
 
+            // Build 62.9 — UNGATE for raiders in native combat tier.
+            // See ghost_ai_havok_step for rationale.
+            if (should_bail && fw::engine::native_combat_fid_exists(fid)) {
+                should_bail = false;
+            }
+
             if (should_bail) {
                 // B6.5w14 cleanup: REMOVED set_actor_anim_driven(false) call.
                 // Per re/B6.5w14_pair_AGENT_4B.md (95% conf), bAnimationDriven

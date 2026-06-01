@@ -6,6 +6,7 @@
 #include <cstdint>
 
 #include "container_hook.h"      // tls_applying_remote (feedback-loop guard)
+#include "npc_ai_suppress.h"     // B6.6w0 puppet — should_freeze_actor
 #include "../hook_manager.h"
 #include "../log.h"
 #include "../offsets.h"
@@ -112,6 +113,26 @@ char __fastcall detour_activate_worker(void* refr,
 
     DoorObserveResult r{};
     observe_target(refr, &r);
+
+    // B6.6w0 puppet — BAIL activation entirely for tracked actors.
+    // Without AI tick, the engine's activation handler reads stale
+    // AIProcess state and gives the player a "Talk" prompt; on
+    // activation it tries to open a dialogue with an actor whose AI
+    // is bailed → deadlock / freeze. Bailing here prevents player
+    // E-key activation from reaching the engine for tracked raiders.
+    //
+    // Form type for Actor = 0x2E (ACHR). We don't filter strictly on
+    // ftype here — `should_freeze_actor` already rejects fid 0 / 0x14
+    // / non-tracked, so non-actor refs sail through.
+    if (r.identity_ok
+        && fw::hooks::should_freeze_actor(r.form_id))
+    {
+        FW_DBG("[door-act] FIRE #%llu BAIL tracked-actor activation "
+               "form=0x%X ftype=0x%X (puppet: prevent dialogue freeze)",
+               static_cast<unsigned long long>(fire),
+               r.form_id, r.form_type);
+        return 0;
+    }
 
     if (!r.identity_ok || !r.door_like) {
         // Activate fired for a non-door (terminal, NPC, switch, etc).

@@ -192,6 +192,43 @@ re/*
 !re/M8*
 re/Fallout4.exe_angr_rtdb/
 
+# -- fw_native/re/ : agent RE arena scratch (SOLVER/AGENT/walker dossiers) ----
+# Same category as root re/ above — internal, regenerable iteration scratch,
+# NOT curated public dossiers (those are only re/M8*). ~33k lines of agent
+# output kept out of history. Added before the first NPC-coop commit.
+fw_native/re/
+
 # Note: tracked .md files (root README, CHANGELOG, fw_native/README,
 # launcher/README) are intentionally kept. Italian/internal docs are
 # excluded explicitly above (fw_native/docs/B5_*.md etc.).
+
+# -- Root-level scratch / runtime / capture files (not in subdirs) ----------
+# Leading `/` scopes these to the repo root only — same-named files inside
+# subdirectories are unaffected.
+/state*.json
+/*.log
+/capture*.txt
+/*_frida_capture.txt
+/tool-paths.txt
+/ttd_attach.bat
+
+#altre repo RE
+CommonLibF4-master/*
+
+# =============================================================================
+# SECRETS + per-iteration exclusions (added before the first NPC-coop commit)
+# =============================================================================
+
+# -- Discord bot token + any local-only secret (NEVER commit) ----------------
+# The Discord integration token lives in Discord/.discord_token.local.
+# `*.local` is this repo's convention for local-only secret/override files.
+*.local
+Discord/.discord_token.local
+**/.discord_token.local
+
+# -- Build capture logs (regenerable from build.bat) -------------------------
+**/build_output.txt
+
+# -- Demo / capture videos (large binaries — hosted on YouTube, never push) --
+# Subsumes the older /DEMO_FoW.mp4 and /assets/demo.mp4 rules above.
+*.mp4

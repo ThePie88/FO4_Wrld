@@ -70,4 +70,13 @@ void* get_ghost_actor();
 // spawned ghost actors so we don't leak save bloat. Idempotent.
 void shutdown();
 
+// Build 65.c.32 — called from the kill detour when the LOCAL player (form
+// 0x14) dies. Deregisters the proxy-ghost Actor from the global form table
+// (the never-called Build-56 fix) before the death→reload mass-free, so the
+// form-table rehydrator can't dispatch vt[51] on the freed proxy (0xC06BFC
+// freeze, confirmed by pointer match). Forgets our trackers + re-arms spawn so
+// a fresh ghost re-appears post-reload. Does NOT free/detach. Main thread only.
+// Idempotent.
+void teardown_proxy_ghost_for_reload();
+
 } // namespace fw::ghost

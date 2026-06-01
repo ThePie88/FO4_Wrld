@@ -32,6 +32,9 @@ add_library(fw_native SHARED
     src/hooks/door_hook.cpp         # B6.0: Activate worker for door open/close
     src/hooks/lock_hook.cpp         # B6.3: ForceUnlock + ForceLock detours
     src/hooks/npc_ai_suppress.cpp   # B6.5w4: Actor::Update_PerFrame suppression for tracked NPCs
+    src/hooks/ownership_manager.cpp # Build 65: DLL-side mirror of server NPC ownership registry (Solver 2)
+    src/hooks/puppet_update_perframe.cpp # B6.6w0: KEEP-ALWAYS replacement body invoked by npc_ai_suppress bail path
+    src/steam/steam_id.cpp          # B6.6w5: local Steam ID reader (real Steam + Goldberg)
     src/hooks/ghost_ai_package.cpp  # B6.5w12 hook #1: TESPackage::EvaluateConditions (server picks active package)
     src/hooks/ghost_ai_combat_target.cpp  # B6.5w12 hook #2: SyncCombatTargetFromAIProcess (server picks combat target)
     src/hooks/ghost_ai_aim.cpp            # B6.5w12 hook #3: CombatAimController::SetAimTarget (server picks aim vector)
@@ -43,8 +46,12 @@ add_library(fw_native SHARED
     src/hooks/ghost_ai_dispatch_attack.cpp    # B6.6w0 (dispatch attack) — universal attack action funnel per C1
     src/hooks/ghost_ai_process_movement.cpp   # B6.6w0 (movement intent) — AIProcess::ProcessPackages_Movement per B1
     src/hooks/ghost_ai_set_combat_target.cpp  # B6.6w0 (combat target writer DIAG) — AIProcess::SetCombatTarget per A1+A2
+    src/hooks/ghost_ai_action_execute.cpp     # B6.6w5 Build 18 — bail BGSActionData::Execute on duplicate target
     src/hooks/ghost_ai_hit_applier.cpp        # B6.6w0 (hit applier orchestrator BAIL) — sub_140CD2780 per D2 — prevents crash on damage to frozen
     src/hooks/ghost_ai_combat_orchestrator.cpp # B6.6w0 NUKE (top-level combat orchestrator BAIL) — sub_140CCFDF0 = Actor::vt[255] per A1
+    src/hooks/cross_cell_gate.cpp   # Build 38: sub_140CF6100 detour — transient ghost+0xB8 swap to defeat PC.cell==target.cell gate at funcs_0309:9926
+    src/hooks/ghost_combat_force.cpp # Build 40: 4-hook surgical decision override (hostility, alive-count, cell-loaded, post-pick) — dossier-driven
+    src/hooks/event_dispatch_guard.cpp # Build 44: sub_140DEF780 vtable-validity guard — blocks EXEC fault on stale event sinks
     src/hooks/equip_cycle.cpp       # B8  : post-LoadGame BipedAnim normalize (DISABLED 2026-05-08, see equip_announce.h)
     src/hooks/equip_announce.cpp    # B8 successor (NON TESTATO): apparel bootstrap broadcast — Option B scaffold
     src/hooks/equip_hook.cpp        # M9 w1: equipment-event sender hook
@@ -76,6 +83,12 @@ add_library(fw_native SHARED
     src/native/weapon_capture.cpp        # M9.w4 PROPER (v0.4.2+): clone-factory-driven mesh capture
     src/native/spai_prewarm.cpp          # SPAI Tier 1: force-prewarm of weapon NIF resmgr
     src/native/synthetic_refr.cpp        # M9 closure (2026-05-07): synthetic TESObjectREFR weapon assembly
+    src/diag/crash_veh.cpp               # B6.6w5 Build 22: VEH for AV diagnostics on duplicate-deref crashes
+    src/hooks/ghost_is_attachable.cpp    # B6.6w5 Build 28f: TLS-gated bypass for IsAttachable during proxy spawn
+    src/hooks/ghost_hostility_guard.cpp  # B6.6w5 Build 30 Fix 2: baseForm guard on sub_140C8DFF0
+    src/hooks/ghost_hostility_guard_layer1.cpp  # Build 50 Strada A: layer-1 IsHostile gateway hook on sub_140C7AD40
+    src/hooks/ghost_vt197_guard.cpp             # Build 55e: Actor vt[197] IsHostileTo bail-on-ghost
+    src/hooks/ghost_global_walker_guards.cpp    # Build 57: 7 walker guards (kills 0xE98860 AV class)
 )
 
 target_link_libraries(fw_native PRIVATE minhook)

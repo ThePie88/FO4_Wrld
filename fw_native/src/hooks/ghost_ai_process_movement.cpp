@@ -1,3 +1,33 @@
+// ============================================================================
+// NOT INSTALLED — 2026-05-17. install_all.cpp:248 has only `(void)install_ghost_ai_process_movement;`
+// for ODR; actual install call is OUT (see install_all.cpp:235 "pending review").
+//
+// LOG PROOF: `[ghost_ai_procmov]` strings absent from both client logs.
+//
+// WHY DISABLED:
+//   Hook detours `AIProcess::ProcessPackages_Movement` (sub_140CEEC30).
+//   Bailing it for tracked NPCs would prevent the AI's package iteration
+//   from generating movement intent. Same effect as ghost_ai_movement
+//   (which bails the downstream wrapper `Actor::TickMovementController`),
+//   but at an earlier point in the chain.
+//
+//   B6.6w4 chose the wrapper bail over this package-iteration bail because:
+//     - The wrapper bail is simpler (single Actor* arg, no bridge needed).
+//     - Bailing the package iterator might starve OTHER AI subsystems
+//       (perception updates, faction list refresh, dialogue triggers)
+//       that share the same iteration loop.
+//
+//   "Pending review" means: empirically wrapper bail is sufficient; this
+//   hook adds no value over what ghost_ai_movement does. But the detour
+//   body is correct; could replace ghost_ai_movement if a cleaner design
+//   ever wants a single-point intercept.
+//
+// KEEP-AS-IS RATIONALE:
+//   Alternative-architecture artifact. Don't delete; revisit if the
+//   wrapper-level bail (ghost_ai_movement) develops issues that the
+//   package-level bail would solve.
+// ============================================================================
+
 #include "ghost_ai_process_movement.h"
 
 #include <windows.h>
@@ -8,6 +38,7 @@
 #include "../log.h"
 #include "../offsets.h"
 #include "npc_ai_suppress.h"   // is_actor_bail_tracked
+#include "ownership_manager.h" // Build 65: owner-driven predicate
 
 namespace fw::hooks {
 
@@ -63,17 +94,26 @@ std::int64_t __fastcall detour_process_movement(void* aiproc, void* actor,
                        g_bails.load(std::memory_order_relaxed)));
         }
 
-        if (plausible && fid != PLAYER_FORM_ID
-            && fw::hooks::should_freeze_actor(fid))
-        {
-            const auto bn = g_bails.fetch_add(
-                1, std::memory_order_relaxed);
-            if (bn < 10) {
-                FW_LOG("[ghost_ai_procmov] BAIL #%llu fid=0x%08X "
-                       "(skipping ProcessPackages_Movement)",
-                       static_cast<unsigned long long>(bn), fid);
+        if (plausible && fid != PLAYER_FORM_ID) {
+            bool should_bail = fw::hooks::should_freeze_actor(fid);
+
+            // Build 65 — owner-driven override (with fallback).
+            if (fw::ownership::is_owner_of(fid)) {
+                should_bail = false;
+            } else if (fw::ownership::is_non_owner_tracked(fid)) {
+                should_bail = true;
             }
-            return 0;
+
+            if (should_bail) {
+                const auto bn = g_bails.fetch_add(
+                    1, std::memory_order_relaxed);
+                if (bn < 10) {
+                    FW_LOG("[ghost_ai_procmov] BAIL #%llu fid=0x%08X "
+                           "(skipping ProcessPackages_Movement)",
+                           static_cast<unsigned long long>(bn), fid);
+                }
+                return 0;
+            }
         }
 
         if (g_orig_process_movement) {

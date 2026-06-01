@@ -107,8 +107,63 @@ std::uint64_t get_aiproc_map_size();
 // dynamic set out of sync. The server cache is the symmetric ground
 // truth.
 //
-// Used by every freeze + B6.6 attack/movement hook to decide bail.
+// Used by EVERY pos/freeze hook (Update_PerFrame, Havok step, pos_belt,
+// actor_setpos, process_movement). These always bail when this returns
+// true. The B6.6 COMBAT hooks (combat_orchestrator, dispatch_attack,
+// fire_decide, hit_applier) use the split `should_silence_combat`
+// predicate instead — it conditionalises on server cache having an
+// active opinion, so the engine resumes combat when the server says so
+// while pos stays locked.
+//
 // Cheap (atomic size check + at most one shared_lock on miss).
 bool should_freeze_actor(std::uint32_t form_id);
+
+// B6.6w0 — combat-hook bail predicate, distinct from pos-hook one.
+//
+// Returns true iff combat hooks should BAIL for this actor.
+//
+// Three states for a tracked NPC:
+//
+//   A. Not tracked at all (random vanilla actor, player) →
+//      false: combat hooks passthrough; engine runs combat normally.
+//
+//   B. Tracked + server has NO active combat opinion
+//      (`cache.combat_target_form_id == 0`) → true: combat hooks
+//      bail; actor stays passive (this is the current "NUKE" mode).
+//
+//   C. Tracked + server has an ACTIVE combat opinion
+//      (`cache.combat_target_form_id != 0`) → false: combat hooks
+//      passthrough; engine runs combat normally. Position hooks still
+//      bail in parallel (via `should_freeze_actor`) so the actor
+//      attacks while standing still.
+//
+// Symmetric across peers because the server pushes the same cache
+// state via NPC_STATE_BCAST. Each client interprets the local
+// `0x14` (= local PlayerCharacter form_id) when the server-pushed
+// per-peer projection picks them as the target peer, and `0`
+// otherwise.
+bool should_silence_combat(std::uint32_t form_id);
+
+// ============================================================================
+// Build 65.c.47 — WEDGE3 death-sync. STICKY "dying" set.
+//
+// When a NON-OWNER applies a relayed owner death (drain_npc_death_apply_queue),
+// the engine Actor::Kill is asynchronous: the KnockState bits (Actor+0x130
+// bits 21-24, read by actor_knocked_or_dead) lag ~1 frame behind the actual
+// transition. Without a sticky marker, the c.41b keyframe machine's `want_kf`
+// predicate (= is_non_owner_tracked && !actor_knocked_or_dead) would still see
+// "alive" for that frame and RE-KEYFRAME the body — re-freezing the ragdoll
+// (a Keyframed body can't flop).
+//
+// `mark_dying(fid)` adds the fid to a process-wide set; `is_dying(fid)` is
+// AND'd into want_kf so the corpse is never re-keyframed once death apply
+// begins. The flag is cleared on ownership re-acquire / cell unload (wherever
+// the per-fid keyframe state is reset) via clear_dying(fid) so a fresh spawn
+// of the same form_id (e.g. respawn / reload) starts clean.
+//
+// Thread-safe (internal std::mutex). Cheap O(1) hash lookup on the hot path.
+void mark_dying(std::uint32_t form_id);
+bool is_dying(std::uint32_t form_id);
+void clear_dying(std::uint32_t form_id);
 
 } // namespace fw::hooks

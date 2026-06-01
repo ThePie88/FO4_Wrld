@@ -150,7 +150,16 @@ constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
 //     back in CONTAINER_OP_ACK. Enables sender-side pre-mutation block
 //     (DLL waits on condvar keyed on op_id before letting the engine's
 //     AddObjectToContainer proceed). Closes the container dup race.
-constexpr std::uint8_t  PROTOCOL_VERSION  = 14;
+// v16: ghost crouch — adds POSE_CROUCH_STATE (0x028E, C→S) and
+//     POSE_CROUCH_BROADCAST (0x028F, S→peers). A SEPARATE, additive channel
+//     beside the working POSE_STATE/POSE_BROADCAST rotation pose: it
+//     replicates the vertical COM/Pelvis LOCAL TRANSLATION a crouch produces
+//     (rotation-only pose left the body at standing height → ghost feet
+//     "flew"). PoseCrouchEntry = {u16 bone_index; f32 tx,ty,tz} = 14 B, keyed
+//     on the SAME shared canonical bone index as the rotation pose. Tiny
+//     count (≤8; COM + Pelvis). Does NOT modify PoseBoneEntry, the canonical
+//     filter, or the rotation capture/apply loops.
+constexpr std::uint8_t  PROTOCOL_VERSION  = 16;
 constexpr std::size_t   HEADER_SIZE       = 12;
 constexpr std::size_t   MAX_PAYLOAD_SIZE  = 1400;
 constexpr std::size_t   MAX_FRAME_SIZE    = HEADER_SIZE + MAX_PAYLOAD_SIZE;
@@ -168,6 +177,7 @@ enum class MessageType : std::uint16_t {
     PEER_LEAVE      = 0x0004,
     HEARTBEAT       = 0x0005,
     DISCONNECT      = 0x0006,
+    PEER_GHOST_REGISTER = 0x0007,  // B6.6w5: client -> server, local ghost form_id
 
     ACK             = 0x0010,
 
@@ -194,6 +204,33 @@ enum class MessageType : std::uint16_t {
     LOCK_OP         = 0x0260,   // B6.3 v0.5.3: client -> server lock state changed
     LOCK_BCAST      = 0x0261,   // B6.3 v0.5.3: server -> other peers lock state changed
     NPC_STATE_BCAST = 0x0270,   // B6.5w2 v13: server -> peers batched NPC pos/anim state (unreliable, ~10 Hz)
+    NPC_FIRE        = 0x0271,   // B6.6w1 v15: server -> peers "this raider fires its equipped weapon NOW" (unreliable, event-driven)
+    NPC_DISCOVER    = 0x0272,   // B6.6w2 v16: client -> server "I auto-tracked this hostile NPC; register it" (reliable, event-driven)
+    NPC_PERCEPTION_TRIGGER = 0x0273,   // Build 62 v17: server -> peers "NPC X perceives peer Y's ghost — call CCF810 locally" (reliable, event-driven, debounced 5s server-side)
+
+    // Build 65 owner-driven NPC sync (Solver 2). Phase A ships the single-
+    // phase variant (no PHASE_1 / RELEASE_ACK dance — server emits PHASE_2
+    // directly on every ownership change). Opcodes for full two-phase are
+    // reserved so the wire stays stable when Phase B lands.
+    NPC_OWNERSHIP_BCAST          = 0x0280,  // S→peer: bootstrap snapshot (chunked, reliable)
+    NPC_OWNERSHIP_HANDOFF_PHASE_1 = 0x0281, // S→old+new owners: release request (RESERVED Phase A no-op)
+    NPC_OWNERSHIP_RELEASE_ACK    = 0x0282,  // C→S: old owner ack (RESERVED Phase A no-op)
+    NPC_OWNERSHIP_HANDOFF_PHASE_2 = 0x0283, // S→all: new owner active for one NPC (reliable)
+    NPC_OWNER_HEARTBEAT          = 0x0284,  // C→S: list of owned (fid, epoch) — proof of life (unreliable, ~2 Hz)
+    NPC_STATE_FROM_OWNER         = 0x0285,  // C→S→all: owner authoritative state batch (unreliable, ~10-30 Hz)
+    NPC_OBSERVED                 = 0x0286,  // C→S: election input — "I see NPC X at dist² D" (reliable)
+    NPC_UNLOAD                   = 0x0287,  // C→S: cell unload — release owner role (reliable)
+    NPC_FIRE_FROM_OWNER          = 0x0288,  // C→S→all: owner fire event (unreliable, event-driven)
+    NPC_DEATH_FROM_OWNER         = 0x0289,  // C→S→all: owner death event (reliable, event-driven)
+    NPC_DAMAGE_FROM_OWNER        = 0x028A,  // C→S→all: owner hit-applier event for ragdoll/visual (unreliable)
+    NPC_ENGAGEMENT_CLAIM         = 0x028B,  // Build 65.c.23 — C→S: non-owner peer's engine has InCombat flag on tracked NPC; server force-handoff if owner disengaged for > ENGAGEMENT_OWNERSHIP_GRACE_MS (unreliable, dedup'd client-side 2s/fid)
+    NPC_POSE_FROM_OWNER          = 0x028C,  // c.37.0 — C→S→all: owner's per-bone rotation snapshot for ONE owned NPC, keyed by form_id (full pose replication, ~15-20 Hz/NPC, unreliable)
+    NPC_DAMAGE_CLAIM             = 0x028D,  // c.39b — C→S: local player dealt D damage to NPC X (drives damage-based ownership/aggro). Unreliable, client-throttled.
+    NPC_CROUCH_FROM_OWNER        = 0x0290,  // NPC crouch — C→S→all: owner's COM/Pelvis LOCAL TRANSLATION snapshot for ONE owned NPC, keyed by form_id. NPC analogue of POSE_CROUCH (rotation pose bends raider legs but leaves body at standing height → feet fly; this carries the vertical drop). Unreliable.
+
+    // v16 — ghost crouch. SEPARATE additive channel beside POSE_STATE/BROADCAST.
+    POSE_CROUCH_STATE     = 0x028E,  // v16: C→S: my crouch bone translations (COM/Pelvis +0x60 local translate)
+    POSE_CROUCH_BROADCAST = 0x028F,  // v16: S→peers: peer X's crouch bone translations
 
     CHAT            = 0x0300,
 
@@ -276,13 +313,17 @@ struct FixedClientId {
 };
 static_assert(sizeof(FixedClientId) == MAX_CLIENT_ID_LEN + 1, "FixedClientId size");
 
-// HELLO (client → server). Python: FixedString(15) + BB = 16 + 2 = 18 bytes
+// HELLO (client → server). B6.6w5: extended with steam_id u64 (8 bytes
+// at end). Wire format: FixedString(15) + BB + Q = 16 + 2 + 8 = 26 bytes.
+// Python side decodes the steam_id tail leniently — if a client sends
+// only the legacy 18-byte form, server treats steam_id as 0.
 struct HelloPayload {
     FixedClientId client_id;
     std::uint8_t  client_version_major;
     std::uint8_t  client_version_minor;
+    std::uint64_t steam_id;   // 0 = unavailable (steam_api64.dll not loaded yet)
 };
-static_assert(sizeof(HelloPayload) == 18, "HelloPayload size");
+static_assert(sizeof(HelloPayload) == 26, "HelloPayload size (v15)");
 
 // WELCOME (server → client). Python: I B B B H = 9 bytes
 struct WelcomePayload {
@@ -379,9 +420,83 @@ struct PoseBroadcastHeader {
 static_assert(sizeof(PoseBroadcastHeader) == 26, "PoseBroadcastHeader size");
 
 struct PoseBoneEntry {
-    float qx, qy, qz, qw;  // quaternion
+    float qx, qy, qz, qw;  // quaternion (local rotation, +0x30)
 };
 static_assert(sizeof(PoseBoneEntry) == 16, "PoseBoneEntry size");
+
+// ---- v16 POSE_CROUCH replication -------------------------------------------
+// A SEPARATE, additive channel beside POSE_STATE/POSE_BROADCAST. The rotation
+// pose (PoseBoneEntry, above) is UNTOUCHED and keeps working; this channel
+// only carries the vertical COM/Pelvis LOCAL TRANSLATION (the vec3 at bone
+// +0x60) that a crouch produces. Each entry is keyed on the SAME shared
+// canonical bone index as the rotation pose (both clients walk the identical,
+// sorted, UNFILTERED canonical list → index is a reliable cross-client key).
+// count is tiny (≤8; COM + Pelvis today).
+//
+// Wire layout mirrors POSE_STATE → POSE_BROADCAST:
+//   POSE_CROUCH_STATE     = PoseCrouchStateHeader     + count × PoseCrouchEntry
+//   POSE_CROUCH_BROADCAST = PoseCrouchBroadcastHeader + count × PoseCrouchEntry
+constexpr std::uint8_t MAX_POSE_CROUCH_BONES = 8;
+
+struct PoseCrouchEntry {
+    std::uint16_t bone_index;   // canonical index (shared with rotation pose)
+    float tx, ty, tz;           // bone m_kLocal.translate (+0x60) vec3
+};
+static_assert(sizeof(PoseCrouchEntry) == 14, "PoseCrouchEntry size (v16)");
+
+struct PoseCrouchStateHeader {
+    std::uint64_t timestamp_ms;  // 8
+    std::uint8_t  count;         // 1
+    // followed by count × PoseCrouchEntry
+};
+static_assert(sizeof(PoseCrouchStateHeader) == 9, "PoseCrouchStateHeader size (v16)");
+
+struct PoseCrouchBroadcastHeader {
+    FixedClientId peer_id;       // 16
+    std::uint64_t timestamp_ms;  // 8
+    std::uint8_t  count;         // 1
+    // followed by count × PoseCrouchEntry
+};
+static_assert(sizeof(PoseCrouchBroadcastHeader) == 25, "PoseCrouchBroadcastHeader size (v16)");
+
+// c.37.0 — NPC pose replication (owner → mirror, keyed by form_id).
+// Same quaternion bone payload as POSE_STATE, prefixed with the NPC's
+// form_id so the receiver resolves the mirror Actor via lookup_by_form_id
+// and drives ITS skeleton (like player→ghost). ONE message type for both
+// C→S and S→peers (owner-driven pattern); server validates owner + fans
+// out unchanged. Layout matches Python NPCPoseFromOwnerPayload "<IQH".
+struct NpcPoseHeader {
+    std::uint32_t form_id;          // 4 @ 0
+    std::uint64_t timestamp_ms;     // 8 @ 4 (pack(1) — no align padding)
+    std::uint16_t bone_count;       // 2 @ 12
+    // followed by bone_count × PoseBoneEntry (qx,qy,qz,qw)
+};
+static_assert(sizeof(NpcPoseHeader) == 14, "NpcPoseHeader size");
+
+// NPC crouch — owner's COM/Pelvis LOCAL TRANSLATION snapshot for ONE owned
+// NPC, keyed by form_id. The NPC analogue of POSE_CROUCH_STATE: reuses the
+// SAME PoseCrouchEntry (14 B: u16 bone_index + f32 tx,ty,tz) keyed on the
+// shared canonical bone index, prefixed with the NPC's form_id so the
+// receiver resolves the mirror Actor via lookup_by_form_id and lowers ITS
+// skeleton — exactly like NpcPoseHeader does for the rotation pose. ONE
+// message type for both C→S and S→peers (owner-driven relay). Layout matches
+// Python NPCCrouchFromOwnerPayload "<IQB".
+struct NpcCrouchHeader {
+    std::uint32_t form_id;          // 4 @ 0
+    std::uint64_t timestamp_ms;     // 8 @ 4 (pack(1) — no align padding)
+    std::uint8_t  count;            // 1 @ 12
+    // followed by count × PoseCrouchEntry (bone_index, tx, ty, tz)
+};
+static_assert(sizeof(NpcCrouchHeader) == 13, "NpcCrouchHeader size");
+
+// c.39b — "my local player dealt `amount` damage to NPC `form_id`". Client→
+// server; the threat table accumulates a per-peer decayed damage sum per NPC
+// and ownership follows the biggest recent damager. Matches Python "<If".
+struct NpcDamageClaim {
+    std::uint32_t form_id;   // 4
+    float         amount;    // 4
+};
+static_assert(sizeof(NpcDamageClaim) == 8, "NpcDamageClaim size");
 // Max payload sizes:
 //   POSE_STATE     = 10 + 64*16 = 1034 bytes < 1400 ✓
 //   POSE_BROADCAST = 26 + 64*16 = 1050 bytes < 1400 ✓
@@ -705,6 +820,317 @@ struct NPCStateBroadcastHeader {
 };
 static_assert(sizeof(NPCStateBroadcastHeader) == 4,
               "NPCStateBroadcastHeader size (v14)");
+
+// B6.6w1 v15 — NPC_FIRE opcode payload. Server emits ONE per fire decision
+// (raider_brain.py applies cooldown + visibility logic before sending).
+// Client RX:
+//   1. lookup_by_form_id(raider_form_id) → Actor* or null
+//   2. if non-null AND raider is in our tracked-bail set, dispatch to
+//      main thread engine::fire_actor_weapon(actor)
+//
+// `target_form_id` is informational for logging only — Actor::FireWeapon
+// auto-resolves the actual target via the combatTarget chain we already
+// keep pointing at PLAYER (force_in_combat_flag triple-write). Useful
+// later when we add aim-direction injection.
+struct NPCFirePayload {
+    std::uint32_t raider_form_id;
+    std::uint32_t target_form_id;   // 0x14 = player; 0 = unknown
+    std::uint32_t flags;            // 0 = reserved; future: burst count / weapon hint
+    // Build 55a (proto v15) — server picks per-raider per-window whether
+    // this fire is aimed at LOCAL (vanilla AI handles) or GHOST (client
+    // puppet-fire path). Eliminates dual-target flicker from competing
+    // aim writes on Actor+0xC0 rotation.
+    std::uint8_t  target_kind;      // 0=LOCAL, 1=GHOST
+};
+static_assert(sizeof(NPCFirePayload) == 13, "NPCFirePayload size (v15)");
+
+constexpr std::uint8_t NPC_FIRE_TARGET_LOCAL = 0;
+constexpr std::uint8_t NPC_FIRE_TARGET_GHOST = 1;
+
+// B6.6w2 v16 — NPC_DISCOVER. Client emits ONE per first-time auto-track
+// (Path 2 in npc_ai_suppress: actor's InCombat flag bit 0x4000 was set
+// by vanilla AI → client decides "this is a hostile worth tracking").
+//
+// Reliable channel: discovery is event-driven (~once per encounter)
+// and dropping would mean the server never knows this raider exists →
+// no cross-peer sync for them. ACK ensures delivery.
+//
+// Wire: 24 bytes. The client reads these directly off the local Actor
+// pointer (offsets from re/reference_fo4_offsets.md):
+//   form_id  = *(u32*)(actor + FORMID_OFF=0x14)
+//   base_id  = *(u32*)(*(TESForm**)(actor + BASE_FORM_OFF=0xE0) + 0x14)
+//   cell_id  = *(u32*)(*(REFR**)(actor + PARENT_CELL_OFF=0xB8) + 0x14)
+//   pos_x/y/z = (float*)(actor + POS_OFF=0xD0)[0..2]
+struct NPCDiscoverPayload {
+    std::uint32_t form_id;
+    std::uint32_t base_id;
+    std::uint32_t cell_id;
+    float         pos_x;
+    float         pos_y;
+    float         pos_z;
+};
+static_assert(sizeof(NPCDiscoverPayload) == 24,
+              "NPCDiscoverPayload size (v16)");
+
+// B6.6w5 v17 — PEER_GHOST_REGISTER. Sender: client, after the engine
+// spawns the local ghost-actor that represents the other peer.
+// Receiver: server stores in PeerSession.ghost_form_id and uses it in
+// project_for_peer to set combat_target_form_id correctly per-viewer.
+struct PeerGhostRegisterPayload {
+    std::uint32_t ghost_form_id;
+};
+static_assert(sizeof(PeerGhostRegisterPayload) == 4,
+              "PeerGhostRegisterPayload size (v17)");
+
+// Build 62 v17 — NPC_PERCEPTION_TRIGGER. Server-side proximity sphere
+// fires this when a peer's ghost enters NPC X's perception radius.
+//
+// Per re/arena_synthesis/SUPERVISOR_SYNTHESIS.md: receiving client
+// resolves both ends (lookup_by_form_id(npc_fid) for observer,
+// peer_registry.get_ghost_actor_for_peer(peer_id) for target — or
+// local PC if peer_id == self) and calls
+// trigger_npc_perception(observer, target). Engine handles
+// HighProcess+CombatController+AddTarget allocation in 1 frame.
+//
+// Server-side debounced 5s per (npc_fid, peer_id) pair to prevent
+// re-trigger spam.
+//
+// Wire: 8 bytes (1+4+4 if opcode-prefixed; the packet header carries
+// the opcode separately so this struct is 8B).
+struct NpcPerceptionTriggerPayload {
+    std::uint32_t npc_fid;     // the OBSERVER (NPC that should perceive)
+    std::uint32_t peer_id;     // the TARGET (peer whose ghost is the threat)
+};
+static_assert(sizeof(NpcPerceptionTriggerPayload) == 8,
+              "NpcPerceptionTriggerPayload size (Build 62 v17)");
+
+// === Build 65 — owner-driven NPC sync (Solver 2) ===========================
+//
+// Wire format mirrors net/protocol.py (Build 65.a). All payloads are MTU-
+// safe (≤ 1400 B framed) at the documented MAX_*_PER_FRAME caps.
+//
+// Phase A: server fires PHASE_2 directly on every ownership change. The
+// old owner is expected to stop emitting state in ≤ 1 RTT; server rejects
+// stale state via the epoch gate. PHASE_1 / RELEASE_ACK opcodes are
+// reserved (handlers are no-op for now) so a future Phase B can layer on
+// without a wire bump.
+//
+// PEER_ID encoding: 16-byte FixedClientId (UTF-8, NUL-padded, truncated).
+// All-zero = "unowned" sentinel (only valid for PHASE_2 release frames).
+
+constexpr std::size_t  PEER_ID_BYTES = 16;
+
+// 0x0286 — NPC_OBSERVED. C→S, reliable. Wire 28 B.
+struct NPCObservedPayload {
+    std::uint32_t form_id;
+    std::uint32_t base_id;
+    std::uint32_t cell_id;
+    float         pos_x;
+    float         pos_y;
+    float         pos_z;
+    float         observer_distance_sq;
+};
+static_assert(sizeof(NPCObservedPayload) == 28,
+              "NPCObservedPayload size (Build 65)");
+
+// 0x0287 — NPC_UNLOAD. C→S, reliable. Wire 26 B.
+struct NPCUnloadPayload {
+    std::uint32_t form_id;
+    std::uint32_t epoch;
+    float         last_pos_x;
+    float         last_pos_y;
+    float         last_pos_z;
+    float         last_yaw;
+    std::uint8_t  last_anim_state;
+    std::uint8_t  last_hp_pct;
+};
+static_assert(sizeof(NPCUnloadPayload) == 26,
+              "NPCUnloadPayload size (Build 65)");
+
+// 0x0284 — NPC_OWNER_HEARTBEAT. Body = u16 count + u16 reserved + N entries.
+struct NPCOwnerHeartbeatEntry {
+    std::uint32_t form_id;
+    std::uint32_t epoch;
+};
+static_assert(sizeof(NPCOwnerHeartbeatEntry) == 8,
+              "NPCOwnerHeartbeatEntry size (Build 65)");
+
+struct NPCOwnerHeartbeatHeader {
+    std::uint16_t num_entries;
+    std::uint16_t reserved;     // 0 — alignment + future flags
+};
+static_assert(sizeof(NPCOwnerHeartbeatHeader) == 4,
+              "NPCOwnerHeartbeatHeader size (Build 65)");
+
+// MTU 1400 - 4 hdr = 1396; / 8 per entry = 174 → cap 170 (Python side).
+constexpr std::uint16_t MAX_HEARTBEAT_ENTRIES = 170;
+
+// 0x0281 — NPC_OWNERSHIP_HANDOFF_PHASE_1. S→old+new owners, reliable.
+// Wire 48 B. Phase A: server does NOT emit this; handler logs + drops.
+struct NPCOwnershipHandoffPhase1Payload {
+    std::uint32_t form_id;
+    std::uint32_t old_epoch;
+    std::uint8_t  old_owner_peer_id[PEER_ID_BYTES];
+    std::uint8_t  new_owner_peer_id[PEER_ID_BYTES];
+    std::uint64_t deadline_ms;
+};
+static_assert(sizeof(NPCOwnershipHandoffPhase1Payload) == 48,
+              "NPCOwnershipHandoffPhase1Payload size (Build 65)");
+
+// 0x0282 — NPC_OWNERSHIP_RELEASE_ACK. C→S, reliable. Wire 32 B.
+// Phase A: client does NOT emit this; reserved.
+struct NPCOwnershipReleaseAckPayload {
+    std::uint32_t form_id;
+    std::uint32_t old_epoch;
+    std::uint8_t  acker_peer_id[PEER_ID_BYTES];
+    std::uint64_t ack_ts_ms;
+};
+static_assert(sizeof(NPCOwnershipReleaseAckPayload) == 32,
+              "NPCOwnershipReleaseAckPayload size (Build 65)");
+
+// 0x0283 — NPC_OWNERSHIP_HANDOFF_PHASE_2. S→all, reliable. Wire 32 B.
+//
+// Authoritative ownership change. Receiver updates local map:
+//   g_ownership[form_id] = { new_epoch, new_owner_peer_id }
+// All-zero new_owner_peer_id = release (NPC becomes unowned).
+struct NPCOwnershipHandoffPhase2Payload {
+    std::uint32_t form_id;
+    std::uint32_t new_epoch;
+    std::uint8_t  new_owner_peer_id[PEER_ID_BYTES];
+    std::uint64_t handed_off_at_ms;
+};
+static_assert(sizeof(NPCOwnershipHandoffPhase2Payload) == 32,
+              "NPCOwnershipHandoffPhase2Payload size (Build 65)");
+
+// 0x0280 — NPC_OWNERSHIP_BCAST. S→peer (bootstrap on join) or S→all (post-
+// handoff cleanup). Reliable. Header u16 count + u16 reserved + N entries.
+struct NPCOwnershipBcastEntry {
+    std::uint32_t form_id;
+    std::uint32_t epoch;
+    std::uint8_t  owner_peer_id[PEER_ID_BYTES];
+};
+static_assert(sizeof(NPCOwnershipBcastEntry) == 24,
+              "NPCOwnershipBcastEntry size (Build 65)");
+
+struct NPCOwnershipBcastHeader {
+    std::uint16_t num_entries;
+    std::uint16_t reserved;
+};
+static_assert(sizeof(NPCOwnershipBcastHeader) == 4,
+              "NPCOwnershipBcastHeader size (Build 65)");
+
+// MTU 1400 - 4 hdr = 1396; / 24 per entry = 58 → cap 57 (Python side).
+constexpr std::uint16_t MAX_OWNERSHIP_BCAST_ENTRIES = 57;
+
+// 0x0285 — NPC_STATE_FROM_OWNER. C→S→all, unreliable. Body = header + N
+// entries × 76 B. Receiver gates each entry on (owner == fid's known
+// owner, epoch == known epoch); drops stale.
+struct NPCOwnerStateEntry {
+    std::uint32_t form_id;
+    std::uint32_t epoch;
+    float         pos_x;
+    float         pos_y;
+    float         pos_z;
+    float         yaw_rad;
+    float         pitch_rad;
+    std::uint32_t combat_target_fid;
+    float         aim_x;
+    float         aim_y;
+    float         aim_z;
+    float         velocity_x;
+    float         velocity_y;
+    float         velocity_z;
+    std::uint8_t  anim_state;
+    std::uint8_t  aggro_state;
+    std::uint8_t  hp_pct;
+    std::uint8_t  weapon_state;     // bit 3 = fire_this_tick
+    std::uint8_t  sighted;
+    std::uint8_t  sprinting;
+    std::uint8_t  sneaking;
+    std::uint8_t  gun_down;
+    std::uint8_t  aggression;
+    std::uint8_t  _pad;             // u8 padding to align loco_state_pack
+    std::uint16_t loco_state_pack;
+    std::uint64_t ts_ms;            // owner's monotonic ms
+};
+static_assert(sizeof(NPCOwnerStateEntry) == 76,
+              "NPCOwnerStateEntry size (Build 65)");
+
+struct NPCStateFromOwnerHeader {
+    std::uint16_t num_entries;
+    std::uint16_t reserved;
+};
+static_assert(sizeof(NPCStateFromOwnerHeader) == 4,
+              "NPCStateFromOwnerHeader size (Build 65)");
+
+// MTU 1400 - 4 hdr = 1396; / 76 = 18 → cap 17 (Python side).
+constexpr std::uint16_t MAX_OWNER_STATES_PER_FRAME = 17;
+
+// 0x0288 — NPC_FIRE_FROM_OWNER. C→S→all, unreliable. Wire 32 B.
+struct NPCFireFromOwnerPayload {
+    std::uint32_t form_id;
+    std::uint32_t target_form_id;
+    std::uint32_t weapon_form_id;
+    float         aim_x;
+    float         aim_y;
+    float         aim_z;
+    std::uint64_t ts_ms;
+};
+static_assert(sizeof(NPCFireFromOwnerPayload) == 32,
+              "NPCFireFromOwnerPayload size (Build 65)");
+
+// 0x0289 — NPC_DEATH_FROM_OWNER. C→S→all, reliable. Wire 48 B.
+struct NPCDeathFromOwnerPayload {
+    std::uint32_t form_id;
+    std::uint32_t killer_form_id;   // 0 = environmental
+    float         pos_x;
+    float         pos_y;
+    float         pos_z;
+    float         ragdoll_x;
+    float         ragdoll_y;
+    float         ragdoll_z;
+    float         damage;
+    std::uint8_t  hit_zone;
+    std::uint8_t  flags;
+    std::uint16_t _pad;
+    std::uint64_t ts_ms;
+};
+static_assert(sizeof(NPCDeathFromOwnerPayload) == 48,
+              "NPCDeathFromOwnerPayload size (Build 65)");
+
+// 0x028A — NPC_DAMAGE_FROM_OWNER. C→S→all, unreliable. Wire 28 B.
+// Cosmetic: HP authority is the owner; this drives receiver-side hit
+// react + ragdoll direction visuals.
+struct NPCDamageFromOwnerPayload {
+    std::uint32_t form_id;          // victim
+    std::uint32_t attacker_form_id;
+    std::uint32_t weapon_form_id;
+    float         damage;
+    std::uint8_t  hit_zone;
+    std::uint8_t  flags;
+    std::uint16_t _pad;
+    std::uint64_t ts_ms;
+};
+static_assert(sizeof(NPCDamageFromOwnerPayload) == 28,
+              "NPCDamageFromOwnerPayload size (Build 65)");
+
+// 0x028B — NPC_ENGAGEMENT_CLAIM. C→S, unreliable. Wire 16 B.
+//
+// Build 65.c.23 — Non-owner peer's local engine has InCombat flag set
+// (Actor+0x2D0 bit 0x4000) on a tracked NPC. Server uses this to force
+// ownership handoff if current owner has not been reporting engagement
+// (anim_state >= 3) for >= ENGAGEMENT_OWNERSHIP_GRACE_MS (= 3000 ms).
+//
+// Per-fid client-side dedup at 2s cooldown prevents flood. peer_id_hash
+// is FNV-1a 32-bit of the local peer_id string, included as a sanity
+// cross-check against the session-bound sender peer_id on the server.
+struct NPCEngagementClaimPayload {
+    std::uint32_t form_id;          // NPC whose InCombat flag is set
+    std::uint32_t peer_id_hash;     // FNV-1a 32-bit hash of local peer_id
+    std::uint64_t ts_ms;            // client monotonic ms (diag only)
+};
+static_assert(sizeof(NPCEngagementClaimPayload) == 16,
+              "NPCEngagementClaimPayload size (Build 65.c.23)");
 
 #pragma pack(pop)
 struct NifDescriptor {

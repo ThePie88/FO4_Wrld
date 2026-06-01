@@ -1,3 +1,29 @@
+// ============================================================================
+// PASSTHROUGH ONLY — 2026-05-17. Hook installed but DEMOTED to diagnostic per
+// inline comment at line ~64 ("Previously this BAILed for tracked actors...
+// Replacement strategy: orchestrator runs unconditionally").
+//
+// LOG PROOF: install_all.cpp:247 has `(void)install_ghost_ai_combat_orchestrator;`
+// — that's a function-pointer reference for ODR, NOT an install call. So this
+// hook is NOT installed in current build (B6.6w5 Phase A v5).
+//
+// Check: search Client A `fw_native.log` for `[ghost_ai_orchestrator]`:
+//   0 lines. Hook is dormant by install_all gate.
+//
+// WHY DISABLED IN install_all:
+//   Per the demotion comment at line ~67, bailing this orchestrator caused
+//   raiders to lose red compass marker and decay to neutral ("Talk" prompt).
+//   The hostility re-eval AND the player-detection logic ALSO live inside
+//   this orchestrator. Bailing it = friendly raiders.
+//
+// KEEP-AS-IS RATIONALE:
+//   Detour body has a complete (counters, SEH cage, plausibility check)
+//   skeleton. If a future redesign needs to intercept the orchestrator
+//   (e.g., to inject a server-driven aim vector BEFORE the engine's aim
+//   solver runs), this file is the install point. Cost of keeping
+//   compiled-but-not-installed: ~5 KB binary.
+// ============================================================================
+
 #include "ghost_ai_combat_orchestrator.h"
 
 #include <windows.h>
@@ -61,22 +87,24 @@ char __fastcall detour_combat_orchestrator(void* actor, std::int64_t a2) {
                        g_bails.load(std::memory_order_relaxed)));
         }
 
-        // BAIL: tracked NPC. Return 0 ≡ "no combat work this frame".
-        // This short-circuits the entire combat brain — no target
-        // promotion, no fire decide, no dispatch attack, no aim, etc.
-        if (plausible && fid != PLAYER_FORM_ID
-            && fw::hooks::should_freeze_actor(fid))
-        {
-            const auto bn = g_bails.fetch_add(
-                1, std::memory_order_relaxed);
-            if (bn < 10) {
-                FW_LOG("[ghost_ai_orchestrator] BAIL #%llu fid=0x%08X "
-                       "(NUKE — entire combat pipeline skipped for "
-                       "this actor)",
-                       static_cast<unsigned long long>(bn), fid);
-            }
-            return 0;
-        }
+        // B6.6w0 (2026-05-12, post-live-test): DEMOTED to diagnostic.
+        //
+        // Previously this BAILed for tracked actors with no server
+        // aggro. Live test result: the engine's faction-hostility
+        // and player-detection logic ALSO lives inside the
+        // orchestrator. Bailing it for the entire session caused
+        // raiders to lose their red compass marker and acquire a
+        // "Talk" activation prompt — they decayed from hostile to
+        // neutral because the orchestrator never re-evaluated
+        // hostility.
+        //
+        // Replacement strategy: orchestrator runs unconditionally.
+        // The downstream attack hooks (dispatch_attack, fire_decide)
+        // remain gated on should_silence_combat — they BAIL when
+        // server has no aggro, so the raider stays hostile (red
+        // marker) but cannot fire / swing. Pos hooks stay always
+        // bailed for tracked → standing still while hostile.
+        (void)fid;
 
         if (g_orig_orchestrator) {
             return g_orig_orchestrator(actor, a2);

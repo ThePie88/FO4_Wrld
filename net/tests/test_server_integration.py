@@ -358,7 +358,7 @@ async def test_npc_state_bcast_reaches_connected_peer(server_port):
 
     # Tick driver + NPC brain task.
     tick_task = loop.create_task(_periodic_tick_driver(protocol, 20))
-    npc_task = loop.create_task(_periodic_npc_brain_tick(brain, protocol, 10))
+    npc_task = loop.create_task(_periodic_npc_brain_tick(brain, None, protocol, 10))
 
     try:
         client = await _make_client(port)
@@ -414,7 +414,7 @@ async def test_npc_state_bcast_skipped_when_no_peers(server_port):
         spec=spec, pos_x=0.0, pos_y=0.0, pos_z=0.0,
     )
 
-    npc_task = loop.create_task(_periodic_npc_brain_tick(brain, protocol, 50))
+    npc_task = loop.create_task(_periodic_npc_brain_tick(brain, None, protocol, 50))
     try:
         # Let the brain tick a few times with zero peers — must not raise.
         await asyncio.sleep(0.2)

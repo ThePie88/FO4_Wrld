@@ -19,6 +19,8 @@ from protocol import (  # noqa: E402
     FrameHeader, Frame,
     HelloPayload, WelcomePayload, PeerJoinPayload, PeerLeavePayload,
     HeartbeatPayload, AckPayload, PosStatePayload, PosBroadcastPayload,
+    PoseCrouchStatePayload, PoseCrouchBroadcastPayload, MAX_POSE_CROUCH_BONES,
+    NPCCrouchFromOwnerPayload,   # NPC crouch — COM/Pelvis vertical drop relay
     ActorEventPayload, ActorEventKind, ChatPayload, DisconnectPayload,
     QuestStageSetPayload, QuestStageBroadcastPayload,
     QuestStateBootPayload, QuestStageStateEntry,
@@ -1022,3 +1024,191 @@ class TestNPCStateBroadcast:
         assert f.header.msg_type == MessageType.NPC_STATE_BCAST
         assert isinstance(f.payload, NPCStateBroadcastPayload)
         assert f.payload.entries[0].form_id == 0x42
+
+
+# ------------------------------------------------------------------ v16 crouch
+
+class TestPoseCrouchState:
+    """v16 — POSE_CROUCH_STATE (client -> server) roundtrip + edges."""
+
+    def test_roundtrip(self):
+        p = PoseCrouchStatePayload(
+            timestamp_ms=1234567890,
+            entries=((3, 0.0, 0.0, -12.5), (7, 0.1, -0.2, -8.0)),
+        )
+        p2 = PoseCrouchStatePayload.decode(p.encode())
+        assert p2.timestamp_ms == p.timestamp_ms
+        assert len(p2.entries) == 2
+        for a, b in zip(p.entries, p2.entries):
+            assert a[0] == b[0]                  # bone_index exact (u16)
+            assert abs(a[1] - b[1]) < 1e-4       # tx
+            assert abs(a[2] - b[2]) < 1e-4       # ty
+            assert abs(a[3] - b[3]) < 1e-4       # tz
+
+    def test_wire_size(self):
+        # header (Q B = 9) + 2 * entry (H fff = 14) = 37 bytes
+        p = PoseCrouchStatePayload(
+            timestamp_ms=0, entries=((0, 1.0, 2.0, 3.0), (1, 4.0, 5.0, 6.0)))
+        assert len(p.encode()) == 9 + 2 * 14
+
+    def test_empty_roundtrip(self):
+        p = PoseCrouchStatePayload(timestamp_ms=42, entries=())
+        p2 = PoseCrouchStatePayload.decode(p.encode())
+        assert p2.entries == ()
+        assert p2.timestamp_ms == 42
+
+    def test_too_many_raises(self):
+        entries = tuple((i, 0.0, 0.0, 0.0) for i in range(MAX_POSE_CROUCH_BONES + 1))
+        with pytest.raises(ProtocolError):
+            PoseCrouchStatePayload(timestamp_ms=0, entries=entries).encode()
+
+    def test_truncated_header_raises(self):
+        with pytest.raises(ProtocolError):
+            PoseCrouchStatePayload.decode(b"\x00" * 4)
+
+    def test_truncated_body_raises(self):
+        # Claim 1 entry but ship only the header.
+        bad = struct.pack("<QB", 0, 1)
+        with pytest.raises(ProtocolError):
+            PoseCrouchStatePayload.decode(bad)
+
+    def test_count_too_high_raises(self):
+        bad = struct.pack("<QB", 0, MAX_POSE_CROUCH_BONES + 1)
+        with pytest.raises(ProtocolError):
+            PoseCrouchStatePayload.decode(bad)
+
+    def test_frame_roundtrip(self):
+        p = PoseCrouchStatePayload(
+            timestamp_ms=99, entries=((5, 0.0, 0.0, -10.0),))
+        raw = encode_frame(MessageType.POSE_CROUCH_STATE, 1, p)
+        f = decode_frame(raw)
+        assert f.header.msg_type == MessageType.POSE_CROUCH_STATE
+        assert isinstance(f.payload, PoseCrouchStatePayload)
+        assert f.payload.entries[0][0] == 5
+
+
+class TestPoseCrouchBroadcast:
+    """v16 — POSE_CROUCH_BROADCAST (server -> peers) roundtrip + edges."""
+
+    def test_roundtrip(self):
+        p = PoseCrouchBroadcastPayload(
+            peer_id="player_A",
+            timestamp_ms=555,
+            entries=((3, 0.0, 0.0, -12.5), (7, 1.0, 2.0, 3.0)),
+        )
+        p2 = PoseCrouchBroadcastPayload.decode(p.encode())
+        assert p2.peer_id == "player_A"
+        assert p2.timestamp_ms == 555
+        assert len(p2.entries) == 2
+        assert p2.entries[0][0] == 3
+        assert abs(p2.entries[0][3] - (-12.5)) < 1e-4
+
+    def test_wire_size(self):
+        # peer_id (16) + header (Q B = 9) + 1 * entry (14) = 39 bytes
+        p = PoseCrouchBroadcastPayload(
+            peer_id="x", timestamp_ms=0, entries=((0, 1.0, 2.0, 3.0),))
+        assert len(p.encode()) == 16 + 9 + 14
+
+    def test_empty_roundtrip(self):
+        p = PoseCrouchBroadcastPayload(peer_id="b", timestamp_ms=1, entries=())
+        p2 = PoseCrouchBroadcastPayload.decode(p.encode())
+        assert p2.peer_id == "b"
+        assert p2.entries == ()
+
+    def test_too_many_raises(self):
+        entries = tuple((i, 0.0, 0.0, 0.0) for i in range(MAX_POSE_CROUCH_BONES + 1))
+        with pytest.raises(ProtocolError):
+            PoseCrouchBroadcastPayload(
+                peer_id="b", timestamp_ms=0, entries=entries).encode()
+
+    def test_truncated_header_raises(self):
+        with pytest.raises(ProtocolError):
+            PoseCrouchBroadcastPayload.decode(b"\x00" * 20)
+
+    def test_count_too_high_raises(self):
+        bad = (b"b\x00".ljust(16, b"\x00")
+               + struct.pack("<QB", 0, MAX_POSE_CROUCH_BONES + 1))
+        with pytest.raises(ProtocolError):
+            PoseCrouchBroadcastPayload.decode(bad)
+
+    def test_frame_roundtrip(self):
+        p = PoseCrouchBroadcastPayload(
+            peer_id="peer_z", timestamp_ms=7, entries=((5, 0.0, 0.0, -10.0),))
+        raw = encode_frame(MessageType.POSE_CROUCH_BROADCAST, 2, p)
+        f = decode_frame(raw)
+        assert f.header.msg_type == MessageType.POSE_CROUCH_BROADCAST
+        assert isinstance(f.payload, PoseCrouchBroadcastPayload)
+        assert f.payload.peer_id == "peer_z"
+
+
+# ------------------------------------------------------------- NPC crouch
+
+class TestNPCCrouchFromOwner:
+    """NPC_CROUCH_FROM_OWNER (C->S->all) roundtrip + edges.
+
+    The NPC analogue of POSE_CROUCH_STATE — form_id-keyed COM/Pelvis vertical
+    drop. Mirrors the PoseCrouchState tests but with the form_id prefix
+    (matching NPCPoseFromOwnerPayload's shape)."""
+
+    def test_roundtrip(self):
+        p = NPCCrouchFromOwnerPayload(
+            form_id=0x0001A2B3,
+            timestamp_ms=1234567890,
+            entries=((3, 0.0, 0.0, -12.5), (7, 0.1, -0.2, -8.0)),
+        )
+        p2 = NPCCrouchFromOwnerPayload.decode(p.encode())
+        assert p2.form_id == p.form_id
+        assert p2.timestamp_ms == p.timestamp_ms
+        assert len(p2.entries) == 2
+        for a, b in zip(p.entries, p2.entries):
+            assert a[0] == b[0]                  # bone_index exact (u16)
+            assert abs(a[1] - b[1]) < 1e-4       # tx
+            assert abs(a[2] - b[2]) < 1e-4       # ty
+            assert abs(a[3] - b[3]) < 1e-4       # tz
+
+    def test_wire_size(self):
+        # header (I Q B = 13) + 2 * entry (H fff = 14) = 41 bytes
+        p = NPCCrouchFromOwnerPayload(
+            form_id=1, timestamp_ms=0,
+            entries=((0, 1.0, 2.0, 3.0), (1, 4.0, 5.0, 6.0)))
+        assert len(p.encode()) == 13 + 2 * 14
+
+    def test_empty_roundtrip(self):
+        p = NPCCrouchFromOwnerPayload(form_id=42, timestamp_ms=7, entries=())
+        p2 = NPCCrouchFromOwnerPayload.decode(p.encode())
+        assert p2.form_id == 42
+        assert p2.timestamp_ms == 7
+        assert p2.entries == ()
+
+    def test_too_many_raises(self):
+        entries = tuple((i, 0.0, 0.0, 0.0)
+                        for i in range(MAX_POSE_CROUCH_BONES + 1))
+        with pytest.raises(ProtocolError):
+            NPCCrouchFromOwnerPayload(
+                form_id=1, timestamp_ms=0, entries=entries).encode()
+
+    def test_truncated_header_raises(self):
+        with pytest.raises(ProtocolError):
+            NPCCrouchFromOwnerPayload.decode(b"\x00" * 8)
+
+    def test_truncated_body_raises(self):
+        # Claim 1 entry but ship only the header.
+        bad = struct.pack("<IQB", 1, 0, 1)
+        with pytest.raises(ProtocolError):
+            NPCCrouchFromOwnerPayload.decode(bad)
+
+    def test_count_too_high_raises(self):
+        bad = struct.pack("<IQB", 1, 0, MAX_POSE_CROUCH_BONES + 1)
+        with pytest.raises(ProtocolError):
+            NPCCrouchFromOwnerPayload.decode(bad)
+
+    def test_frame_roundtrip(self):
+        p = NPCCrouchFromOwnerPayload(
+            form_id=0xDEADBEEF, timestamp_ms=99,
+            entries=((5, 0.0, 0.0, -10.0),))
+        raw = encode_frame(MessageType.NPC_CROUCH_FROM_OWNER, 1, p)
+        f = decode_frame(raw)
+        assert f.header.msg_type == MessageType.NPC_CROUCH_FROM_OWNER
+        assert isinstance(f.payload, NPCCrouchFromOwnerPayload)
+        assert f.payload.form_id == 0xDEADBEEF
+        assert f.payload.entries[0][0] == 5

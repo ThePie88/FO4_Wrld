@@ -63,6 +63,7 @@ def snapshot(state: ServerState, path: Path, *, pretty: bool = True) -> None:
                 "last_seen_ms": s.last_seen_ms,
                 "total_pos_updates": s.total_pos_updates,
                 "total_events": s.total_events,
+                "steam_id": s.steam_id,            # B6.6w5
                 "last_pos": _pos_to_dict(s.last_pos) if s.last_pos else None,
                 "channel_in_flight": len(s.channel.send.in_flight),
                 "channel_rtt_ms": s.channel.send.rtt.srtt_ms,

@@ -61,6 +61,31 @@ constexpr std::size_t INVENTORY_ITEM_OBJ_OFF  = 0x00;   // entry → TESBoundObj
 // formType byte at TESForm+0x1A: 0x38 = kLVLI leveled item, filter out in seed.
 constexpr std::uint8_t FORMTYPE_OFF           = 0x1A;
 constexpr std::uint8_t FORMTYPE_LVLI          = 0x38;
+constexpr std::uint8_t FORMTYPE_NPC           = 0x2D;  // kTESNPC
+
+// Build 35 (2026-05-16) — ONE-HOOK BASEFORM SWAP.
+//
+// PlayerNPC has formID == 0x07 globally. It is the root cause of the
+// 155+ engine special-case branches we keep hitting (damage, perception,
+// aim, faction, relation, AddTarget validators). Every place the engine
+// reads `*(actor+0xE0)->formID` and compares it to 0x07 takes a
+// "this is the player" path that derefs player-only sub-objects.
+//
+// Our ghost is spawned via PlaceAtMe(PlayerNPC) — only way we found to
+// get a working Actor* with a body mesh — but the inherited baseForm
+// poisons every subsequent engine read.
+//
+// THE ONE FIX: at runtime, when we observe ANY other actor whose
+// baseForm is a TESNPC (formType=0x2D) with formID != 0x07, we cache
+// that pointer. Then we overwrite ghost+0xE0 with the cached pointer.
+// All subsequent engine reads of `*(ghost+0xE0)` return a vanilla NPC,
+// none of the player-special branches fire, and the entire crash
+// taxonomy collapses in a single 8-byte write.
+//
+// We never modify the cached vanilla TESNPC itself — it's a shared
+// engine singleton (one TESNPC per record in the loaded plugins).
+// We only point the ghost at it.
+constexpr std::uint32_t PLAYERNPC_FORMID      = 0x00000007;
 
 // Engine helpers for inventory iteration.
 constexpr std::uintptr_t INVLIST_MUTEX_LOCK_RVA   = 0x01658FE0; // lock(mtx*)
@@ -1234,6 +1259,133 @@ constexpr std::size_t    ACTOR_FLAGS_720_OFF            = 0x2D0;   // u32 flags,
 //   ... then call original so it writes our coords into self+24/28/32.
 constexpr std::uintptr_t AIM_SET_TARGET_RVA = 0x00E65820;
 
+// ============================================================================
+// PUPPET FIRE PHASE 1 — supervisor-verified offsets (2026-05-17)
+// See re/puppet_fire_phase1/SUPERVISOR_SYNTHESIS.md §7.1 + the 4 dossiers in
+// the same directory. Each constant has worker citation + supervisor spot-check.
+// ============================================================================
+
+// Weapon-state class setter (Worker A verified — funcs_0307.md:6070,
+// text_0142.asm:6192-6212, size 0x270).
+//   char __fastcall(Actor* actor /*rcx*/, u32 slot /*edx*/, int new_class /*r8d*/)
+//
+// Writes new_class to slot_record[+56] (canonical state read by reader
+// sub_140CD1770) and, for new_class ∈ {1..6}, to Actor+0x130 bits 25..27.
+// For class ∈ {15,16,17} (puppet-fire range) only the slot record is written;
+// the 3-bit packed field cannot hold values 7+.
+//
+// Preconditions: Actor+0x300 (primary AIProcess) non-null AND slot record
+// exists for `slot`. Does NOT consult Actor+0x328 — safe on actors WITHOUT
+// HighProcess.
+constexpr std::uintptr_t WEAPON_STATE_CLASS_SETTER_RVA = 0x00CD1830;
+
+// Slot resolver — equipment walker for the slot id used by class setter and
+// WeaponFireHandler (Worker A verified — funcs_0307.md:5287, size 0x57).
+//   int* __fastcall(Actor* actor, int* out_slot, int64_t zero_pair[2])
+// Returns pointer (= &out_slot); sets *out_slot to slot id or -1 sentinel.
+constexpr std::uintptr_t ACTOR_RESOLVE_WEAPON_SLOT_RVA = 0x00CD0A60;
+
+// CombatAimController vtable RVA (Worker B verified — rtti_catalog:5075,
+// confirmed across all 4 ctor callers). 17-slot vtable.
+constexpr std::uintptr_t COMBAT_AIM_CONTROLLER_VTBL_RVA = 0x02578C28;
+
+// CombatAimController field offsets (Worker B + supervisor walk verified —
+// ctor sub_140E653D0 funcs_0333.md:14129-14153, SetAimTarget body 14379-14395).
+// Block size: 0x40 (64 bytes).
+constexpr std::size_t AIM_CTRL_PARENT_HIGHPROC_OFF = 0x10;   // = HighProcess*
+constexpr std::size_t AIM_CTRL_TARGET_POS_X_OFF    = 0x18;   // float (written by SetAimTarget)
+constexpr std::size_t AIM_CTRL_TARGET_POS_Y_OFF    = 0x1C;   // float
+constexpr std::size_t AIM_CTRL_TARGET_POS_Z_OFF    = 0x20;   // float
+constexpr std::size_t AIM_CTRL_TYPE_TAG_OFF        = 0x28;   // u32 (1=gun, 2=charge, 3=melee — a3 from ctor)
+constexpr std::size_t AIM_CTRL_SLOT_FILTER_OFF     = 0x30;   // u32 = slot_id | (wstate_flags<<8) — match key for sub_14087D190 walk
+constexpr std::size_t AIM_CTRL_FLAGS_OFF           = 0x34;   // u32 — bit 0 = "valid aim" (set by SetAimTarget)
+constexpr std::size_t AIM_CTRL_TIMESTAMP_OFF       = 0x38;   // float = g_game_time when set
+
+// HighProcess BSTArray of CombatObjectBase* (Worker B + supervisor verified —
+// sub_14087CFA0 funcs_0240.md:8007 registers, sub_14087D190 walks).
+// Stride 8 (pointer entries). The BSTArray is populated lazily by Stage-1
+// behavior leaves when they construct CombatAimController instances.
+constexpr std::size_t HIGHPROC_CHILDREN_BSTARRAY_DATA_OFF = 0x98;   // void** data
+constexpr std::size_t HIGHPROC_CHILDREN_BSTARRAY_SIZE_OFF = 0xA8;   // u32 count
+constexpr std::size_t HIGHPROC_LOCK_OFF                   = 0x30;   // recursive spinlock (unused by us; supervisor noted for future)
+// ============================================================================
+
+// ============================================================================
+// PUPPET FIRE PHASE 1.5 — EnterCombat direct call (D agent verified, 2026-05-17)
+// See re/puppet_fire_phase1/D_AGENT_enter_combat.md
+// ============================================================================
+// sub_140CCF810 — EnterCombat. The TOP-LEVEL primitive that allocates
+// Actor+0x328 (HighProcess), allocates CombatController, registers target
+// in known_targets[], and primes AIProcess fields. Dispatches to either
+// sub_140ED2390 (fresh allocation) or sub_140ED2490 (alt/merge path) →
+// both end at sub_140878640 (combat-extension ctor).
+//
+// Signature: char __fastcall(void* observer_actor, void* subject_actor,
+//                            void* descriptor_or_NULL)
+// Returns: 1 = combat entered (Actor+0x328 populated); 0 = refused/no-op.
+//
+// With descriptor=NULL it falls into the bilateral hostility check, which
+// is where our ghost_hostility_guard FORCE-HOSTILE branch needs to be active.
+//
+// Calling this directly from C++ breaks the chicken-and-egg of:
+//   "Need raider in combat tier to install fixed-sel — but raider only
+//    enters combat tier via natural perception which doesn't see ghost
+//    across cells."
+//
+// Cite: funcs_0307.md:4421 (ID 76832/204831 per 05_functions.csv), size 0x51B.
+constexpr std::uintptr_t ENTER_COMBAT_RVA = 0x00CCF810;
+// ============================================================================
+
+// ===========================================================================
+// Strada B.2 (2026-05-22) — Manual HighProcess + AimController synthesis.
+// See re/strada_B2_synthesize_highprocess/SUPERVISOR_SYNTHESIS.md.
+//
+// sub_140ED2390 (Fresh-allocation orchestrator) — the function EnterCombat
+// calls internally when raider has no HighProcess and a fresh combat group
+// must be created (funcs_0344.md:6526, size 0xF0). Body (verbatim summary):
+//   1. Push TLS frame id 113 (recursion guard).
+//   2. If actor+0x328 != NULL → call sub_140E91D70(controller, target)
+//      (AddTarget) and return.
+//   3. Call sub_140C7ABC0(observer, target, target) — bilateral hostility
+//      predicate. If false → return 0.  Our FORCE-HOSTILE hook on
+//      sub_140C8DFF0 intercepts the inner sub_140C7AD40 call.
+//   4. Call sub_140ED44F0(combat_manager) — alloc fresh CombatController.
+//   5. AddAlly(ctrl, observer) + AddTarget(ctrl, target).
+//   6. Allocate 0x190 bytes via sub_1401E0000(0x190) (engine heap).
+//   7. Call sub_140878640(buf, observer, ctrl) — the HighProcess ctor.
+//   8. Store *(_QWORD *)(observer + 0x328) = result.
+//
+// Calling this DIRECTLY bypasses the combat-disable gate in EnterCombat
+// (sub_140CCF810:4549 — Actor+0x208+0x1D8 & 2 == 1) that refused 5/5
+// Concord raiders in Build 45 live test. Gate lives in EnterCombat's
+// preamble, not in the orchestrator.
+constexpr std::uintptr_t COMBAT_PROMOTER_FRESH_RVA = 0x00ED2390;  // sub_140ED2390
+
+// sub_140E653D0 CombatAimController ctor (funcs_0333.md:14129, size 0x8B).
+// Signature: void* __fastcall(self, parent_HighProcess, type_tag).
+// 64-byte object; self-registers to parent+0x98 BSTArray via sub_14087CFA0.
+// Ctor zeroes +0x30 (slot_filter) and +0x34 (flags) — caller MUST write
+// these after ctor returns, else the scanner sub_14087D190 predicate fails.
+constexpr std::uintptr_t COMBAT_AIM_CONTROLLER_CTOR_RVA = 0x00E653D0;  // sub_140E653D0
+
+// CombatManager singleton bag index. qword_1430DBF78 is the engine's global
+// symbol bag (already resolved as g_procmgr_bag). Bag index 135939 holds
+// the CombatManager* used by sub_140CCF810:4498 as the a1 to sub_140ED2390.
+constexpr std::size_t COMBAT_MANAGER_BAG_INDEX = 135939;
+
+// HighProcess field offsets (for safety reads and skip-tick write).
+constexpr std::size_t HIGHPROC_OWNER_HANDLE_OFF    = 0x68;  // owner Actor handle DWORD
+constexpr std::size_t HIGHPROC_TARGET_HANDLE_OFF   = 0x6C;  // primary combat target handle DWORD
+constexpr std::size_t HIGHPROC_SKIP_TICK_FLAG_OFF  = 0x189; // sticky skip-tick byte (Agent 1 §8.1 step 6)
+// HIGHPROC_CHILDREN_BSTARRAY_{DATA,SIZE}_OFF already defined elsewhere as 0x98/0xA8.
+
+// CombatAimController field offsets (40-byte object).
+constexpr std::size_t AIM_CTRL_REFCOUNT_OFF        = 0x08;  // NiRefObject refcount
+constexpr std::size_t AIM_CTRL_PARENT_OFF          = 0x10;  // HighProcess*
+// AIM_CTRL_TARGET_POS_OFF, AIM_CTRL_TYPE_TAG_OFF, AIM_CTRL_SLOT_FILTER_OFF,
+// AIM_CTRL_VALID_FLAG_OFF, AIM_CTRL_TIMESTAMP_OFF already defined elsewhere.
+// ===========================================================================
+
 // HOOK #4 — Actor::TickMovementController (per-actor wrapper).
 //
 // Tortuous history (in order):
@@ -1533,6 +1685,67 @@ constexpr std::size_t HIT_DATA_TARGET_ACTOR_OFFSET = 0x300;
 // this should give us totally neutral, non-aggressive tracked NPCs.
 constexpr std::uintptr_t ACTOR_COMBAT_ORCHESTRATOR_RVA = 0x00CCFDF0;
 
+// Build 40 (2026-05-17) — ghost_combat_force hook RVAs.
+//
+// Per re/AI_pipeline/MASTER.md cross-section synthesis: the engine
+// rejects our ghost as a combat target through 4 INDEPENDENT validity
+// gates (A=Hostility, B=Weapon-state, C=Aim-solver, D=Alive-count).
+// Bypassing any one is insufficient — they cascade. We hook the 4
+// decision points to force engine to treat ghost as a valid hostile
+// target, then vanilla AI handles locomotion / aim / fire naturally
+// (body rotation, walk-to-target, cover, anim graph, fire timing —
+// all from engine's own pipeline, no puppet-rendering).
+//
+// Section 10 §1: sub_140C8DFF0 HostilityCore (returns 0/1/2/3).
+// Section 03 §3: sub_140E9E650 alive-counter (writes controller+0x110).
+// Section 06 §1: sub_1404FB890 cell-loaded (returns 0/1).
+// Section 06 §8: sub_14087A900 post-pick gate (returns 0/1 "re-pick / stay engaged").
+
+constexpr std::uintptr_t HOSTILITY_CORE_RVA    = 0x00C8DFF0; // sub_140C8DFF0
+constexpr std::uintptr_t ALIVE_COUNTER_RVA     = 0x00E9E650; // sub_140E9E650
+constexpr std::uintptr_t CELL_LOADED_RVA       = 0x004FB890; // sub_1404FB890
+constexpr std::uintptr_t POST_PICK_GATE_RVA    = 0x0087A900; // sub_14087A900
+
+// Build 44 (2026-05-17) — event dispatch guard for use-after-free
+// crash exposed by Build 43b. Combat orchestrator schedules events
+// on `a2` event sinks whose vtable can be stale after the sink's
+// lifetime ends; vt[3] dispatch at sub_140DEF780+0x22 reads garbage
+// → EXEC fault. Our detour validates vt[3] is in module .text before
+// passing through.
+constexpr std::uintptr_t EVENT_DISPATCH_RVA    = 0x00DEF780; // sub_140DEF780
+
+// Build 38 (2026-05-16) — combat target ENGAGE gate.
+//
+// `sub_140CF6100` = target engagement / cell-gated commit.
+// Signature: `bool __fastcall(__int64 a1_controller, __int64 a2_target, char a3)`
+// Size 0x7A6. 3 callers, all in combat brain (funcs_0309:4177,
+// funcs_0311:11324, funcs_0313:8387) — all consume bool return.
+//
+// Internal cell-gate at funcs_0309.md line 9926:
+//     if (!v12 || PC.parent_cell != target.parent_cell) goto LABEL_28;
+//     sub_140CF1130(a1, v7, a2);  // ← commit, activates target.AIProcess
+//     return 0;
+//
+// `qword_1430DBF78[257117]` is PC singleton; `+184 = +0xB8` is
+// parent_cell. Our ghost has stale parent_cell from spawn-time
+// AttachREFR-bypass (set to Sanctuary cell while PC is in Concord).
+// Without satisfying this gate the engine takes the LABEL_28
+// fallback (returns v11=1 "bailed") and never commits the ghost as
+// an aggro target. Symptom: raider weapon-ready pose forever, no
+// fire / no swing.
+//
+// Build 37 attempted to satisfy this by directly writing
+// `ghost+0xB8 = PC.parent_cell` every PEER_POS tick → catastrophic
+// crash because per-tick walkers OUTSIDE this gate then processed
+// the ghost as in-cell and iterated baseForm sublists with
+// incomplete vt[103] entries → vtable past-end AV.
+//
+// Build 38 strategy: hook `sub_140CF6100`, save+swap ghost+0xB8 only
+// for the duration of the call, restore on return. Per-tick walkers
+// run between calls and see stale ghost.cell → don't iterate ghost
+// as in-cell → no crash.
+constexpr std::uintptr_t COMBAT_ENGAGE_GATE_RVA = 0x00CF6100;
+
 // .data slot holding the tlsIndex used by sub_14086FCA0 to find the
 // per-thread CombatBehaviorThread. ABSOLUTE address per dossier:
 // 0x143E5C658 → RVA 0x03E5C658.
@@ -1550,5 +1763,711 @@ constexpr std::uintptr_t BEHAVIOR_THREAD_HOLDER_TLSIDX_RVA = 0x03E5C658;
 constexpr std::size_t BEHAVIOR_HOLDER_OFFSET            = 0x8F0;   // 2288
 constexpr std::size_t BEHAVIOR_THREAD_PROCESS_OFFSET    = 0x158;   // 344
 constexpr std::size_t BEHAVIOR_AIPROCESS_ACTOR_OFFSET   = 0x68;    // 104
+
+
+// ============================================================================
+// B6.6w0 PUPPET — replacement Update_PerFrame internal callees.
+//
+// Per re/B6.6w0_update_perframe_structural_AGENT.md: when our
+// `npc_ai_suppress` detour identifies a tracked actor, we run our own
+// 14-step subset of Update_PerFrame instead of fully bailing. The
+// subset preserves engine bookkeeping the renderer / cell / extra-data
+// systems depend on (so the puppet looks like a live actor) but skips
+// all AI decision branches.
+//
+// RVAs gathered from §2 of the dossier. All resolved to function
+// pointers at puppet install time; we never relink at call time.
+// ============================================================================
+
+// KEEP-ALWAYS callees (12 mandatory).
+constexpr std::uintptr_t PUPPET_DEATH_FADE_RVA           = 0x00C960C0; // sub_140C960C0 — death-fade / deferred death
+constexpr std::uintptr_t PUPPET_MOUNT_SWIM_FLAGS_RVA     = 0x00C5AD90; // sub_140C5AD90 — mount/swim flag sync
+constexpr std::uintptr_t PUPPET_ANIM_EVENT_DRAIN_RVA     = 0x00DA8F60; // sub_140DA8F60 — BSAnimGraphMgr push unprocessed events
+constexpr std::uintptr_t PUPPET_TICK_RENDER_STATE_RVA    = 0x00CE1720; // sub_140CE1720 — Actor::TickRenderState_PerFrame (SyncBehavior + BipedAnim::Update)
+constexpr std::uintptr_t PUPPET_SHUTDOWN_TRANSITION_RVA  = 0x00C9B860; // sub_140C9B860 — Actor::ProcessShutdownTransition
+constexpr std::uintptr_t PUPPET_ANIM_DISPATCH_DELTA_RVA  = 0x00CEEBD0; // sub_140CEEBD0 — AIProcess::AnimGraph TickWithDelta (delta>0)
+constexpr std::uintptr_t PUPPET_ANIM_DISPATCH_IDLE_RVA   = 0x00CEEB90; // sub_140CEEB90 — TickIdle (delta=0)
+constexpr std::uintptr_t PUPPET_BS_TIME_FRAME_COUNT_RVA  = 0x00C1F120; // sub_140C1F120 — BSTime::GetFrameCount (returns u8 parity)
+constexpr std::uintptr_t PUPPET_EXTRADATA_PARITY_TICK_RVA = 0x00280660; // sub_140280660 — ExtraDataList::OnFrameTickWithParity
+constexpr std::uintptr_t PUPPET_AIPROC_POST_EXTRA_RVA    = 0x00CF2290; // sub_140CF2290 — AIProcess::OnTickPostExtra
+constexpr std::uintptr_t PUPPET_STATIC_BLOCK_CHECK_RVA   = 0x00C65F50; // sub_140C65F50 — Actor::OnFrameStaticBlockCheck (water/cell)
+
+// Helpers used during graph-mgr / stack-local handling.
+constexpr std::uintptr_t PUPPET_GRAPHMGR_IS_LOADING_RVA  = 0x00DC8170; // sub_140DC8170 — BSAnimGraphMgr::IsLoading predicate
+constexpr std::uintptr_t PUPPET_ACTOR_IS_LOADED3D_RVA    = 0x00516FB0; // sub_140516FB0 — Actor::IsLoaded3DInWorld
+constexpr std::uintptr_t PUPPET_STACK_LOCAL_CTOR_A_RVA   = 0x016597B0; // sub_1416597B0 — stack-local init (BSTArray / NiPointer ctor)
+constexpr std::uintptr_t PUPPET_STACK_LOCAL_CTOR_B_RVA   = 0x01659470; // sub_141659470 — second stack-local init
+constexpr std::uintptr_t PUPPET_STACK_LOCAL_DTOR_RVA     = 0x0029CC10; // sub_14029CC10 — stack-local dtor (pairs to ctor_a/b)
+
+// Field offsets used by the puppet body.
+constexpr std::size_t ACTOR_AIPROCESS_PTR_OFF        = 0x300;   // *(Actor+0x300) = AIProcess*
+constexpr std::size_t ACTOR_GRAPHMGR_SMARTPTR_OFF    = 0x318;   // smart-ptr to BSAnimGraphMgr
+constexpr std::size_t ACTOR_FLAGS_43C_OFF            = 0x43C;   // Actor::flags_43C
+constexpr std::size_t ACTOR_TIMER1_OFF               = 0x3A0;   // float countdown 1 (idle/speech)
+constexpr std::size_t ACTOR_TIMER2_OFF               = 0x388;   // float countdown 2
+constexpr std::size_t ACTOR_TIMER1_INT_OFF           = 0x39C;   // companion int that gets zeroed when timer1<=0
+constexpr std::size_t ACTOR_EXTRADATALIST_OFF        = 0x008;   // Actor+0x08 = ExtraDataList*
+constexpr std::size_t ACTOR_AIPROC_INNER_OFF         = 0x010;   // AIProcess inner offset for anim-graph dispatch (aiproc->inner = *(aiproc+0x10))
+
+// Graph-mgr vtable slot 8 (= byte offset 0x40 in the vtable).
+constexpr std::size_t GRAPHMGR_VT_UPDATE_OFF         = 0x040;
+// Actor vtable slot 81 (= byte offset 0x288).
+constexpr std::size_t ACTOR_VT_UPDATELOADEDREF_OFF   = 0x288;
+
+// ============================================================================
+// B6.6w4 — server-driven fire trigger (REWRITTEN per fire-trigger audit
+// AGENT, 2026-05-12 late night).
+//
+// Earlier B6.6w1 path used sub_140479680 + manual slot read from
+// dword_142ED4E40. That global is a FALLBACK initial value only — the
+// vanilla resolver overwrites it dynamically. Live: zero fire_actor_weapon
+// OK logs were ever observed.
+//
+// New path: WeaponFireHandler `sub_140DFF6B0` @ RVA 0xDFF6B0 (verified
+// at D:/falloutworld_decomp/out/10_decomp/funcs_0325.md:9573).
+// Signature: `char __fastcall sub_140DFF6B0(__int64 unused, Actor* actor,
+//                                            __int64* anim_event_arg)`
+// Body internally:
+//   1. If anim_event_arg is a valid BSFixedString-like → atoi the string
+//      to get slot id. Else → call vanilla `sub_140CD0A60(actor, &slot,
+//      &inst)` which walks equipManager and returns the correct slot.
+//   2. Validate weapon-state class is projectile (class in {15,16,17}).
+//   3. Build BGSObjectInstance via sub_140CD07F0.
+//   4. Call sub_140479680(buf, actor, slot, 0, 0) — Projectile::Launch.
+//   5. Ammo bookkeeping + weapon-state advance.
+//
+// We call it as fire(0, actor, nullptr) so the vanilla slot resolver
+// kicks in. Eliminates the dword_142ED4E40 dependency entirely.
+constexpr std::uintptr_t WEAPON_FIRE_HANDLER_RVA = 0x00DFF6B0;
+
+// Legacy — kept for compat, no longer used by new fire path.
+constexpr std::uintptr_t ACTOR_RESOLVE_WEAPON_FOR_SLOT_RVA = 0x00CD07F0;
+constexpr std::uintptr_t EQUIP_DEFAULT_SLOT_DWORD_RVA       = 0x02ED4E40;
+
+// ============================================================================
+// B6.6w4 — engine-native movement-controller disable (replaces 4-hook
+// pos-freeze cascade).
+//
+// Per pos-freeze audit AGENT (2026-05-12 late night). The agent identified
+// a single byte gate at `MovementControllerNPC + 0x1A1`:
+//   - Read via sub_140DC8170 (returns u8 at +0x1A1)
+//   - Write to 1 via sub_140DC80B0 (also does vt-cleanup on inner controllers)
+//   - When byte == 1, Actor::TickMovementController (sub_140C65E20) reads
+//     the byte and BAILS its entire body — engine-native suppression.
+//
+// Verified in decomp:
+//   - sub_140DC80B0 setter @ funcs_0321.md:8048
+//   - sub_140DC8170 getter @ funcs_0321.md:8092
+//   - Actor::TickMovementController body @ funcs_0301.md:9525:
+//       v3 = a1[99];          // = *(actor + 0x318) = MovementController*
+//       if (!sub_140DC8170(v3)) {
+//           // ... movement work runs here ...
+//       }
+//
+// MovementController pointer at Actor + 0x318 (a1[99] in funcs_0301.md:9521,
+// 99 * 8 == 0x318).
+//
+// Single call site replaces all 4 of (ghost_ai_movement,
+// ghost_ai_pos_belt, ghost_ai_actor_setpos, ghost_ai_havok_step) since
+// engine vanilla itself uses this path (scene-start, dialog, ~10 call
+// sites — combat / perception / anim are designed to tolerate the
+// disabled state).
+constexpr std::uintptr_t MOVCTRL_SET_DISABLED_RVA = 0x00DC80B0;
+// Offset of the disabled-byte INSIDE MovementControllerNPC.
+constexpr std::size_t    MOVCTRL_DISABLED_BYTE_OFF = 0x1A1;
+// Actor field holding the MovementController pointer.
+constexpr std::size_t    ACTOR_MOVCTRL_PTR_OFF     = 0x318;
+
+// ============================================================================
+// B6.6w5 — engine-native PlayerCharacter spawn path (no PlaceAtMe).
+//
+// PlaceAtMe was rejected: it is a console/Papyrus shim that creates a
+// generic Actor REFR, not the engine's true player-creation path. With
+// PlaceAtMe the engine's vanilla AI keys on the singleton at 0x1432D2260
+// (the local player) and treats the spawned actor as just-another-NPC —
+// the spawned actor can never be a "player target" for remote raiders.
+//
+// True player-creation path (verified in re/B6.6w5_player_ctor_audit.md
+// against D:\falloutworld_decomp\out\10_decomp\):
+//
+//   funcs_0298.md:7767-7778  CALLER PATTERN (sub_140C3E3C0)
+//     v3 = sub_1416579C0(&unk_143E5E0F0, 0xE10u, 0x10u, 1);  // alloc
+//     v5 = sub_140D52350(v3);                                // ctor
+//     MEMORY[0x1432D2260] = v5;                              // singleton
+//                                                            //   (we SKIP)
+//     vt[65](v5, 20, true);                                  // SetFormID
+//                                                            //   (we patch
+//                                                            //    directly)
+//
+// We re-use the alloc + ctor but skip the singleton write and the form-table
+// insert, then apply four mandatory post-ctor patches:
+//
+//   1. Restore MEMORY[0x1431E2D50] (secondary player-pointer) — the ctor
+//      unconditionally clobbers this at funcs_0314.md:6224. 30+ engine
+//      sites use it as `if (actor == MEMORY[0x1431E2D50])` for player
+//      equality. If we don't restore, the real player becomes "not the
+//      player" everywhere.
+//   2. Write ghost form-id to a unique value (e.g. 0xFF000001) at +0x14.
+//      The ctor's TESForm base allocated a runtime form-id via
+//      sub_1402E6920 (funcs_0140.md:5705) — we overwrite it with our
+//      peer-stable id.
+//   3. OR in TEMPORARY flag (0x4000) at +0x10. Ctor leaves flags = 0x400
+//      (kInitialized only). Without TEMPORARY the form is save-eligible
+//      and will balloon save size.
+//   4. Register with ProcessLists via sub_140DAF6D0(qword_1430DBF78[41],
+//      ghost). Ctor's a2=0 gate at funcs_0304.md:7593 skips this. Without
+//      it the ghost is invisible to AI perception.
+//
+// Allocator details (verified in re/B6.6w5_player_ctor_audit.md §Q6):
+//   - sub_1416579C0 (funcs_0471.md:6687) is the generic Bethesda
+//     MemoryManager allocator, used in 112+ files for heterogenous
+//     allocations. Not capacity-limited. Signature:
+//       void* alloc(MemMgr* mgr, size_t size, unsigned align, char aligned_path)
+//   - unk_143E5E0F0 is the global MemoryManager instance.
+//   - dword_143E5F2D0 is the lazy-init state (0=uninit, 2=done). Engine
+//     guards every alloc with `if (dword_143E5F2D0 != 2) lazy_init(...)`.
+//     We mirror this guard.
+//   - sub_141657F90 is the lazy-init worker.
+
+constexpr std::uintptr_t PLAYER_CTOR_RVA          = 0x00D52350; // sub_140D52350
+constexpr std::uintptr_t MEMMGR_ALLOC_RVA         = 0x016579C0; // sub_1416579C0
+constexpr std::uintptr_t MEMMGR_LAZY_INIT_RVA     = 0x01657F90; // sub_141657F90
+constexpr std::uintptr_t MEMMGR_INSTANCE_RVA      = 0x03E5E0F0; // unk_143E5E0F0
+constexpr std::uintptr_t MEMMGR_INIT_GUARD_RVA    = 0x03E5F2D0; // dword_143E5F2D0
+
+// Secondary player-equality singleton. funcs_0314.md:6224 writes this
+// inside the PlayerCharacter ctor. Used by 30+ engine sites for the
+// `actor == player` check.
+constexpr std::uintptr_t PLAYER_ALT_SINGLETON_RVA = 0x031E2D50; // MEMORY[0x1431E2D50]
+
+// Engine "ProcessManager bag" — array of 42+ subsystem pointers keyed
+// by index in qword_1430DBF78. Index 41 (= byte offset 41*8 = 0x148)
+// holds the ProcessLists instance pointer; many engine sites read this
+// as `qword_1430DBF78[41]`. We resolve to module_base + 0x30DBF78 then
+// add 0x148 to reach the ProcessLists* slot.
+constexpr std::uintptr_t PROCMGR_BAG_RVA          = 0x030DBF78; // qword_1430DBF78
+constexpr std::size_t    PROCMGR_BAG_PROCESSLISTS_IDX = 41;     // [41] = ProcessLists*
+
+// ProcessLists::AddActor (sub_140DAF6D0 @ funcs_0320.md:7213). Signature:
+//   void __fastcall(ProcessLists* pl, Actor* actor);
+// Appends to internal handle list at pl+360 and sets Actor+720 bit 0x200.
+// Idempotent — if actor handle already present, skips append but still
+// sets the +720 bit.
+constexpr std::uintptr_t PROCESSLISTS_ADD_ACTOR_RVA = 0x00DAF6D0;
+
+// PlayerCharacter sizeof (verified at funcs_0298.md:7767 — caller passes
+// 0xE10 to MemMgr::alloc as the requested size).
+constexpr std::size_t    PLAYER_INSTANCE_SIZE      = 0xE10;
+// Required alignment for PlayerCharacter alloc (also caller-supplied).
+constexpr std::uint32_t  PLAYER_INSTANCE_ALIGN     = 0x10;
+
+// TESForm flag bits. kTemporary (0x4000) — when set, the form is not
+// serialized into saves and TESForm ctor would force form_id=0x800.
+// We OR this in post-ctor (TESForm ctor already allocated a real fid;
+// we then overwrite it with our peer fid anyway).
+constexpr std::uint32_t  TESFORM_FLAG_TEMPORARY    = 0x4000;
+// Existing FLAGS_OFF = 0x10 already defined at top of file (TESForm::flags).
+
+// Form-id base for ghost peers. Engine plugin form-id high byte is the
+// load-order mod-index; 0xFF is reserved by F4SE/engine as "no plugin"
+// transient space. Using 0xFF000001+ ensures we don't collide with any
+// loaded ESM/ESP form.
+constexpr std::uint32_t  GHOST_FORMID_BASE         = 0xFF000001;
+
+// ============================================================================
+// B6.6w5 Build 6 — cell-attach + leaf position writer.
+//
+// Per re/B6.6w5_cell_attach_aiprocess_audit.md Q2:
+//   sub_140517020(refr, cell) at funcs_0175.md:10568-10641
+//     — REFR::SetParentCell. Two-phase:
+//       Phase A: remove from old cell (decrement counters at old_cell+208+512/516/520)
+//       Phase B: add to new cell (increment counters at new_cell+208+512/516/520)
+//     Then writes refr+184 = cell.
+//   Cell does NOT maintain a per-actor handle list — just 3 atomic refcounts.
+//   For our ghost (no prior cell), Phase A is no-op. Phase B increments and writes.
+//
+// Per re/B6.6w5_player_ctor_audit.md (referenced) + this audit:
+//   sub_140513A80(refr, pos[3]) at funcs_0175.md:7953
+//     — REFR::SetPosition leaf writer. Writes Actor+0xD0/D4/D8 (POS_OFF triplet)
+//     and emits vt[13](2) cell-change broadcast. SEH-safe target.
+
+constexpr std::uintptr_t REFR_SETPARENTCELL_RVA    = 0x00517020; // sub_140517020
+constexpr std::uintptr_t REFR_SETPOSITION_LEAF_RVA = 0x00513A80; // sub_140513A80
+
+// B6.6w5 Build 12 (Fix 2) — engine handle allocator.
+//
+// sub_14022C8B0 takes (DWORD* out_handle, Actor* actor) and:
+//   - if actor has bit 0x400 set in actor+0x28 (already in handle table):
+//     returns the existing handle in *out_handle, no allocation
+//   - if actor has refcount > 0 in actor+0x28 but bit 0x400 cleared:
+//     allocates a fresh slot in unk_1430DA390, writes handle to *out
+//     AND to actor+0x28 (with bit 0x400 set, slot_idx in bits 11-20)
+//   - else (refcount=0): returns dword_1430DA180 (= NULL_HANDLE = 0)
+//
+// Verified at funcs_0120.md:9862-9931 (handle audit).
+// To preallocate a fresh handle for our duplicate, we MUST set
+// `duplicate+0x28 = 1` (refcount=1, bit 0x400 cleared) BEFORE calling.
+// The "v6 == dword_1430DA180" gate (line 9884) requires v6 = 0; for
+// that, bit 0x400 must be clear and dword_1430DA180 == 0 (which Agent A
+// verified statically in 08_data_section.hex).
+constexpr std::uintptr_t HANDLE_GET_OR_ALLOC_RVA   = 0x0022C8B0; // sub_14022C8B0
+
+// ============================================================================
+// B6.6w5 Build 29 — Engine-native CombatTargetSelectorFixed installation.
+//
+// To get the engine to GENUINELY commit to ghost_proxy as a raider's combat
+// target (instead of fighting the per-frame `sub_14087B080` promoter that
+// stomps our aiproc+0x6C writes), we install a CombatTargetSelectorFixed on
+// each raider's AIProcess. This is the engine's own mechanism — same path
+// vanilla Bethesda uses for Papyrus `ForceCombatTarget`.
+//
+// Prerequisites (VERIFIED in decomp + re/B6.6w5_fixed_selector_audit notes):
+//   1. Ghost MUST be in `controller.known_targets[]` — added via
+//      `sub_140E91D70(controller, ghost)`. Without this, the Fixed selector's
+//      vt[5] refresh calls `sub_140E98250(controller, ghost)` which checks
+//      `(ghost+0x10 & 0x820) == 0` (= NOT Disabled, NOT Deleted) AND
+//      controller-relation — returns false → vt[5] sets flag bit 1 →
+//      promoter skips selector → no promotion.
+//
+//   2. Ghost MUST have Disabled flag CLEAR (bit 0x800 at +0x10). Otherwise
+//      the bullet point above's `(flags & 0x820) == 0` check fails.
+//
+// Implementation:
+//   - block = sub_1416579C0(&unk_143E5E0F0, 0x28, 0, 0)  — alloc 40-byte selector
+//   - sub_140EE9780(block, aiproc, ghost, 3)  — construct + self-register
+//     The ctor stores: vtable_chain (NiRefObject→Selector→Fixed) at +0,
+//     aiproc at +0x10, ghost handle at +0x18, priority(3) at +0x1C, flag(1) at +0x20.
+//     Then calls sub_14087B1F0(aiproc, block) which inserts ptr into
+//     `aiproc+0x100` BSTArray (count at `aiproc+0x110`).
+//
+// Promoter (`sub_14087B080`, called per-frame from Actor::vt[255]
+// orchestrator funcs_0307.md:4706):
+//   - phase 1: for each selector at aiproc+0x100, call vt[5] = refresh
+//   - phase 2: sort by priority descending (comparator sub_140880A10 at
+//     funcs_0240.md:11045 reads priority at selector+0x1C).
+//   - phase 3: walk sorted, pick first with (flag&1)!=0 && (flag&2)==0,
+//     call vt[6] which returns its cached handle.
+//   - phase 4: if winning handle != aiproc+0x6C, call sub_14087AB30
+//     (SetCombatTarget) with the resolved Actor.
+//
+//   With our Fixed (priority=3) in the list, it always beats Standard (priority=1)
+//   and Preferred (priority=2). Engine itself writes aiproc+0x6C every frame
+//   — we no longer need our hook.
+//
+// Verified RVAs (funcs_0337.md:1818, funcs_0346.md:6441, funcs_0358.md:4906,
+// funcs_0240.md:6180-6241, 11045):
+constexpr std::uintptr_t ADD_COMBAT_TARGET_RVA          = 0x00E91D70; // sub_140E91D70
+constexpr std::uintptr_t FIXED_SELECTOR_CTOR_RVA        = 0x00EE9780; // sub_140EE9780
+constexpr std::uintptr_t ENGINE_HEAP_ALLOC_RVA          = 0x016579C0; // sub_1416579C0
+// Static heap descriptor used by the canonical vanilla call site at
+// funcs_0358.md:4906: `sub_1416579C0(&unk_143E5E0F0, 0x28, 0, 0)`.
+// Address 0x143E5E0F0 in the static image (image base 0x140000000).
+constexpr std::uintptr_t ENGINE_HEAP_DESC_RVA           = 0x03E5E0F0; // &unk_143E5E0F0
+
+// Actor + AIProcess + selector structure offsets.
+//
+// IMPORTANT — Actor has TWO AIProcess-related slots:
+//   - +0x300: "primary" AIProcess (allocated by InitDefaults; used for
+//             tier-transition lifecycle internal bookkeeping).
+//   - +0x328: "combat" AIProcess (the one passed to SetCombatTarget by the
+//             engine, and the one whose +0x100 selector list the promoter
+//             walks). VERIFIED empirically Build 13b at
+//             engine_calls.cpp:920-947 — reading +0x300 for combat purposes
+//             yielded garbage `0x0200FEFF` values across all 5 raiders in
+//             Build 29 live test. USE +0x328 FOR COMBAT.
+constexpr std::size_t    ACTOR_AIPROCESS_OFF            = 0x328;
+constexpr std::size_t    AIPROCESS_CONTROLLER_OFF       = 0x40;
+constexpr std::size_t    AIPROCESS_SELECTOR_LIST_OFF    = 0x100;
+constexpr std::size_t    AIPROCESS_SELECTOR_COUNT_OFF   = 0x110;
+constexpr std::size_t    FIXED_SELECTOR_BLOCK_SIZE      = 0x28;
+
+// Build 39 (2026-05-17) — priority bumped from 3 to 10.
+//
+// Verified by reading sort comparator sub_140880A10 (funcs_0240.md:11048):
+//   if (pri(a2) <= pri(a1)) return -(pri(a2) < pri(a1)) else return 1;
+// With concrete test: pri(a1)=3, pri(a2)=1 → returns -1 → a1 sorts FIRST.
+// HIGHER PRIORITY SORTS FIRST. (Direction was misread by parallel agent.)
+//
+// Vanilla selectors observed at engine_calls.cpp install path investigation:
+//   - CombatTargetSelectorStandard (sub_140EE83A0) priority 1
+//     (caller sub_140878640 funcs_0344.md:4116 passes 1)
+//   - CombatTargetSelectorPreferred (sub_14097BDD0) priority 3
+//     (caller sub_140878640 funcs_0344.md:4166 passes 3)
+//   - Another vanilla Fixed at priority 3 (funcs_0358.md:4912)
+//
+// With our previous priority=3 we tied with vanilla Preferred + Fixed.
+// Quicksort sub_140880A30 is NOT stable → tie ordering unpredictable →
+// vanilla might run before ours → vanilla's vt[6] returns nonzero → loop
+// breaks → our Fixed never runs → ghost never picked → raider idle.
+//
+// Priority 10 is HIGHER than every vanilla observed → guarantees our
+// Fixed selector is the FIRST iterated in the pick loop
+// (sub_14087B080 funcs_0240.md:6209) → our ghost handle wins.
+//
+// Live-test diagnostic to confirm: if priority=10 fixes the symptom,
+// vanilla Standard/Preferred was indeed beating us. If raiders still
+// idle, the chokepoint is downstream (alive-counter / post-pick gate)
+// and we need Fix #2 / #3 from the cross-cell investigation dossier.
+constexpr int            FIXED_SELECTOR_PRIORITY        = 10;
+
+// Build 30 Fix 1 — BSReadWriteLock recovery on SEH from AddTarget.
+//
+// AddTarget (sub_140E91D70) acquires `controller + 0x120` write-lock via
+// sub_141659060 at funcs_0337.md:1877 BEFORE running the validator
+// (sub_140E924A0) that may crash on stale known_targets. If we SEH-catch
+// the validator crash, the lock stays acquired → next thread accessing
+// the same controller spins forever → main-thread freeze (Build 29.2
+// live test 2026-05-16 08:11:48).
+//
+// Spinlock layout (verified funcs_0471.md:8136, funcs_0472.md:42):
+//   +0x00: DWORD owner TID (GetCurrentThreadId() when write-held, 0 free)
+//   +0x04: DWORD count (= 0x80000001 when single-writer-held)
+// Release fn `sub_1416592C0` (funcs_0472.md:42, 26 bytes): if count
+// matches 0x80000001 (= -2147483647), clears owner TID and exchanges
+// count to 0 atomically. Safe to call when WE own the lock.
+constexpr std::size_t    CONTROLLER_SPINLOCK_OFF        = 0x120;
+constexpr std::uintptr_t LOCK_RELEASE_WRITE_RVA         = 0x016592C0;
+
+// Build 30 Fix 3 — Handle table base (unk_1430DA390). Used to inline-
+// resolve a 32-bit handle to its Actor* without refcount mutation.
+// Layout: 16-byte entries indexed by `handle & 0x1FFFFF`:
+//   +0x00: flags DWORD (bit 0x4000000 = active, bits 0x3E00000 = generation)
+//   +0x08: pointer-to-data (data is actor+32; subtract 32 for Actor*)
+// Verified at engine's resolver sub_14022CC20 funcs_0120.md:10046, also
+// referenced inline at sub_14087AB30 funcs_0240.md:5918-5929.
+//
+// The 24-byte `controller+32` known_targets[] array stores handles at
+// offset +0 of each entry (count at controller+48 = 0x30). The validator
+// (sub_140E924A0) iterates these and resolves each via sub_14022CC20 →
+// crash when resolved Actor* has stale/freed baseForm. We pre-purge by
+// zeroing entry+0 handle field; the engine's resolve-or-skip logic at
+// validator line 2229 (`!v53[0]`) then skips the entry without faulting.
+constexpr std::uintptr_t HANDLE_TABLE_BASE_RVA          = 0x030DA390;
+constexpr std::size_t    CONTROLLER_KNOWN_TGT_BASE_OFF  = 0x20;   // = 32
+constexpr std::size_t    CONTROLLER_KNOWN_TGT_COUNT_OFF = 0x30;   // = 48
+constexpr std::size_t    KNOWN_TGT_ENTRY_STRIDE         = 24;     // 24-byte records
+
+// Build 31 — EXTENDED PURGE additional field offsets per 8-agent synthesis.
+//
+// Agent B2 + D1 cross-verified the stale-handle pattern extends beyond
+// controller+0x20 to MULTIPLE fields on the (combat) AIProcess at
+// Actor+0x328. LoadGame restores these from save buffer WITHOUT
+// validating handles against the (never-reset) handle table:
+//
+//   aiproc+0x100  selectors BSTArray (CombatTargetSelector* heap ptrs;
+//                 count at aiproc+0x110). Each selector has internal
+//                 cached handle at selector+0x18 from save bytes.
+//   aiproc+0x178  cached attacker raw Actor* (no refcount, tick-lifetime)
+//   aiproc+0x180  cached target   raw Actor* (no refcount, tick-lifetime)
+//
+// sub_14087F9D0 (funcs_0240.md:10156) repopulates +0x178/+0x180 PRE-TICK
+// from +0x68/+0x6C handles. sub_14087FA30 clears them POST-TICK. Bug:
+// if save was written mid-tick, or restore path skips post-clear,
+// these raw ptrs are stuck — no generation check possible. Zero them
+// unconditionally before AI tick; engine repopulates safely.
+//
+// Validation strategies (per B2 §5):
+//   selectors[]:  walk count, check each selector_ptr != null AND
+//                 selector->NiRefObject_refcount (+0x08 DWORD) > 0.
+//                 If invalid, leave slot null but DON'T decrement count
+//                 (engine's iterators tolerate null entries).
+//   raw caches:   zero unconditionally on entry; engine repopulates.
+constexpr std::size_t    AIPROCESS_SELECTORS_BASE_OFF      = 0x100;
+constexpr std::size_t    AIPROCESS_SELECTORS_COUNT_OFF     = 0x110;
+constexpr std::size_t    AIPROCESS_CACHED_ATTACKER_OFF     = 0x178;
+constexpr std::size_t    AIPROCESS_CACHED_TARGET_OFF       = 0x180;
+constexpr std::size_t    NIREFOBJECT_REFCOUNT_OFF          = 0x08;
+
+// Build 31.3 — scalar handle fields on HighProcess (= Actor+0x328).
+// Agent B2 dossier §Top-5 #2: HighProcess+0x68/+0x6C are DWORD handles
+// resolved via `unk_1430DA390 + 16*(handle&0x1FFFFF)` at funcs_0240.md:4853
+// (sub_1408798F0 aim resolver). LoadGame restores from save buffer
+// without validating against the never-reset handle table. Resolved
+// Actor* may point to a recycled freed slot whose vtable is now
+// freelist garbage → vt[N] call lands at `0x10000002XXX` low-mem AV.
+//
+// Distinct from controller+0x20 known_targets[] array (which is a list
+// of 24-byte entries with handles at +0); these are SCALAR fields on
+// the AIProcess struct itself. Apply the same handle-table resolve +
+// vtable sanity check; zero the DWORD if invalid.
+constexpr std::size_t    AIPROCESS_TARGET_HANDLE_1_OFF     = 0x68;
+constexpr std::size_t    AIPROCESS_TARGET_HANDLE_2_OFF     = 0x6C;
+
+// Build 33 (2026-05-16) — F2/F9 agent recommendations.
+//
+// F2: Actor's 6th secondary vtable @ RVA 0x2560CB0 is the
+// IAnimationGraphManagerHolder interface vtable, a 26-slot table
+// where all slots null-check `actor+0x300 AIProcess` before doing
+// real work (verified at funcs_0304.md:15447-15466). Writing this
+// vtable to ghost+0x48 replaces the s_lock_buf_48 hack: lock-walker
+// reads it as the inline holder's vtable (valid game-module address),
+// and vt[18] dispatch (Build 31.4 crash source sub_140CD68CD) lands
+// in a real function that returns false safely when ghost.AIProcess
+// is null/sanitized.
+constexpr std::uintptr_t ACTOR_IAGMH_VTABLE_RVA           = 0x02560CB0;
+
+// F9: AIProcess scalar zero offsets (post-spawn sanitize block).
+// Agent F9 dossier: zero these to remove residual state inherited
+// from the PlaceAtMe-from-PlayerNPC ctor and force engine into "no
+// current target" fallback path. All readers null-check the resolved
+// actor / handle so zero is a safe sentinel.
+constexpr std::size_t    AIPROCESS_LOCK_COUNTER_OFF        = 0x170;
+constexpr std::size_t    AIPROCESS_ALIVE_BYTE_OFF          = 0xDF;
+constexpr std::size_t    ACTOR_IS_1P_FLAGS_OFF             = 0xDFF;
+constexpr std::uint8_t   ACTOR_IS_1P_FLAGS_BIT             = 0x02;
+
+// F5: MagicTarget inline sub-object on Actor at offset 0x110. Vt[4]
+// (= +0x20 byte offset in vtable) is the "is target immune" predicate
+// called by `sub_140C62EE0` HP-delta path at funcs_0301.md:7591-7594.
+// Returning 1 from vt[4] short-circuits damage delivery before the
+// engine touches AIProcess / HighProcess / AV chain.
+constexpr std::size_t    ACTOR_MAGIC_TARGET_OFF            = 0x110;
+constexpr std::size_t    MAGIC_TARGET_VT_IMMUNITY_SLOT     = 4;   // vt[4]
+
+// NOTE: SetDisabled is already resolved in engine_calls.cpp::init at hardcoded
+// RVA 0x0519410 → `g_set_disabled`. Build 29 will change `SetDisabled(proxy, 1)`
+// to `SetDisabled(proxy, 0)` in spawn_ghost_proxy so the (flags & 0x820)==0
+// check inside `sub_140E98250` (Fixed selector vt[5] refresh) passes.
+
+// ============================================================================
+// Build 57 (2026-05-23) — GLOBAL WALKER GUARD RVAs.
+//
+// Reverse-engineered in 6-agent arena 2026-05-23 (re/walker_inventory/
+// AGENT_{A,B,C,D,E,F}_*.md). The arena enumerated every engine function
+// that iterates a global collection containing actor pointers and
+// dispatches a virtual or function-pointer call on each entry. Walker
+// guards in `ghost_global_walker_guards.cpp` hook each HIGH-RISK walker
+// and bail safely when the entry/controller is the ghost or has the
+// known sentinel-poison patterns.
+//
+// CRASH KILLER (build 56 → 57 motivating finding):
+//   sub_140E98820 (CombatController::FindEntryByFormID, RVA 0xE98820,
+//   size 0x76). Linear search over the 208-byte-stride known_targets[]
+//   table at controller+0x08. The AV at 0xE98860 is `cmp [r8+rdx], ecx`
+//   where rdx = *(controller+8). If controller+0x08 == -1 (or 0), the
+//   first compare AVs at addr=0xFFFFFFFFFFFFFFFF. The fix is a SINGLE
+//   hook here that returns 0 ("not found") when the entries-base is
+//   poisoned. Killing this AV class eliminates 27 wrapper crash sites
+//   simultaneously (full enumeration in AGENT_D §6).
+// ============================================================================
+
+// --- AGENT D: combat controller table walkers ---
+
+// sub_140E98820 — CombatController::FindEntryByFormID
+// Signature: __int64(controller, _DWORD* target_formid)
+// Behavior:  linear-search entries[] at ctrl+0x08, stride 0xD0 (208 B),
+//            count at ctrl+0x18. Returns entry ptr or 0.
+// Hook:      pre-check ctrl+0x08 against -1 / 0 / unmapped; if poisoned,
+//            return 0 ("not found") instead of letting the cmp AV.
+constexpr std::uintptr_t COMBATCTRL_FIND_ENTRY_RVA   = 0x00E98820;
+
+// sub_140E988A0 — CombatController housekeeping pass (decay/cull).
+// Sole caller sub_140E918C0:1784. Body 0x862 bytes; reads entries-base
+// and id_list-base in 7+ dispatch sites. Guard: skip when ctrl is
+// ghost-engaged set OR ctrl+0x08 is poisoned.
+constexpr std::uintptr_t COMBATCTRL_HOUSEKEEPING_RVA = 0x00E988A0;
+
+// sub_140E918C0 — CombatController::ProcessTick.
+// Per-tick AI processor; iterates entries[], invokes cull predicate
+// sub_140E9E2B0, then iterates secondary id_list at ctrl+0x20.
+// Guard: skip whole tick when ctrl is ghost or entries-base poisoned.
+constexpr std::uintptr_t COMBATCTRL_PROCESS_TICK_RVA = 0x00E918C0;
+
+// sub_140E91D70 — CombatController::AddKnownTarget.
+// Allocates new 208-byte entry, called from sub_14087A320, sub_14087CAD0,
+// sub_140ED45D0. May AV in BSTArray-Grow if entries_base is poisoned.
+constexpr std::uintptr_t COMBATCTRL_ADD_TARGET_RVA   = 0x00E91D70;
+
+// CombatController struct field offsets (AGENT_D §2.4 verified).
+constexpr std::size_t  COMBATCTRL_ENTRIES_BASE_OFF   = 0x08;  // entries[]* base
+constexpr std::size_t  COMBATCTRL_ENTRIES_COUNT_OFF  = 0x18;  // entry count
+constexpr std::size_t  COMBATCTRL_ID_LIST_BASE_OFF   = 0x20;  // secondary id_list base
+constexpr std::size_t  COMBATCTRL_ID_LIST_COUNT_OFF  = 0x30;  // id_list count
+constexpr std::size_t  COMBATCTRL_ENTRY_STRIDE       = 0xD0;  // 208 bytes per entry
+constexpr std::size_t  COMBATCTRL_ENTRY_FORMID_OFF   = 0x00;  // formid at entry+0
+constexpr std::size_t  COMBATCTRL_ENTRY_FLAGS_OFF    = 0x0C;  // flags at entry+0xC
+
+// Actor field: combat controller pointer at actor+0x40 (AGENT_D §2.5,
+// confirmed via decomp funcs_0240.md:5407,5446,5452).
+constexpr std::size_t  ACTOR_COMBAT_CONTROLLER_OFF   = 0x40;
+
+// --- AGENT C: known_targets[] / allies[] tier-1 walkers ---
+
+// sub_140E98480 — dispatches vt[256] on each known_target actor.
+constexpr std::uintptr_t COMBATCTRL_TIER1_E98480_RVA = 0x00E98480;
+
+// sub_140E97D30 — deep sub-object dispatch on actor+0x58.
+constexpr std::uintptr_t COMBATCTRL_TIER1_E97D30_RVA = 0x00E97D30;
+
+// sub_140E9D710 — per-frame group-cleanup with 3 nested loops.
+constexpr std::uintptr_t COMBATCTRL_TIER1_E9D710_RVA = 0x00E9D710;
+
+// --- AGENT A: form table walker (known crash class) ---
+
+// sub_140C06AC0 — post-load form-table rehydrator. Dispatches vt[51]
+// on every entry in qword_1430DBF78[2506] global table. Known crash
+// site documented in re/crash_death_vtable_cascade/AGENT_crash_analysis.md.
+// Hook: skip-entry if entry == ghost during iteration. Detour body
+// re-walks the bucket loop with a ghost-skip filter.
+constexpr std::uintptr_t FORM_TABLE_REHYDRATOR_RVA   = 0x00C06AC0;
+
+// --- AGENT E: death broadcast + LOS walker ---
+
+// sub_140C80D70 — death broadcast walker. Iterates ProcessLists.actors
+// dispatching sub_140D0B740(actor.AIProcess, actor, dyingActor) per actor.
+// Called from Actor::Kill (sub_140C58150). Guard: when dyingActor maps to
+// any peer/ghost, skip dispatch on entries whose actor == ghost.
+constexpr std::uintptr_t DEATH_BROADCAST_WALKER_RVA  = 0x00C80D70;
+
+// sub_140DA28A0 — LOS / sight-cone walker. Dispatches vt[140], vt[148],
+// vt[192] per actor in ProcessLists; reads deep into combat extension
+// at actor+0x300. Likely next crash surface if ghost has no extension.
+constexpr std::uintptr_t LOS_SIGHT_CONE_WALKER_RVA   = 0x00DA28A0;
+
+// --- AGENT F: global per-frame thunks reaching ghost ---
+
+// Master profiler table at 0x142F25B20 holds 70 thunk-descriptor pairs.
+// Of those, the following per-frame walkers REACH the ghost (per AGENT_F):
+constexpr std::uintptr_t ANIMS_AND_EFFECTS_THUNK_RVA = 0x00BD5300;  // → sub_141695CF0
+constexpr std::uintptr_t FOOT_IK_THUNK_RVA           = 0x00BD5720;  // → sub_140DB39A0
+constexpr std::uintptr_t CELL_ATTACH_JOBS_THUNK_RVA  = 0x00BD62A0;  // CellAttachJobs
+
+// Per-actor render dispatchers (not yet hooked, predicted next-crash):
+constexpr std::uintptr_t PER_ACTOR_RENDER_RVA        = 0x021BBD20;
+constexpr std::uintptr_t PER_ACTOR_RENDER_2ND_RVA    = 0x022267A90;
+constexpr std::uintptr_t UPDATE_WORLD_DATA_RVA       = 0x016C85A0;
+
+// Anim graph manager flush (called from AnimsAndEffects thunk):
+constexpr std::uintptr_t ANIM_GRAPH_FLUSH_RVA        = 0x01695CF0;
+
+// --- Build 59 (2026-05-24) — Lock primitive null-deriv guard ---
+//
+// AV #1 in Build 58 live test (2026-05-24 04:18:05.714):
+//   rip=...0x1658FEF fault=READ addr=0x40 rcx=0x40 r8=raider
+//   stack: 0xD00D0B (= inside sub_140D00D50 EnterCombat alt-path)
+//
+// Pattern: engine code does `lea rcx, [actor_subobj + 0x40]; call lock`
+// where actor_subobj is NULL (raider has no synthesized combat state).
+// Derived rcx = 0 + 0x40 = 0x40. BSSimpleMutex::lock(0x40) dereferences
+// rcx → AV at addr=0x40.
+//
+// 0x01658FE0 is INVLIST_MUTEX_LOCK_RVA per the existing block — it's the
+// generic BSSimpleMutex::lock used by hundreds of engine subsystems.
+// Hooking it with a `rcx < 0x10000` bail kills the null-deriv class
+// without affecting legitimate lock acquisitions (heap pointers always
+// >= 0x10000 = 64 KiB first user page).
+constexpr std::uintptr_t LOCK_PRIMITIVE_GUARD_RVA    = 0x01658FE0;
+
+// --- Build 62.1 (2026-05-24) — 2 unguarded CC-walker functions ---
+//
+// Live AV cascade in Build 62 testing (19:19:45, ~38s post EnterCombat):
+//   AV @ RVA 0xE92505 — inside sub_140E924A0 (GroupMembershipGate),
+//     reads [CC+0x20] = id_list_base, fault addr 0xA0000046B /
+//     0xE000004A0 (pool-reuse garbage, low-canonical pattern).
+//     Sole caller: sub_140E91D70 (AddKnownTarget) at line 1874.
+//   AV @ RVA 0xE92299 — inside sub_140E92260 (RemoveByFormID),
+//     reads [CC+0x08] = entries_base, fault addr 0x1 (classic sentinel).
+//     Caller chain: sub_140DAE160 (TESObjectREFR dtor sweep) →
+//     sub_14087A470 → sub_140E92260.
+//
+// Per re/av_E92xxx_root_cause/AGENT_analysis.md: these are parallel
+// implementations of the same walker pattern that Hook 1 (sub_140E98820)
+// already guards. Hook 1 doesn't reach these because they are PEER
+// functions (same RVA family) called by DIFFERENT engine paths.
+// The ghost itself isn't the problem; the engine iterates OTHER actors'
+// CombatControllers and one of them has freed-and-reused buffers.
+constexpr std::uintptr_t COMBATCTRL_REMOVE_BY_FID_RVA = 0x00E92260;  // sub_140E92260
+constexpr std::uintptr_t COMBATCTRL_GROUP_GATE_RVA    = 0x00E924A0;  // sub_140E924A0
+
+// --- Build 62.2 (2026-05-24) — 5 more peer CC walkers ---
+//
+// Per re/av_E92xxx_root_cause/AGENT_peer_family.md (enumeration agent
+// found 12 unguarded peers in range 0xE92000-0xEA0000). Build 62.1
+// covered 0xE92260+0xE924A0. Build 62.2 covers the next 5 highest-
+// priority ones.
+//
+// Hook 11: sub_140E96490 FindFirstActorInRange(entries) — currently
+//   firing as user's Build 62.1 AV (RVA 0xE964E6). Reads CC+0x08
+//   entries_base. Caller chain: sub_140D2C3E0 (perception ranking) +
+//   sub_140F5CB40 (AI state behavior tree).
+//
+// Hook 12-14: EnsureKnownTarget family
+//   sub_140E92E50 "is target in known_targets by Actor*"
+//   sub_140E929C0 EnsureKnownTarget (main entry)
+//   sub_140E92B90 UpdatePositionForTarget
+//
+// Hook 15: sub_140E97D30 — Tier-1 in AGENT_C dossier but hook never
+//   actually installed. Allies health aggregate, reads CC+0x20.
+constexpr std::uintptr_t COMBATCTRL_FIND_IN_RANGE_RVA    = 0x00E96490;  // sub_140E96490
+constexpr std::uintptr_t COMBATCTRL_KNOWN_BY_ACTOR_RVA   = 0x00E92E50;  // sub_140E92E50
+constexpr std::uintptr_t COMBATCTRL_ENSURE_KNOWN_RVA     = 0x00E929C0;  // sub_140E929C0
+constexpr std::uintptr_t COMBATCTRL_UPDATE_POS_RVA       = 0x00E92B90;  // sub_140E92B90
+constexpr std::uintptr_t COMBATCTRL_ALLY_HEALTH_RVA      = 0x00E97D30;  // sub_140E97D30
+
+// Build 62.5 (2026-05-24) — Hook 16: sub_140E75F30 "BSTHashMap merge walker".
+//
+// Crash signature in Build 62.4 live test 21:23:52.456 — AV at RVA 0xE75F6A
+// (instruction `mov rcx, [rbx+10h]`). rbx derived from `[a1+0x20]` which
+// was 0xEA1173B7E44 — high-canonical user address but UNMAPPED.
+//
+// Function body (decomp funcs_0335.md:1318) walks an array of 24-byte
+// entries (a1+0x04 = count u32, a1+0x20 = base u64) and merges each into
+// a hash table at a2. The walker invariant — base must be a valid heap
+// pointer OR count must be 0 — was violated because the source structure
+// got freed/reused mid-iteration of an upstream loop.
+//
+// Caller chain: combat orchestrators sub_140E93370 / sub_140E93AB0 →
+// sub_140E75840 (33-byte wrapper) → sub_140E75F30 (the AV site).
+// Hook installs at the AV site; the SEH cage covers the orig call so a
+// stale a1 doesn't crash the process — the merge for this tick is skipped
+// and the engine retries naturally on the next combat tier tick.
+constexpr std::uintptr_t COMBATCTRL_HASHMAP_MERGE_RVA    = 0x00E75F30;  // sub_140E75F30
+
+// Build 62.6 (2026-05-24) — Hooks 17-23: stride-208 CC walkers in the
+// FindEntry / per-tick freshness / per-tick ally-validity family. All read
+// CC+0x08 (base) + CC+0x18 (count) with 208-byte stride. Same poison
+// vulnerability as Hook 1.
+//
+// Crash signature Build 62.5 21:51:34 — RVA 0xE98721 (inside sub_140E986C0
+// at +0x61), fault addr 0x1812EC00070 reading [r8+rcx] where rcx = base
+// from a corrupt CombatController.
+constexpr std::uintptr_t COMBATCTRL_FIND_BY_ACTOR_RVA    = 0x00E986C0;  // sub_140E986C0
+constexpr std::uintptr_t COMBATCTRL_FIND_BY_FID_RVA      = 0x00E98760;  // sub_140E98760
+constexpr std::uintptr_t COMBATCTRL_AGGRO_FRESHNESS_RVA  = 0x00E9EC40;  // sub_140E9EC40
+constexpr std::uintptr_t COMBATCTRL_ALLY_VALIDITY1_RVA   = 0x00E9E870;  // sub_140E9E870
+constexpr std::uintptr_t COMBATCTRL_ALLY_VALIDITY2_RVA   = 0x00E9EA40;  // sub_140E9EA40
+constexpr std::uintptr_t COMBATCTRL_COUNT_ENTRIES_RVA    = 0x00E9E760;  // sub_140E9E760
+constexpr std::uintptr_t COMBATCTRL_NOTIFY_SUBS_RVA      = 0x00E98480;  // sub_140E98480
+
+// Build 62.7 (2026-05-24) — Hooks 24-25: id_list walkers in the
+// RemoveAlly family. Crash signature Build 62.6 22:09:36 — RVA 0xE92D2A
+// (inside sub_140E92D00 at +0x2A), fault addr 0xFF reading [r10+r8*8]
+// where r10 = base from [CC+0x20] = 0xFF (tiny garbage). Same id_list
+// layout (CC+0x20 base, CC+0x30 count, stride 24) as Hook 10/14/15.
+constexpr std::uintptr_t COMBATCTRL_REMOVE_ALLY_BY_KEY_RVA = 0x00E92D00;  // sub_140E92D00
+constexpr std::uintptr_t COMBATCTRL_REMOVE_ALLY_BY_IDX_RVA = 0x00E9E0C0;  // sub_140E9E0C0
+
+// Build 63 (2026-05-25) — Hook 26: sub_140ED2490 combat-group-membership
+// reconcile (called from sub_140CCF810 with a freshly-realloc'd CC slot
+// after cell-attach). Crashes from Build 62.12 traced here:
+//   sub_140CCF810 → sub_140ED2490 (reads actor.HighProcess+0x40) →
+//   sub_140E93370 MERGE (AV @ +0x50 prologue xmm5 spill, before any
+//   member-pointer reads, because rcx was already pointing at a freed CC).
+//
+// Per re/walker_audit_v2/AGENT_D_teleport_race.md: the HP+0x40 back-pointer
+// goes stale when the engine frees/realloc's the underlying CC during cell
+// attach. ED2490 needs HP+0x40 validated (vtable in module .text + entries
+// base not poison) before passing to MERGE. On corruption we null HP+0x40
+// and return 1 so the engine reallocates a fresh CC on next combat-tier
+// transition.
+constexpr std::uintptr_t COMBATCTRL_GROUP_RECONCILE_RVA   = 0x00ED2490;  // sub_140ED2490
+
+// Build 65.c.31 — Hook 27: sub_140E959E0 "update combat-target record".
+// Reads rsi = *(ctrl+0x78) (combat-target sub-object holding a BSTScatterTable),
+// then derefs +0x40 (spinlock) and +0x28 (hash base) UNCONDITIONALLY. On owner-
+// side raider death the +0x78 sub-object is NULL → AV at 0xE95A49 (read
+// [ctrl+0x78]+0x28). Guard validates *(ctrl+0x78) before forwarding.
+constexpr std::uintptr_t COMBATCTRL_UPDATE_TARGET_REC_RVA = 0x00E959E0;  // sub_140E959E0
+constexpr std::size_t    COMBATCTRL_TARGET_MAP_OFF        = 0x78;        // sub-obj ptr
 
 } // namespace fw::offsets

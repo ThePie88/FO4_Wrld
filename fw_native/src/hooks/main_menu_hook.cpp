@@ -170,6 +170,34 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         fw::dispatch::drain_npc_state_apply_queue();
         return 0;
     }
+    // Build 65.c.10 — owner-driven STATE_FROM_OWNER apply (receiver side).
+    // Drains entries the net thread queued from server-relayed owner state.
+    if (msg == fw::dispatch::FW_MSG_NPC_OWNER_STATE_APPLY) {
+        fw::dispatch::drain_npc_owner_state_apply_queue();
+        return 0;
+    }
+    // Build 65.c.47 WEDGE3 — owner-driven DEATH_FROM_OWNER apply (non-owner
+    // side). Drains relayed owner deaths: un-keyframe → place at synced pos →
+    // engine Actor::Kill (under ApplyingRemoteGuard). Main-thread-required:
+    // the engine death handler touches cell + anim + Havok state.
+    if (msg == fw::dispatch::FW_MSG_NPC_DEATH_APPLY) {
+        fw::dispatch::drain_npc_death_apply_queue();
+        return 0;
+    }
+    // B6.6w1: drain remote NPC fire events. Each op resolves form_id →
+    // Actor* and calls engine::fire_actor_weapon — Projectile::Launch +
+    // muzzle flash + audio + damage. Native fns touch equipManager +
+    // projectile lists not lock-protected → main thread required.
+    if (msg == fw::dispatch::FW_MSG_NPC_FIRE) {
+        fw::dispatch::drain_npc_fire_queue();
+        // Build 62 — drain perception trigger queue on the same wake-up.
+        // Both queues need main-thread engine calls; sharing the WndProc
+        // message avoids a second PostMessage round-trip. Order doesn't
+        // matter (perception triggers cause CCF810 alloc, fires use the
+        // result — but they're separately enqueued by net thread).
+        fw::dispatch::drain_npc_perception_trigger_queue();
+        return 0;
+    }
     // M9 wedge 2: drain remote equip events. Each op resolves form_id →
     // ARMA → 3rd-person NIF path and attaches/detaches on the ghost.
     // Engine NIF loader + scene graph mutation = main-thread-required.
@@ -256,6 +284,19 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     // Posted by net thread after stashing quats into shared slot.
     if (msg == fw::native::FW_MSG_STRADAB_POSE_APPLY) {
         fw::native::on_pose_apply_message();
+        return 0;
+    }
+    // v16: apply received remote crouch (POSE_CROUCH_BROADCAST) to ghost —
+    // SEPARATE additive channel beside the rotation pose above. Posted by
+    // net thread after stashing the COM/Pelvis translations.
+    if (msg == fw::native::FW_MSG_STRADAB_CROUCH_APPLY) {
+        fw::native::on_pose_crouch_apply_message();
+        return 0;
+    }
+    // c.37.0: apply received NPC pose (NPC_POSE_FROM_OWNER) to the mirror
+    // Actor. Posted by net thread after stashing quats into the per-fid slot.
+    if (msg == fw::native::FW_MSG_STRADAB_NPC_POSE_APPLY) {
+        fw::native::on_npc_pose_apply_message();
         return 0;
     }
     // B8: post-LoadGame BipedAnim normalize cycle. Two-phase:

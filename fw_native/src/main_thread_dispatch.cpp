@@ -1,16 +1,23 @@
 #include "main_thread_dispatch.h"
 
 #include <atomic>
+#include <cmath>      // sqrtf — Build 65.c.30 handoff-blend distance log
 #include <deque>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <windows.h>  // GetTickCount64 — Build 65.c.22 staleness check
 
 #include "engine/engine_calls.h"
 #include "hooks/container_hook.h"   // ApplyingRemoteGuard + tls_applying_remote
+#include "hooks/ownership_manager.h" // Build 65.c.10 — owner-driven apply gate
+#include "hooks/npc_ai_suppress.h"  // Build 65.c.47 WEDGE3 — mark_dying (corpse guard)
 #include "log.h"
 #include "native/scene_inject.h"    // M9 wedge 2: ghost armor attach/detach
+#include "offsets.h"                // Build 53: POS_OFF for ghost.+0xD0 read
+#include "net/protocol.h"           // Build 55a: NPC_FIRE_TARGET_LOCAL / _GHOST
 
 namespace fw::dispatch {
 
@@ -42,11 +49,48 @@ std::deque<PendingMeshBlob> g_mesh_blob_queue;
 std::mutex g_lock_mtx;
 std::deque<PendingLockOp> g_lock_queue;
 
+// Build 65.c.47 WEDGE3: NPC death-apply queue. Event-driven + reliable +
+// very low frequency (one per NPC death). Separate mutex so it never blocks
+// the 10 Hz NPC state / fire lanes. The drain holds an ApplyingRemoteGuard
+// around engine::kill_actor so the relayed kill doesn't echo to the server.
+std::mutex g_npc_death_mtx;
+std::deque<PendingNPCDeath> g_npc_death_queue;
+
+// Build 65.c.47 WEDGE3: idempotency dedup. A re-delivered NPC_DEATH_FROM_OWNER
+// (reliable channel can re-deliver on retransmit) must NOT double-kill the
+// mirror. Main-thread-only (mutated solely in drain_npc_death_apply_queue), so
+// no lock needed — but kept as a plain set for clarity. Never pruned: at a few
+// dozen deaths per session the memory is negligible; a fid that respawns gets
+// a NEW form_id from the engine so stale entries can't false-positive.
+std::unordered_set<std::uint32_t> g_killed_fids;
+
 // B6.5w3.b: NPC continuous-state queue. Higher frequency than locks
 // (10 Hz × N npcs server-side) but each entry is small (24 B POD).
 // Separate mutex so NPC traffic doesn't block lock/door/container drains.
 std::mutex g_npc_mtx;
 std::deque<PendingNPCStateEntry> g_npc_queue;
+
+// B6.6w1: server-driven fire trigger queue. Frequency is low (event-
+// driven, typically <5 Hz aggregate across all raiders) and entries are
+// tiny (12 B POD). Separate mutex so a slow drain doesn't block the
+// 10 Hz NPC state lane.
+std::mutex g_npc_fire_mtx;
+std::deque<PendingNPCFire> g_npc_fire_queue;
+
+// Build 65.c.10: owner-driven STATE_FROM_OWNER apply queue (receiver
+// side). Net thread enqueues entries from the relayed batch; main
+// thread drains and writes pos to engine actor via apply_npc_pos.
+// Separate mutex from g_npc_mtx so the legacy NPC_STATE_BCAST path
+// and the new owner-driven path don't contend.
+std::mutex g_npc_owner_mtx;
+std::deque<PendingNPCOwnerState> g_npc_owner_queue;
+
+// Build 62 — perception trigger queue, separate from fire queue so
+// drain timings are independent. Triggers are reliable (server uses
+// send_reliable) so we expect small bursts (~5/sec at startup, then
+// ~1/sec during ongoing combat after debounce).
+std::mutex g_npc_perception_trigger_mtx;
+std::deque<PendingNPCPerceptionTrigger> g_npc_perception_trigger_queue;
 
 // B6.5w4 round 2: per-NPC state cache (replaces the bare set from
 // round 1). Net thread updates on each BCAST; main thread suppression
@@ -137,6 +181,15 @@ void post_wakeup_lock() noexcept {
     }
 }
 
+void post_wakeup_npc_death() noexcept {
+    HWND h = g_hwnd.load(std::memory_order_acquire);
+    if (!h) return;
+    if (!PostMessageW(h, FW_MSG_NPC_DEATH_APPLY, 0, 0)) {
+        FW_DBG("dispatch: PostMessage(FW_MSG_NPC_DEATH_APPLY) failed (err=%lu)",
+               GetLastError());
+    }
+}
+
 void post_wakeup_npc() noexcept {
     HWND h = g_hwnd.load(std::memory_order_acquire);
     if (h && PostMessageW(h, FW_MSG_NPC_STATE_APPLY, 0, 0)) {
@@ -165,6 +218,38 @@ void post_wakeup_npc() noexcept {
     // No HWND OR failed post — apply pos-only from this thread so the
     // NPC at least stays at the right world position on the receiver.
     drain_npc_state_apply_queue_pos_only();
+}
+
+void post_wakeup_npc_owner_state() noexcept {
+    HWND h = g_hwnd.load(std::memory_order_acquire);
+    if (!h) return;
+    if (!PostMessageW(h, FW_MSG_NPC_OWNER_STATE_APPLY, 0, 0)) {
+        // HWND went stale across cell load / main menu — drop the wake
+        // and let the next enqueue try again after WndProc rebinds.
+        FW_DBG("dispatch: PostMessage(FW_MSG_NPC_OWNER_STATE_APPLY) failed err=%lu",
+               GetLastError());
+    }
+}
+
+void post_wakeup_npc_fire() noexcept {
+    HWND h = g_hwnd.load(std::memory_order_acquire);
+    if (!h) return;
+    if (!PostMessageW(h, FW_MSG_NPC_FIRE, 0, 0)) {
+        FW_DBG("dispatch: PostMessage(FW_MSG_NPC_FIRE) failed (err=%lu)",
+               GetLastError());
+    }
+}
+
+// Build 62 — reuse FW_MSG_NPC_FIRE for now (same drain timing, both queues
+// are draining engine-native calls that need main-thread affinity). If we
+// see contention or starvation, split to FW_MSG_NPC_PERCEPTION later.
+void post_wakeup_npc_perception() noexcept {
+    HWND h = g_hwnd.load(std::memory_order_acquire);
+    if (!h) return;
+    if (!PostMessageW(h, FW_MSG_NPC_FIRE, 0, 0)) {
+        FW_DBG("dispatch: PostMessage for perception trigger failed (err=%lu)",
+               GetLastError());
+    }
 }
 
 } // namespace
@@ -206,6 +291,18 @@ void enqueue_lock_apply(const PendingLockOp& op) {
     post_wakeup_lock();
 }
 
+void enqueue_npc_death_apply(const PendingNPCDeath& op) {
+    std::size_t qsize;
+    {
+        std::lock_guard lk(g_npc_death_mtx);
+        g_npc_death_queue.push_back(op);
+        qsize = g_npc_death_queue.size();
+    }
+    FW_LOG("dispatch: NPC death enqueued fid=0x%X killer=0x%X pos=(%.1f,%.1f,%.1f) (qsize=%zu)",
+           op.form_id, op.killer_form_id, op.pos_x, op.pos_y, op.pos_z, qsize);
+    post_wakeup_npc_death();
+}
+
 void enqueue_npc_state_apply(const std::vector<PendingNPCStateEntry>& entries) {
     if (entries.empty()) return;
     std::size_t qsize;
@@ -218,6 +315,23 @@ void enqueue_npc_state_apply(const std::vector<PendingNPCStateEntry>& entries) {
     FW_DBG("dispatch: npc enqueued %zu entries (qsize=%zu)",
            entries.size(), qsize);
     post_wakeup_npc();
+}
+
+// Build 65.c.10 — owner-driven state apply enqueue. Same pattern as
+// enqueue_npc_state_apply but on the separate g_npc_owner_queue lane.
+void enqueue_npc_owner_state_apply(
+    const std::vector<PendingNPCOwnerState>& entries)
+{
+    if (entries.empty()) return;
+    std::size_t qsize;
+    {
+        std::lock_guard lk(g_npc_owner_mtx);
+        for (const auto& e : entries) g_npc_owner_queue.push_back(e);
+        qsize = g_npc_owner_queue.size();
+    }
+    FW_DBG("dispatch: npc_owner_state enqueued %zu entries (qsize=%zu)",
+           entries.size(), qsize);
+    post_wakeup_npc_owner_state();
 }
 
 void enqueue_equip_apply(const PendingEquipOp& op) {
@@ -1200,6 +1314,85 @@ void drain_lock_apply_queue() {
            local.size(), applied_ok, failed);
 }
 
+// Build 65.c.47 WEDGE3 — KILL-SWITCH for the whole non-owner death apply.
+// Default true. Flip to false to fully disable the corpse-on-non-owner path
+// (the drain becomes a no-op that still clears the queue). Paired with the
+// owner-emit switch of the same name in kill_hook.cpp.
+static constexpr bool kDeathSyncEnabled = true;
+
+void drain_npc_death_apply_queue() {
+    std::deque<PendingNPCDeath> local;
+    {
+        std::lock_guard lk(g_npc_death_mtx);
+        local.swap(g_npc_death_queue);
+    }
+    if (local.empty()) {
+        FW_DBG("dispatch: NPC death drain with empty queue — no-op");
+        return;
+    }
+    if (!kDeathSyncEnabled) {
+        FW_LOG("dispatch: NPC death drain — kDeathSyncEnabled=false, dropping %zu",
+               local.size());
+        return;
+    }
+
+    // ApplyingRemoteGuard so the engine Actor::Kill we invoke below re-enters
+    // kill_hook::detour_kill with applying_remote()==true → the detour bails
+    // WITHOUT re-reporting to the server (no echo loop). Same TLS flag shared
+    // by door/lock/pickup/container apply paths.
+    fw::hooks::ApplyingRemoteGuard guard;
+
+    std::size_t killed = 0, skipped = 0, dedup = 0;
+    for (const auto& op : local) {
+        const std::uint32_t fid = op.form_id;
+        if (fid == 0 || fid == 0xFFFFFFFFu || fid == fw::offsets::PLAYER_FORMID) {
+            ++skipped;
+            continue;   // never the player; never a sentinel
+        }
+
+        // a. resolve the mirror Actor. Null → not loaded locally; nothing to
+        //    do (there is no live mirror to corpse on this client).
+        void* actor = fw::engine::lookup_by_form_id(fid);
+        if (!actor) {
+            FW_DBG("dispatch: NPC death fid=0x%X — mirror not loaded, skip", fid);
+            ++skipped;
+            continue;
+        }
+
+        // c. idempotency — a re-delivered death must not double-kill. Check
+        //    BEFORE the engine call. (Step c per spec; done before b/d/e/f so a
+        //    retransmit is a pure no-op.)
+        if (g_killed_fids.find(fid) != g_killed_fids.end()) {
+            FW_DBG("dispatch: NPC death fid=0x%X — already killed, idempotent skip", fid);
+            ++dedup;
+            continue;
+        }
+
+        // b. mark the fid dying — STICKY so the c.41b keyframe machine never
+        //    re-keyframes the corpse while the async Kill's KnockState bits lag.
+        fw::hooks::mark_dying(fid);
+
+        // d. un-keyframe so the body can ragdoll (a Keyframed body can't flop).
+        fw::engine::set_actor_motion_dynamic(actor);
+
+        // e. (cheap) pin the corpse at the synced death pos — deadlock-safe
+        //    pure memory write (no cell-grid lock). Best-effort.
+        fw::engine::apply_npc_pos_raw(actor, op.pos_x, op.pos_y, op.pos_z);
+
+        // f. KILL the mirror via the engine's own Actor::Kill (killer=null;
+        //    minimal build = no directional impulse). SEH-caged inside
+        //    kill_actor. The ApplyingRemoteGuard above suppresses the echo.
+        const bool ok = fw::engine::kill_actor(actor, /*killer=*/nullptr);
+        g_killed_fids.insert(fid);   // latch even on a failed call — a retry
+                                     // would hit the same engine state; idempotent.
+        if (ok) ++killed; else ++skipped;
+        FW_LOG("dispatch: NPC death APPLIED fid=0x%X killer=0x%X pos=(%.1f,%.1f,%.1f) ok=%d",
+               fid, op.killer_form_id, op.pos_x, op.pos_y, op.pos_z, ok ? 1 : 0);
+    }
+    FW_LOG("dispatch: drained %zu NPC deaths (killed=%zu skipped=%zu dedup=%zu)",
+           local.size(), killed, skipped, dedup);
+}
+
 void drain_npc_state_apply_queue() {
     std::deque<PendingNPCStateEntry> local;
     {
@@ -1211,53 +1404,588 @@ void drain_npc_state_apply_queue() {
         return;
     }
 
-    // No fw::hooks::ApplyingRemoteGuard needed here yet — apply path
-    // writes directly to Actor fields + IAnimationGraphManagerHolder
-    // setters. Neither triggers our own hooks (no sender-side NPC pos
-    // observe yet; the only NPC traffic flows server→client).
+    // B6.6w5 REWIRED — POS-ONLY apply via engine::apply_npc_pos which
+    // calls Actor::vt[202] (sub_140C60630) with a3=0. Sets the TLS
+    // bypass flag via ApplyingRemoteGuard so our 2 pos hooks
+    // (ghost_ai_pos_belt, ghost_ai_actor_setpos) passthrough instead
+    // of bail. Receiver-side pos write reaches Actor+0xD0 + NIF root.
     //
-    // When B6.5w4 (AI suppression) lands, we'll detour
-    // Actor::Update_PerFrame@0xC636A0; tracked-form filter happens
-    // inside the detour so we don't need a tls-guard scope here.
-
+    // Yaw + anim_state apply DEFERRED — would need separate engine fn
+    // resolution + anim graph setter sync. For B.1 we just sync pos.
+    //
+    // Idempotent and main-thread-safe (per
+    // re/B6.6w5_vt202_unknowns.md).
     std::size_t applied = 0, missed = 0;
+    std::size_t ct_applied = 0, ct_missed = 0;
     for (const auto& e : local) {
-        const bool ok = fw::engine::apply_npc_state_to_engine(
-            e.form_id, e.pos_x, e.pos_y, e.pos_z,
-            e.yaw_deg_math, e.anim_state,
-            /*skip_anim_graph=*/false);   // main thread → full apply
-        if (ok) ++applied; else ++missed;
+        void* actor = fw::engine::lookup_by_form_id(e.form_id);
+        if (!actor) {
+            ++missed;
+            continue;
+        }
+        if (e.apply_flags & 0x01) {
+            const bool ok = fw::engine::apply_npc_pos(
+                actor, e.pos_x, e.pos_y, e.pos_z);
+            if (ok) ++applied; else ++missed;
+        }
+        // Build 64 (2026-05-25) — combat_target apply BUILD64_DISABLED.
+        //
+        // Under MVP-A (re/BUILD64_strategy/STRATEGY.md) the client does
+        // not drive cross-client combat. Vanilla engine AI picks the
+        // local PC as the hostile target on each client independently.
+        // The wire path still carries combat_target_form_id (cached for
+        // potential future use) but we never apply it.
+        //
+        // The trigger in client.cpp (NPC_STATE_BCAST handler) no longer
+        // sets apply_flags bit 0x02. This check is belt-and-braces — if
+        // some future code path enqueues with the bit set, we ignore it.
+        if ((e.apply_flags & 0x02) && e.combat_target_form_id != 0) {
+            (void)e;  // BUILD64_DISABLED — apply_npc_combat_target skipped
+            ++ct_missed;  // count as missed so logs reveal stragglers
+        }
     }
-    // At 10 Hz × 2 NPCs = 20 entries/sec. Logging every drain at INFO
-    // would be 10 lines/sec. DBG is fine; a periodic INFO summary can
-    // be added later if needed.
-    FW_DBG("dispatch: drained %zu npc entries (applied=%zu missed=%zu)",
-           local.size(), applied, missed);
+    FW_DBG("dispatch: drained %zu npc entries (pos applied=%zu missed=%zu, "
+           "combat_target applied=%zu missed=%zu)",
+           local.size(), applied, missed, ct_applied, ct_missed);
 }
 
-void drain_npc_state_apply_queue_pos_only() {
-    // Called from the net thread when PostMessage fails. Same drain
-    // logic as drain_npc_state_apply_queue but passes skip_anim_graph=
-    // true so SetGraphVariable* (main-thread-only) is skipped. Pos +
-    // yaw writes are pure memory ops and safe from any thread.
-    std::deque<PendingNPCStateEntry> local;
+// Build 65.c.10 — drain owner-driven STATE_FROM_OWNER. Pos-only apply
+// via the same `engine::apply_npc_pos` primitive that powers the legacy
+// NPC_STATE_BCAST drain — proven main-thread-safe via Actor::vt[202]
+// + ApplyingRemoteGuard TLS flag (motion hooks passthrough on it).
+//
+// Cautious guards:
+//   - Skip ghost proxy fid (we never apply to our own ghost actor).
+//   - Skip local PC fid (0x14).
+//   - Skip if `is_owner_of(fid)` — we are the authority for that NPC
+//     and we already run vanilla AI; applying a stale relay onto
+//     ourselves would teleport us backward.
+//   - lookup_by_form_id null → actor not loaded on this client; drop.
+//   - All Actor accesses sit behind the SEH cage inside apply_npc_pos.
+// Build 65.c.18 — SEH-safe InCombat flag setter. File-local helper because
+// MSVC forbids `__try` in functions with unwind-required objects (we use
+// std::deque + std::lock_guard in the drain). Same pattern as
+// `safe_force_in_combat_flag` in npc_ai_suppress.cpp.
+static void seh_set_actor_in_combat(void* actor) noexcept {
+    if (!actor) return;
+    __try {
+        auto* const flags = reinterpret_cast<std::uint32_t*>(
+            reinterpret_cast<std::uint8_t*>(actor) + 0x2D0);
+        *flags |= 0x4000u;   // ACTOR_FLAG_IN_COMBAT
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        // actor torn down between lookup and write. No-op.
+    }
+}
+
+// Build 65.c.22 + c.23 — Unified owner-state cache (non-owner side).
+//
+// c.22 — InCombat-flag propagation: drain stores latest anim_state,
+//   detour reads at 60 Hz and re-OR's bit 0x4000 on Actor+0x2D0 because
+//   the engine perception walker clears it inside orig Update_PerFrame
+//   when no local enemy is in perception range. Without this, behavior
+//   tree drives idle/patrol anim despite combat being authoritative
+//   on the owner side.
+//
+// c.23 — pos+yaw interpolation: drain ALSO records prev/cur snapshot
+//   per fid. Detour reads via get_interpolated_owner_state and linearly
+//   extrapolates from (prev, cur) to "now", producing a smooth 60 Hz
+//   visual instead of the 10 Hz snap-teleport pattern Agent 1 forensics
+//   showed as the visible flicker.
+//
+// Single struct + single mutex keeps the c.22 and c.23 reads atomic w.r.t.
+// each other (so anim_state and pos are consistent in the same frame).
+struct LatestOwnerStateEntry {
+    // Current snapshot (latest STATE_FROM_OWNER entry processed by drain).
+    float         cur_pos_x;
+    float         cur_pos_y;
+    float         cur_pos_z;
+    float         cur_yaw_rad;
+    std::uint8_t  anim_state;
+    std::uint64_t cur_ts_ms;          // GetTickCount64() at drain time
+
+    // Previous snapshot (one drain cycle ago). Used as the extrapolation
+    // "origin" — the line from prev to cur is the actor's velocity vector
+    // sampled across one ~100 ms drain interval; the detour extrapolates
+    // forward along that line based on time-since-cur.
+    float         prev_pos_x;
+    float         prev_pos_y;
+    float         prev_pos_z;
+    float         prev_yaw_rad;
+    std::uint64_t prev_ts_ms;
+    bool          has_prev;            // false until the 2nd drain entry
+};
+std::shared_mutex g_latest_owner_mtx;
+std::unordered_map<std::uint32_t, LatestOwnerStateEntry>
+    g_latest_owner_state;
+
+// Build 65.c.30 — handoff smoothing state (hold + short lerp).
+//
+// Root cause (re/reteleport_on_death_AGENT.md): while B is the non-owner of a
+// raider, B's *visible* pos is pinned 60 Hz to the owner's relayed pose
+// (apply_npc_pos, last writer each frame), but B's local engine AI + Havok run
+// un-suppressed and silently diverge the raider's internal pos. The instant
+// ownership leaves the remote peer (peer death → server PHASE_2 release → B
+// re-claims / fid goes unowned), the override stops in the same frame and B's
+// engine's diverged pos becomes visible → a one-frame SNAP. This blends FROM
+// (last interp pose) → TO (B's engine pose) over HANDOFF_BLEND_MS so the swap
+// is smooth instead of a jump.
+//
+// `note_non_owner_interp_pose` is called every frame the fid is non-owner
+// (records the last applied interp pose = FROM, and marks was_non_owner).
+// `poll_handoff_blend` is called every frame the fid is NOT non-owner; on the
+// first such frame after a non-owner period it arms the blend, then returns the
+// lerped pose each frame until HANDOFF_BLEND_MS elapses. A large FROM→TO gap
+// (> HANDOFF_BLEND_MAX_DIST) is treated as a real teleport/cell-change and NOT
+// blended (cut). All access is main-thread (npc_ai_suppress detour); a plain
+// mutex is sufficient and cheap.
+struct HandoffBlendEntry {
+    float         from_x = 0.0f, from_y = 0.0f, from_z = 0.0f, from_yaw = 0.0f;
+    bool          has_from = false;        // a FROM pose has been captured
+    bool          was_non_owner = false;   // fid was non-owner-tracked recently
+    std::uint64_t blend_start_ms = 0;      // 0 = not currently blending
+};
+std::mutex g_handoff_blend_mtx;
+std::unordered_map<std::uint32_t, HandoffBlendEntry> g_handoff_blend;
+
+// Build 65.c.24 — Recent-fire timestamp cache for Signal 3 of the multi-
+// signal anim_state aggregation. See main_thread_dispatch.h comment block
+// for full rationale. Writer = ghost_ai_fire.cpp on owner detour fire-
+// decision-succeeds; reader = npc_ai_suppress.cpp owner capture path.
+std::shared_mutex g_recent_fire_mtx;
+std::unordered_map<std::uint32_t, std::uint64_t> g_recent_fire_ts;
+
+void drain_npc_owner_state_apply_queue() {
+    std::deque<PendingNPCOwnerState> local;
     {
-        std::lock_guard lk(g_npc_mtx);
-        local.swap(g_npc_queue);
+        std::lock_guard lk(g_npc_owner_mtx);
+        local.swap(g_npc_owner_queue);   // always drain to bound the queue
     }
     if (local.empty()) return;
 
-    std::size_t applied = 0, missed = 0;
-    for (const auto& e : local) {
-        const bool ok = fw::engine::apply_npc_state_to_engine(
-            e.form_id, e.pos_x, e.pos_y, e.pos_z,
-            e.yaw_deg_math, e.anim_state,
-            /*skip_anim_graph=*/true);   // net thread → no anim setter
-        if (ok) ++applied; else ++missed;
+    // Build 65.c.28 — TELEPORT FREEZE GUARD.
+    //
+    // Two independent freezes (c.25 Fixed Selector, c.27 RNG) shared one
+    // root: the main thread froze during the teleport cell-stream. apply_
+    // npc_pos goes through Actor::vt[202] which mutates the destination
+    // cell's hash. Calling it on a non-owner raider whose cell is mid-
+    // stream deadlocks against the engine's own cell-load lock → drain
+    // queue starves (qsize 255→280 observed) → Windows kills the hung
+    // process.
+    //
+    // Build 65.c.46 — SUSPENDED-WINDOW SAFE PATH (was: DROP whole batch).
+    //
+    // Original c.28 behaviour DROPPED the batch AND skipped the snapshot-cache
+    // update during recently_teleported(). But recently_teleported() false-
+    // positives on exterior cell-edge streaming (it arms 1500ms on ANY local-
+    // player parentCell change), so on a Concord cell-cross BOTH the 10Hz drain
+    // (here) and the 60Hz detour (npc_ai_suppress) stop pinning the non-owner
+    // keyframed raider for ~1.5s. Result: the body's pos FREEZES while its pose
+    // keeps streaming ("runs in place") then SNAPS forward when the guard
+    // releases (LOG_B 00:40:06.040→07.331, 10 consecutive skips ≈ 1.29s).
+    //
+    // The ONLY thing the guard must suppress is vt[202] (apply_npc_pos), because
+    // its sub_140513A80→sub_140576030/sub_140575E20 grab a PROCESS-GLOBAL cell-
+    // grid spinlock that the streaming thread can hold → main-thread deadlock
+    // (the c.27/c.28 freeze — DO NOT re-introduce). Everything else here is
+    // deadlock-safe (pure SEH-caged memory writes, no engine call):
+    //   - the snapshot cache update (so interp endpoints stay FRESH — a frozen
+    //     cache would make even a fresh apply write a stale pos),
+    //   - apply_npc_pos_raw (Actor+0xD0 + NIF local/world — moves the keyframed
+    //     body without the grid lock),
+    //   - the InCombat bit (raw |= 0x4000).
+    // So during the window we KEEP all of those and skip ONLY vt[202] + the
+    // SetRotation engine call. KILL-SWITCH: kRawPinDuringTeleport=false restores
+    // the old drop-batch behaviour.
+    static constexpr bool kRawPinDuringTeleport = true;
+    const bool suspended = fw::engine::recently_teleported();
+    if (suspended && !kRawPinDuringTeleport) {
+        static std::atomic<std::uint64_t> s_load_skips{0};
+        const auto sk = s_load_skips.fetch_add(1, std::memory_order_relaxed);
+        if (sk < 10 || (sk % 200) == 0) {
+            FW_DBG("dispatch: owner-state drain SKIPPED — cell transition "
+                   "(teleport guard, dropped %zu entries, skip#%llu)",
+                   local.size(), static_cast<unsigned long long>(sk));
+        }
+        return;
     }
-    FW_DBG("dispatch: net-thread fallback pos-only drain %zu entries "
-           "(applied=%zu missed=%zu)",
-           local.size(), applied, missed);
+    if (suspended) {
+        static std::atomic<std::uint64_t> s_raw_pins{0};
+        const auto rp = s_raw_pins.fetch_add(1, std::memory_order_relaxed);
+        if (rp < 10 || (rp % 200) == 0) {
+            FW_DBG("dispatch: owner-state drain SUSPENDED-SAFE — cell transition "
+                   "(teleport guard: raw-pin %zu entries, skip vt[202] only, "
+                   "skip#%llu)",
+                   local.size(), static_cast<unsigned long long>(rp));
+        }
+    }
+
+    std::size_t applied = 0, missed = 0, skipped_owner = 0;
+    for (const auto& e : local) {
+        if (e.form_id == 0 || e.form_id == 0xFFFFFFFFu ||
+            e.form_id == 0x00000014u ||
+            e.form_id == fw::offsets::GHOST_FORMID_BASE)
+        {
+            ++missed;
+            continue;
+        }
+        if (fw::ownership::is_owner_of(e.form_id)) {
+            // We're the authority — never apply server-relayed state to
+            // ourselves. Defence in depth: server should already filter
+            // these out, but a race during handoff could leak one frame.
+            ++skipped_owner;
+            continue;
+        }
+        void* actor = fw::engine::lookup_by_form_id(e.form_id);
+        if (!actor) {
+            ++missed;
+            continue;
+        }
+        // Build 65.c.21 — ROLLBACK apply_npc_state_to_actor da drain.
+        //
+        // 65.c.19 introdusse `apply_npc_state_to_actor` per scrivere
+        // anim graph vars (bIsAimingGun, bsSpeedSampled, ecc.) on the
+        // non-owner side. Quel funzionava finché 65.c.20 manteneva il
+        // bail Update_PerFrame su non-owner: in quel caso solo IL
+        // NOSTRO drain toccava l'anim graph holder → single-writer.
+        //
+        // 65.c.20 ha rimosso il bail Update_PerFrame (L1 pass-through
+        // per fix "tronchi"). Ora engine vanilla AI tickka l'NPC su
+        // non-owner E chiama internamente SetGraphVariable a 60Hz +
+        // il nostro drain chiamava SetGraphVariable a 10Hz sul medesimo
+        // holder. Mid-cell-streaming (teleport in corso) lo smart-ptr
+        // dell'holder è in init: il doppio writer race produce SEH
+        // (READ addr=0xFFFFFFFFFFFFFFFF, sentinel di pointer "torn down")
+        // a RVA 0x81B5CF — il SetGraphVariableFloat interno deref. VEH
+        // cattura ma 30 AV consecutivi corrompono graph → process muore.
+        //
+        // Fix: ENGINE vanilla AI (ora live grazie a 65.c.20) gestisce
+        // nativamente l'anim graph. NOI ci limitiamo a pos+yaw+InCombat
+        // override post-orig. Niente più double-write sull'anim graph
+        // holder, no SEH race.
+        // Build 65.c.46 — during the teleport-guard window use the DEADLOCK-
+        // SAFE raw pin (no cell-grid lock) instead of vt[202]; also skip the
+        // SetRotation engine call (sibling of SetPosition — avoid any engine
+        // recursion during a cell-stream). The body's facing is cosmetic vs
+        // the freeze; the next post-window drain restores full vt[202]+yaw.
+        const bool pos_ok =
+            suspended ? fw::engine::apply_npc_pos_raw(
+                            actor, e.pos_x, e.pos_y, e.pos_z)
+                      : fw::engine::apply_npc_pos(
+                            actor, e.pos_x, e.pos_y, e.pos_z);
+        if (!suspended) {
+            (void)fw::engine::aim_actor_at_target_rotation_only(
+                actor, e.yaw_rad);
+        }
+
+        // Build 65.c.22 + c.23 — popola cache unificata pos/yaw/anim_state
+        // per il detour 60Hz.
+        //
+        //   c.22: anim_state per re-set bit InCombat (Actor+0x2D0 |= 0x4000)
+        //   c.23: prev/cur pos+yaw per interpolation/extrapolation 60Hz
+        //
+        // L'aggiornamento è "shift": cur diventa prev, nuovo entry diventa
+        // cur. Al primo drain per un fid, has_prev resta false (no
+        // interpolation possible until 2nd drain → detour usa cur as-is).
+        {
+            std::unique_lock<std::shared_mutex> lk(g_latest_owner_mtx);
+            auto& s = g_latest_owner_state[e.form_id];
+            const std::uint64_t now = GetTickCount64();
+            // Shift cur → prev se cur era populated (ts != 0). All'inserzione
+            // di un nuovo fid, s è value-init (tutto a 0), quindi has_prev
+            // resta false alla prima iterazione.
+            if (s.cur_ts_ms != 0) {
+                s.prev_pos_x  = s.cur_pos_x;
+                s.prev_pos_y  = s.cur_pos_y;
+                s.prev_pos_z  = s.cur_pos_z;
+                s.prev_yaw_rad = s.cur_yaw_rad;
+                s.prev_ts_ms   = s.cur_ts_ms;
+                s.has_prev     = true;
+            }
+            s.cur_pos_x   = e.pos_x;
+            s.cur_pos_y   = e.pos_y;
+            s.cur_pos_z   = e.pos_z;
+            s.cur_yaw_rad = e.yaw_rad;
+            s.anim_state  = e.anim_state;
+            s.cur_ts_ms   = now;
+        }
+
+        // InCombat flag set se anim_state suggerisce combat. Quel non
+        // è anim graph — è solo Actor+0x2D0 bit 0x4000 raw write, no
+        // smart-pointer involved, no race con engine. Engine vanilla
+        // AI legge questo flag ma non lo writes su questo path
+        // (lo settta via sub_140CCF810 EnterCombat path che è separato).
+        //
+        // Build 65.c.22: questa scrittura 10Hz rimane (è "best effort"
+        // immediato), ma il detour 60Hz è quello che dà davvero la
+        // persistenza del bit contro engine clear.
+        if (e.anim_state >= 3 && e.anim_state <= 5) {
+            seh_set_actor_in_combat(actor);
+        }
+
+        if (pos_ok) ++applied; else ++missed;
+    }
+    if (applied || missed || skipped_owner) {
+        FW_DBG("dispatch: drained %zu owner-state entries "
+               "(applied=%zu missed=%zu skipped_owner=%zu)",
+               local.size(), applied, missed, skipped_owner);
+    }
+}
+
+// Build 65.c.22 — getter pubblico per il detour npc_ai_suppress.
+// Chiamato 60Hz per ogni non-owner tracked NPC. Hot path: shared_lock
+// per concurrent read, no contention col drain (drain è 10Hz unique_lock,
+// detour è 60Hz shared_lock → contention rara).
+bool get_latest_owner_anim_state(std::uint32_t form_id,
+                                  std::uint8_t* out_anim_state) {
+    if (form_id == 0 || form_id == 0xFFFFFFFFu) return false;
+    std::shared_lock<std::shared_mutex> lk(g_latest_owner_mtx);
+    auto it = g_latest_owner_state.find(form_id);
+    if (it == g_latest_owner_state.end()) return false;
+    const auto now = GetTickCount64();
+    // Staleness: >2s significa che owner ha smesso di emettere (offline,
+    // handoff, peer disconnect). Non forzare bit su entry stale → engine
+    // gestisce naturalmente (raider decay a idle se appropriato).
+    if (now < it->second.cur_ts_ms ||
+        now - it->second.cur_ts_ms > 2000ULL) {
+        return false;
+    }
+    if (out_anim_state) *out_anim_state = it->second.anim_state;
+    return true;
+}
+
+// Build 65.c.23 — interpolated pos+yaw+anim getter for the detour 60Hz path.
+//
+// Logic:
+//   1. Snapshot `s` under shared_lock (atomic w.r.t. drain writes).
+//   2. Staleness gate: if cur is older than 500 ms, the owner has likely
+//      stopped emitting (handoff in progress, peer disconnect, owner
+//      out of cell). Return false so the detour yields and the engine's
+//      own pos integration takes over.
+//   3. Without prev (first drain only) → return cur as-is (no extrapolation
+//      possible without 2 samples).
+//   4. With prev → compute extrapolation factor t = (now - cur.ts) / (cur.ts -
+//      prev.ts), capped at kMaxExtrapolation. Linear: pos = cur + (cur-prev)*t.
+//      Yaw uses shortest-arc π wrap-around to avoid 6.28→0.01 jump.
+//
+// Capped extrapolation prevents wild overshoot if the owner emits at
+// irregular cadence (TCP retransmit, GC pause). 1.5 = 50 % past current
+// matches the existing legacy `get_interpolated_npc_state` cap.
+bool get_interpolated_owner_state(std::uint32_t form_id,
+                                   std::uint64_t now_ms,
+                                   InterpolatedOwnerState* out) {
+    if (form_id == 0 || form_id == 0xFFFFFFFFu || !out) return false;
+    LatestOwnerStateEntry snap{};
+    {
+        std::shared_lock<std::shared_mutex> lk(g_latest_owner_mtx);
+        auto it = g_latest_owner_state.find(form_id);
+        if (it == g_latest_owner_state.end()) return false;
+        snap = it->second;
+    }
+    if (snap.cur_ts_ms == 0) return false;
+    if (now_ms < snap.cur_ts_ms) return false;
+    const std::uint64_t dt_now = now_ms - snap.cur_ts_ms;
+
+    // c.40b — STALENESS HANDLING REWRITTEN. ROOT-CAUSE FIX for the #1 desync
+    // (raiders scattano/scompaiono/si ricollocano), confirmed 2026-05-31 from
+    // handoff dist=1189 + relay gaps.
+    //
+    // OLD behaviour: after 700 ms with no fresh owner sample, return false →
+    // the 60 Hz override (npc_ai_suppress c.23) stopped writing → the non-
+    // owner's LOCAL engine AI ("natural integration", live since c.20) resumed
+    // moving the raider → it walked off the owner's path → DIVERGENCE → on
+    // handoff/owner-death the diverged local copy surfaced = teleport/relocate.
+    // Yielding to the local AI is architecturally WRONG for owner-driven sync:
+    // while we are the non-owner, the raider must NEVER be driven by our AI.
+    //
+    // NEW behaviour: HOLD the last-good owner pos through a relay gap — keep
+    // pinning the body (frozen, no overshoot, no yield). This makes our post-
+    // orig write the reliable last word every frame (same principle as the
+    // c.37 pose freeze). Only release after a LONG gap (5 s ≈ raider unloaded
+    // on the owner / genuinely abandoned), where the engine SHOULD take over.
+    if (dt_now > 5000ULL) return false;
+
+    out->anim_state = snap.anim_state;
+
+    // Beyond a short fresh window (or before we have a velocity sample) HOLD
+    // cur: pin the raider at its last-synced owner pos. THIS is the drift-stop.
+    if (dt_now > 300ULL || !snap.has_prev) {
+        out->pos_x   = snap.cur_pos_x;
+        out->pos_y   = snap.cur_pos_y;
+        out->pos_z   = snap.cur_pos_z;
+        out->yaw_rad = snap.cur_yaw_rad;
+        return true;
+    }
+
+    // FRESH (≤300 ms): extrapolate along the velocity vector for 60 Hz
+    // smoothness between the ~13 Hz owner samples. dt_pc ≥ 1 avoids div-by-zero.
+    const std::uint64_t dt_pc =
+        (snap.cur_ts_ms > snap.prev_ts_ms)
+            ? (snap.cur_ts_ms - snap.prev_ts_ms)
+            : 1ULL;
+
+    float t = static_cast<float>(dt_now) / static_cast<float>(dt_pc);
+    // c.40b — 2.2→1.5. Less overshoot on a single late packet now that longer
+    // gaps HOLD (above) instead of gliding forward unboundedly.
+    constexpr float kMaxExtrapolation = 1.5f;
+    if (t > kMaxExtrapolation) t = kMaxExtrapolation;
+
+    // Linear position extrapolation from velocity vector (cur - prev).
+    const float vx = snap.cur_pos_x - snap.prev_pos_x;
+    const float vy = snap.cur_pos_y - snap.prev_pos_y;
+    const float vz = snap.cur_pos_z - snap.prev_pos_z;
+    out->pos_x = snap.cur_pos_x + vx * t;
+    out->pos_y = snap.cur_pos_y + vy * t;
+    out->pos_z = snap.cur_pos_z + vz * t;
+
+    // Yaw: shortest-arc wrap. Without this 6.27 → 0.01 (= +1° real)
+    // would extrapolate backwards 6.26 rad = ~−359° = visible spin.
+    constexpr float kPi  = 3.14159265358979323846f;
+    constexpr float k2Pi = 2.0f * kPi;
+    float yaw_diff = snap.cur_yaw_rad - snap.prev_yaw_rad;
+    if (yaw_diff > kPi)  yaw_diff -= k2Pi;
+    if (yaw_diff < -kPi) yaw_diff += k2Pi;
+    out->yaw_rad = snap.cur_yaw_rad + yaw_diff * t;
+
+    return true;
+}
+
+// Build 65.c.30 — handoff smoothing impl. See struct comment above + the
+// dossier re/reteleport_on_death_AGENT.md §5 (Option A).
+void note_non_owner_interp_pose(std::uint32_t form_id,
+                                float x, float y, float z, float yaw_rad) {
+    if (form_id == 0 || form_id == 0xFFFFFFFFu) return;
+    std::lock_guard<std::mutex> lk(g_handoff_blend_mtx);
+    auto& e = g_handoff_blend[form_id];
+    e.from_x   = x;
+    e.from_y   = y;
+    e.from_z   = z;
+    e.from_yaw = yaw_rad;
+    e.has_from = true;
+    e.was_non_owner = true;
+    e.blend_start_ms = 0;   // not blending while still non-owner
+}
+
+bool poll_handoff_blend(std::uint32_t form_id, std::uint64_t now_ms,
+                        float eng_x, float eng_y, float eng_z, float eng_yaw,
+                        InterpolatedOwnerState* out) {
+    if (form_id == 0 || form_id == 0xFFFFFFFFu || !out) return false;
+    std::lock_guard<std::mutex> lk(g_handoff_blend_mtx);
+    auto it = g_handoff_blend.find(form_id);
+    if (it == g_handoff_blend.end()) return false;
+    auto& e = it->second;
+
+    // Arm on the first frame after the non-owner period (the handoff frame).
+    if (e.blend_start_ms == 0) {
+        if (!e.was_non_owner || !e.has_from) {
+            // Not a fresh handoff (steady owner / already consumed) → clean up.
+            g_handoff_blend.erase(it);
+            return false;
+        }
+        const float dx = eng_x - e.from_x;
+        const float dy = eng_y - e.from_y;
+        const float dz = eng_z - e.from_z;
+        const float dist2 = dx * dx + dy * dy + dz * dz;
+        const float maxd = HANDOFF_BLEND_MAX_DIST;
+        const bool too_far = dist2 > maxd * maxd;
+        // FROM/TO diagnostic — once per handoff arm (measures snap magnitude).
+        FW_LOG("[handoff-blend] ARM fid=0x%08X FROM=(%.1f,%.1f,%.1f) "
+               "TO=(%.1f,%.1f,%.1f) dist=%.1f blend_ms=%llu%s",
+               form_id, e.from_x, e.from_y, e.from_z,
+               eng_x, eng_y, eng_z, std::sqrt(dist2),
+               static_cast<unsigned long long>(HANDOFF_BLEND_MS),
+               too_far ? " — SKIP (gap too large, treat as real teleport)" : "");
+        if (too_far) {
+            g_handoff_blend.erase(it);
+            return false;          // let engine pose stand (hard cut)
+        }
+        e.was_non_owner = false;   // consume
+        e.blend_start_ms = now_ms; // begin blend
+    }
+
+    const std::uint64_t elapsed =
+        (now_ms >= e.blend_start_ms) ? (now_ms - e.blend_start_ms) : 0ULL;
+    if (elapsed >= HANDOFF_BLEND_MS) {
+        g_handoff_blend.erase(it);  // blend complete → release to engine
+        return false;
+    }
+    float t = static_cast<float>(elapsed) /
+              static_cast<float>(HANDOFF_BLEND_MS);
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+
+    // lerp FROM → engine pose (TO moves each frame as B's engine pathes it).
+    out->pos_x = e.from_x + (eng_x - e.from_x) * t;
+    out->pos_y = e.from_y + (eng_y - e.from_y) * t;
+    out->pos_z = e.from_z + (eng_z - e.from_z) * t;
+    // Yaw: shortest-arc wrap (same as get_interpolated_owner_state).
+    constexpr float kPi  = 3.14159265358979323846f;
+    constexpr float k2Pi = 2.0f * kPi;
+    float yd = eng_yaw - e.from_yaw;
+    if (yd > kPi)  yd -= k2Pi;
+    if (yd < -kPi) yd += k2Pi;
+    out->yaw_rad    = e.from_yaw + yd * t;
+    out->anim_state = 0;   // unused by the blend caller
+    return true;
+}
+
+// Build 65.c.44 — handoff COMMIT. See header. Returns the last-synced owner pose
+// (FROM, captured by note_non_owner_interp_pose while non-owner) ONCE on the
+// handoff frame, then consumes the entry so the caller MoveTo's exactly once.
+bool consume_handoff_commit(std::uint32_t form_id,
+                            float* out_x, float* out_y, float* out_z,
+                            float* out_yaw) {
+    if (form_id == 0 || form_id == 0xFFFFFFFFu) return false;
+    std::lock_guard<std::mutex> lk(g_handoff_blend_mtx);
+    auto it = g_handoff_blend.find(form_id);
+    if (it == g_handoff_blend.end()) return false;
+    auto& e = it->second;
+    // Only commit on a FRESH handoff: the fid was non-owner AND we captured a
+    // FROM pose. Otherwise it's a steady owner / already-consumed entry → drop.
+    if (!e.was_non_owner || !e.has_from) {
+        g_handoff_blend.erase(it);
+        return false;
+    }
+    if (out_x)   *out_x   = e.from_x;
+    if (out_y)   *out_y   = e.from_y;
+    if (out_z)   *out_z   = e.from_z;
+    if (out_yaw) *out_yaw = e.from_yaw;
+    g_handoff_blend.erase(it);   // one-shot: consume so we MoveTo exactly once
+    return true;
+}
+
+// Build 65.c.24 — Recent-fire timestamp cache impl.
+void mark_owner_actor_fired(std::uint32_t form_id) {
+    if (form_id == 0 || form_id == 0xFFFFFFFFu) return;
+    const auto now = GetTickCount64();
+    std::unique_lock<std::shared_mutex> lk(g_recent_fire_mtx);
+    g_recent_fire_ts[form_id] = now;
+}
+
+bool recently_fired(std::uint32_t form_id, std::uint64_t window_ms) {
+    if (form_id == 0 || form_id == 0xFFFFFFFFu) return false;
+    std::shared_lock<std::shared_mutex> lk(g_recent_fire_mtx);
+    auto it = g_recent_fire_ts.find(form_id);
+    if (it == g_recent_fire_ts.end()) return false;
+    const auto now = GetTickCount64();
+    // Guard against backward time (system clock changes); treat as stale.
+    if (now < it->second) return false;
+    return (now - it->second) <= window_ms;
+}
+
+void drain_npc_state_apply_queue_pos_only() {
+    // B6.6w5 REWIRED — this fallback is now a NO-OP. The new pos
+    // apply path uses Actor::vt[202] which makes cell-hash mutations
+    // that are NOT safe from arbitrary threads. We refuse to dispatch
+    // pos applies from the net thread; entries stay queued until the
+    // main thread's PostMessage path resumes after HWND restore.
+    std::deque<PendingNPCStateEntry> local;
+    {
+        std::lock_guard lk(g_npc_mtx);
+        // Don't swap — leave entries in the queue for the next main-
+        // thread drain attempt. Worst case: positions arrive late.
+    }
+    FW_DBG("dispatch: net-thread fallback pos-only drain SKIPPED — "
+           "B6.6w5 requires main-thread serialization");
 }
 
 // =========================================================================
@@ -1550,6 +2278,473 @@ std::size_t pending_count() {
 
 HWND get_target_hwnd() {
     return g_hwnd.load(std::memory_order_acquire);
+}
+
+// ---------------------------------------------------------------------------
+// B6.6w1 — server-driven fire trigger
+// ---------------------------------------------------------------------------
+
+void enqueue_npc_fire(const PendingNPCFire& op) {
+    std::size_t qsize;
+    {
+        std::lock_guard lk(g_npc_fire_mtx);
+        g_npc_fire_queue.push_back(op);
+        qsize = g_npc_fire_queue.size();
+    }
+    FW_DBG("dispatch: npc_fire enqueued raider=0x%X target=0x%X flags=0x%X "
+           "kind=%u (qsize=%zu)",
+           op.raider_form_id, op.target_form_id, op.flags,
+           static_cast<unsigned>(op.target_kind), qsize);
+    post_wakeup_npc_fire();
+}
+
+// =============================================================================
+// Build 55a (2026-05-23) — Per-raider ghost-target window tracker.
+//
+// Map: form_id → expiry_ms (CLOCK_MONOTONIC). Entry added when an NPC_FIRE
+// with target_kind=GHOST arrives (npc_fire_with_ghost_aim sets expiry =
+// now + 5000ms). Entry expires lazily on lookup. ghost_ai_fire's
+// should_silence_combat predicate consults this set and BAILS vanilla fire
+// for any raider currently in the ghost-target window — which prevents
+// engine vanilla AI's 60Hz rotation writes from competing with our
+// puppet-fire's 1-2Hz writes (root cause of the dual-target flicker in
+// Build 54 live test).
+//
+// Window size 5s is generous: NPC_FIRE arrives ~1-2Hz when raider is
+// engaged, so the window typically refreshes well before expiry. If the
+// server changes aggro target_kind to LOCAL, no more GHOST events come
+// in → window expires → ghost_ai_fire stops BAILing → vanilla resumes.
+// =============================================================================
+
+namespace {
+std::mutex g_ghost_targeted_mtx;
+std::unordered_map<std::uint32_t, std::uint64_t> g_ghost_targeted;
+
+// Build 55f — per-fid rotation override (yaw_rad + expiry_ms).
+// Same mutex as g_ghost_targeted for simplicity (cheap to share).
+struct GhostYawEntry {
+    float        yaw_rad;
+    std::uint64_t expiry_ms;
+};
+std::unordered_map<std::uint32_t, GhostYawEntry> g_ghost_targeted_yaw;
+
+// Monotonic millisecond clock (GetTickCount64 — wraps every ~49 days,
+// negligible for our windows).
+inline std::uint64_t now_ms_monotonic() noexcept {
+    return static_cast<std::uint64_t>(GetTickCount64());
+}
+}  // namespace
+
+void mark_raider_ghost_targeted(std::uint32_t form_id,
+                                std::uint64_t expiry_ms) {
+    std::lock_guard lk(g_ghost_targeted_mtx);
+    g_ghost_targeted[form_id] = expiry_ms;
+}
+
+bool is_raider_currently_ghost_targeted(std::uint32_t form_id) {
+    if (form_id == 0 || form_id == 0xFFFFFFFFu) return false;
+    const auto now = now_ms_monotonic();
+    std::lock_guard lk(g_ghost_targeted_mtx);
+    auto it = g_ghost_targeted.find(form_id);
+    if (it == g_ghost_targeted.end()) return false;
+    if (now >= it->second) {
+        g_ghost_targeted.erase(it);
+        return false;
+    }
+    return true;
+}
+
+std::size_t ghost_targeted_raiders_count() {
+    std::lock_guard lk(g_ghost_targeted_mtx);
+    return g_ghost_targeted.size();
+}
+
+void mark_raider_ghost_targeted_yaw(std::uint32_t form_id,
+                                    float yaw_rad,
+                                    std::uint64_t expiry_ms) {
+    if (form_id == 0 || form_id == 0xFFFFFFFFu) return;
+    std::lock_guard lk(g_ghost_targeted_mtx);
+    g_ghost_targeted_yaw[form_id] = GhostYawEntry{yaw_rad, expiry_ms};
+}
+
+bool get_ghost_targeted_yaw(std::uint32_t form_id,
+                            float* out_yaw_rad) {
+    if (form_id == 0 || form_id == 0xFFFFFFFFu) return false;
+    const auto now = now_ms_monotonic();
+    std::lock_guard lk(g_ghost_targeted_mtx);
+    auto it = g_ghost_targeted_yaw.find(form_id);
+    if (it == g_ghost_targeted_yaw.end()) return false;
+    if (now >= it->second.expiry_ms) {
+        g_ghost_targeted_yaw.erase(it);
+        return false;
+    }
+    if (out_yaw_rad) *out_yaw_rad = it->second.yaw_rad;
+    return true;
+}
+
+// Build 53 (2026-05-23) — puppet-fire helper invoked per NPC_FIRE event.
+//
+// Why an out-of-line helper: drain_npc_fire_queue holds a std::deque local
+// (non-trivial dtor) so MSVC forbids __try in its body (C2712). We extract
+// the SEH-needing pos-read here as a separate noexcept fn.
+//
+// Logic:
+//   1. Get current ghost actor via get_ghost_duplicate().
+//   2. Read ghost.+0xD0 (POS_OFF) for current peer position (cell-sync
+//      keeps this updated every PEER_POS broadcast).
+//   3. Call fire_actor_at_target(refr, gx, gy, gz) — full puppet-fire:
+//      a. set_actor_weapon_state_class(refr, slot, 15) — gate B refresh
+//      b. aim_set_target(aim_ctrl, ghost.pos) — refreshes target_pos
+//         + valid flag + timestamp every event (defeats engine's decay)
+//      c. fire_actor_weapon(refr) — WeaponFireHandler emits projectile
+//
+// Fallback path (no ghost or SEH on pos read): bare fire_actor_weapon —
+// projectile fires in whatever direction the raider's current aim
+// controller has (Build 52 behavior).
+//
+// Build 52 symptom this fixes: "raider's weapon continues firing at the
+// ground when raider goes idle". Root cause: class=15 + aim_set_target
+// happened only once at synth time. Engine decay'd +0x34 valid flag +
+// +0x38 timestamp; aim returned to weapon's default rest direction.
+static void npc_fire_with_ghost_aim(void* refr) noexcept {
+    void* ghost = fw::engine::get_ghost_duplicate();
+    if (!ghost) {
+        // No ghost yet — fall back to bare WeaponFireHandler.
+        (void)fw::engine::fire_actor_weapon(refr);
+        return;
+    }
+    float gx = 0.f, gy = 0.f, gz = 0.f;
+    bool got_pos = false;
+    __try {
+        const auto* pos = reinterpret_cast<const float*>(
+            reinterpret_cast<const std::uint8_t*>(ghost) +
+            fw::offsets::POS_OFF);
+        gx = pos[0];
+        gy = pos[1];
+        gz = pos[2];
+        got_pos = true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        got_pos = false;
+    }
+    if (got_pos) {
+        // Build 61.2 (2026-05-24) — CALLER-SIDE defensive synth dedup.
+        //
+        // Build 61 added enter_combat+synth here to fix the 2/5 raiders
+        // never getting AimController (their NPC_STATE_BCAST never carried
+        // the combat_target flag). Build 61 unconditionally called both,
+        // which created DUPLICATE ctrl_main entries in HP+0x98 BSTArray
+        // for raiders ALREADY synth'd by the BCAST path. The duplicate
+        // caused double-detach during engine cleanup → freelist marker
+        // poisoning → AV cascade.
+        //
+        // Build 61.1 attempted to fix the duplicate inside synth body
+        // (early return on re-entry) but BROKE the normal flow — synth
+        // is normally called AFTER enter_combat allocates HighProcess,
+        // and the early return skipped Steps B/C even on first call.
+        //
+        // Build 61.2 correct fix: dedup AT THE CALLER. Check if this
+        // raider already has a ghost-engaged combat state (i.e., synth
+        // already ran for it from any path). If yes → skip enter_combat
+        // and synth entirely (cheap idempotent path). If no → run full
+        // synth (Steps A+B+C produce HighProcess + ctrl_main).
+        //
+        // The is_ghost_engaged_raider_fid set is populated by
+        // install_fixed_selector_on_raider (called by both Tier 1 success
+        // path and the apply_npc_combat_target Build 55h fast-path).
+        // So any raider that has been synth'd via BCAST → already in set.
+        std::uint32_t raider_fid = 0;
+        __try {
+            raider_fid = *reinterpret_cast<std::uint32_t*>(
+                reinterpret_cast<std::uint8_t*>(refr) +
+                fw::offsets::FORMID_OFF);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            raider_fid = 0;
+        }
+
+        const bool already_synthd =
+            (raider_fid != 0) &&
+            fw::engine::is_ghost_engaged_raider_fid(raider_fid);
+
+        if (!already_synthd) {
+            // Build 65.c.33 — DISABLED. Completes the c.25.1 Fixed-Selector
+            // rollback that this caller-side pair SURVIVED (the sibling
+            // aim/fire calls below are already BUILD64_DISABLED; these two
+            // were the last live path into install_fixed_selector_on_raider).
+            //
+            // ROOT CAUSE of the client-B COMBAT FREEZE (Agent1, stack-proven):
+            // these two reached install_fixed_selector_on_raider, which injects
+            // the ghost into the RAIDER's known_targets BSTArray and purges its
+            // handles — corrupting the array header. When that array later grew,
+            // BSTArray::Reallocate (sub_141659850) ran a garbage-size (~2.4 GB,
+            // 0x97FFFF30) memmove → AV (rip in system memmove, src+size matches
+            // the fault addr) → the AV unwound mid-realloc through the engine's
+            // frame-SEH, leaving the global scrapheap allocator inconsistent →
+            // the next main-thread allocation spins forever = FREEZE (log B
+            // 01:12:45: POISON-BAIL storm on the fixed-sel'd raider ctrl, one AV,
+            // then qsize 1→152 with no drain while the net thread lives).
+            //
+            // Obsolete in the owner-driven model (c.27+): raiders aggro their
+            // OWNER's LOCAL player, NOT the ghost; cross-client visuals come
+            // from the state relay (proven by the mosquito test — melee/no-fire,
+            // so it never hit this path, and it synced correctly).
+            // BUILD64_DISABLED (c.33) — (void)fw::engine::enter_combat_raider_vs_ghost(refr, ghost);
+            // BUILD64_DISABLED (c.33) — (void)fw::engine::synthesize_combat_extension_for_ghost_target(refr, ghost, gx, gy, gz);
+            (void)ghost;
+        }
+        // else: raider already synth'd. Skip to avoid duplicate ctrl_main.
+        // Existing HighProcess + ctrl_main are still valid and registered.
+
+        // Build 54 — rotate raider to face ghost + activate aim/attack
+        // anim graph vars BEFORE firing. This makes the weapon node's
+        // world forward (which Stage-4 reads) point toward the ghost.
+        // Without this step, projectiles fly in the raider's natural
+        // idle facing direction ("punti fissi ma diversi" per Build 53).
+        // BUILD64_DISABLED — (void)fw::engine::aim_actor_at_target(refr, gx, gy, gz);
+
+        // c.40a — RE-ENABLE the mirror muzzle/projectile. The relay + enqueue
+        // worked all along (B receives the FIRE events) but the executor was
+        // BUILD64-disabled, so the mirror only AIMED (via the c.23 relayed yaw)
+        // and never discharged. fire_actor_at_target is self-contained (sets
+        // weapon class firable=15, resolves the AimController, aims, fires) and
+        // does NOT touch the known_targets BSTArray / fixed-selector path that
+        // caused the c.33 freeze — only enter_combat/synthesize did (kept off).
+        // Full puppet-fire: class=15 + aim_set_target refresh + WeaponFire.
+        (void)fw::engine::fire_actor_at_target(refr, gx, gy, gz);
+    } else {
+        // SEH reading ghost.pos — bare fire in the relayed facing direction.
+        (void)fw::engine::fire_actor_weapon(refr);
+    }
+    (void)refr;
+}
+
+void drain_npc_fire_queue() {
+    std::deque<PendingNPCFire> local;
+    {
+        std::lock_guard lk(g_npc_fire_mtx);
+        local.swap(g_npc_fire_queue);   // always drain to bound the queue
+    }
+    if (local.empty()) return;
+
+    // Build 65.c.28 — TELEPORT FREEZE GUARD (same rationale as the owner-
+    // state drain above). npc_fire_with_ghost_aim spawns a projectile +
+    // muzzle flash and reads the ghost actor's transform; during a cell-
+    // stream the raider and/or ghost can be in transient state → engine
+    // fire path faults or hangs. Drop fire events while loading; a missed
+    // muzzle flash during a teleport is invisible.
+    if (fw::engine::recently_teleported()) {
+        static std::atomic<std::uint64_t> s_fire_load_skips{0};
+        const auto sk = s_fire_load_skips.fetch_add(
+            1, std::memory_order_relaxed);
+        if (sk < 10 || (sk % 200) == 0) {
+            FW_DBG("dispatch: npc_fire drain SKIPPED — cell transition "
+                   "(teleport guard, dropped %zu, skip#%llu)",
+                   local.size(), static_cast<unsigned long long>(sk));
+        }
+        return;
+    }
+
+    static std::atomic<std::uint64_t> s_drain_count{0};
+    const auto dc = s_drain_count.fetch_add(1, std::memory_order_relaxed);
+    if (dc < 10) {
+        FW_LOG("dispatch: drain_npc_fire_queue #%llu — %zu pending",
+               static_cast<unsigned long long>(dc), local.size());
+    }
+
+    for (const auto& op : local) {
+        // Look up the Actor* by form_id. Returns null if the raider
+        // isn't loaded in our cell — common when the raider is on the
+        // other client's side only. Skip silently.
+        void* refr = fw::engine::lookup_by_form_id(op.raider_form_id);
+        if (!refr) {
+            static std::atomic<std::uint64_t> s_no_actor{0};
+            const auto na = s_no_actor.fetch_add(
+                1, std::memory_order_relaxed);
+            if (na < 10) {
+                FW_DBG("dispatch: npc_fire raider=0x%X — not loaded locally "
+                       "(skip, na=%llu)",
+                       op.raider_form_id,
+                       static_cast<unsigned long long>(na));
+            }
+            continue;
+        }
+
+        // Build 55a (proto v15) — gate puppet-fire on target_kind.
+        //
+        // target_kind=LOCAL → the recipient peer's local player IS the
+        //   aggro target. Vanilla engine AI fires at them naturally.
+        //   We must NOT puppet-fire here (we'd compete with vanilla aim
+        //   and produce the dual-target flicker observed in Build 54).
+        //   Just skip; vanilla handles this raider's combat.
+        //
+        // target_kind=GHOST → the recipient's local GHOST proxy
+        //   represents the aggro target (= the OTHER peer). Run puppet-
+        //   fire path AND mark the raider in g_ghost_targeted so
+        //   ghost_ai_fire BAILs the vanilla fire to prevent competition.
+        if (op.target_kind == fw::net::NPC_FIRE_TARGET_LOCAL) {
+            static std::atomic<std::uint64_t> s_local_skip{0};
+            const auto ls = s_local_skip.fetch_add(
+                1, std::memory_order_relaxed);
+            if (ls < 10) {
+                FW_DBG("dispatch: npc_fire raider=0x%X kind=LOCAL — "
+                       "skipping puppet (vanilla AI handles, ls=%llu)",
+                       op.raider_form_id,
+                       static_cast<unsigned long long>(ls));
+            }
+            continue;
+        }
+        // target_kind == GHOST (or unknown — treat as GHOST for back-compat).
+        // Mark raider in ghost-target set with 5s expiry. ghost_ai_fire
+        // will BAIL vanilla fire for this raider while the entry is live.
+        constexpr std::uint64_t kGhostWindowMs = 5000;
+        mark_raider_ghost_targeted(
+            op.raider_form_id, now_ms_monotonic() + kGhostWindowMs);
+
+        // Build 53 — puppet-fire with ghost.pos as aim target.
+        npc_fire_with_ghost_aim(refr);
+    }
+}
+
+// ============================================================================
+// Build 62 (2026-05-24) — NPC perception trigger dispatch.
+//
+// Per re/arena_synthesis/SUPERVISOR_SYNTHESIS.md. Replaces the
+// synth/Tier1/Tier2/walker fragile pipeline with a single CCF810
+// EnterCombat call. Server's proximity sphere detection emits one
+// MSG_NPC_PERCEPTION_TRIGGER per (npc, peer) entrance event; this drain
+// invokes engine::trigger_npc_perception which calls sub_140CCF810
+// natively. Engine allocates HighProcess+CombatController+AddTarget in
+// 1 frame.
+//
+// Threading: enqueue on net thread; drain runs on main thread (engine
+// CombatController alloc reads TLS recursion counter).
+// ============================================================================
+
+namespace {
+// Each client knows its own peer_id string (registered at PEER_HELLO).
+// We hash it ONCE at startup and compare against the wire payload's
+// peer_id_hash to decide if the perception target is the LOCAL PC (=
+// peer_id == self → target = local_player) or another peer's ghost
+// duplicate (peer_id != self → target = registered ghost).
+//
+// Hash function MUST match the server-side Python `hash(str)` truncated
+// to 32 bits. Python's `hash` on a string is implementation-defined and
+// NOT stable across runs — that's a real problem. To match deterministically
+// we have to either (a) emit a numeric peer_id at PEER_HELLO time and
+// thread it, or (b) use a stable hash (e.g. FNV-1a) on both sides.
+//
+// For Build 62 prototype we'll use a stable FNV-1a 32-bit hash on the
+// peer_id string from both sides. Implementation in both Python server
+// and C++ client.
+std::atomic<std::uint32_t> g_local_peer_id_hash{0};
+
+constexpr std::uint32_t fnv1a32(const char* s) noexcept {
+    std::uint32_t h = 2166136261u;
+    while (*s) {
+        h ^= static_cast<std::uint8_t>(*s++);
+        h *= 16777619u;
+    }
+    return h;
+}
+} // namespace
+
+void register_local_peer_id_hash(const char* peer_id_str) noexcept {
+    if (!peer_id_str) return;
+    const auto h = fnv1a32(peer_id_str);
+    g_local_peer_id_hash.store(h, std::memory_order_release);
+    FW_LOG("dispatch: local_peer_id='%s' fnv1a32=0x%08X (Build 62)",
+           peer_id_str, h);
+}
+
+void enqueue_npc_perception_trigger(const PendingNPCPerceptionTrigger& op) {
+    std::size_t qsize;
+    {
+        std::lock_guard lk(g_npc_perception_trigger_mtx);
+        g_npc_perception_trigger_queue.push_back(op);
+        qsize = g_npc_perception_trigger_queue.size();
+    }
+    FW_DBG("dispatch: npc_perception_trigger enqueued npc=0x%X peer_hash=0x%08X "
+           "(qsize=%zu)", op.npc_fid, op.peer_id_hash, qsize);
+    post_wakeup_npc_perception();
+}
+
+void drain_npc_perception_trigger_queue() {
+    std::deque<PendingNPCPerceptionTrigger> local;
+    {
+        std::lock_guard lk(g_npc_perception_trigger_mtx);
+        local.swap(g_npc_perception_trigger_queue);
+    }
+    if (local.empty()) return;
+
+    static std::atomic<std::uint64_t> s_drain_count{0};
+    const auto dc = s_drain_count.fetch_add(1, std::memory_order_relaxed);
+    if (dc < 20 || (dc % 100) == 0) {
+        FW_LOG("dispatch: drain_npc_perception_trigger #%llu — %zu pending",
+               static_cast<unsigned long long>(dc), local.size());
+    }
+
+    const std::uint32_t self_hash =
+        g_local_peer_id_hash.load(std::memory_order_acquire);
+    void* local_player = fw::engine::get_local_player();
+    void* local_ghost  = fw::engine::get_ghost_duplicate();
+
+    for (const auto& op : local) {
+        // Resolve observer (NPC X) on this client.
+        void* observer = fw::engine::lookup_by_form_id(op.npc_fid);
+        if (!observer) {
+            // NPC not loaded in our cell — drop silently. If both peers
+            // far from NPC, this is normal: server broadcasts to all but
+            // we only react when relevant.
+            static std::atomic<std::uint64_t> s_no_obs{0};
+            const auto na = s_no_obs.fetch_add(1, std::memory_order_relaxed);
+            if (na < 10) {
+                FW_DBG("dispatch: perception_trigger npc=0x%X — not loaded "
+                       "locally (na=%llu)", op.npc_fid,
+                       static_cast<unsigned long long>(na));
+            }
+            continue;
+        }
+
+        // Resolve target by peer_id_hash:
+        //   self_hash == op.peer_id_hash → target is LOCAL PC (the peer
+        //     is THIS client; NPC X should engage me)
+        //   self_hash != op.peer_id_hash → target is OTHER peer's ghost
+        //     duplicate registered locally
+        void* target = nullptr;
+        const char* target_kind = nullptr;
+        if (self_hash != 0 && self_hash == op.peer_id_hash) {
+            target = local_player;
+            target_kind = "LOCAL_PC";
+        } else {
+            // For Build 62 MVP: assume single OTHER peer → use the global
+            // registered ghost. Future multi-peer: maintain per-peer-hash
+            // map of ghost pointers.
+            target = local_ghost;
+            target_kind = "GHOST";
+        }
+        if (!target) {
+            static std::atomic<std::uint64_t> s_no_tgt{0};
+            const auto nt = s_no_tgt.fetch_add(1, std::memory_order_relaxed);
+            if (nt < 10) {
+                FW_DBG("dispatch: perception_trigger npc=0x%X target_kind=%s "
+                       "but ptr null (nt=%llu)", op.npc_fid, target_kind,
+                       static_cast<unsigned long long>(nt));
+            }
+            continue;
+        }
+
+        // Build 64 — BUILD64_DISABLED. trigger_npc_perception calls
+        // sub_140CCF810 which triggers the combat tier pipeline. With
+        // AI-control hooks disabled, calling CCF810 still works but
+        // produces unstable engagement that crashes within seconds.
+        // Skip the call; agents will redesign the engagement strategy.
+        const bool ok = false;  // Was: fw::engine::trigger_npc_perception(observer, target);
+
+        FW_LOG("[perception] npc=0x%08X peer_hash=0x%08X target_kind=%s "
+               "observer=%p target=%p rc=%d (BUILD64 — call DISABLED, "
+               "vanilla AI runs unmolested)",
+               op.npc_fid, op.peer_id_hash, target_kind,
+               observer, target, ok ? 1 : 0);
+    }
 }
 
 } // namespace fw::dispatch

@@ -5,6 +5,227 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## N1 / N2 — owner-driven NPC co-op combat (2026-06-01) — WIP
+
+Working tree, first commit of the N branch (tag `v0.6.0`). My first
+iteration on the game's AI: hostile raiders (the Concord Museum cluster,
+14 placed refs) now fight both players together and stay consistent across
+clients — world position, full-body pose, aggro ownership with live
+hand-off, and death. This started as the B6.5 / B6.6 wedges of the B6
+world-state epic, but the NPC AI problem turned out to be large enough to
+be its own epic, so I split it into the **N** branch (N1 = pos + pose,
+N2 = combat target + aggro + death). It is also a hard pivot away from
+B6.5 / B6.6: that stack tried to NUKE the engine's combat brain
+(`Actor::vt[255]` bail) and leave raiders frozen + immortal. N keeps the
+engine's vanilla AI running on exactly one client and replicates it.
+
+### The pivot: suppress-everywhere → owner-driven
+
+B6.5 / B6.6 ran the same AI-suppression stack on both peers, so neither
+engine drove the raider. The N model is asymmetric:
+
+- **One client owns each raider.** On the owner, the raider's vanilla
+  engine AI runs untouched (perception, target select, movement, aim,
+  fire, melee). The owner reads its authoritative state and streams it.
+- **The other client is a puppet.** It suppresses its own AI decisions for
+  that raider and replays the owner's stream: position pinned to the
+  relayed coords, the Havok body keyframed, the full per-bone pose applied.
+- **The server is the single ownership authority.** The Python
+  `OwnershipRegistry` elects an owner per raider and broadcasts every
+  transition; the DLL only mirrors it.
+
+### Server: ownership + threat election (`net/server/ownership.py`)
+
+`OwnershipRegistry` holds one record per tracked raider (owner peer, epoch,
+last pos, threat accumulators). Election is server-authoritative:
+
+- **Initial owner = the observer.** `NPC_OBSERVED` is gated on the client
+  engine actually being in combat with the raider (see DLL gate), so the
+  first peer to observe it is by definition the one fighting it → it claims
+  ownership (`assign_owner_by_threat`).
+- **Per-tick re-evaluation (`reeval_threat_owners`).** For every raider,
+  each candidate peer's threat is
+
+      threat = 10.0 * engage + 1.0 * proximity + 30.0 * damage
+
+  where `engage` is 1.0 while a peer is in combat with the raider and
+  decays to 0 over 4500 ms, `proximity` is 1.0 at the raider and 0 at the
+  aggro-range edge, and `damage` is that peer's recent decayed damage
+  (4000 ms window, normalised by 80). Damage is weighted to dominate so
+  ownership follows whoever is actually fighting, not merely who is nearest.
+- **Anti-thrash hysteresis.** A handoff fires only when the challenger
+  decisively beats the owner: `MIN_HOLD = 2000 ms` since the last change,
+  `FLIP_MARGIN = 1.3×`, `MIN_ABS_DELTA = 3.0`, plus a commitment band
+  (`COMMIT_WINDOW = 3500 ms`, `COMMIT_ABS_DELTA = 8.0`) that lets a clearly
+  committed challenger take over faster. This stops the owner from flipping
+  every time both players trade fire.
+
+This is engine-native aggro: the server never tells a raider who to hate —
+it watches who the raiders *already* hate (via the in-combat signal below)
+and routes ownership there, so both players are real threats.
+
+### DLL: the per-actor gate (`hooks/npc_ai_suppress.cpp`)
+
+`Actor::Update_PerFrame` (RVA `0xC636A0`, the single per-actor per-frame
+funnel) is detoured. For every loaded actor:
+
+1. **Observation gate.** I emit `NPC_OBSERVED` only for actors my engine
+   sees as combat-relevant — `S1 || S2 || S3`:
+   - **S1** = the InCombat flag (`Actor+0x2D0 & 0x4000`),
+   - **S2** = `CombatController+0x98`,
+   - **S3** = `recently_fired` (the actor fired in the last 1.5 s).
+
+   The MQ102 Concord quest raiders fight through a *scripted package* and
+   never set S1 / S2, so S3 (they do fire) is what catches them. I
+   deliberately do **not** observe on raw HighProcess (`Actor+0x328`) —
+   that would re-flag every idle settler / companion and reopen the
+   UDP-observation storm an earlier build hit.
+2. **Owner / non-owner branch** via the cheap predicates `is_owner_of(fid)`
+   / `is_non_owner_tracked(fid)` (a `shared_mutex`-guarded map mirrored
+   from the server):
+   - **Owner** → record the raider's pos / yaw / anim into the TX cache and
+     run vanilla `Update_PerFrame` normally. A periodic tick drains the
+     cache into `NPC_STATE_FROM_OWNER` (~10 Hz) plus `NPC_POSE_FROM_OWNER`
+     per-bone (~30 Hz).
+   - **Non-owner** → I no longer bail `Update_PerFrame` (an earlier build
+     did; it left the raider a frozen "wooden log" because the engine's
+     anim walker never ran). Instead I let the engine tick but pin the
+     result, set the mirror-suppress flag (`Actor+0x189 = 1`, stops the
+     puppet aiming at / crouch-sliding toward the local player), and emit
+     `NPC_ENGAGEMENT_CLAIM` when my engine has the InCombat bit on a raider
+     I don't own (drives the server's combat-driven handoff).
+
+A new `puppet_update_perframe` module implements the KEEP-ALWAYS subset of
+the 106 `Update_PerFrame` call-sites (anim-graph tick, bone-tree, NIF
+transforms, cell / extra-data bookkeeping) with zero AI decisions, for the
+path where the puppet must look alive without taking any AI.
+
+### Position + pose, and the teleport fix
+
+The non-owner pins the raider to the relayed position. Two writers,
+depending on engine state:
+
+- **Normal:** `apply_npc_pos` writes `Actor+0xD0` through the engine.
+- **During a teleport / cell-stream window:** `apply_npc_pos_raw`
+  (`engine_calls.cpp`) does SEH-caged raw memory writes to `Actor+0xD0` +
+  the NIF root local / world transforms only — zero engine calls. This
+  exists because `SetPosition_NoCell` (`sub_140513A80`, RVA `0x513A80`) and
+  `vt[202]` share a process-global cell-grid spinlock that the streaming
+  thread can hold, which froze the main thread; the raw path can't reach
+  the lock. The body is held by `NiAVObject::SetMotionType` (RVA
+  `0x18763E0`) in **Keyframed** mode (2) on the puppet, flipped back to
+  **Dynamic** (1) on death.
+
+The headline bug this branch closes is the **teleport-on-handoff**: the
+instant ownership changed, the raider snapped to a stale position. Root
+cause — the visible-position pin (`Actor+0xD0` + NIF) was the only thing
+kept in sync; the *engine ground truth* (AI-process, cell, Havok) on the
+new owner had never moved from the raider's pre-aggro default, and surfaced
+the moment that client's AI took over. Fix (`actor_teleport_handoff`): at
+the handoff I commit the synced pose into the new owner's engine via
+`Actor::MoveTo` (the atomic-teleport worker, RVA `0xC60BE0`) with
+`doProcessUpdate = 1`, which reattaches the AI-process + cell at the
+target, so engine state and visible position no longer diverge.
+
+### Death sync (`hooks/kill_hook.cpp`)
+
+`Actor::Kill` (RVA `0xC612E0`) is detoured. When a tracked raider dies, the
+killing client emits `NPC_DEATH_FROM_OWNER`; the server relays it; the
+other client corpses its mirror at the synced position: un-keyframe (motion
+→ Dynamic), `apply_npc_pos_raw` to the death pos, then `kill_actor` under an
+"applying-remote" guard so the re-entrant `Kill` detour bails
+(`tls_applying_remote`) instead of echoing back into a loop.
+
+- **Bidirectional:** either client's kill propagates (owner *or*
+  non-owner). Originally only the owner emitted, so "B shoots a raider
+  owned by A → dead on B, alive on A".
+- **No vanishing corpses:** the legacy generic `ActorEvent KILL` (which
+  routes to `set_disabled_validated` and *disables* the ref) is now skipped
+  for tracked entities — for placed (`0x00`) refs the disable made the body
+  disappear instead of ragdolling, because the dynamic-form vanish-guard
+  only protected runtime (`0xFF`) spawns. Tracked raiders now corpse via
+  `kill_actor` only.
+
+### Wire protocol
+
+`PROTOCOL_VERSION = 16`. The owner-driven NPC channel is opcodes `0x0280`–
+`0x0290`:
+
+| Opcode | Name | Dir | Role |
+|---|---|---|---|
+| `0x0280` | NPC_OWNERSHIP_BCAST | S→peer | bootstrap snapshot |
+| `0x0283` | NPC_OWNERSHIP_HANDOFF_PHASE_2 | S→all | new owner for one NPC |
+| `0x0284` | NPC_OWNER_HEARTBEAT | C→S | proof-of-life (~2 Hz) |
+| `0x0285` | NPC_STATE_FROM_OWNER | C→S→all | owner state batch (~10 Hz) |
+| `0x0286` | NPC_OBSERVED | C→S | election input |
+| `0x0287` | NPC_UNLOAD | C→S | cell unload → release |
+| `0x0288` | NPC_FIRE_FROM_OWNER | C→S→all | owner fire event |
+| `0x0289` | NPC_DEATH_FROM_OWNER | C→S→all | owner death event |
+| `0x028A` | NPC_DAMAGE_FROM_OWNER | C→S→all | hit-applier visual |
+| `0x028B` | NPC_ENGAGEMENT_CLAIM | C→S | non-owner in-combat → force handoff |
+| `0x028C` | NPC_POSE_FROM_OWNER | C→S→all | per-bone pose (~30 Hz) |
+| `0x028D` | NPC_DAMAGE_CLAIM | C→S | damage → threat |
+| `0x0290` | NPC_CROUCH_FROM_OWNER | C→S→all | crouch translation |
+
+### Files / components
+
+- **DLL:** `hooks/ownership_manager.{h,cpp}` (server-mirror registry +
+  predicates + TX), `hooks/puppet_update_perframe.{h,cpp}`,
+  `hooks/npc_ai_suppress.cpp` (the gate), `hooks/kill_hook.cpp` (death
+  emit), `engine/engine_calls.cpp` (`apply_npc_pos_raw`,
+  `actor_teleport_handoff`, `kill_actor`), `main_thread_dispatch.cpp`
+  (death / owner-state / handoff / pose drains), `net/protocol.h` +
+  `net/client.cpp`.
+- **Server:** `net/server/ownership.py` (threat table),
+  `net/server/main.py` (handlers + relay + per-tick reeval),
+  `net/protocol.py`.
+
+### Build path (key milestones)
+
+Build 65 → 65.c.49.1, ~50 iterations. The ones that matter: **65**
+owner-driven foundation (registry + relay + DLL mirror); **c.35** server
+threat table; **c.36a** the S0–S3 combat detection + anti-thrash; **c.36b**
+mirror-suppress (`+0x189`); **c.37** full per-bone pose replication;
+**c.41b** the keyframe machine; **c.42** 30 Hz pose + receiver
+interpolation; **c.44** the teleport fix (`MoveTo` engine-commit); **c.46**
+the deadlock-safe raw pin; **c.47 / c.49 / c.49.1** death sync (owner →
+bidirectional → corpse-vanish fix); **c.48** the S1‖S2‖S3 observation gate.
+
+### Not done
+
+- **Shared authoritative HP (N3).** Each client still tracks a raider's HP
+  locally (its own hits only) via the engine HP funnel (`sub_140CC9650`);
+  the two clients don't pool damage. A high-HP boss would die on whoever
+  solo-deals its HP. The hit-claim / damage-threat infra exists; this needs
+  a server-held HP pool + an `NPC_HP_STATE` opcode. The #1 boss blocker.
+- **The ~1 s aggro-switch idle.** The fix (force the raider's combat target
+  to the local player at the handoff commit) is implemented but
+  kill-switched off (`kForceTargetPlayerOnHandoff = false`) — it was a
+  suspect in an earlier crash that turned out to be the unsynced-death UAF
+  (now fixed by death sync), so it can be re-enabled behind a
+  dead / creature / already-killed guard.
+- **Player death + respawn sync (N4).** The ghost doesn't yet die / ragdoll
+  / respawn on the peer.
+- Other creatures beyond hostile raiders.
+
+### Known limitations (live)
+
+A raider occasionally not joining on the non-owner (non-deterministic,
+rare); pure-melee enemies not observed yet (no fire, no combat-controller
+flag → never owned); raider appearance + loot diverge per client (placed
+leveled refs, per-client RNG — pos / aggro / death still sync because the
+form_id matches; parked, staying engine-native, no ESL / no Creation Kit).
+
+### Dead code
+
+Several hooks from the abandoned ghost-proxy / per-walker era (builds 55–63:
+`ghost_hostility_guard`, `ghost_combat_force`, `ghost_is_attachable`,
+`ghost_vt197_guard`, `ghost_global_walker_guards`, `ghost_ai_action_execute`)
+are commented-out / inert but still compiled, kept as a record of what I
+tried. Cleanup (~2.9k LOC) is deferred.
+
+---
+
 ## B6.5 / B6.6 WIP — NPC AI sync infrastructure (2026-05-12) — UNSTABLE
 
 Working tree, no tag. The pieces below land in the working tree but
