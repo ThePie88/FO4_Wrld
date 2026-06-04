@@ -112,6 +112,7 @@
 #include "ghost_vt197_guard.h"            // Build 55e — Actor vt[197] IsHostileTo bail-on-ghost (prevents +0x418→+0x80 AV)
 #include "ghost_global_walker_guards.h"   // Build 57 — comprehensive walker guards (7 hooks) — kills 0xE98860 AV class + Agent A/B/C/D/E/F predicted crash surfaces
 #include "ghost_ai_hit_applier.h"         // B6.6w0 (hit applier BAIL): sub_140CD2780 — anti-crash on damage to frozen NPC
+#include "npc_hp_probe.h"                 // N3 step 1 — READ-ONLY HP-funnel probe (sub_140CC9650), diagnostic only
 #include "ghost_ai_combat_orchestrator.h" // B6.6w0 NUKE (top-level combat orchestrator BAIL): sub_140CCFDF0 = Actor::vt[255]
 #include "cross_cell_gate.h"              // Build 38: sub_140CF6100 detour — transient ghost+0xB8 swap to defeat PC.cell==target.cell gate
 #include "ghost_combat_force.h"           // Build 40: 4-hook surgical decision override for combat AI
@@ -557,6 +558,12 @@ InstallSummary install_all(std::uintptr_t module_base,
     // (victim, damage) and reports the local player's damage so the threat table
     // makes ownership/aggro follow the real fighter. All hits pass through.
     (void)install_ghost_ai_hit_applier(module_base);
+
+    // N3 (shared HP) STEP 1 — READ-ONLY HP-funnel probe (sub_140CC9650). Logs
+    // the funnel's delta vs the actual Health-cell change + damage source for
+    // tracked raiders, to validate the RE before the real capture+clamp lands.
+    // Zero writes, zero arg mutation. Kill-switch: set_hp_probe_enabled(false).
+    (void)install_npc_hp_probe(module_base);
     // BUILD64_DISABLED — (void)install_ghost_ai_combat_orchestrator(module_base);
     // Build 65.c.17 — re-enabled. Same rationale as pos_belt / actor_setpos
     // above: predicate flip (65.c.3) ensures owner runs vanilla and

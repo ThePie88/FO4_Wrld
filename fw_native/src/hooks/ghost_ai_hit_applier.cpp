@@ -175,13 +175,19 @@ std::int64_t __fastcall detour_hit_applier(void* hit_data, void* aux) {
             }
 
             if (by_player && dmg > 0.0f && dmg < 1.0e6f) {
-                fw::net::client().enqueue_npc_damage_claim(victim_fid, dmg);
+                // N3 (2026-06-04) — the damage CLAIM moved to the HP funnel hook
+                // (npc_hp_probe / sub_140CC9650). The funnel reports the FINAL
+                // post-resist damage + the raider max HP for the shared pool and
+                // catches fire/DoT/radiation too; this orchestrator path read
+                // PRE-mitigation damage (HitData+0x90). Disabled here to avoid a
+                // DOUBLE claim. Kept as a diagnostic only.
+                // fw::net::client().enqueue_npc_damage_claim(victim_fid, dmg);
                 const auto dn = g_dmg_reports.fetch_add(
                     1, std::memory_order_relaxed);
                 if (dn < 20 || (dn % 500) == 0) {
-                    FW_LOG("[c39b-dmg] local player dealt %.1f to fid=0x%08X "
-                           "→ damage claim (#%llu)", dmg, victim_fid,
-                           static_cast<unsigned long long>(dn));
+                    FW_LOG("[c39b-diag] orchestrator saw player dmg %.1f to "
+                           "fid=0x%08X (claim now via funnel) (#%llu)", dmg,
+                           victim_fid, static_cast<unsigned long long>(dn));
                 }
             }
         }

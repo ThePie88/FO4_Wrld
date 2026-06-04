@@ -32,7 +32,7 @@ from typing import ClassVar, Union
 # ------------------------------------------------------------------ constants
 
 PROTOCOL_MAGIC: int = 0xFA
-PROTOCOL_VERSION: int = 16
+PROTOCOL_VERSION: int = 17  # v17: N3 NpcDamageClaim 8->12B (+max_hp)
 # v16 (2026-05-31): ghost crouch — adds POSE_CROUCH_STATE (0x028E, C->S) and
 # POSE_CROUCH_BROADCAST (0x028F, S->peers). A SEPARATE, additive channel
 # alongside the working POSE_STATE/POSE_BROADCAST rotation pose: it replicates
@@ -800,22 +800,28 @@ class NPCDamageClaimPayload:
     which the combat-target signal alone can't disambiguate). Unreliable;
     client throttles to ~6 Hz/fid (accumulating between sends).
 
-    Wire: 8 bytes.
+    N3 (v17): `max_hp` carries the raider's full Health so the server can
+    bootstrap the shared HP pool (both clients deplete one server-held cur_hp).
+    0.0 = unknown (server leaves the pool un-bootstrapped).
+
+    Wire: 12 bytes.
     """
     form_id: int
     amount: float
+    max_hp: float = 0.0
 
-    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<If")  # form_id, amount
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<Iff")  # form_id, amount, max_hp
 
     def encode(self) -> bytes:
-        return self._STRUCT.pack(self.form_id & 0xFFFFFFFF, float(self.amount))
+        return self._STRUCT.pack(
+            self.form_id & 0xFFFFFFFF, float(self.amount), float(self.max_hp))
 
     @classmethod
     def decode(cls, data: bytes) -> "NPCDamageClaimPayload":
         if len(data) < cls._STRUCT.size:
             raise ProtocolError("NPC_DAMAGE_CLAIM truncated")
-        fid, amount = cls._STRUCT.unpack_from(data, 0)
-        return cls(form_id=fid, amount=amount)
+        fid, amount, max_hp = cls._STRUCT.unpack_from(data, 0)
+        return cls(form_id=fid, amount=amount, max_hp=max_hp)
 
 
 class ActorEventKind(IntEnum):

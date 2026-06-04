@@ -6,6 +6,17 @@ This project uses unconventional approaches in several critical areas (scene gra
 Fallout 4 1.11.191 next-gen — multiplayer mod (FoM-lite framework).
 Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 
+> **Status (2026-06-05):** **N3 — shared authoritative HP (partial).** Both
+> clients now deplete ONE server-held HP pool per raider: each reports its
+> FINAL post-resist damage — captured at the engine's single HP-write funnel
+> `sub_140CC9650` — and a raider dies when the COMBINED pool hits 0, not when
+> one client solo-deals its HP. A DLL clamp floors each client's local Health
+> at 1 so the engine never kills the raider on its own; the server then fires
+> the kill, reusing the N1 / N2 death-sync, so the corpse lands on both clients
+> together. This is the core mechanic the ~20k-HP boss needs. Validated on the
+> Concord raiders; PARTIAL — wants broader testing and other creatures. Wire
+> proto v17. See [CHANGELOG.md](CHANGELOG.md).
+>
 > **Status (2026-06-01):** **N1 / N2 — owner-driven NPC combat sync.** My
 > first iteration on the game's AI. Hostile raiders (the Concord cluster)
 > now fight both players together, synced across clients: world position,
@@ -35,29 +46,6 @@ Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 > decide, dispatch attack, and aim update in one shot. Working tree,
 > no tag. Server-driven aggro / damage flow / movement substitution
 > are the next wedges. See [CHANGELOG.md](CHANGELOG.md).
->
-> **B6.4 v0.5.6 — Interior cell-entry crash fix + B6.4 implicit
-> closure (2026-05-10).** Closes the deterministic crash when a
-> remote peer crosses into an interior (repro on the Sanctuary
-> terminal-house entry, both clients, every time). TTD pinned the AV
-> at `sub_1416C7510 + 0x29` = `mov r8, [rax]` with `rax = 0x10` — a
-> `BSFlattenedBoneTree` visitor dereferencing `**ctx[0]` against a
-> NULL-padded `bones_fallback` slot (`BSSkin::Instance+0x10`, count
-> at `+0x20`). Three layers in `fw_native/src/native/`: (1) MinHook
-> detour on `sub_1416C7510` validates `*ctx >= 0x10000` and skips the
-> call on the NULL+offset pattern; (2) head and hands NIFs deep-cloned
-> at inject via `clone_nif_subtree` (engine `vt[26]` DeepClone, RVA
-> `0x16BA800`, mirroring the body clone path) so their skin instances
-> are independent of the local player's, eliminating the shared-rebind
-> race that nukes `bones_fb` mid-cycle on cell-load; (3) 4 Hz
-> `swap_skin_bones_to_skeleton` re-apply now also walks the body root
-> in addition to attached armors. Bonus: B6.4 (terminal hack state
-> sync) closes for free — verified live on the same fix test pass
-> (peer A hacks terminal → peer B sees unlocked instantly, no
-> minigame). Successful hack flips `ExtraLock` via the same
-> `ForceUnlock` (`sub_140563320`) the B6.3 v0.5.3 detour already
-> covers. Zero new code for B6.4.
-> See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -146,10 +134,10 @@ in real time).
 | ↳ **B6.11** Time of day + weather sync | ⏳ — GlobalVar `GameHour` + Sky weather state |
 | ↳ **B6.12** Workshop / settlement build state sync | ⏳ — major epic; build/scrap/move workshop refs + furniture |
 | ↳ **B6.13** Power Armor frame + worn-state sync | ⏳ — chassis is a REFR with its own state (location, per-piece HP, fusion core); player-in-PA = chassis attached to player. Both visibilities require sync. Re-scoped from M9 to B6 (2026-05-04) — fundamentally world-state, not an equip event |
-| **N** NPC co-op combat *(split out from B6.5 / B6.6 — grew into its own epic; my first iteration on the game's AI)* | 🟡 N1 + N2 done for hostile raiders; shared-HP, player-death, and the rest of the creature roster pending |
+| **N** NPC co-op combat *(split out from B6.5 / B6.6 — grew into its own epic; my first iteration on the game's AI)* | 🟡 N1 + N2 done, N3 (shared HP) partial — all on hostile raiders; player-death + the rest of the creature roster pending |
 | ↳ **N1** NPC actor pos + pose sync (owner-driven) | ✅ done (v0.6.0, 2026-06-01) — each raider is owned by one client whose vanilla engine runs its AI and streams pos + full-body pose (~30 Hz); the non-owner mirrors it (pos-pinned, Havok-keyframed). Teleport-on-handoff fixed by committing the synced pose to the new owner's engine via `Actor::MoveTo` (doProcessUpdate=1). Replaces the old B6.5 frozen-suppression stack. |
 | ↳ **N2** NPC combat target + aggro + death sync (owner-driven threat table) | ✅ done (v0.6.0, 2026-06-01) — the Python server holds a threat table and elects the owner from whoever the raiders natively aggro (engine-native: noise / line of sight), with hysteresis anti-thrash; live aggro hand-off; bidirectional death-sync (corpse + ragdoll at the synced pos, either client's kill propagates). Scope: hostile raiders. |
-| ↳ **N3** Shared authoritative HP / damage | ⏳ — both clients deplete one server-held HP pool (required for a ~20k-HP boss). Hit-claim infra exists; needs server HP authority + an `NPC_HP_STATE` opcode. |
+| ↳ **N3** Shared authoritative HP / damage | 🟡 partial (v0.6.1, 2026-06-05) — both clients deplete ONE server-held HP pool: damage is captured at the engine HP-write funnel `sub_140CC9650` (FINAL post-resist value), a DLL floor-1 clamp stops either client killing the raider solo, and the server fires the kill at pool=0 (reusing the N1/N2 death-sync). Validated on Concord raiders; needs broader testing + other creatures. Wire proto v17. |
 | ↳ **N4** Player death + respawn sync | ⏳ — the ghost dies / ragdolls / respawns on the peer; part of the boss-fight loop (deaths + respawns). |
 | **B7** Rust server port | ⏳ |
 
@@ -177,6 +165,31 @@ in real time).
 
 Latest 3 patches summarized below. **Full version history in
 [CHANGELOG.md](CHANGELOG.md).**
+
+### N3 (2026-06-05) — shared authoritative HP — PARTIAL
+
+Working tree, tag v0.6.1. The boss-enabling piece: both clients deplete ONE
+server-held HP pool per raider, so a raider dies from the COMBINED damage,
+not from whichever client solo-deals its HP.
+
+- **Capture** — a detour on the engine's single HP-write funnel
+  `sub_140CC9650` (the chokepoint every Health delta passes through, incl.
+  fire/DoT/radiation) reads the FINAL post-resist damage and reports it,
+  firer-gated (each client only its own hits). Max HP = `absolute − modifier`
+  via the AVO getter, shipped on the claim (wire proto v17, claim 8→12 B).
+- **Pool** — `OwnershipRegistry` holds `hp_cur / hp_max` per form_id (survives
+  handoffs); the first claim bootstraps max, both clients deplete the same pool.
+- **Clamp** — a DLL clamp floors each client's absolute Health at 1 inside the
+  funnel, so the engine's death cascade (keyed on `Health ≤ 0`) never starts.
+  Gating `Actor::Kill` was REJECTED by the RE pass (it re-fires forever + leaves
+  a ragdolled live actor); clamping the one HP store is the clean gate.
+- **Death** — at pool 0 the server fires `NPC_DEATH_FROM_OWNER` to ALL clients
+  (neither killed it locally), reusing the N1 / N2 death-sync, corpse synced.
+
+Validated on the Concord raiders (clamp floors to 1 exactly, the pool kills at
+combined = max, no double-count, no SEH). PARTIAL — wants broader testing +
+other creatures. De-risked first by 3 decomp-verified RE agents + a read-only
+probe build. Full detail in [CHANGELOG.md](CHANGELOG.md).
 
 ### N1 / N2 (2026-06-01) — owner-driven NPC co-op combat — WIP
 
@@ -283,50 +296,6 @@ opcode (`PEER_HIT_REPORT` C→S + validation +
 `NPC_DAMAGE_TAKEN` BCAST); server-driven movement; `main.py`
 wiring of `raider_brain`. Full per-hook detail in
 [CHANGELOG.md](CHANGELOG.md).
-
-### B6.4 v0.5.6 (2026-05-10) — interior cell-entry crash fix + B6.4 free closure — HOTFIX
-
-- **Symptom.** Deterministic crash on a peer's machine when another
-  peer crossed into an interior cell. Repro on the Sanctuary
-  terminal-house entry, both clients, every time. Vanilla FO4 (no
-  DLL) walked through cleanly; DLL was at fault.
-- **TTD root-cause.** AV at `sub_1416C7510 + 0x29` (`mov r8, [rax]`
-  with `rax = 0x10`). The function is a `BSFlattenedBoneTree`
-  visitor; the iterator at RVA `0x35F560` walks an `NiAVObject*`
-  array (`bones_fallback` of `BSSkin::Instance+0x10`, count at
-  `+0x20`) and computes `(*slot) + 0x10` for every entry without
-  null-checking. When `*slot == NULL`, that becomes `0x10`, which
-  the visitor downstream dereferences. Vanilla NPCs don't trip this
-  because their `bones_fb` stays densely populated; the ghost-side
-  BSSITF instances were shared with the local player's NIF cache
-  and got nuked mid-cycle by the engine local-actor rebind on
-  cell-load.
-- **Fix.** Three layers, all in `fw_native/src/native/`. (1) MinHook
-  detour on `sub_1416C7510` (`install_bone_iter_shield`,
-  `skin_rebind.cpp`) intercepts the NULL+offset pattern at engine
-  boundary. (2) `inject_body_nif` deep-clones head and hands NIFs
-  immediately after `nif_load_by_path` (mirror of body clone path)
-  via `clone_nif_subtree` → engine `sub_1416BA800` DeepClone →
-  `vt[26]` dispatch, giving the ghost independent skin instances
-  the engine local-actor rebind never touches. (3)
-  `on_bone_tick_message` 4 Hz `swap_skin_bones_to_skeleton`
-  re-apply loop now also walks the body root.
-- **Diagnostic counters** in `skin_rebind.cpp` track shield
-  activations per tick, logged from `on_bone_tick_message` when
-  non-zero: `[skin-shield] last-tick: swap_NULL_fills=N
-  iter_AV_skips=M`. Production traces show steady-state
-  `swap_NULL_fills=36` (harmless, GPU doesn't read those slots) and
-  `iter_AV_skips=0` outside cell-load events; at cell-entry the
-  shield's counter spikes to 36–108 in a single tick (= 1×36 to 3×36
-  BSSITFs touched in the burst), then returns to zero.
-- **B6.4 closes for free.** During the same fix test pass, peer A's
-  successful terminal hack on the Sanctuary terminal-house unlocked
-  the terminal on peer B with no minigame prompt — exactly the B6.4
-  behaviour planned as a future wedge. The B6.3 v0.5.3 `ForceUnlock`
-  detour (`sub_140563320`) already covers terminals (the hack flips
-  `ExtraLock` through the same engine path). Milestone table moves
-  to done with zero new code. Tag
-  `v0.5.6-b6.4-interior-crash-fix`.
 
 ## Why this exists
 

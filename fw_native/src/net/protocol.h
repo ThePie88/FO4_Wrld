@@ -159,7 +159,7 @@ constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
 //     on the SAME shared canonical bone index as the rotation pose. Tiny
 //     count (≤8; COM + Pelvis). Does NOT modify PoseBoneEntry, the canonical
 //     filter, or the rotation capture/apply loops.
-constexpr std::uint8_t  PROTOCOL_VERSION  = 16;
+constexpr std::uint8_t  PROTOCOL_VERSION  = 17;  // v17: N3 NpcDamageClaim 8->12B (+max_hp)
 constexpr std::size_t   HEADER_SIZE       = 12;
 constexpr std::size_t   MAX_PAYLOAD_SIZE  = 1400;
 constexpr std::size_t   MAX_FRAME_SIZE    = HEADER_SIZE + MAX_PAYLOAD_SIZE;
@@ -491,12 +491,16 @@ static_assert(sizeof(NpcCrouchHeader) == 13, "NpcCrouchHeader size");
 
 // c.39b — "my local player dealt `amount` damage to NPC `form_id`". Client→
 // server; the threat table accumulates a per-peer decayed damage sum per NPC
-// and ownership follows the biggest recent damager. Matches Python "<If".
+// and ownership follows the biggest recent damager.
+// N3 (v17) — `max_hp` carries the raider's full Health so the server can
+// bootstrap the shared HP pool (both clients deplete one server-held cur_hp).
+// 0 = unknown (server keeps the pool un-bootstrapped). Matches Python "<Iff".
 struct NpcDamageClaim {
     std::uint32_t form_id;   // 4
-    float         amount;    // 4
+    float         amount;    // 4  — FINAL applied damage this batch (post-resist)
+    float         max_hp;    // 4  — N3 raider full Health for pool bootstrap
 };
-static_assert(sizeof(NpcDamageClaim) == 8, "NpcDamageClaim size");
+static_assert(sizeof(NpcDamageClaim) == 12, "NpcDamageClaim size");
 // Max payload sizes:
 //   POSE_STATE     = 10 + 64*16 = 1034 bytes < 1400 ✓
 //   POSE_BROADCAST = 26 + 64*16 = 1050 bytes < 1400 ✓

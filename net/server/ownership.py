@@ -287,6 +287,15 @@ class NPCOwnership:
     # it as the dominant term so ownership/aggro follows whoever hits hardest.
     threat_damage: dict[str, tuple[float, float]] = field(default_factory=dict)
 
+    # N3 (shared HP) — server-authoritative HP pool, keyed by this fid (so it
+    # survives ownership handoffs). Bootstrapped from the first damage claim
+    # carrying max_hp; BOTH clients' claims deplete the SAME hp_cur. Round 1 is
+    # log-only (no death command); round 2 drives the kill + the client clamp.
+    hp_max: float = 0.0          # 0.0 = not yet bootstrapped
+    hp_cur: float = 0.0
+    hp_dead: bool = False        # latched True the first time hp_cur reaches 0
+    hp_dmg_by_peer: dict[str, float] = field(default_factory=dict)  # cumulative, for validation
+
 
 @dataclass(frozen=True, slots=True)
 class OwnershipChange:
@@ -707,6 +716,33 @@ class OwnershipRegistry:
         # Dealing damage also counts as engagement (so the engage term + the
         # candidate set in reeval pick this peer up immediately).
         rec.threat_engaged[peer_id] = now_ms
+
+    def apply_hp_claim(
+        self, form_id: int, peer_id: str, amount: float, max_hp: float,
+    ) -> Optional[tuple[float, float, bool]]:
+        """N3 (shared HP) — deplete the per-fid shared HP pool by `amount`,
+        bootstrapping the pool from `max_hp` on the first claim that carries it.
+        Returns (hp_cur, hp_max, just_crossed_zero), or None if the NPC isn't
+        tracked, or (0,0,False) if max is still unknown. NEVER kills — round 1
+        is log-only at the call site; the kill command lands in round 2."""
+        rec = self.get(form_id)
+        if rec is None:
+            return None
+        # Bootstrap the pool max once (first claim carrying a non-zero max wins).
+        if rec.hp_max <= 0.0 and max_hp > 0.0:
+            rec.hp_max = max_hp
+            rec.hp_cur = max_hp
+        if rec.hp_max <= 0.0:
+            return (0.0, 0.0, False)   # max still unknown — can't pool yet
+        amt = max(0.0, amount)
+        if amt > 0.0:
+            rec.hp_dmg_by_peer[peer_id] = rec.hp_dmg_by_peer.get(peer_id, 0.0) + amt
+        prev = rec.hp_cur
+        rec.hp_cur = max(0.0, rec.hp_cur - amt)
+        just_died = (prev > 0.0 and rec.hp_cur <= 0.0 and not rec.hp_dead)
+        if just_died:
+            rec.hp_dead = True
+        return (rec.hp_cur, rec.hp_max, just_died)
 
     def assign_owner_by_threat(
         self,

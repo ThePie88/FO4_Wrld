@@ -232,3 +232,6 @@ Discord/.discord_token.local
 # -- Demo / capture videos (large binaries — hosted on YouTube, never push) --
 # Subsumes the older /DEMO_FoW.mp4 and /assets/demo.mp4 rules above.
 *.mp4
+
+# -- Frida tracing scratch (one-off trace dumps keep reappearing as junk) ----
+tools/frida/

@@ -5,6 +5,137 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## N3 — shared authoritative HP (2026-06-05) — PARTIAL
+
+Working tree, tag `v0.6.1`. The piece the boss needs: both co-op clients now
+deplete ONE server-held HP pool per raider, so a raider dies from the COMBINED
+damage of both players — not from whichever client happens to solo-deal its HP
+first. Validated end-to-end on the Concord raiders; PARTIAL because it wants
+broader testing and other creature types before it's "done".
+
+### RE de-risk first (no blind code)
+
+The whole HP / damage / death engine path was reverse-engineered against the
+Hex-Rays decomp by three parallel agents before a line was written, because the
+earlier plan dossiers had real errors that would have caused wack-a-mole:
+
+- **Health ActorValue index.** The plan said `sub_140263120()[1]`; the decomp
+  proved `[1]` is **ActionPoints** and Health is **`[27]`** (three independent
+  confirmations). Writing HP at `[1]` would have drained Action Points.
+- **The kill gate.** The plan said "gate `Actor::Kill`". The decomp proved that
+  is **unsafe**: the `Health <= 0 && !IsDead -> Kill` decision is duplicated
+  inline across >=3 per-frame checkers, so swallowing one `Kill` makes the
+  engine re-fire it every frame forever, while the ragdoll (fired inside the hit
+  orchestrator, independent of `Kill`) leaves a ragdolled-but-live actor. The
+  safe gate is to **clamp Health so it never reaches 0** — one store, and no
+  death code ever begins.
+- **HP layout.** The Health cell at `Actor+0x444` holds only the 3 modifier
+  columns (0 at full, negative as damage lands); the permanent base lives in the
+  ActorValueOwner. So `max = absolute_current - cell_modifier_sum`, the absolute
+  coming from the AVO getter (vtable +8).
+
+A read-only probe build (`npc_hp_probe`) then confirmed all three at runtime
+before any write: the funnel's `delta` arg equals the FINAL applied damage to
+the centesimo (post-resist/perk, no `vtable+2440` re-derivation for raider
+weapon damage), the `0x444` cell tracks HP, and the damage `source` decodes to
+the firer. It also caught a trap — `avIdx==2` is shared by several AVs (Health,
+AP, resists), so gating on the column alone would have fed -100 / -200 spurious
+values into the pool; the real gate is the Health AVInfo.
+
+### Damage capture — `sub_140CC9650` (the HP-write funnel)
+
+A new detour on `sub_140CC9650` (RVA `0xCC9650`) — the single chokepoint EVERY
+Health delta passes through (weapon, melee, explosion, **plus** fire / DoT /
+poison `sub_14098DB00`, radiation / script `sub_140BA0610`, fall
+`sub_140C62EE0`) — reports the local player's damage to the server. The value
+is the FINAL post-resist `-delta` (not the pre-mitigation `HitData+0x90` the old
+hit orchestrator read), firer-gated via the funnel's `source` arg so each client
+reports only its own hits exactly once. Which writes are Health is learned at
+runtime with no extra engine call: the first write that actually moves the
+`0x444` cell teaches the Health AVInfo pointer, after which the clamp can gate
+pre-write. Max HP (`absolute - modifier`) rides on the claim.
+
+The old orchestrator-based claim (`ghost_ai_hit_applier`, pre-mitigation,
+weapon-only) is disabled to avoid a double claim; the funnel claim is a superset
+and more accurate, and still drives the aggro threat table.
+
+### Server pool — `OwnershipRegistry`
+
+`NPCOwnership` gains `hp_cur / hp_max / hp_dead / hp_dmg_by_peer`, keyed by
+form_id so the pool **survives ownership handoffs**. `apply_hp_claim` bootstraps
+`hp_max` from the first claim that carries it, subtracts every claim from the
+shared `hp_cur` (floored at 0), and latches `hp_dead` the first time it crosses
+zero (idempotent). The pool re-bootstraps cleanly when a raider respawns.
+
+### Clamp — no premature solo-death
+
+For tracked raiders the funnel detour floors the **absolute** Health at
+`HP_FLOOR = 1`: if `absolute + delta < 1` it rewrites the delta so the new
+absolute is exactly 1. The engine's death cascade is keyed on `Health <= 0`, so
+it never starts; the raider stays alive and AI-functional, taking damage the
+server is accumulating. Skipped while the raider is already dying (the server
+kill is applying). The clamp is a detour on the engine's own call (engine
+thread), NOT a write from our thread — the riskiest path the dossiers feared is
+avoided entirely.
+
+### Death — server-driven, reusing N1 / N2
+
+When `apply_hp_claim` latches the pool at zero, the server's `_fire_npc_death`
+sends `NPC_DEATH_FROM_OWNER` to ALL sessions (unlike the peer-relayed death,
+NEITHER client killed it locally) and releases ownership. The clients apply it
+through the existing N1 / N2 death-sync drain (un-keyframe -> `Actor::Kill` under
+the applying-remote guard), so the corpse lands on both clients at the synced
+position, exactly once.
+
+### Wire proto v17
+
+`NpcDamageClaim` 8 -> 12 B (`<Iff`): adds `max_hp`. `PROTOCOL_VERSION` 16 -> 17.
+No new opcode — the existing `NPC_DAMAGE_CLAIM` (0x028D) carries the pool input
+(it already drove aggro).
+
+### Files
+
+- DLL: `hooks/npc_hp_probe.{h,cpp}` (the funnel detour: capture + clamp +
+  learn-Health-form), `hooks/ghost_ai_hit_applier.cpp` (claim disabled),
+  `net/client.{h,cpp}`, `net/protocol.h`, `offsets.h` (`ACTOR_HP_FUNNEL_RVA`,
+  `ACTOR_HEALTH_CELL_OFF`, AVO offsets).
+- Server: `net/server/ownership.py` (pool + `apply_hp_claim`),
+  `net/server/main.py` (`_fire_npc_death` + claim handler), `net/protocol.py`.
+
+### Validation (in-engine)
+
+- **Round 1 (pool math, log-only).** Server log shows `max` bootstrapping to the
+  real raider HP (20, 30), both peers' post-resist damage summing into one pool,
+  and the pool reaching 0 at COMBINED damage — incl. the key case where neither
+  peer alone reached max (B 21.6 + A 17.8 on a 30-HP raider). No double-count.
+- **Round 2 (clamp + kill).** Client log: `[hp-clamp]` floors HP to 1 exactly
+  (abs 7.7, -11.2 hit -> `use_delta = -6.7` -> abs 1.0). Server: 6 `KILL-COMMAND`
+  events at pool 0, each to both peers. Live: a raider held at 1 HP by one client
+  and finished by the other dies on both at the same spot. No SEH.
+
+### Not done (why PARTIAL)
+
+- Broader testing + other creature types (only the Concord raiders so far).
+- HP bar UI (players can't yet SEE the shared pool) — Tier 1, separate.
+- Ragdoll direction is 0 (corpse drops in place; impulse is polish).
+- Kill credit / killer form is 0 (server-origin death).
+
+### Build path
+
+`npc_hp_probe` read-only probe -> round 1 (capture + server pool, log-only) ->
+round 2 (clamp + server kill). Kill-switches on capture and clamp.
+
+### Note
+
+Both clients show the known shutdown teardown crash `0x16632B9` (null+8 write)
+when force-closed with alt+F4 — pre-existing (Tier 2), unrelated to N3 (the
+funnel detour is SEH-caged and touches no heap; it fires only at process
+teardown).
+
+**Tag:** `v0.6.1`.
+
+---
+
 ## N1 / N2 — owner-driven NPC co-op combat (2026-06-01) — WIP
 
 Working tree, first commit of the N branch (tag `v0.6.0`). My first

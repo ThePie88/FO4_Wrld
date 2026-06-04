@@ -148,7 +148,8 @@ public:
     // c.39b — report that the local player dealt `amount` damage to NPC
     // `form_id`. Accumulates per fid and self-throttles to ~6 Hz/fid (sends
     // the batched amount), so rapid-fire weapons don't flood. Unreliable.
-    void enqueue_npc_damage_claim(std::uint32_t form_id, float amount);
+    void enqueue_npc_damage_claim(std::uint32_t form_id, float amount,
+                                  float max_hp = 0.0f);  // N3: max_hp for the shared HP pool
 
     // Reliable.
     void enqueue_actor_event(const ActorEventPayload& a);

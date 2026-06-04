@@ -1346,6 +1346,35 @@ class ServerProtocol(asyncio.DatagramProtocol):
         self.ownership.record_damage(
             payload.form_id, session.peer_id, float(payload.amount), now_ms)
 
+        # N3 (shared HP) — also deplete the server's shared HP pool. ROUND 1 is
+        # LOG-ONLY: no kill command, no client clamp. Validates that both
+        # clients' accurate (post-resist) claims sum to the raider's max HP at
+        # death. The kill command + clamp land in round 2.
+        res = self.ownership.apply_hp_claim(
+            payload.form_id, session.peer_id,
+            float(payload.amount), float(getattr(payload, "max_hp", 0.0) or 0.0))
+        if res is not None:
+            hp_cur, hp_max, just_died = res
+            if hp_max > 0.0:
+                if not hasattr(self, "_hp_pool_log_ms"):
+                    self._hp_pool_log_ms: dict[int, float] = {}
+                last = self._hp_pool_log_ms.get(payload.form_id, 0.0)
+                if just_died or (now_ms - last) >= 500.0:   # throttle ~2 Hz/fid
+                    self._hp_pool_log_ms[payload.form_id] = now_ms
+                    rec = self.ownership.get(payload.form_id)
+                    totals = dict(rec.hp_dmg_by_peer) if rec else {}
+                    log.info(
+                        "N3 HP-POOL fid=0x%X cur=%.0f/%.0f (peer=%s dealt %.1f) "
+                        "totals=%s%s",
+                        payload.form_id, hp_cur, hp_max, session.peer_id,
+                        float(payload.amount), totals,
+                        "  *** POOL=0 -> KILL ***" if just_died else "")
+                    # N3 round 2 — the shared pool hit 0: command the kill. Both
+                    # clients clamp their local HP (the raider never dies on its
+                    # own), so the raider only dies on this server command.
+                    if just_died and rec is not None:
+                        self._fire_npc_death(payload.form_id, rec, now_ms)
+
     def _handle_npc_pose_from_owner(
         self, session: PeerSession, payload, now_ms: float,
     ) -> None:
@@ -1418,6 +1447,51 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 self._send_raw(sess, raw)
             except ChannelError:
                 pass
+
+    def _fire_npc_death(self, fid: int, rec, now_ms: float,
+                        killer_fid: int = 0) -> None:
+        """N3 round 2 — the shared HP pool hit 0: command the raider's death.
+
+        Both clients CLAMP their local HP (the raider never dies on its own), so
+        the SERVER drives the kill here by sending the SAME NPC_DEATH_FROM_OWNER
+        both clients already know how to apply (un-keyframe -> Actor::Kill, the N2
+        death-sync path). Sent to ALL sessions, because — unlike the peer-relayed
+        death — NEITHER client killed it. Idempotent: only the first pool-zero
+        crossing reaches here (hp_dead latch in apply_hp_claim)."""
+        payload = NPCDeathFromOwnerPayload(
+            form_id=fid,
+            killer_form_id=killer_fid & 0xFFFFFFFF,
+            pos_x=rec.last_pos_x, pos_y=rec.last_pos_y, pos_z=rec.last_pos_z,
+            ragdoll_x=0.0, ragdoll_y=0.0, ragdoll_z=0.0,
+            damage=0.0, hit_zone=0, flags=0, ts_ms=int(now_ms),
+        )
+        sent = 0
+        for sess in self.state.all_sessions():   # ALL — neither client killed it
+            try:
+                raw = sess.channel.send_reliable(
+                    MessageType.NPC_DEATH_FROM_OWNER, payload, now_ms)
+                self._send_raw(sess, raw)
+                sent += 1
+            except ChannelError:
+                pass
+        log.info(
+            "N3 KILL-COMMAND fid=0x%X pool=0 -> NPC_DEATH to %d peer(s) "
+            "(pos=%.0f,%.0f,%.0f totals=%s)",
+            fid, sent, rec.last_pos_x, rec.last_pos_y, rec.last_pos_z,
+            dict(rec.hp_dmg_by_peer))
+        # Release ownership (forge an unload-style release), like the death
+        # handler, so a respawn re-elects cleanly.
+        change = self.ownership.on_unload(
+            NPCUnloadPayload(
+                form_id=fid, epoch=rec.epoch,
+                last_pos_x=rec.last_pos_x, last_pos_y=rec.last_pos_y,
+                last_pos_z=rec.last_pos_z,
+                last_yaw=0.0, last_anim_state=0, last_hp_pct=0,
+            ),
+            rec.owner_peer_id, now_ms,
+        )
+        if change is not None:
+            self._emit_ownership_change(change, now_ms)
 
     def _handle_npc_death_from_owner(
         self, session: PeerSession, payload: NPCDeathFromOwnerPayload,

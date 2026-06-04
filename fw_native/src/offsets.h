@@ -1636,12 +1636,29 @@ constexpr std::uintptr_t ACTOR_HIT_APPLIER_RVA = 0x00CD2780;
 // Offset to target Actor within the hit-data struct passed as 1st arg.
 constexpr std::size_t HIT_DATA_TARGET_ACTOR_OFFSET = 0x300;
 
-// Hook #4 (HP writer) — still deferred. `sub_140CC9650` signature is
-// `(_QWORD *AVO_view, int=2 for HP, __int64 healthForm, float delta,
-// __int64 source)`. The victim Actor is reachable via AVO_view → owner
-// chain but exact offset not yet RE'd. Bailing sub_140CD2780 above
-// short-circuits BEFORE sub_140CC9650 is called for tracked NPCs, so
-// HP authority can stay deferred for the MVP.
+// N3 (shared HP) — HP-write funnel. THE single chokepoint every Health delta
+// passes through (weapon/melee/explosion via sub_140CD2780, PLUS fire/DoT/poison
+// sub_14098DB00, radiation/script sub_140BA0610, fall sub_140C62EE0, regen
+// sub_140CCA530/620). Confirmed by 3-agent decomp RE 2026-06-04:
+//   sub_140CC9650(Actor* a1, int avIdx, AVInfo* a3, float delta, void* source)
+//     a1     = Actor base (the OLD "AVO_view" note was WRONG; the funnel reads
+//              the AVO at a1+0x58 and the Health cell at a1+0x444).
+//     avIdx  = AV modifier COLUMN; 2 = the runtime HP/AP column.
+//     a3     = ActorValueInfo*; Health = sub_140263120()[27] (NOT [1] = ActionPoints).
+//     delta  = float ADDED to current (negative = damage); for weapon hits this is
+//              the orchestrator's already-resisted/perked value (-v266).
+//     source = aggressor Actor* (already handle-decoded from HitData+0x40).
+//   Health cell = Actor+0x444 (3×f32 modifier columns; CURRENT Health = their sum).
+//   Death is GATED on Health<=0 (duplicated in >=3 per-frame checkers) — so the
+//   safe shared-HP gate is to CLAMP this write to floor>=1, NOT to gate Actor::Kill.
+constexpr std::uintptr_t ACTOR_HP_FUNNEL_RVA   = 0x00CC9650;  // sub_140CC9650
+constexpr std::size_t    ACTOR_HEALTH_CELL_OFF = 0x444;       // 3×f32, current = sum
+// ActorValueOwner sub-object: its vtable pointer sits at Actor+0x58. Vtable
+// slot +8 = GetActorValue(AVInfo*) → ABSOLUTE current value (permanent base +
+// the 3 modifier columns). Used to recover max HP = current - cell_sum, since
+// the 0x444 cell holds only the modifiers (the permanent base is in the AVO).
+constexpr std::size_t    ACTOR_AVOWNER_OFF        = 0x58;
+constexpr std::size_t    AVOWNER_GET_CURRENT_VTBL = 0x08;
 
 
 // ============================================================================

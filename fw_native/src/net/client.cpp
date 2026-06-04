@@ -200,26 +200,32 @@ void Client::enqueue_npc_crouch(std::uint32_t form_id,
     }
 }
 
-void Client::enqueue_npc_damage_claim(std::uint32_t form_id, float amount) {
+void Client::enqueue_npc_damage_claim(std::uint32_t form_id, float amount,
+                                      float max_hp) {
     if (!connected_.load() || stopping_.load()) return;
     if (form_id == 0 || form_id == 0xFFFFFFFFu || amount <= 0.0f) return;
 
     // Accumulate per fid; flush at most ~6 Hz/fid (batch rapid-fire hits).
+    // N3 (v17): also carry the latest max_hp so the server can bootstrap the
+    // shared HP pool. max_hp is ~constant per raider; keep the freshest > 0.
     float to_send = 0.0f;
+    float to_send_max = 0.0f;
     {
         using namespace std::chrono;
         const std::uint64_t now = duration_cast<milliseconds>(
             steady_clock::now().time_since_epoch()).count();
+        struct DmgAccum { float sum; std::uint64_t last_ms; float max_hp; };
         static std::mutex s_dmg_mtx;
-        static std::unordered_map<std::uint32_t,
-                                  std::pair<float, std::uint64_t>> s_accum;
+        static std::unordered_map<std::uint32_t, DmgAccum> s_accum;
         std::lock_guard lk(s_dmg_mtx);
-        auto& e = s_accum[form_id];          // (sum, last_send_ms), zero-init
-        e.first += amount;
-        if (now - e.second >= 160ULL) {      // ~6 Hz/fid; first hit sends now
-            to_send = e.first;
-            e.first = 0.0f;
-            e.second = now;
+        auto& e = s_accum[form_id];          // {sum, last_send_ms, max_hp}, zero-init
+        e.sum += amount;
+        if (max_hp > 0.0f) e.max_hp = max_hp;
+        if (now - e.last_ms >= 160ULL) {     // ~6 Hz/fid; first hit sends now
+            to_send = e.sum;
+            to_send_max = e.max_hp;
+            e.sum = 0.0f;
+            e.last_ms = now;
         }
     }
     if (to_send <= 0.0f) return;
@@ -227,7 +233,7 @@ void Client::enqueue_npc_damage_claim(std::uint32_t form_id, float amount) {
     QueuedSend q;
     q.msg_type = MessageType::NPC_DAMAGE_CLAIM;
     q.reliable = false;
-    NpcDamageClaim p{ form_id, to_send };
+    NpcDamageClaim p{ form_id, to_send, to_send_max };
     q.payload_bytes.resize(sizeof(p));
     std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
     {
