@@ -6,6 +6,19 @@ This project uses unconventional approaches in several critical areas (scene gra
 Fallout 4 1.11.191 next-gen — multiplayer mod (FoM-lite framework).
 Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 
+> **Status (2026-06-06):** **N3 shared HP — DONE; N4 player death — DONE.** The
+> shared-HP enemy bar is now LIVE on both clients — the non-owner's local Health
+> is driven to the combined server pool, so the vanilla enemy-health bar reads it
+> and repaints as EITHER client deals damage (not only when the watching client
+> shoots), and the aggro/first shot is counted instead of lost. A client's death
+> ragdolls + respawns at Sanctuary with the raiders re-aggroing the survivor. Two
+> removals made the bar land: `max = GetCurrent − cell` (the AVO GetMax leaf
+> mis-reads) and dropping the client InCombat capture gate (raiders read
+> InCombat=0 on the mirror). The bar is GREEN (non-hostile color — doubles as a
+> "this client has no aggro" tell); a RED color is TODO. N1 (raider pos/pose) is
+> REOPENED partial for small anim+position hardening at first-contact +
+> post-mortem. Wire proto v18. See [CHANGELOG.md](CHANGELOG.md).
+>
 > **Status (2026-06-05):** **N3 — shared authoritative HP (partial).** Both
 > clients now deplete ONE server-held HP pool per raider: each reports its
 > FINAL post-resist damage — captured at the engine's single HP-write funnel
@@ -134,11 +147,11 @@ in real time).
 | ↳ **B6.11** Time of day + weather sync | ⏳ — GlobalVar `GameHour` + Sky weather state |
 | ↳ **B6.12** Workshop / settlement build state sync | ⏳ — major epic; build/scrap/move workshop refs + furniture |
 | ↳ **B6.13** Power Armor frame + worn-state sync | ⏳ — chassis is a REFR with its own state (location, per-piece HP, fusion core); player-in-PA = chassis attached to player. Both visibilities require sync. Re-scoped from M9 to B6 (2026-05-04) — fundamentally world-state, not an equip event |
-| **N** NPC co-op combat *(split out from B6.5 / B6.6 — grew into its own epic; my first iteration on the game's AI)* | 🟡 N1 + N2 done, N3 (shared HP) partial — all on hostile raiders; player-death + the rest of the creature roster pending |
-| ↳ **N1** NPC actor pos + pose sync (owner-driven) | ✅ done (v0.6.0, 2026-06-01) — each raider is owned by one client whose vanilla engine runs its AI and streams pos + full-body pose (~30 Hz); the non-owner mirrors it (pos-pinned, Havok-keyframed). Teleport-on-handoff fixed by committing the synced pose to the new owner's engine via `Actor::MoveTo` (doProcessUpdate=1). Replaces the old B6.5 frozen-suppression stack. |
+| **N** NPC co-op combat *(split out from B6.5 / B6.6 — grew into its own epic; my first iteration on the game's AI)* | 🟡 N2 + N3 + N4 done — shared-HP boss mechanic + player death complete; N1 (pos/pose) reopened partial for raider anim+pos hardening; scope still hostile raiders, creature roster pending |
+| ↳ **N1** NPC actor pos + pose sync (owner-driven) | 🟡 REOPENED partial (v0.6.2, 2026-06-06) — was ✅ done (v0.6.0): each raider is owned by one client whose vanilla engine runs its AI and streams pos + full-body pose (~30 Hz); the non-owner mirrors it (pos-pinned, Havok-keyframed); teleport-on-handoff fixed via `Actor::MoveTo` (doProcessUpdate=1). REOPENED because small raider anim + position glitches remain to harden at FIRST contact with a client and POST-mortem. |
 | ↳ **N2** NPC combat target + aggro + death sync (owner-driven threat table) | ✅ done (v0.6.0, 2026-06-01) — the Python server holds a threat table and elects the owner from whoever the raiders natively aggro (engine-native: noise / line of sight), with hysteresis anti-thrash; live aggro hand-off; bidirectional death-sync (corpse + ragdoll at the synced pos, either client's kill propagates). Scope: hostile raiders. |
-| ↳ **N3** Shared authoritative HP / damage | 🟡 partial (v0.6.1, 2026-06-05) — both clients deplete ONE server-held HP pool: damage is captured at the engine HP-write funnel `sub_140CC9650` (FINAL post-resist value), a DLL floor-1 clamp stops either client killing the raider solo, and the server fires the kill at pool=0 (reusing the N1/N2 death-sync). Validated on Concord raiders; needs broader testing + other creatures. Wire proto v17. |
-| ↳ **N4** Player death + respawn sync | ⏳ — the ghost dies / ragdolls / respawns on the peer; part of the boss-fight loop (deaths + respawns). |
+| ↳ **N3** Shared authoritative HP / damage | ✅ done (v0.6.2, 2026-06-06) — both clients deplete ONE server-held HP pool (damage captured at the engine HP-write funnel `sub_140CC9650`, FINAL post-resist; DLL floor-1 clamp stops either client soloing the kill; server fires the kill at pool=0). v0.6.2 closed it: the enemy-health HUD now shows the LIVE combined pool on both clients (the non-owner's local Health is driven to the pool fraction so the vanilla bar reads it — `max = GetCurrent − cell`, since the AVO GetMax leaf mis-reads), the aggro/first shot is no longer lost (claimed pre-tracking, server-buffered until the NPC registers), and multi-feeder + server-driven death are confirmed. The HUD bar is GREEN (non-hostile color — handy as a "this client has no aggro" tell); a RED color is TODO. Wire proto v18. |
+| ↳ **N4** Player death + respawn sync | ✅ done (v0.6.2, 2026-06-06) — a client's death is vanilla: it ragdolls + respawns at Sanctuary, and the raiders re-aggro the surviving client (the threat table re-elects on the death). N1 / N2 already carry it — no extra wiring needed. |
 | **B7** Rust server port | ⏳ |
 
 ## Major RE achievements

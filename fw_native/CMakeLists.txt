@@ -49,6 +49,7 @@ add_library(fw_native SHARED
     src/hooks/ghost_ai_action_execute.cpp     # B6.6w5 Build 18 — bail BGSActionData::Execute on duplicate target
     src/hooks/ghost_ai_hit_applier.cpp        # B6.6w0 (hit applier orchestrator BAIL) — sub_140CD2780 per D2 — prevents crash on damage to frozen
     src/hooks/npc_hp_probe.cpp                # N3 step 1: READ-ONLY HP-funnel probe (sub_140CC9650) — validates RE before capture+clamp
+    src/hooks/hp_bar_hook.cpp                 # v18: shared-pool HP override on the enemy bar (HUDEnemyHealthMeter Invoke)
     src/hooks/ghost_ai_combat_orchestrator.cpp # B6.6w0 NUKE (top-level combat orchestrator BAIL) — sub_140CCFDF0 = Actor::vt[255] per A1
     src/hooks/cross_cell_gate.cpp   # Build 38: sub_140CF6100 detour — transient ghost+0xB8 swap to defeat PC.cell==target.cell gate at funcs_0309:9926
     src/hooks/ghost_combat_force.cpp # Build 40: 4-hook surgical decision override (hostility, alive-count, cell-loaded, post-pick) — dossier-driven

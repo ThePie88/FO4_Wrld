@@ -930,6 +930,11 @@ std::uint8_t read_actor_posture_byte(const void* actor) noexcept;
 // Returns nullptr if singleton not bound yet or SEH fault.
 void* get_local_player() noexcept;
 
+// c.45-light — seed a raider's combat-target handle = `target` directly (no
+// EnterCombat, no allocation). Writes AIProcess+0x6C (AIProcess = Actor+0x328).
+// Returns false (no-op) if the raider has no HighProcess yet. SEH-caged.
+bool seed_combat_target_handle(void* actor, void* target) noexcept;
+
 // ============================================================================
 // STRADA B.2 — Manual synthesis of HighProcess + CombatAimController.
 // Source: re/strada_B2_synthesize_highprocess/SUPERVISOR_SYNTHESIS.md (1168

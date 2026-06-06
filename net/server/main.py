@@ -60,6 +60,7 @@ from protocol import (  # noqa: E402
     NPCPoseFromOwnerPayload,    # c.37.0 — full NPC pose replication
     NPCCrouchFromOwnerPayload,  # NPC crouch — COM/Pelvis vertical drop relay
     NPCDamageClaimPayload,      # c.39b — damage-based threat
+    NPCHpPoolBcastPayload,      # v18 — shared HP pool → enemy bar
     PeerGhostRegisterPayload,
     encode_frame, decode_frame,
 )
@@ -1185,6 +1186,20 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 payload, session.peer_id, now_ms)
             if change is not None:
                 self._emit_ownership_change(change, now_ms)
+                # N3 first-shot fix — if the create drained a buffered aggro shot
+                # into the new pool, broadcast the corrected enemy bar (and fire
+                # death if that first burst already zeroed it). Read-and-clear so the
+                # next observe can't re-emit.
+                drained = self.ownership.last_drained_hp
+                self.ownership.last_drained_hp = None
+                if drained is not None:
+                    d_cur, d_max, d_died = drained
+                    if d_max > 0.0:
+                        self._broadcast_hp_pool(
+                            payload.form_id, d_cur, d_max,
+                            session.peer_id, 0.0, d_died, now_ms)
+            else:
+                self.ownership.last_drained_hp = None
             return
 
         # Already owned. on_observed refreshes pos/distance AND (threat mode)
@@ -1356,24 +1371,52 @@ class ServerProtocol(asyncio.DatagramProtocol):
         if res is not None:
             hp_cur, hp_max, just_died = res
             if hp_max > 0.0:
-                if not hasattr(self, "_hp_pool_log_ms"):
-                    self._hp_pool_log_ms: dict[int, float] = {}
-                last = self._hp_pool_log_ms.get(payload.form_id, 0.0)
-                if just_died or (now_ms - last) >= 500.0:   # throttle ~2 Hz/fid
-                    self._hp_pool_log_ms[payload.form_id] = now_ms
-                    rec = self.ownership.get(payload.form_id)
-                    totals = dict(rec.hp_dmg_by_peer) if rec else {}
-                    log.info(
-                        "N3 HP-POOL fid=0x%X cur=%.0f/%.0f (peer=%s dealt %.1f) "
-                        "totals=%s%s",
-                        payload.form_id, hp_cur, hp_max, session.peer_id,
-                        float(payload.amount), totals,
-                        "  *** POOL=0 -> KILL ***" if just_died else "")
-                    # N3 round 2 — the shared pool hit 0: command the kill. Both
-                    # clients clamp their local HP (the raider never dies on its
-                    # own), so the raider only dies on this server command.
-                    if just_died and rec is not None:
-                        self._fire_npc_death(payload.form_id, rec, now_ms)
+                self._broadcast_hp_pool(payload.form_id, hp_cur, hp_max,
+                                        session.peer_id, float(payload.amount),
+                                        just_died, now_ms)
+        else:
+            # N3 first-shot fix — unknown fid: this is (almost always) the AGGRO
+            # shot, claimed by the client before NPC_OBSERVED registered the NPC.
+            # Stash it in the TTL pending buffer; assign_owner_by_threat drains it
+            # into the fresh pool the instant the matching NPC_OBSERVED arrives.
+            # NOTHING is pooled yet (a real pool is only ever born from an
+            # InCombat-gated NPC_OBSERVED).
+            self.ownership.stash_pending_damage(
+                payload.form_id, session.peer_id,
+                float(payload.amount),
+                float(getattr(payload, "max_hp", 0.0) or 0.0),
+                now_ms)
+
+    def _broadcast_hp_pool(
+        self, fid: int, hp_cur: float, hp_max: float,
+        last_peer: str, last_amount: float, just_died: bool, now_ms: float,
+    ) -> None:
+        """v18 / N3 — push the shared HP pool to ALL clients so the enemy-health bar
+        shows the COMBINED hp. On a fresh pool-zero crossing, command the kill. Shared
+        by the normal claim path AND the first-shot drain-on-create path."""
+        pool_bcast = NPCHpPoolBcastPayload(form_id=fid, hp_cur=hp_cur, hp_max=hp_max)
+        for sess in self.state.all_sessions():
+            try:
+                raw = sess.channel.send_unreliable(
+                    MessageType.NPC_HP_POOL_BCAST, pool_bcast)
+                self._send_raw(sess, raw)
+            except ChannelError:
+                pass
+        if not hasattr(self, "_hp_pool_log_ms"):
+            self._hp_pool_log_ms: dict[int, float] = {}
+        last = self._hp_pool_log_ms.get(fid, 0.0)
+        if just_died or (now_ms - last) >= 500.0:   # throttle ~2 Hz/fid
+            self._hp_pool_log_ms[fid] = now_ms
+            rec = self.ownership.get(fid)
+            totals = dict(rec.hp_dmg_by_peer) if rec else {}
+            log.info(
+                "N3 HP-POOL fid=0x%X cur=%.0f/%.0f (peer=%s dealt %.1f) totals=%s%s",
+                fid, hp_cur, hp_max, last_peer, last_amount, totals,
+                "  *** POOL=0 -> KILL ***" if just_died else "")
+            # The shared pool hit 0: command the kill (both clients clamp their local
+            # HP, so the raider only dies on this server command).
+            if just_died and rec is not None:
+                self._fire_npc_death(fid, rec, now_ms)
 
     def _handle_npc_pose_from_owner(
         self, session: PeerSession, payload, now_ms: float,
@@ -1479,6 +1522,12 @@ class ServerProtocol(asyncio.DatagramProtocol):
             "(pos=%.0f,%.0f,%.0f totals=%s)",
             fid, sent, rec.last_pos_x, rec.last_pos_y, rec.last_pos_z,
             dict(rec.hp_dmg_by_peer))
+        # FIX (resurrection) — mark the fid dead in the registry's STICKY set
+        # BEFORE on_unload deletes the record. Otherwise a still-in-combat client
+        # re-observes the corpse → fresh live record → reeval re-elects → the new
+        # owner's handoff MoveTo revives it = the "MORTO MA NON MORTO" zombie +
+        # the 0xC0F510 crash feeder. See ownership.OwnershipRegistry.note_dead.
+        self.ownership.note_dead(fid, now_ms)
         # Release ownership (forge an unload-style release), like the death
         # handler, so a respawn re-elects cleanly.
         change = self.ownership.on_unload(

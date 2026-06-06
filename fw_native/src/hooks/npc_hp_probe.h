@@ -34,6 +34,14 @@ void set_hp_probe_enabled(bool on) noexcept;
 void set_hp_capture_enabled(bool on) noexcept;   // N3 — toggle the shared-pool damage report
 void set_hp_clamp_enabled(bool on) noexcept;     // N3 round 2 — toggle the floor-1 clamp
 
+// vita-locale-dal-pool (HP bar) — set the actor's LOCAL Health so the vanilla
+// enemy-health bar renders the SHARED pool fraction. target = AVO.GetMax *
+// (pool_cur/pool_max), floored ≥1, applied as a delta through the original funnel
+// (no detour re-entry). Called from the main-thread pool-health drain after
+// lookup_by_form_id. SEH-caged; no-op on null actor / unresolvable Health AVInfo.
+// MAIN THREAD ONLY.
+void apply_pool_health_to_actor(void* actor, float pool_cur, float pool_max) noexcept;
+
 // Diagnostics.
 std::uint64_t get_hp_probe_fires()    noexcept;  // # of diagnostic log fires
 std::uint64_t get_hp_probe_captures() noexcept;  // # of damage claims sent to the pool

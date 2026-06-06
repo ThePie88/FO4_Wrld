@@ -343,6 +343,28 @@ class OwnershipRegistry:
         # c.40a-fix — per-fid throttle for the "challenger higher but blocked"
         # diagnostic so a near-miss handoff is visible without spamming.
         self._threat_diag_last_ms: dict[int, float] = {}
+        # FIX (resurrection) — sticky "this fid is dead" memory that SURVIVES the
+        # record deletion done by _fire_npc_death. Without it, a still-in-combat
+        # client re-OBSERVES the just-killed raider → a fresh record (hp_dead=
+        # False) is created → reeval re-elects it → the new owner's handoff MoveTo
+        # REVIVES the corpse = the "MORTO MA NON MORTO" zombie (+ the 0xC0F510
+        # crash feeder). fid -> server-clock ms of death; entries older than
+        # _DEAD_FID_TTL_MS are pruned so a legit respawn (cell reset, well after
+        # the fight) can re-elect.
+        self._dead_fids: dict[int, float] = {}
+        # N3 first-shot fix — TTL buffer for damage claims whose fid is not yet
+        # registered (the AGGRO shot: the client claims it before NPC_OBSERVED
+        # registers the NPC, so apply_hp_claim returns None). fid ->
+        # (sum_amount, max_hp, last_peer, ts_ms). Drained-on-create by
+        # assign_owner_by_threat the instant the matching NPC_OBSERVED arrives, so
+        # the aggro shot is folded into the fresh pool. NOTHING is pooled from here
+        # alone — a real pool is only ever BORN from an InCombat-gated NPC_OBSERVED.
+        self._pending_dmg: dict[int, tuple[float, float, str, float]] = {}
+        # N3 first-shot fix — set by assign_owner_by_threat to (hp_cur, hp_max,
+        # just_died) when a pending aggro claim was drained into the new record this
+        # call, else None. main._handle_npc_observed reads + clears it to emit the
+        # NPC_HP_POOL_BCAST (and death-on-zero) for the drained pool.
+        self.last_drained_hp: Optional[tuple[float, float, bool]] = None
 
     # -------------------------------------------------------------- queries
 
@@ -371,6 +393,94 @@ class OwnershipRegistry:
     def __len__(self) -> int:
         return len(self._records)
 
+    # ----------------------------------------------------- dead-fid memory
+    # FIX (resurrection) — 10-minute TTL: a raider stays "dead" long enough to
+    # outlast any in-combat re-observe burst that would otherwise resurrect it,
+    # but a genuine respawn (cell reset, much later) is allowed to re-elect.
+    _DEAD_FID_TTL_MS = 600_000.0
+
+    # N3 first-shot fix — how long a pre-registration damage claim survives waiting
+    # for its NPC_OBSERVED. The observe round-trip after an aggro shot is ≤ ~120 ms;
+    # 2 s is a safe margin and bounds the buffer for NPCs shot once but never tracked.
+    _PENDING_DMG_TTL_MS = 2000.0
+
+    def note_dead(self, fid: int, now_ms: float) -> None:
+        """Record that `fid` was just killed (pool=0). Survives the record
+        deletion _fire_npc_death does right after."""
+        self._dead_fids[fid] = now_ms
+
+    def is_recently_dead(self, fid: int, now_ms: float) -> bool:
+        """True if `fid` died within the TTL → must NOT be re-created/re-elected
+        (prevents the zombie). Lazily prunes the queried fid once expired."""
+        t = self._dead_fids.get(fid)
+        if t is None:
+            return False
+        if (now_ms - t) > self._DEAD_FID_TTL_MS:
+            del self._dead_fids[fid]
+            return False
+        return True
+
+    # ------------------------------------------------ N3 pending-damage buffer
+
+    def stash_pending_damage(
+        self, fid: int, peer_id: str, amount: float, max_hp: float, now_ms: float,
+    ) -> None:
+        """N3 first-shot fix — accumulate a damage claim for a NOT-yet-registered
+        fid (the aggro shot). Called by main._handle_npc_damage_claim ONLY when
+        apply_hp_claim returned None (unknown fid) AND max_hp > 0. Drained into the
+        record by assign_owner_by_threat when the matching NPC_OBSERVED arrives.
+        max_hp/last_peer take the freshest claim; amount ACCUMULATES. Refuses fids
+        known recently-dead (don't resurrect a corpse via a late claim)."""
+        if amount <= 0.0 or max_hp <= 0.0:
+            return
+        if self.is_recently_dead(fid, now_ms):
+            return
+        prev = self._pending_dmg.get(fid)
+        prev_sum = prev[0] if prev is not None else 0.0
+        self._pending_dmg[fid] = (prev_sum + amount, max_hp, peer_id, now_ms)
+
+    def _drain_pending_damage(
+        self, rec: "NPCOwnership", now_ms: float,
+    ) -> Optional[tuple[float, float, bool]]:
+        """N3 first-shot fix — fold any buffered pre-registration damage into a
+        freshly-created record. Returns (hp_cur, hp_max, just_died) if a pending
+        entry existed and was applied, else None. POPs the entry → drain-on-create,
+        so the aggro damage is counted EXACTLY ONCE."""
+        pending = self._pending_dmg.pop(rec.form_id, None)
+        if pending is None:
+            return None
+        sum_amount, max_hp, last_peer, ts = pending
+        if (now_ms - ts) > self._PENDING_DMG_TTL_MS:
+            return None   # too old — the aggro burst is stale; ignore it
+        if max_hp <= 0.0 or sum_amount <= 0.0:
+            return None
+        rec.hp_max = max_hp
+        rec.hp_cur = max_hp
+        rec.hp_dmg_by_peer[last_peer] = (
+            rec.hp_dmg_by_peer.get(last_peer, 0.0) + sum_amount)
+        prev = rec.hp_cur
+        rec.hp_cur = max(0.0, rec.hp_cur - sum_amount)
+        just_died = (prev > 0.0 and rec.hp_cur <= 0.0 and not rec.hp_dead)
+        if just_died:
+            rec.hp_dead = True
+        log.info(
+            "N3 first-shot DRAIN fid=0x%X +%.1f from %s -> pool %.0f/%.0f%s",
+            rec.form_id, sum_amount, last_peer, rec.hp_cur, rec.hp_max,
+            "  *** POOL=0 -> KILL ***" if just_died else "")
+        return (rec.hp_cur, rec.hp_max, just_died)
+
+    def prune_pending_damage(self, now_ms: float) -> None:
+        """Lazily evict pending-damage entries past the TTL (fids shot once but
+        never registered). Not required for correctness (drain re-checks the TTL)."""
+        if not self._pending_dmg:
+            return
+        stale = [
+            fid for fid, (_s, _m, _p, ts) in self._pending_dmg.items()
+            if (now_ms - ts) > self._PENDING_DMG_TTL_MS
+        ]
+        for fid in stale:
+            del self._pending_dmg[fid]
+
     # ---------------------------------------------------------- handler API
 
     def on_observed(
@@ -385,6 +495,10 @@ class OwnershipRegistry:
         existing = self._records.get(fid)
 
         if existing is None:
+            # FIX (resurrection) — refuse to re-create a record for a fid that
+            # was just killed; a re-observe of the corpse must NOT bring it back.
+            if self.is_recently_dead(fid, now_ms):
+                return None
             # Rule 1 — first observer claims it.
             epoch = self._next_epoch
             self._next_epoch += 1
@@ -762,6 +876,12 @@ class OwnershipRegistry:
         """
         fid = payload.form_id
         if fid in self._records:
+            self.last_drained_hp = None
+            return None
+        # FIX (resurrection) — don't re-elect a just-killed raider (its corpse is
+        # re-observed while still loaded/in-combat on a client). See __init__.
+        if self.is_recently_dead(fid, now_ms):
+            self.last_drained_hp = None
             return None
         epoch = self._next_epoch
         self._next_epoch += 1
@@ -781,6 +901,10 @@ class OwnershipRegistry:
         rec.threat_engaged[observer_peer_id] = now_ms
         rec.last_engaged_ms = now_ms
         self._records[fid] = rec
+        # N3 first-shot fix — fold any buffered aggro-shot damage into the brand-new
+        # pool (drain-on-create; counted exactly once). Carried out via
+        # self.last_drained_hp for main to broadcast the corrected bar.
+        self.last_drained_hp = self._drain_pending_damage(rec, now_ms)
         log.info(
             "ownership: THREAT assign fid=0x%X owner=%s epoch=%d "
             "(in-combat observer = highest threat; tick reeval refines)",
@@ -816,6 +940,10 @@ class OwnershipRegistry:
         changes: list[OwnershipChange] = []
         for fid in list(self._records):
             rec = self._records[fid]
+            # FIX (resurrection) — never re-elect a dead record (belt-and-braces;
+            # the create-path guard normally stops a dead record from existing).
+            if rec.hp_dead or self.is_recently_dead(fid, now_ms):
+                continue
             owner = rec.owner_peer_id
 
             # Per-peer distance² to the NPC's last-known position.

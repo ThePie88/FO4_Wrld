@@ -82,6 +82,24 @@ const void* safe_read_ptr(const void* base, std::size_t off) noexcept {
     }
 }
 
+// InCombat gate (defence-in-depth for the first-shot capture). True iff the local
+// Actor has the engine InCombat bit set (Actor+0x2D0 & 0x4000) — the aggro shot
+// itself sets it, so it is already true on the frame we capture; passive damage to
+// a settler/companion/critter leaves it clear → those are NOT pooled. Faults → false.
+constexpr std::uint32_t ACTOR_INCOMBAT_BIT = 0x4000u;
+bool safe_actor_in_combat(const void* actor) noexcept {
+    if (!actor) return false;
+    __try {
+        const std::uint32_t flags = *reinterpret_cast<const std::uint32_t*>(
+            reinterpret_cast<const std::uint8_t*>(actor) +
+            fw::offsets::ACTOR_FLAGS_720_OFF);
+        return (flags & ACTOR_INCOMBAT_BIT) != 0u;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_seh.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+}
+
 // Health MODIFIER sum = the 3 floats in the Health cell (Actor+0x444): 0 at
 // full, negative as damage lands. NOT the absolute HP (base lives in the AVO).
 float safe_health_sum(const void* actor) noexcept {
@@ -113,6 +131,69 @@ float safe_avo_current_hp(const void* actor, void* health_form) noexcept {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         g_seh.fetch_add(1, std::memory_order_relaxed);
         return -1.0f;
+    }
+}
+
+// ABSOLUTE max value via the AVO vtable (GetMaxValue) — EXACTLY the divisor the
+// enemy-bar fraction sub_140C63130 uses (vt+0x10). PROVEN by disasm: it takes ONE
+// arg (avo only) and returns a FLOAT (text_0137.asm:12232 — ucomiss/divss). The
+// earlier double-return read mangled the float-in-xmm0 to ~0 (the GetMax==0 bug).
+// Whatever it returns, the bar divides by it, so target = thisMax * pool_frac
+// always renders pool_frac. < 0 on fault. re/hpbar_avo_fix_AGENT.md.
+float safe_avo_max_value(const void* actor) noexcept {
+    if (!actor) return -1.0f;
+    __try {
+        const std::uint8_t* avo = reinterpret_cast<const std::uint8_t*>(actor)
+            + fw::offsets::ACTOR_AVOWNER_OFF;
+        const void* const* vtbl =
+            *reinterpret_cast<const void* const* const*>(avo);
+        using GetMaxFn = float (__fastcall*)(const void*);   // (avo) -> float, 1-arg
+        GetMaxFn fn = reinterpret_cast<GetMaxFn>(
+            vtbl[fw::offsets::AVOWNER_GET_MAX_VTBL / sizeof(void*)]);   // slot[2] = byte 0x10
+        return fn(avo);                                      // NO second arg, NO double read
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_seh.fetch_add(1, std::memory_order_relaxed);
+        return -1.0f;
+    }
+}
+
+// The Health ActorValueInfo* (same singleton for every actor). Prefer the one
+// hp_probe already learned; fall back to the engine AV registry getter
+// sub_140263120()[27] so the set works even on a client that never dealt Health
+// damage itself (the non-owner "just aiming" case). Cached after first resolve.
+constexpr std::uintptr_t AV_REGISTRY_RVA = 0x00263120;  // sub_140263120 → &AVInfo[125]
+std::atomic<const void*> g_health_avinfo_cached{nullptr};
+
+const void* resolve_health_avinfo() noexcept {
+    const void* learned = g_health_form.load(std::memory_order_relaxed);
+    if (learned) return learned;
+    const void* cached = g_health_avinfo_cached.load(std::memory_order_relaxed);
+    if (cached) return cached;
+    const std::uintptr_t base = g_module_base.load(std::memory_order_relaxed);
+    if (!base) return nullptr;
+    __try {
+        using AvRegFn = const void* const* (__fastcall*)();
+        AvRegFn fn = reinterpret_cast<AvRegFn>(base + AV_REGISTRY_RVA);
+        const void* const* arr = fn();
+        if (!arr) return nullptr;
+        const void* hf = arr[27];                 // [27] = Health (NOT [1] = ActionPoints)
+        g_health_avinfo_cached.store(hf, std::memory_order_relaxed);
+        return hf;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_seh.fetch_add(1, std::memory_order_relaxed);
+        return nullptr;
+    }
+}
+
+// SEH-caged call of the ORIGINAL funnel (g_orig = MinHook trampoline, NOT the
+// detour) → the value write bypasses our own detour entirely, so there is no
+// re-entry/recursion and no spurious capture or clamp can fire.
+void safe_call_funnel(void* actor, void* health_form, float delta) noexcept {
+    if (!g_orig || !actor || !health_form) return;
+    __try {
+        g_orig(actor, HEALTH_AP_COLUMN, health_form, delta, nullptr);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_seh.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
@@ -153,14 +234,22 @@ std::int64_t __fastcall detour_hp_funnel(void* a1, int avIdx, void* a3,
         }
     }
 
-    const float old_cell = tracked ? safe_health_sum(a1) : 0.0f;
+    // Health-cell snapshot BEFORE the write — read whenever the av/delta window
+    // matches (NOT gated on tracked) so the post-write `applied>0` Health detection
+    // works for an untracked (first-shot) fid too.
+    const bool  av_in_window = (avIdx == HEALTH_AP_COLUMN && a1 && delta < 0.0f);
+    const float old_cell     = av_in_window ? safe_health_sum(a1) : 0.0f;
 
     // The write (clamped or original).
     const std::int64_t result = g_orig
         ? g_orig(a1, avIdx, a3, use_delta, source)
         : 0;
 
-    if (tracked) {
+    // CAPTURE / DETECT — runs for ANY actor in the av/delta window, tracked or not.
+    // First-shot fix: the aggro shot lands BEFORE the NPC is in the local ownership
+    // mirror (tracked=false), so it must still be claimed. The CLAMP stays strictly
+    // tracked-only (above); only the CAPTURE is widened, gated by InCombat.
+    if (av_in_window) {
         const float new_cell = safe_health_sum(a1);
         const float applied  = old_cell - new_cell;   // >0 ⟺ Health cell changed
 
@@ -190,6 +279,12 @@ std::int64_t __fastcall detour_hp_funnel(void* a1, int avIdx, void* a3,
             const bool  by_player = (source != nullptr && source == player);
             const float damage    = -delta;   // INTENDED final dmg (== applied unclamped)
 
+            // CAPTURE: claim by_player Health damage REGARDLESS of `tracked`, so the
+            // aggro (first) shot is reported. NO client InCombat gate — the raiders'
+            // InCombat bit reads 0 (cleared on the mirror by the perception walker),
+            // so gating on it dropped the real captures. Friendlies are excluded
+            // SERVER-side: a pool is only ever born from an InCombat-gated NPC_OBSERVED,
+            // so a stray settler/companion claim is stashed then expires, never pooled.
             if (g_capture_enabled.load(std::memory_order_relaxed) && by_player &&
                 damage > 0.0f && damage < 1.0e6f) {
                 fw::net::client().enqueue_npc_damage_claim(fid, damage, max_hp);
@@ -213,11 +308,12 @@ std::int64_t __fastcall detour_hp_funnel(void* a1, int avIdx, void* a3,
                 const auto n = g_fires.fetch_add(1, std::memory_order_relaxed);
                 if (n < 60 || (n % 100) == 0) {
                     FW_LOG("[hp-probe] #%llu fid=0x%08X abs=%.1f dmg=%.2f max=%.0f "
-                           "src=0x%08X by_player=%d clamped=%d",
+                           "src=0x%08X by_player=%d tracked=%d incombat=%d clamped=%d",
                            static_cast<unsigned long long>(n), fid,
                            static_cast<double>(abs_after),
                            static_cast<double>(damage), static_cast<double>(max_hp),
-                           src_fid, by_player ? 1 : 0, clamped ? 1 : 0);
+                           src_fid, by_player ? 1 : 0, tracked ? 1 : 0,
+                           safe_actor_in_combat(a1) ? 1 : 0, clamped ? 1 : 0);
                 }
             }
         }
@@ -226,6 +322,74 @@ std::int64_t __fastcall detour_hp_funnel(void* a1, int avIdx, void* a3,
 }
 
 } // namespace
+
+// vita-locale-dal-pool — set the actor's LOCAL Health so the vanilla enemy-health
+// bar (which reads GetCurrent(Health)/GetMax via sub_140C63130) renders the SHARED
+// pool fraction. target_current = AVO.GetMax * (pool_cur/pool_max) — the GetMax
+// cancels in the bar's own division, so the displayed % == pool_frac regardless of
+// the actor's true max. Floored ≥1 (never 0 → no local death cascade; death stays
+// server-driven). Applied as a delta through the ORIGINAL funnel (g_orig → no
+// detour re-entry). MAIN THREAD ONLY (AVO vtable deref + funnel are main-thread).
+std::atomic<std::uint64_t> g_pool_applies{0};
+
+void apply_pool_health_to_actor(void* actor, float pool_cur, float pool_max) noexcept {
+    if (!actor || pool_max <= 0.0f) return;
+    const auto n = g_pool_applies.fetch_add(1, std::memory_order_relaxed);
+    const bool dolog = (n < 40 || (n % 500) == 0);
+    const std::uint32_t fid = safe_read_u32(actor, fw::offsets::FORMID_OFF);
+    void* hf = const_cast<void*>(resolve_health_avinfo());
+    if (!hf) {
+        if (dolog) FW_LOG("[hp-pool] #%llu fid=0x%08X SKIP: no Health AVInfo "
+                          "(learned=null + registry getter failed)",
+                          static_cast<unsigned long long>(n), fid);
+        return;
+    }
+    const float cur = safe_avo_current_hp(actor, hf);
+    if (cur < 0.0f) {
+        if (dolog) FW_LOG("[hp-pool] #%llu fid=0x%08X SKIP: GetCurrent faulted",
+                          static_cast<unsigned long long>(n), fid);
+        return;
+    }
+    // MAX = the permanent base Health = GetCurrent(absolute) - cell_modifier_sum.
+    // This is the bar's own divisor (GetMax) WITHOUT calling the AVO GetMax leaf
+    // (which faults/zeroes under every signature we tried). It is the exact math the
+    // capture path already uses for max_hp (abs - cell). cell ≤ 0 when damaged.
+    const float cell = safe_health_sum(actor);
+    const float maxv = cur - cell;
+    if (maxv <= 0.0f) {
+        if (dolog) FW_LOG("[hp-pool] #%llu fid=0x%08X SKIP: max<=0 (cur=%.1f cell=%.1f)",
+                          static_cast<unsigned long long>(n), fid,
+                          static_cast<double>(cur), static_cast<double>(cell));
+        return;
+    }
+    float frac = pool_cur / pool_max;
+    if (frac < 0.0f) frac = 0.0f;
+    if (frac > 1.0f) frac = 1.0f;
+    float target = maxv * frac;
+    if (target < 1.0f)  target = 1.0f;            // never 0 (empty bar = death-cascade risk)
+    if (target > maxv)  target = maxv;
+    const float delta = target - cur;
+    if (delta > -0.5f && delta < 0.5f) {
+        if (dolog) FW_LOG("[hp-pool] #%llu fid=0x%08X noop: cur=%.1f≈target=%.1f "
+                          "max=%.1f (pool %.0f/%.0f)",
+                          static_cast<unsigned long long>(n), fid,
+                          static_cast<double>(cur), static_cast<double>(target),
+                          static_cast<double>(maxv),
+                          static_cast<double>(pool_cur), static_cast<double>(pool_max));
+        return;
+    }
+    safe_call_funnel(actor, hf, delta);
+    if (dolog) {
+        const float after = safe_avo_current_hp(actor, hf);   // did the write land?
+        FW_LOG("[hp-pool] #%llu fid=0x%08X SET cur %.1f->%.1f (target=%.1f max=%.1f "
+               "pool %.0f/%.0f frac=%.2f delta=%.1f)",
+               static_cast<unsigned long long>(n), fid,
+               static_cast<double>(cur), static_cast<double>(after),
+               static_cast<double>(target), static_cast<double>(maxv),
+               static_cast<double>(pool_cur), static_cast<double>(pool_max),
+               static_cast<double>(frac), static_cast<double>(delta));
+    }
+}
 
 bool install_npc_hp_probe(std::uintptr_t module_base) {
     g_module_base.store(module_base, std::memory_order_release);

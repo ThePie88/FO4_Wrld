@@ -5,6 +5,49 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## N3 shared HP — DONE · N4 player death — DONE (2026-06-06) — v0.6.2
+
+Tag `v0.6.2`. Small follow-up that closes N3 + N4 and reopens N1 partial.
+
+**N3 — the shared-HP enemy bar is now LIVE on both clients.** The non-owner
+mirror's local Health is driven to the server pool fraction (deferred to the main
+thread on each `NPC_HP_POOL_BCAST`), so the vanilla enemy-health bar reads the
+COMBINED pool and repaints as either client deals damage — not only when the
+watching client shoots. Two fixes made it work, both by REMOVING, not adding:
+
+- **`max = GetCurrent − cell`** instead of calling the ActorValueOwner GetMax leaf.
+  That leaf faults when called 1-arg and returns ~0 when called 2-arg under every
+  signature tried (a float-in-xmm0 mis-read as a double), so the bar value was
+  being skipped every frame. The permanent base = absolute current minus the
+  `0x444` modifier cell is the SAME math the capture path already uses for max_hp.
+- **dropped the client InCombat capture gate.** Raiders read InCombat=0 on the
+  mirror (the perception walker clears the bit), so the gate I had added was
+  dropping the real damage claims. Friendlies stay excluded SERVER-side: a pool is
+  only ever born from an InCombat-gated `NPC_OBSERVED`.
+
+Plus a producer change-cache poke in the G2 hook to force a per-frame repaint, and
+the **first / aggro shot is no longer lost**: the client claims by-player Health
+damage even before the NPC is tracked, and the server buffers the unknown-fid
+claim (2 s TTL) and drains it into the pool — exactly once — the instant the NPC
+registers. Confirmed live: multi-feeder pool (`totals={player_A, player_B}`),
+first-shot DRAIN, kills from the combined pool, no crashes.
+
+The HUD bar is GREEN — the engine's non-hostile color, since the mirror is neutral
+to the watching client. Kept on purpose for now: it doubles as a free "which client
+does NOT have aggro on this NPC" tell during testing. A RED color is TODO.
+
+**N4 — player death is done.** A client's death is vanilla — ragdoll + respawn at
+Sanctuary — and the raiders re-aggro the surviving client (the threat table
+re-elects on the death). N1 / N2 already carried it; nothing new was needed.
+
+**N1 — reopened partial.** The owner-driven pos / pose sync works, but small raider
+animation + position glitches remain to harden at FIRST contact with a client and
+POST-mortem. A future hardening wedge.
+
+Wire proto v18 (unchanged from v0.6.1 — `NPC_HP_POOL_BCAST`). 339 server tests pass.
+
+---
+
 ## N3 — shared authoritative HP (2026-06-05) — PARTIAL
 
 Working tree, tag `v0.6.1`. The piece the boss needs: both co-op clients now

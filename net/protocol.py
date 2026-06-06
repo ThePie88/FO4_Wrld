@@ -32,7 +32,7 @@ from typing import ClassVar, Union
 # ------------------------------------------------------------------ constants
 
 PROTOCOL_MAGIC: int = 0xFA
-PROTOCOL_VERSION: int = 17  # v17: N3 NpcDamageClaim 8->12B (+max_hp)
+PROTOCOL_VERSION: int = 18  # v18: NPC_HP_POOL_BCAST (shared-HP enemy bar)
 # v16 (2026-05-31): ghost crouch — adds POSE_CROUCH_STATE (0x028E, C->S) and
 # POSE_CROUCH_BROADCAST (0x028F, S->peers). A SEPARATE, additive channel
 # alongside the working POSE_STATE/POSE_BROADCAST rotation pose: it replicates
@@ -209,6 +209,7 @@ class MessageType(IntEnum):
     NPC_POSE_FROM_OWNER           = 0x028C  # c.37.0 — C→S→all: owner's per-bone rotation snapshot for ONE owned NPC, keyed by form_id. Full pose replication (like player→ghost) so the mirror animates bone-by-bone instead of the coarse pos/yaw/anim-enum relay. Unreliable, ~15-20 Hz per NPC.
     NPC_DAMAGE_CLAIM              = 0x028D  # c.39b — C→S: "my local player dealt D damage to NPC X". Drives damage-based ownership/aggro (chi fa più danno possiede). Unreliable, client-throttled ~6 Hz/fid.
     NPC_CROUCH_FROM_OWNER         = 0x0290  # NPC crouch — C→S→all: owner's COM/Pelvis LOCAL TRANSLATION snapshot for ONE owned NPC, keyed by form_id. The NPC analogue of POSE_CROUCH (rotation pose bends the raider's legs but leaves the body at standing height → feet "fly"; this carries the vertical drop). Unreliable, ~same rate as NPC_POSE_FROM_OWNER.
+    NPC_HP_POOL_BCAST             = 0x0291  # v18: S→all: shared HP pool (form_id, hp_cur, hp_max) so the client enemy-bar shows the COMBINED pool instead of the locally-clamped Health. Unreliable, event-driven on damage claims.
 
     # v16 — ghost crouch. SEPARATE additive channel beside POSE_STATE/BROADCAST.
     # Replicates the vertical COM/Pelvis local translation a crouch produces
@@ -822,6 +823,34 @@ class NPCDamageClaimPayload:
             raise ProtocolError("NPC_DAMAGE_CLAIM truncated")
         fid, amount, max_hp = cls._STRUCT.unpack_from(data, 0)
         return cls(form_id=fid, amount=amount, max_hp=max_hp)
+
+
+@dataclass(frozen=True, slots=True)
+class NPCHpPoolBcastPayload:
+    """v18 — S→all: the SHARED authoritative HP pool for a tracked raider.
+
+    The client enemy-health bar normally reads the raider's local Health, which
+    N3 clamps to 1 → it reads ~empty. This carries the server pool so the bar can
+    show the COMBINED hp_cur/hp_max. Unreliable, event-driven (on damage claims).
+
+    Wire: 12 bytes.
+    """
+    form_id: int
+    hp_cur: float
+    hp_max: float
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<Iff")  # form_id, hp_cur, hp_max
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.form_id & 0xFFFFFFFF, float(self.hp_cur), float(self.hp_max))
+
+    @classmethod
+    def decode(cls, data: bytes) -> "NPCHpPoolBcastPayload":
+        if len(data) < cls._STRUCT.size:
+            raise ProtocolError("NPC_HP_POOL_BCAST truncated")
+        fid, hp_cur, hp_max = cls._STRUCT.unpack_from(data, 0)
+        return cls(form_id=fid, hp_cur=hp_cur, hp_max=hp_max)
 
 
 class ActorEventKind(IntEnum):
@@ -3478,6 +3507,7 @@ _TYPE_TO_PAYLOAD_CLS: dict[int, type] = {
     MessageType.NPC_POSE_FROM_OWNER:            NPCPoseFromOwnerPayload,
     MessageType.NPC_CROUCH_FROM_OWNER:          NPCCrouchFromOwnerPayload,
     MessageType.NPC_DAMAGE_CLAIM:               NPCDamageClaimPayload,
+    MessageType.NPC_HP_POOL_BCAST:              NPCHpPoolBcastPayload,
     MessageType.PEER_GHOST_REGISTER:   PeerGhostRegisterPayload,
 }
 

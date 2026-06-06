@@ -113,6 +113,7 @@
 #include "ghost_global_walker_guards.h"   // Build 57 — comprehensive walker guards (7 hooks) — kills 0xE98860 AV class + Agent A/B/C/D/E/F predicted crash surfaces
 #include "ghost_ai_hit_applier.h"         // B6.6w0 (hit applier BAIL): sub_140CD2780 — anti-crash on damage to frozen NPC
 #include "npc_hp_probe.h"                 // N3 step 1 — READ-ONLY HP-funnel probe (sub_140CC9650), diagnostic only
+#include "hp_bar_hook.h"                  // v18 — shared-pool HP override on the enemy bar (HUDEnemyHealthMeter sub_1409C28A0)
 #include "ghost_ai_combat_orchestrator.h" // B6.6w0 NUKE (top-level combat orchestrator BAIL): sub_140CCFDF0 = Actor::vt[255]
 #include "cross_cell_gate.h"              // Build 38: sub_140CF6100 detour — transient ghost+0xB8 swap to defeat PC.cell==target.cell gate
 #include "ghost_combat_force.h"           // Build 40: 4-hook surgical decision override for combat AI
@@ -564,6 +565,10 @@ InstallSummary install_all(std::uintptr_t module_base,
     // tracked raiders, to validate the RE before the real capture+clamp lands.
     // Zero writes, zero arg mutation. Kill-switch: set_hp_probe_enabled(false).
     (void)install_npc_hp_probe(module_base);
+    // v18 — HP-bar value override: show the shared server pool on the enemy
+    // health bar (HUDEnemyHealthMeter Invoke sub_1409C28A0) instead of the
+    // locally-clamped Health. Pure HUD write (no combat structs) → crash-safe.
+    (void)install_npc_hp_bar(module_base);
     // BUILD64_DISABLED — (void)install_ghost_ai_combat_orchestrator(module_base);
     // Build 65.c.17 — re-enabled. Same rationale as pos_belt / actor_setpos
     // above: predicate flip (65.c.3) ensures owner runs vanilla and

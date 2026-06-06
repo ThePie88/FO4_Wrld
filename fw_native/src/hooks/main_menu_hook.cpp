@@ -184,6 +184,13 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         fw::dispatch::drain_npc_death_apply_queue();
         return 0;
     }
+    // HP bar (vita-locale-dal-pool) — set each tracked NPC's LOCAL Health to the
+    // shared server pool so the vanilla enemy-health bar reads it. Main-thread-
+    // required (AVO getter + the HP funnel are main-thread-affine).
+    if (msg == fw::dispatch::FW_MSG_NPC_POOL_HEALTH_APPLY) {
+        fw::dispatch::drain_npc_pool_health_queue();
+        return 0;
+    }
     // B6.6w1: drain remote NPC fire events. Each op resolves form_id →
     // Actor* and calls engine::fire_actor_weapon — Projectile::Launch +
     // muzzle flash + audio + damage. Native fns touch equipManager +

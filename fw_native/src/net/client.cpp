@@ -17,6 +17,7 @@
 #include "../hooks/equip_cycle.h"   // M9 v0.3.x: re-arm cycle on PEER_JOIN
 #include "../hooks/npc_ai_suppress.h" // B6.5w4: suppress/passthrough counters
 #include "../hooks/ownership_manager.h" // Build 65: NPC owner-driven sync
+#include "../hooks/hp_bar_hook.h"      // v18: shared-pool HP → enemy bar
 #include "../main_thread_dispatch.h"
 #include "../native/scene_inject.h"
 
@@ -1376,6 +1377,17 @@ void Client::dispatch(const Delivered& d) {
         const PoseCrouchEntry* entries = reinterpret_cast<const PoseCrouchEntry*>(
             d.payload.data() + sizeof(hdr));
         fw::native::store_npc_crouch(hdr.form_id, entries, hdr.count);
+        break;
+    }
+
+    // v18 — shared HP pool for a tracked raider (server → all). Cache it so the
+    // enemy-health-bar hook shows the COMBINED pool instead of the local Health
+    // (which N3 clamps to 1).
+    case static_cast<std::uint16_t>(MessageType::NPC_HP_POOL_BCAST): {
+        if (d.payload.size() < sizeof(NpcHpPoolBcast)) break;
+        NpcHpPoolBcast p{};
+        std::memcpy(&p, d.payload.data(), sizeof(p));
+        fw::hooks::set_npc_pool_hp(p.form_id, p.hp_cur, p.hp_max);
         break;
     }
 

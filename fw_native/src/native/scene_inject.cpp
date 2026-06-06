@@ -11607,6 +11607,10 @@ struct NpcBoneCache {
     // glide each bone toward the latest relayed pose instead of snapping, so
     // a late/lost packet's correction becomes a fast slide, not a 1-frame jump.
     std::vector<fw::net::PoseBoneEntry> applied;
+    // Build N upgrade1 — per-ptr upper-body flag (aim chain vs legs). Drives the
+    // per-region snap factor + the HOLD-window "upper only" gap behaviour. Built
+    // alongside ptrs (same canonical index), so it stays aligned across rebuilds.
+    std::vector<std::uint8_t> is_upper;
     bool primed = false;                 // false → first frame snaps (no glide-in)
 };
 std::unordered_map<std::uint32_t, NpcBoneCache> g_npc_bone_cache;
@@ -11639,6 +11643,40 @@ constexpr float kNpcPoseSmooth = 0.35f;
 // KILL-SWITCH: kNpcPoseInterpEnabled=false → target=latest (exact pre-c.42).
 constexpr bool  kNpcPoseInterpEnabled = true;
 constexpr float kNpcPoseMaxExtrap     = 1.5f;
+
+// ── Build N (upgrade 1) — APPLY: non-wooden gap behaviour + per-region snap ──
+// Three tiers by relayed-pose age (LOCAL receipt clock):
+//   FRESH (≤ kNpcPoseFreshMs)        : drive ALL bones, with extrapolation.
+//   HOLD  (FRESH .. kNpcPoseHoldMs)  : drive ONLY the upper body (aim/arms/
+//       spine/head) held at the last-good pose; LEAVE the legs to the native
+//       graph so the raider keeps running (no frozen-leg statue). This masks the
+//       c.22-forced wrong combat stance during a capture/net gap WITHOUT going
+//       "tronco di legno".
+//   RELEASE (> kNpcPoseHoldMs)       : full native fallback (return), as before.
+// Per-region smoothing replaces the single 0.35: SNAP the aim/upper body the eye
+// tracks; glide the legs to hide the ~20 Hz capture grain.
+// KILL-SWITCH: kNpcPoseApplyUpgrade=false → exact pre-upgrade behaviour
+// (kNpcPoseStaleMs hard gate + single kNpcPoseSmooth on every bone).
+constexpr bool          kNpcPoseApplyUpgrade = true;
+constexpr std::uint64_t kNpcPoseFreshMs      = 200;   // ≤ this: full fresh apply
+constexpr std::uint64_t kNpcPoseHoldMs       = 500;   // FRESH..this: upper-body hold
+constexpr float         kNpcPoseSmoothUpper  = 0.70f; // near-snap on the aim chain
+constexpr float         kNpcPoseSmoothLower  = 0.45f; // glide legs (hide 20Hz grain)
+
+// Build N upgrade1 — classify a canonical bone name as upper-body (aim chain:
+// arms/hands/clavicle/spine/chest/neck/head/weapon) vs lower (legs/pelvis/COM/
+// root). Case-insensitive substring match (canonical names come from skel.nif).
+bool bone_is_upper_body(const std::string& nm) {
+    std::string s;
+    s.reserve(nm.size());
+    for (char c : nm)
+        s.push_back((c >= 'A' && c <= 'Z') ? static_cast<char>(c + 32) : c);
+    auto has = [&](const char* sub) { return s.find(sub) != std::string::npos; };
+    return has("arm") || has("hand") || has("finger") || has("thumb")
+        || has("clav") || has("collar") || has("shoulder")
+        || has("spine") || has("chest") || has("neck") || has("head")
+        || has("weapon");
+}
 
 // Generic Get3D: Actor +0xF0 (LoadedRefData*) → +0x08 (root NiNode).
 // Same path as find_local_player_3d's path A, for an arbitrary actor.
@@ -11866,12 +11904,18 @@ void apply_npc_pose_to_actor(void* actor, std::uint32_t form_id) {
     }
     if (slot.bone_count == 0) return;
 
-    // Freshness via LOCAL receipt clock (no cross-machine skew). When the
-    // owner stops streaming, fall back to the mirror's native anim.
+    // Freshness via LOCAL receipt clock (no cross-machine skew). Build N
+    // upgrade1 — 3-tier: FRESH → full apply; HOLD → upper-body-only hold (legs
+    // stay native); RELEASE → native fallback. Kill-switch → old 300ms hard gate.
     using namespace std::chrono;
     const std::uint64_t now = duration_cast<milliseconds>(
         steady_clock::now().time_since_epoch()).count();
-    if (now - slot.local_recv_ms > kNpcPoseStaleMs) return;
+    const std::uint64_t pose_age = (now >= slot.local_recv_ms)
+        ? (now - slot.local_recv_ms) : 0ULL;
+    const std::uint64_t release_ms =
+        kNpcPoseApplyUpgrade ? kNpcPoseHoldMs : kNpcPoseStaleMs;
+    if (pose_age > release_ms) return;   // RELEASE → mirror's native anim
+    const bool hold = kNpcPoseApplyUpgrade && (pose_age > kNpcPoseFreshMs);
 
     void* a3d = get_actor_3d(actor);
     if (!a3d) return;
@@ -11892,9 +11936,11 @@ void apply_npc_pose_to_actor(void* actor, std::uint32_t form_id) {
         const std::size_t n = std::min<std::size_t>(
             canonical.size(), static_cast<std::size_t>(fw::net::MAX_POSE_BONES));
         cache.ptrs.assign(n, nullptr);
+        cache.is_upper.assign(n, 0);
         for (std::size_t i = 0; i < n; ++i) {
             auto mit = bone_map.find(canonical[i]);
             cache.ptrs[i] = (mit != bone_map.end()) ? mit->second : nullptr;
+            cache.is_upper[i] = bone_is_upper_body(canonical[i]) ? 1u : 0u;
         }
         cache.root = a3d;
         cache.primed = false;   // c.38 — snap once after a (re)build
@@ -11907,8 +11953,9 @@ void apply_npc_pose_to_actor(void* actor, std::uint32_t form_id) {
         cache.primed = false;
     }
     // First frame after a (re)build snaps (factor 1.0) so we don't glide in
-    // from identity; afterwards glide toward the latest pose.
-    const float smooth = cache.primed ? kNpcPoseSmooth : 1.0f;
+    // from identity. Build N upgrade1 — the per-bone factor (upper vs lower) is
+    // chosen inside the loop; this global is only the kill-switch fallback.
+    const float smooth_global = cache.primed ? kNpcPoseSmooth : 1.0f;
 
     // c.42 — receiver pose extrapolation factor (computed ONCE; mirrors
     // get_interpolated_owner_state). t = (now - cur_recv)/(cur_recv - prev_recv),
@@ -11917,7 +11964,9 @@ void apply_npc_pose_to_actor(void* actor, std::uint32_t form_id) {
     // latest sample = exact pre-c.42 behaviour (kill-switch or no prev yet).
     bool  do_interp = false;
     float interp_t  = 0.0f;
-    if (kNpcPoseInterpEnabled && slot.has_prev && slot.prev_bone_count > 0
+    // Build N upgrade1 — no extrapolation while HOLDing: the held pose is a
+    // stale-but-correct anchor; predicting it forward would diverge.
+    if (!hold && kNpcPoseInterpEnabled && slot.has_prev && slot.prev_bone_count > 0
         && slot.local_recv_ms > slot.prev_recv_ms) {
         const std::uint64_t dt_now = (now >= slot.local_recv_ms)
             ? (now - slot.local_recv_ms) : 0ULL;
@@ -11937,6 +11986,16 @@ void apply_npc_pose_to_actor(void* actor, std::uint32_t form_id) {
         if (e.qw > 1.5f) continue;  // sentinel → keep native bone
         const float ml = e.qx*e.qx + e.qy*e.qy + e.qz*e.qz + e.qw*e.qw;
         if (ml < 0.5f) continue;    // degenerate quat guard
+
+        // Build N upgrade1 — HOLD drives ONLY the upper body (legs stay native →
+        // never a frozen-leg statue). Per-region smoothing: snap the aim chain,
+        // glide the legs. Kill-switch → single global factor on every bone.
+        const bool upper = (i < cache.is_upper.size()) && (cache.is_upper[i] != 0);
+        if (hold && !upper) continue;
+        const float smooth = kNpcPoseApplyUpgrade
+            ? (cache.primed ? (upper ? kNpcPoseSmoothUpper : kNpcPoseSmoothLower)
+                            : 1.0f)
+            : smooth_global;
 
         // c.42 — target = cur, optionally extrapolated forward by (cur-prev)*t
         // so the nlerp below chases a MOVING target (no converge-then-freeze).
@@ -12022,8 +12081,10 @@ void apply_npc_pose_to_actor(void* actor, std::uint32_t form_id) {
     static std::atomic<std::uint64_t> s_drv{0};
     const auto c = s_drv.fetch_add(1, std::memory_order_relaxed);
     if (c < 10 || (c % 600) == 0) {
-        FW_LOG("[npc-pose-drive] fid=0x%08X wrote=%d/%zu crouch=%d (60Hz post-orig) a3d=%p",
-               form_id, wrote, apply_n, crouch_wrote, a3d);
+        FW_LOG("[npc-pose-drive] fid=0x%08X wrote=%d/%zu crouch=%d hold=%d age=%llums "
+               "(60Hz post-orig) a3d=%p",
+               form_id, wrote, apply_n, crouch_wrote, hold ? 1 : 0,
+               static_cast<unsigned long long>(pose_age), a3d);
     }
 }
 

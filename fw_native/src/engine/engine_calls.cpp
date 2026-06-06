@@ -1614,6 +1614,32 @@ void* get_local_player() noexcept {
     }
 }
 
+// c.45-light — seed a raider's combat-target HANDLE = `target` directly, with
+// ZERO allocation (NO EnterCombat / no CCF810 HighProcess+CombatController build
+// → dodges the 0xC0F510 form-deserialize UAF amplifier + the FRIENDLY/unstable
+// disable records). Writes the engine's real combat-target field AIProcess+0x6C
+// (AIProcess = Actor+0x328, the HighProcess — the same field sub_140C5CCE0
+// mirrors and the per-frame combat brain reads). Returns false (no-op) if the
+// raider has no HighProcess yet (caller then leans on the InCombat bit + the
+// engine's natural distance-only re-acquire sweep). Fully SEH-caged so it can be
+// called from the C2712-bound detour without an inline __try.
+bool seed_combat_target_handle(void* actor, void* target) noexcept {
+    if (!actor || !target || !g_handle_get_or_alloc) return false;
+    __try {
+        void* aiproc = *reinterpret_cast<void**>(
+            reinterpret_cast<std::uint8_t*>(actor) + 0x328);   // HighProcess
+        if (!aiproc) return false;        // no combat process → bit+sweep handle it
+        std::uint32_t handle = 0;
+        g_handle_get_or_alloc(&handle, target);
+        if (handle == 0) return false;
+        *reinterpret_cast<std::uint32_t*>(
+            reinterpret_cast<std::uint8_t*>(aiproc) + 0x6C) = handle;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 // Build 65.c.28.1 — TELEPORT / CELL-TRANSITION detection.
 //
 // Replaces the BROKEN c.28 guard `is_load_in_progress()`, which read

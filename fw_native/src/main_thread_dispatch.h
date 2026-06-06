@@ -75,6 +75,7 @@ constexpr UINT FW_MSG_NPC_STATE_APPLY = WM_APP + 0x53;  // B6.5w3.b
 constexpr UINT FW_MSG_NPC_FIRE        = WM_APP + 0x54;  // B6.6w1 server-driven shoot
 constexpr UINT FW_MSG_NPC_OWNER_STATE_APPLY = WM_APP + 0x55;  // Build 65.c.10 — owner-driven STATE_FROM_OWNER apply
 constexpr UINT FW_MSG_NPC_DEATH_APPLY = WM_APP + 0x56;  // Build 65.c.47 WEDGE3 — owner-driven DEATH_FROM_OWNER apply
+constexpr UINT FW_MSG_NPC_POOL_HEALTH_APPLY = WM_APP + 0x57;  // HP bar — set mirror Health = shared pool
 
 struct PendingContainerOp {
     std::uint32_t kind;               // 1=TAKE, 2=PUT
@@ -495,6 +496,19 @@ struct PendingNPCDeath {
 };
 void enqueue_npc_death_apply(const PendingNPCDeath& op);
 void drain_npc_death_apply_queue();
+
+// HP bar (vita-locale-dal-pool) — set the NPC's LOCAL Health so the vanilla
+// enemy-health bar reads the SHARED server pool. Net thread enqueues on each
+// NPC_HP_POOL_BCAST (set_npc_pool_hp); main thread (WndProc) drains, resolves
+// lookup_by_form_id, and calls engine apply_pool_health_to_actor. Tiny POD,
+// event-driven (≈ per damage claim), main-thread-required (AVO call).
+struct PendingNpcPoolHealth {
+    std::uint32_t form_id;
+    float         hp_cur;
+    float         hp_max;
+};
+void enqueue_npc_pool_health(const PendingNpcPoolHealth& op);
+void drain_npc_pool_health_queue();
 
 // Build 62 (2026-05-24) — sphere-proximity perception trigger.
 //

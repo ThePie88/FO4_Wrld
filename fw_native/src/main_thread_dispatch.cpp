@@ -14,6 +14,7 @@
 #include "hooks/container_hook.h"   // ApplyingRemoteGuard + tls_applying_remote
 #include "hooks/ownership_manager.h" // Build 65.c.10 — owner-driven apply gate
 #include "hooks/npc_ai_suppress.h"  // Build 65.c.47 WEDGE3 — mark_dying (corpse guard)
+#include "hooks/npc_hp_probe.h"     // HP bar — apply_pool_health_to_actor (vita-dal-pool)
 #include "log.h"
 #include "native/scene_inject.h"    // M9 wedge 2: ghost armor attach/detach
 #include "offsets.h"                // Build 53: POS_OFF for ghost.+0xD0 read
@@ -63,6 +64,12 @@ std::deque<PendingNPCDeath> g_npc_death_queue;
 // dozen deaths per session the memory is negligible; a fid that respawns gets
 // a NEW form_id from the engine so stale entries can't false-positive.
 std::unordered_set<std::uint32_t> g_killed_fids;
+
+// HP bar (vita-locale-dal-pool): pool→local-Health apply queue. Event-driven
+// (one per NPC_HP_POOL_BCAST claim, ≈6 Hz/fid max), tiny POD. Separate mutex so
+// it never blocks the death/state lanes. Drained on the main thread (AVO call).
+std::mutex g_npc_pool_health_mtx;
+std::deque<PendingNpcPoolHealth> g_npc_pool_health_queue;
 
 // B6.5w3.b: NPC continuous-state queue. Higher frequency than locks
 // (10 Hz × N npcs server-side) but each entry is small (24 B POD).
@@ -190,6 +197,15 @@ void post_wakeup_npc_death() noexcept {
     }
 }
 
+void post_wakeup_npc_pool_health() noexcept {
+    HWND h = g_hwnd.load(std::memory_order_acquire);
+    if (!h) return;
+    if (!PostMessageW(h, FW_MSG_NPC_POOL_HEALTH_APPLY, 0, 0)) {
+        FW_DBG("dispatch: PostMessage(FW_MSG_NPC_POOL_HEALTH_APPLY) failed (err=%lu)",
+               GetLastError());
+    }
+}
+
 void post_wakeup_npc() noexcept {
     HWND h = g_hwnd.load(std::memory_order_acquire);
     if (h && PostMessageW(h, FW_MSG_NPC_STATE_APPLY, 0, 0)) {
@@ -301,6 +317,32 @@ void enqueue_npc_death_apply(const PendingNPCDeath& op) {
     FW_LOG("dispatch: NPC death enqueued fid=0x%X killer=0x%X pos=(%.1f,%.1f,%.1f) (qsize=%zu)",
            op.form_id, op.killer_form_id, op.pos_x, op.pos_y, op.pos_z, qsize);
     post_wakeup_npc_death();
+}
+
+// HP bar (vita-locale-dal-pool) — net thread enqueues on each NPC_HP_POOL_BCAST.
+void enqueue_npc_pool_health(const PendingNpcPoolHealth& op) {
+    {
+        std::lock_guard lk(g_npc_pool_health_mtx);
+        g_npc_pool_health_queue.push_back(op);
+    }
+    post_wakeup_npc_pool_health();
+}
+
+// Main thread (WndProc) — resolve each fid → Actor* and drive its LOCAL Health to
+// the shared pool fraction so the vanilla enemy-health bar reads + repaints it.
+void drain_npc_pool_health_queue() {
+    std::deque<PendingNpcPoolHealth> local;
+    {
+        std::lock_guard lk(g_npc_pool_health_mtx);
+        local.swap(g_npc_pool_health_queue);
+    }
+    if (local.empty()) return;
+    for (const auto& op : local) {
+        if (op.form_id == 0 || op.form_id == 0xFFFFFFFFu) continue;
+        void* actor = fw::engine::lookup_by_form_id(op.form_id);
+        if (!actor) continue;   // mirror not loaded on this client → nothing to set
+        fw::hooks::apply_pool_health_to_actor(actor, op.hp_cur, op.hp_max);
+    }
 }
 
 void enqueue_npc_state_apply(const std::vector<PendingNPCStateEntry>& entries) {

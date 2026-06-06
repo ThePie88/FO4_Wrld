@@ -159,7 +159,7 @@ constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
 //     on the SAME shared canonical bone index as the rotation pose. Tiny
 //     count (≤8; COM + Pelvis). Does NOT modify PoseBoneEntry, the canonical
 //     filter, or the rotation capture/apply loops.
-constexpr std::uint8_t  PROTOCOL_VERSION  = 17;  // v17: N3 NpcDamageClaim 8->12B (+max_hp)
+constexpr std::uint8_t  PROTOCOL_VERSION  = 18;  // v18: NPC_HP_POOL_BCAST (shared-HP enemy bar)
 constexpr std::size_t   HEADER_SIZE       = 12;
 constexpr std::size_t   MAX_PAYLOAD_SIZE  = 1400;
 constexpr std::size_t   MAX_FRAME_SIZE    = HEADER_SIZE + MAX_PAYLOAD_SIZE;
@@ -227,6 +227,7 @@ enum class MessageType : std::uint16_t {
     NPC_POSE_FROM_OWNER          = 0x028C,  // c.37.0 — C→S→all: owner's per-bone rotation snapshot for ONE owned NPC, keyed by form_id (full pose replication, ~15-20 Hz/NPC, unreliable)
     NPC_DAMAGE_CLAIM             = 0x028D,  // c.39b — C→S: local player dealt D damage to NPC X (drives damage-based ownership/aggro). Unreliable, client-throttled.
     NPC_CROUCH_FROM_OWNER        = 0x0290,  // NPC crouch — C→S→all: owner's COM/Pelvis LOCAL TRANSLATION snapshot for ONE owned NPC, keyed by form_id. NPC analogue of POSE_CROUCH (rotation pose bends raider legs but leaves body at standing height → feet fly; this carries the vertical drop). Unreliable.
+    NPC_HP_POOL_BCAST            = 0x0291,  // v18: S→all: shared HP pool (form_id, hp_cur, hp_max) for the enemy-bar override. Unreliable, event-driven on damage claims.
 
     // v16 — ghost crouch. SEPARATE additive channel beside POSE_STATE/BROADCAST.
     POSE_CROUCH_STATE     = 0x028E,  // v16: C→S: my crouch bone translations (COM/Pelvis +0x60 local translate)
@@ -501,6 +502,16 @@ struct NpcDamageClaim {
     float         max_hp;    // 4  — N3 raider full Health for pool bootstrap
 };
 static_assert(sizeof(NpcDamageClaim) == 12, "NpcDamageClaim size");
+
+// v18 — NPC_HP_POOL_BCAST. Server → all: the SHARED authoritative HP pool for a
+// tracked raider, so the enemy-health bar shows the combined pool instead of the
+// local Health (which N3 clamps to 1). Matches Python "<Iff".
+struct NpcHpPoolBcast {
+    std::uint32_t form_id;   // 4
+    float         hp_cur;    // 4  — server pool current HP
+    float         hp_max;    // 4  — server pool max HP
+};
+static_assert(sizeof(NpcHpPoolBcast) == 12, "NpcHpPoolBcast size");
 // Max payload sizes:
 //   POSE_STATE     = 10 + 64*16 = 1034 bytes < 1400 ✓
 //   POSE_BROADCAST = 26 + 64*16 = 1050 bytes < 1400 ✓

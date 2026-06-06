@@ -1658,7 +1658,11 @@ constexpr std::size_t    ACTOR_HEALTH_CELL_OFF = 0x444;       // 3×f32, current
 // the 3 modifier columns). Used to recover max HP = current - cell_sum, since
 // the 0x444 cell holds only the modifiers (the permanent base is in the AVO).
 constexpr std::size_t    ACTOR_AVOWNER_OFF        = 0x58;
-constexpr std::size_t    AVOWNER_GET_CURRENT_VTBL = 0x08;
+constexpr std::size_t    AVOWNER_GET_CURRENT_VTBL = 0x08;   // (avo, AVInfo) -> float  [2-arg]
+// vt+0x10 = GetMaximumValue(avo) -> FLOAT, 1-arg (NO AVInfo). PROVEN sub_140C63130
+// disasm (text_0137.asm:12232): call [rax+10h] rcx-only, ucomiss/divss = float. Reading
+// it as a double yields ~0 (the GetMax==0 bug). re/hpbar_avo_fix_AGENT.md.
+constexpr std::size_t    AVOWNER_GET_MAX_VTBL     = 0x10;
 
 
 // ============================================================================

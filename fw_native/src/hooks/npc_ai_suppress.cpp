@@ -1553,46 +1553,64 @@ void __fastcall detour_actor_update_perframe(void* actor, float sim_time) {
                 float cx = 0.0f, cy = 0.0f, cz = 0.0f, cyaw = 0.0f;
                 if (fw::dispatch::consume_handoff_commit(
                         fid, &cx, &cy, &cz, &cyaw)) {
-                    const bool tp_ok = fw::engine::actor_teleport_handoff(
-                        actor, cx, cy, cz, cyaw);
-                    FW_LOG("[npc-ai-suppress] c.44 HANDOFF-COMMIT fid=0x%08X -> "
-                           "MoveTo synced (%.1f,%.1f,%.1f) yaw=%.2f ok=%d "
-                           "(engine ground-truth <- synced pos; no respawn-at-default)",
-                           fid, cx, cy, cz, cyaw, tp_ok ? 1 : 0);
+                    // FIX (resurrection) — NEVER MoveTo-revive a dying raider.
+                    // The c.44 MoveTo(do_process_update=1) reattaches AI+cell+
+                    // Havok = brings the corpse back to life → the "MORTO MA NON
+                    // MORTO" zombie + the 0xC0F510 form-deserialize crash feeder.
+                    // We already consumed the armed entry above; for a dying fid
+                    // just skip the teleport (is_dying is set by the death-apply
+                    // drain). 2-agent RCA: re/shareddmg_zombie_AGENT.md.
+                    const bool skip_revive = is_dying(fid);
+                    const bool tp_ok = skip_revive
+                        ? false
+                        : fw::engine::actor_teleport_handoff(actor, cx, cy, cz, cyaw);
+                    if (skip_revive) {
+                        FW_LOG("[npc-ai-suppress] c.44 HANDOFF-COMMIT SKIP "
+                               "fid=0x%08X (is_dying — no MoveTo revive)", fid);
+                    } else {
+                        FW_LOG("[npc-ai-suppress] c.44 HANDOFF-COMMIT fid=0x%08X -> "
+                               "MoveTo synced (%.1f,%.1f,%.1f) yaw=%.2f ok=%d "
+                               "(engine ground-truth <- synced pos; no respawn-at-default)",
+                               fid, cx, cy, cz, cyaw, tp_ok ? 1 : 0);
+                    }
 
-                    // c.45 FIX 1a — kill the ~1s re-aggro idle. We just became the
-                    // OWNER of this raider (= the aggro target, per the server
-                    // threat table), so force it to ENGAGE the LOCAL PLAYER now
-                    // instead of waiting ~1s for the engine's perception walker to
-                    // re-acquire. SAFE vs the c.25/c.33/c.55f crashes: those
-                    // targeted the GHOST (synthetic actor, non-resolvable handle);
-                    // the REAL local player is the vanilla target the engine
-                    // engages constantly. One-shot (consume_handoff_commit fired
-                    // once). Main-thread (this detour). The wrapper is SEH-caged +
-                    // gated (baseform/aiproc/frozen/range); is_player=true skips
-                    // the ghost.pos pre-snap + the fixed-selector/AddAlly tail.
-                    // KILL-SWITCH: kForceTargetPlayerOnHandoff=false.
-                    // c.46.1 — DISABLED: suspected root of the crash @0xC0F510
-                    // (sub_140C0F4F0 reads a -1 torn-down member). When A takes a
-                    // dead-on-the-other-client entity (e.g. a mosquito B already
-                    // killed), force-EnterCombat sets up combat structures that
-                    // then UAF-crash on the death teardown + pos-apply. Re-enable
-                    // once the RCA gives the correct guard (skip dead/creature/
-                    // already-killed entities). Idle-fix lost meanwhile.
-                    static constexpr bool kForceTargetPlayerOnHandoff = false;
-                    if (kForceTargetPlayerOnHandoff && tp_ok
-                        && fw::ownership::is_owner_of(fid)) {
+                    // c.45-light — kill the ~1s re-aggro idle SAFELY. The OLD c.45
+                    // (enter_combat_raider_vs_ghost) is the WRONG primitive: its
+                    // is_player path still calls CCF810 which ALLOCATES HighProcess
+                    // +CombatController — that (a) amplifies the 0xC0F510 form-
+                    // deserialize UAF on a stale dead mirror, and (b) has 3 disable
+                    // records (c.25 ghost teardown, Build-45 FRIENDLY decay,
+                    // Build-64 "unstable, crashes within seconds"). So we do NOT
+                    // call it. Instead the LIGHT re-engage (2-agent RCA,
+                    // re/c45_fix_design_AGENT.md + re/c45_crash_RCA_AGENT.md):
+                    //   1. un-gate the combat tick (+0x189=0),
+                    //   2. seed the combat-target HANDLE = local player directly
+                    //      (Build-15 no-alloc primitive, AIProcess+0x6C),
+                    //   3. set the InCombat bit.
+                    // The engine's re-acquire sweep is distance-only (no LOS
+                    // raycast) and the c.44 MoveTo just placed the raider on the
+                    // player → it engages at once. ZERO alloc → no 0xC0F510
+                    // amplification, no Fixed-Selector (c.25), no FRIENDLY/tronco.
+                    // GUARD: never on a dead/dying/knocked raider (the zombie that
+                    // feeds 0xC0F510) — tp_ok is already false for is_dying (c.44
+                    // skip above), plus the explicit guard here.
+                    // KILL-SWITCH: kLightReengageOnHandoff=false.
+                    static constexpr bool kLightReengageOnHandoff = true;
+                    if (kLightReengageOnHandoff && tp_ok
+                        && fw::ownership::is_owner_of(fid)
+                        && !is_dying(fid) && !actor_knocked_or_dead(actor)) {
                         void* player = fw::engine::get_local_player();
                         if (player && player != actor) {
-                            // No __try here: get_local_player + enter_combat_*
-                            // are both noexcept + SEH-caged internally. An inline
-                            // __try would trip C2712 (this fn has C++ unwind
-                            // objects — the c.41b lock_guards).
-                            const bool ec = fw::engine::enter_combat_raider_vs_ghost(
-                                actor, player, /*is_player=*/true);
-                            FW_LOG("[npc-ai-suppress] c.45 FORCE-TARGET fid=0x%08X "
-                                   "-> local player ok=%d (skip ~1s idle)",
-                                   fid, ec ? 1 : 0);
+                            // No inline __try (C2712 — this fn owns lock_guards):
+                            // every callee is noexcept + SEH-caged internally.
+                            set_combat_skip_tick(actor, false);   // un-gate +0x189
+                            const bool seed =
+                                fw::engine::seed_combat_target_handle(actor, player);
+                            safe_or_in_combat_bit(actor);         // InCombat 0x4000
+                            FW_LOG("[npc-ai-suppress] c.45-light RE-ENGAGE "
+                                   "fid=0x%08X seed=%d (un-gate + target=local "
+                                   "player + InCombat; no EnterCombat)",
+                                   fid, seed ? 1 : 0);
                         }
                     }
                 }
