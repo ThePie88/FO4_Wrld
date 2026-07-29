@@ -83,6 +83,15 @@ HWND find_fo4_hwnd() {
 }
 
 LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    // Build 67 — main-thread liveness heartbeat (stall watchdog forensics).
+    // Win32 dispatches this proc on the window-owning thread = the game main
+    // thread, so a stale heartbeat == the main thread stopped pumping.
+    fw::dispatch::note_main_thread_alive();
+    // Build 68.4 — bone-cache lifetime sweep. Hosted here because this is the
+    // one unconditional main-thread tick we have that keeps running regardless
+    // of ownership, cell state or whether any NPC is being mirrored. It
+    // self-throttles to ~250 ms internally.
+    fw::native::sweep_npc_bone_caches();
     if (msg == FW_MSG_LOAD_GAME) {
         // We're on the main (UI) thread — MinHook-level guarantees don't
         // apply here (no MinHook involved), but Win32 semantics do:

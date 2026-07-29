@@ -5,6 +5,187 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## N hardening — stability, position, locomotion, aggro (2026-07-29) — v0.6.3
+
+Tag `v0.6.3`. This does **not** close branch N — it hardens it. Every fix below
+came out of measuring the live logs against the decomp instead of guessing, and
+each one is a defect I could name before I touched a line.
+
+### The crash class: writes through stale engine pointers
+
+Client B kept dying with a different signature every session. They were all one
+bug. The decisive capture: `AV rip RVA=0x1DEFE3E fault=WRITE addr=0x3F800008`,
+inside a 0x24-byte function whose disasm is `mov rcx,[rcx+20h]` / `test` / `jz`
+/ `lock xadd [rcx+8],eax` — an NiRefObject refcount RELEASE, with the held
+pointer reading `0x3F800000`: the IEEE bits of **1.0f**. The stack named
+`MovementMessagePathEvent` / `PathingRequest`. So our own pose data (a
+quaternion w / identity-matrix diagonal) was sitting where a smart pointer
+should be: we had written floats into a freed block the engine's pathing
+allocator had already recycled.
+
+The writer was the per-fid bone cache. It stored raw `void*` bone pointers,
+was invalidated ONLY by root-pointer inequality, and was never erased. When an
+NPC's 3D is rebuilt the allocator very often returns the SAME root address, so
+the check passed while every cached child was already freed, and we kept
+writing at 60 Hz.
+
+Fixed with the engine's own lifetime protocol rather than another heuristic:
+
+- **Pin.** Every cached bone is `_InterlockedIncrement`ed at +0x08. The only
+  code that frees an NiNode is its scalar deleting destructor `sub_1416BF930`,
+  which has ZERO direct callers — it is reachable only through vtable slot 0,
+  invoked only by `NiRefObject::DeleteThis`, invoked only from a `refcount 1→0`
+  site. So free ⟺ refcount hits zero, and holding +1 makes the free
+  **impossible**, not merely unlikely. Not a new technique for us:
+  `scene_inject.cpp:699` already pre-bumps this counter before `AttachChild`,
+  and `skin_rebind.cpp` has a working release.
+- **Parent probe.** A pinned bone survives its parent's destruction as a
+  detached orphan, so the pin needs a detach detector — and the Build 68.2 NAME
+  probe cannot be it (the destructor never touches +0x10, so a pinned node
+  reports its correct name forever). Both destruction paths mutate exactly ONE
+  field on a survivor: they null the parent at +0x28 (`sub_1416C8CC0`, seen at
+  `0x1416BF972` in `~NiNode` and in `DetachChild`). So `*(void**)(bone+0x28) ==
+  nullptr` is a complete, one-deref, same-frame test. It lives at the top of
+  both write helpers, which means it covers the NPC pose, the crouch channel
+  and the ghost path at once.
+- SEH was never a defence here and the old comment claiming otherwise is gone:
+  a freed-and-recycled block is mapped and writable, so the write simply
+  succeeds and corrupts.
+
+### Position: 12 of 29 owned NPCs never received a position, ever
+
+The visible bug was raiders standing in the wrong place on the non-owner while
+being correctly animated. Measured: drift was `0.0` on 4,591 of 5,133 samples
+with a 36-unit maximum, so the apply path was flawless — the data never
+arrived. The owner-state batch walked `tx.owned` from `begin()` and broke at
+`MAX_OWNER_STATES_PER_FRAME` (17, an MTU limit) with **no rotation**: the same
+17 fids were streamed on every 100 ms tick and the rest got nothing for the
+whole session. Client A owned 29 NPCs, every batch logged `enqueued 17
+entries`, client B mirrored exactly 17. The pose channel has no such cap, which
+is why the other 12 were fully animated in the wrong spot. Now the tick emits
+as many batches as the owned set needs (capped at 4 = 68 NPCs, with a warning
+if that is ever exceeded), so nobody starves and everyone keeps the full 10 Hz.
+
+Also fixed here: the native char-controller warp (Build 66/67). We pinned only
+the VISIBLE pos (`Actor+0xD0` + NIF) while the AI-locomotion proxy kept an
+independent native pos that surfaced on handoff. The engine's own flush-free,
+cell-grid-lock-free setter is `sub_141894670` (units→meters, `vtbl[+416]`,
+warp), reached via `sub_140C5C830(actor)`. Build 66 shipped with a guard that
+accepted only `bhkCharProxyController` — the decomp says ordinary NPCs get
+`bhkCharRigidBodyController`, so it was a 1,419-call no-op; both vtables are
+accepted now.
+
+### Locomotion: every moving NPC was relayed as "idle"
+
+Mirrors slid like logs. It was never the bones (only ~4-7 aim-chain joints are
+ours; legs have always been the mirror's own graph). Measured: all 13 owned
+actors that actually moved — 493 to 4,353 units of travel — relayed
+`anim_state = 0` for their entire life, with 0-3 combat samples in total. We
+told the graph "you are standing still" while translating the body, so it
+played the only animation that matches that input. The protocol and the
+receiver already supported the fix (`1 = WALKING → SpeedSampled 100`,
+`2 = RUNNING → 200`); the owner simply never produced those values. It now
+derives them from the position delta it already samples at 60 Hz — no new
+engine reads, no wire change — and the mirror drives `SpeedSampled` /
+`Direction` through the pre-minted BSFixedStrings. Combat states keep priority
+so an aiming raider is not downgraded to a walk.
+
+### Aggro: three independent defects, each one fatal on its own
+
+1. **The engage signal was stamped once and then decayed to zero forever.** The
+   server stamps `threat_engaged` only when it receives an observe, and that
+   term decays over 4.5 s — but the observe dedup was permanent, so it could
+   never refresh. Across 1,711 ownership evaluations the challenger threat
+   never once exceeded **1.0** (pure proximity). Only damage (weight 30) could
+   move anything, which is exactly the reported "aggro only changes if you
+   actually hit them". A combat observe may now re-fire every 1.5 s while that
+   client is genuinely fighting the NPC — bounded at ~13 packets/s for 20 NPCs
+   versus the 278/s storm the dedup was built to stop. Proximity seeds stay
+   strictly one-shot.
+2. **`Actor+0x380` is an ObjectRefHandle, not a form id.** The engine reader at
+   `funcs_0188.md:8261-8276` resolves it through the `0x1430DA390` handle table
+   with generation checks. Every consumer comparing it to a form id was a
+   permanent false negative — the "am I fighting this NPC" signal was dead from
+   birth. It is now resolved through the validated handle resolver, and the
+   misleading label in `offsets.h` is corrected.
+3. **The proximity tie-break was mathematically inert.** Its own docstring
+   calls it a tie-break, but the score is normalised to [0,1] with weight 1.0
+   while a handoff needs `THREAT_MIN_ABS_DELTA = 3.0` — it could never break
+   anything. With the engage signal revived, two clients fighting the same
+   raider both score ~10 (`chal 10.99 vs owner 10.89`), a dead heat neither
+   gate can resolve. Weight raised to 6.0: proximity can now decide an engage
+   tie while staying far below the damage weight, and the anti-thrash bands
+   (MIN_HOLD 2 s, post-flip COMMIT +8 within 5 s) are untouched — 6.0 cannot
+   reach 8.0 alone.
+
+### Death: kills are remembered, not just broadcast
+
+NPC death was a fire-once event, so a client that had the actor unloaded when
+it fired — watching from out of range, or still loading after its own respawn —
+applied it to nothing and had no way to ever learn. `is_recently_dead` then
+blocked it from even claiming the NPC, making the divergence permanent. The
+server now records WHERE each NPC died and replays the same reliable
+`NPC_DEATH_FROM_OWNER` to any peer that observes a known-dead fid (the client
+path is idempotent, so a peer that already applied it drops the duplicate).
+Client-reported deaths were also never registered server-side at all — only
+server-driven pool kills were — so after relaying once the server forgot they
+happened; both paths record now. Live: 85 replays, 9/9 kills applied on both
+clients. The remaining gaps (loaded-but-unobserved, TTL expiry, cell reload)
+are written up as a dead-roster reconciliation TODO in `net/server/main.py`.
+
+### Performance: our own logger was the stutter
+
+Client B logged 26,054 lines in 168 s (155/s) from the game main thread, and
+every line did 3× `WriteFile` + `FlushFileBuffers` — a synchronous disk sync —
+plus `OutputDebugStringA`, under a global mutex. Measured from the log's own
+timestamps: **0.525 ms per line**, 8.1 % of all wall-clock, and one ungated
+scene dump that froze the game for **1,499 ms** in a single burst. Now: one
+`WriteFile`, flush only on Warn/Error so crash forensics is preserved, and the
+debugger mirror only when a debugger is actually attached. Default DLL log
+level dropped to `info`.
+
+### Smaller fixes
+
+- **The crouch channel was completely dead.** `FW_MSG_STRADAB_CROUCH_APPLY` and
+  `FW_MSG_NPC_POOL_HEALTH_APPLY` were both `WM_APP + 0x57`; the HP-bar case
+  runs first and returns, so every crouch message was eaten — 58,351 relayed by
+  the server, 0 applied. The NPC pose apply had the same collision on `0x56`.
+  Renumbered to `0x58` / `0x59`.
+- **Yaw starvation.** Widening the teleport guard with `is_load_in_progress()`
+  looked harmless but that byte is true in ~94-97 % of normal gameplay, so the
+  drain skipped `SetRotation` almost always (mirrors facing the wrong way while
+  translating) and the native warp never ran. Reverted.
+- **Main-thread stall watchdog.** A heartbeat from the WndProc plus a watcher
+  thread that suspends the main thread after 1.5 s of silence, captures RIP +
+  a stack scan, resumes, and logs it as RVAs. It has already identified stalls
+  inside the engine allocator.
+- **Server socket hardening.** `SIO_UDP_CONNRESET` disabled on Windows: one
+  `WinError 10054` from a dead peer used to freeze the whole rx path and time
+  out a peer that was provably alive.
+- **Launcher.** The server-ready wait was a hardcoded 5 s; measured cold start
+  is now ~11 s (interpreter start, snapshot restore of 263 actors, brain JSON),
+  so the launcher was killing a healthy server and aborting. Raised to 45 s and
+  it now exits early if the process actually dies.
+- Proximity sphere radius +20 % (8400 / 11400 units).
+
+### Known issues written into the code
+
+- **Cross-skeleton pose bleed** (`scene_inject.cpp`, at `kNpcPoseMinMatch`): the
+  canonical joint list is the HUMAN skeleton, but the gate only requires ONE
+  coincidental name match, so a creature sharing a few generic node names (COM,
+  Pelvis, …) is sent a human pose. One mole rat was seen stretched toward a map
+  coordinate — the crouch channel writes an absolute TRANSLATE, and a wrong
+  translate teleports a bone. Raising the threshold is not the fix: humanoid
+  raiders themselves match only 4-7 joints. Needs a schema gate.
+- **Leveled-list divergence.** Each client rolls its own leveled actors, so the
+  same REFR can carry a different base form (`0xFF001AAA` vs `0xFF00105A`) —
+  same raider slot, different NPC and gear on each client. Our identity check
+  compares `base_id` and will always mismatch for these.
+
+350 server tests pass. Wire proto unchanged (v18).
+
+---
+
 ## N3 shared HP — DONE · N4 player death — DONE (2026-06-06) — v0.6.2
 
 Tag `v0.6.2`. Small follow-up that closes N3 + N4 and reopens N1 partial.

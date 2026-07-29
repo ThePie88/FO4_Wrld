@@ -61,7 +61,20 @@ struct OwnedSnapshot {
 
 struct TxState {
     std::shared_mutex                                 obs_mtx;
-    std::unordered_set<std::uint32_t>                 observed;
+    // Build 68.1 — observe dedup CLASS map (was a plain one-shot set). The
+    // sphere proximity seed burned the one-shot dedup BEFORE combat ever
+    // started, so the later COMBAT observe (the only observe that stamps
+    // server-side engage, ownership.py on_observed) was silently dropped for
+    // every seeded fid → all peers stuck at proximity-only threat (~1.0) →
+    // ABS_DELTA(3) unclearable → the 2026-06-11 aggro asymmetry. Classes:
+    // 1=proximity seed, 2=combat. A fid observed as seed may be re-observed
+    // ONCE as combat (upgrade → server stamps engage); everything else stays
+    // deduped → max 2 observes per fid per epoch = no UDP storm (the c.8
+    // storm was UNBOUNDED per-frame observation; this is a one-shot upgrade).
+    std::unordered_map<std::uint32_t, std::uint8_t>   observed;
+    // Build 68.5 — last COMBAT observe per fid, so engage can be refreshed at a
+    // bounded rate instead of being stamped once and decaying to zero forever.
+    std::unordered_map<std::uint32_t, std::uint64_t>  last_combat_obs_ms;
     std::shared_mutex                                 owned_mtx;
     std::unordered_map<std::uint32_t, OwnedSnapshot>  owned;
     std::uint64_t                                     last_hb_ms      = 0;
@@ -252,7 +265,13 @@ namespace {
 // and silence heartbeats long enough for the server's 2.5 s timeout to
 // fire. With 5 s we still drop cell-unloads (engine stops ticking the
 // actor) but tolerate transient gaps in the per-frame tick.
-constexpr std::uint64_t OWNED_SNAPSHOT_STALE_MS = 5000;
+// Sphere upgrade (idle-sync fix A) — 5000 → 12000. A proximity-seeded IDLE NPC
+// in a slow ProcessLists tier (Low / round-robin) ticks only every few seconds;
+// at 5 s it could drop from the owned cache between ticks → heartbeat stops →
+// server release → reseed loop. 12 s keeps a slow-ticked idle NPC cached so its
+// heartbeat stays continuous (paired with server HEARTBEAT_TIMEOUT_MS 2500→8000).
+// A real cell-unload (engine stops ticking entirely) still drops it after 12 s.
+constexpr std::uint64_t OWNED_SNAPSHOT_STALE_MS = 12000;
 
 // Build 65.c.5 — bumped from 500 ms → 250 ms (4 Hz). Server's
 // HEARTBEAT_TIMEOUT_MS is 2500 ms, so 4 Hz gives 10 consecutive losses of
@@ -271,14 +290,59 @@ void notify_observation(std::uint32_t form_id,
 {
     if (form_id == 0 || form_id == 0xFFFFFFFFu) return;
     auto& tx = tx_state();
+    // Build 68.1 — class-aware dedup: 1=proximity seed (negative wire dist²),
+    // 2=combat. Same-or-lower class → deduped; seed→combat → ONE upgrade
+    // observe passes (the server stamps engage on it — the signal the plain
+    // one-shot set was silently eating for every sphere-seeded fid).
+    //
+    // Build 68.5 — COMBAT OBSERVES MUST REPEAT. Measured 2026-07-29: across
+    // 1,711 server-side ownership evaluations the challenger threat NEVER once
+    // exceeded 1.0 — i.e. pure proximity, engage always zero. Root cause: the
+    // server stamps `threat_engaged[peer]` ONLY when it receives an observe
+    // (ownership.py:584), and that term decays over THREAT_ENGAGE_WINDOW_MS
+    // (4500 ms). With a permanent one-shot dedup the stamp happened exactly
+    // ONCE per fid, decayed to zero 4.5 s later and could never refresh — so
+    // the engage weight (10) was dead and ONLY damage (weight 30) could ever
+    // clear the ABS_DELTA(3) hysteresis. That is precisely the reported
+    // behaviour: "raiders only sync once hit" and "aggro only moves if the
+    // other client actually shoots them".
+    // Fix: a COMBAT observe (cls 2) may re-fire every kCombatReobserveMs while
+    // this client is genuinely fighting the NPC, keeping engage fresh. Bounded
+    // by construction: 1 packet per actively-fought NPC per 1.5 s (~13/s at 20
+    // NPCs) versus the 278/s unbounded per-frame storm the dedup was created to
+    // stop. PROXIMITY seeds (cls 1) stay strictly one-shot — they must never
+    // refresh, or a merely-near peer would accrue standing and steal ownership.
+    static constexpr std::uint64_t kCombatReobserveMs = 1500;
+    const std::uint8_t cls = (dist_sq < 0.0f) ? 1u : 2u;
+    const std::uint64_t now_ms = GetTickCount64();
     {
         std::shared_lock lk(tx.obs_mtx);
-        if (tx.observed.count(form_id)) return;
+        auto it = tx.observed.find(form_id);
+        if (it != tx.observed.end() && it->second >= cls) {
+            if (cls != 2u) return;                       // seed: one-shot
+            auto lt = tx.last_combat_obs_ms.find(form_id);
+            if (lt != tx.last_combat_obs_ms.end()
+                && (now_ms - lt->second) < kCombatReobserveMs) {
+                return;                                  // combat: rate-limited
+            }
+        }
     }
     {
         std::unique_lock lk(tx.obs_mtx);
-        auto [it, inserted] = tx.observed.insert(form_id);
-        if (!inserted) return;   // raced
+        auto [it, inserted] = tx.observed.try_emplace(form_id, cls);
+        if (!inserted) {
+            if (it->second >= cls) {
+                if (cls != 2u) return;                   // seed: one-shot
+                auto& last = tx.last_combat_obs_ms[form_id];
+                if ((now_ms - last) < kCombatReobserveMs) return;  // raced
+                last = now_ms;                           // combat refresh
+            } else {
+                it->second = cls;                        // seed → combat upgrade
+                tx.last_combat_obs_ms[form_id] = now_ms;
+            }
+        } else if (cls == 2u) {
+            tx.last_combat_obs_ms[form_id] = now_ms;
+        }
     }
     fw::net::client().enqueue_npc_observed(
         form_id, base_id, cell_id, pos_x, pos_y, pos_z, dist_sq);
@@ -286,9 +350,10 @@ void notify_observation(std::uint32_t form_id,
         1, std::memory_order_relaxed);
     if (n < 20 || (n % 50) == 0) {
         FW_LOG("ownership: OBSERVED tx #%llu fid=0x%X base=0x%X cell=0x%X "
-               "pos=(%.1f,%.1f,%.1f)",
+               "pos=(%.1f,%.1f,%.1f) cls=%u",
                static_cast<unsigned long long>(n + 1),
-               form_id, base_id, cell_id, pos_x, pos_y, pos_z);
+               form_id, base_id, cell_id, pos_x, pos_y, pos_z,
+               static_cast<unsigned>(cls));
     }
 }
 
@@ -410,11 +475,31 @@ void tick_periodic(std::uint64_t now_ms) {
     // ---------- STATE every 100 ms (10 Hz). Owner-driven state batch.
     if (tick_now - tx.last_state_ms >= STATE_INTERVAL_MS) {
         tx.last_state_ms = tick_now;
-        std::vector<fw::net::NPCOwnerStateEntry> st;
+        // Build 68.6 — SEND EVERY OWNED NPC, NOT THE SAME FIRST 17 FOREVER.
+        //
+        // The old loop walked tx.owned from begin() and broke at
+        // MAX_OWNER_STATES_PER_FRAME (17, an MTU limit). With no rotation and a
+        // stable unordered_map iteration order, the SAME 17 fids were streamed
+        // on every 100 ms tick and every additional owned NPC NEVER had its
+        // position sent at all. Measured 2026-07-29: client A owned 29 NPCs,
+        // every batch logged "enqueued 17 entries", and client B mirrored
+        // exactly 17 of them — the other 12 got their POSE driven (a separate
+        // per-fid channel with no cap) but never a position, so on B they were
+        // fully animated while standing wherever B's own vanilla AI had left
+        // them. That is the "raiders in the wrong place on client B" report;
+        // measured drift on the fids that WERE streamed was 0.0 on 4,591 of
+        // 5,133 samples with a 36-unit maximum, i.e. the apply path was never
+        // the problem — the data simply never arrived.
+        //
+        // Fix: emit as many batches as needed to cover the whole owned set
+        // (bounded by kMaxStateBatches so a pathological owner count can never
+        // flood the link). Nobody starves, and every NPC keeps the full 10 Hz
+        // rate — a round-robin cursor would have halved it to 5 Hz past 17.
+        static constexpr std::size_t kMaxStateBatches = 4;   // 4 x 17 = 68 NPCs
+        std::vector<fw::net::NPCOwnerStateEntry> all;
         {
             std::shared_lock lk(tx.owned_mtx);
-            st.reserve(std::min<std::size_t>(
-                tx.owned.size(), fw::net::MAX_OWNER_STATES_PER_FRAME));
+            all.reserve(tx.owned.size());
             for (const auto& [fid, snap] : tx.owned) {
                 fw::net::NPCOwnerStateEntry e{};
                 e.form_id    = fid;
@@ -430,13 +515,33 @@ void tick_periodic(std::uint64_t now_ms) {
                 // All other fields default to zero. Anim/aim/velocity
                 // capture lands in 65.c.3 once we wire the engine-side
                 // readers (CombatAimController, locomotion controller).
-                st.push_back(e);
-                if (st.size() >= fw::net::MAX_OWNER_STATES_PER_FRAME) break;
+                all.push_back(e);
+            }
+        }
+        std::vector<fw::net::NPCOwnerStateEntry> st;   // first batch (for logs)
+        if (!all.empty()) {
+            const std::size_t per = fw::net::MAX_OWNER_STATES_PER_FRAME;
+            const std::size_t batches =
+                std::min(kMaxStateBatches, (all.size() + per - 1) / per);
+            for (std::size_t b = 0; b < batches; ++b) {
+                const std::size_t off = b * per;
+                const std::size_t cnt = std::min(per, all.size() - off);
+                fw::net::client().enqueue_npc_state_from_owner(
+                    all.data() + off, cnt);
+                if (b == 0) st.assign(all.begin(), all.begin() + cnt);
+            }
+            if (all.size() > batches * per) {
+                static std::atomic<std::uint64_t> s_drop{0};
+                const auto dn = s_drop.fetch_add(1, std::memory_order_relaxed);
+                if (dn < 5 || (dn % 300) == 0) {
+                    FW_WRN("ownership: owned=%zu exceeds %zu batches x %zu — "
+                           "%zu NPC(s) get NO position this tick",
+                           all.size(), kMaxStateBatches, per,
+                           all.size() - batches * per);
+                }
             }
         }
         if (!st.empty()) {
-            fw::net::client().enqueue_npc_state_from_owner(
-                st.data(), st.size());
             const auto n = tx.state_emitted.fetch_add(
                 1, std::memory_order_relaxed);
             if (n < 5 || (n % 300) == 0) {

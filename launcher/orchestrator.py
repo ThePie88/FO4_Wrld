@@ -85,12 +85,25 @@ def start_server_detached(python_exe: str = sys.executable) -> subprocess.Popen:
     )
 
 
-def wait_for_server_ready(timeout_s: float = 5.0) -> bool:
-    """Poll port binding until something's listening."""
+def wait_for_server_ready(timeout_s: float = 45.0,
+                          proc: Optional[subprocess.Popen] = None) -> bool:
+    """Poll port binding until something's listening.
+
+    Timeout was 5.0s and started failing every launch after a couple of months
+    of not running the project: measured cold start is now ~11s to bind (python
+    interpreter start + imports, snapshot restore of 263 world actors, brain
+    JSON load) — well past 5s, so the launcher killed a perfectly healthy
+    server and aborted with "server failed to listen in 5s". 45s leaves room
+    for a cold disk / AV-scanned python start. If `proc` is given we also bail
+    out immediately when it dies, so a real crash still fails fast instead of
+    waiting out the full timeout.
+    """
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if is_server_up():
             return True
+        if proc is not None and proc.poll() is not None:
+            return False        # server process died — no point waiting
         time.sleep(0.2)
     return False
 
@@ -229,8 +242,8 @@ def run(
         server_proc = start_server_detached(python_exe)
         procs.append(("server", server_proc))
         threads.append(pipe_output(server_proc, f"{DIM}[srv]{RESET}", stop_evt))
-        if not wait_for_server_ready(5.0):
-            log(side.log_prefix, "server failed to listen in 5s", color=RED)
+        if not wait_for_server_ready(45.0, server_proc):
+            log(side.log_prefix, "server failed to listen in 45s", color=RED)
             return shutdown(1)
         log(side.log_prefix, "server up", color=GREEN)
     else:

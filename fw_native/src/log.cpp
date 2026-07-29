@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 
 namespace fw::log {
@@ -12,6 +13,9 @@ namespace {
 HANDLE g_file = INVALID_HANDLE_VALUE;
 std::mutex g_mutex;
 std::atomic<Level> g_level{Level::Info};
+// Build 68.3 — sampled once at init(): with no debugger attached the
+// OutputDebugString mirror is a pure kernel round-trip nobody reads.
+bool g_debugger_present = false;
 
 const char* level_tag(Level lvl) {
     switch (lvl) {
@@ -23,42 +27,65 @@ const char* level_tag(Level lvl) {
     return "???";
 }
 
+// Build 68.3 — THE LOG PATH WAS A FRAME-KILLER.
+//
+// Measured on client B (2026-07-29 session): 26,054 lines in 168 s = 155
+// lines/sec, sustained, emitted from the GAME MAIN THREAD. The old body did,
+// per line: 3x WriteFile + FlushFileBuffers + OutputDebugStringA, all under a
+// global mutex. FlushFileBuffers is a SYNCHRONOUS disk sync (0.1-1 ms+ each,
+// worse on a spinning disk / under AV) and OutputDebugStringA is a kernel
+// round-trip that also stalls if any debugger/DebugView is listening. At 155
+// lines/sec that is ~15-150 ms of blocking I/O per SECOND of gameplay, and a
+// burst (e.g. one drain logging 17 entries) lands entirely inside a single
+// 16.6 ms frame → visible stutter. That is the "Codsworth lags on B" report.
+//
+// Now: format once into a stack buffer, ONE WriteFile, and:
+//   - flush ONLY on Warn/Error, so a crash still has its context on disk
+//     (the crash-veh / watchdog lines are ERR, so forensics is unaffected);
+//   - mirror to OutputDebugString ONLY when a debugger is actually attached
+//     (checked once at init — no debugger, no kernel round-trip).
+// The OS write-behind cache handles the rest; a hard process kill can lose at
+// most the last unflushed INF/DBG lines, which is an acceptable trade for a
+// stable frame time (and ERR/WRN, the ones that matter, are always flushed).
 void write_locked(Level lvl, std::string_view line) {
     // Timestamp prefix: [HH:MM:SS.mmm][TAG]
     SYSTEMTIME st;
     GetLocalTime(&st);
-    char prefix[48];
+    char buf[1152];
     const int n = std::snprintf(
-        prefix, sizeof(prefix), "[%02u:%02u:%02u.%03u][%s] ",
+        buf, sizeof(buf), "[%02u:%02u:%02u.%03u][%s] ",
         st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, level_tag(lvl));
+    const size_t plen = (n > 0 && static_cast<size_t>(n) < sizeof(buf))
+        ? static_cast<size_t>(n) : 0;
+    size_t total = plen;
+    const size_t copy = (line.size() < sizeof(buf) - total - 2)
+        ? line.size() : (sizeof(buf) - total - 2);
+    std::memcpy(buf + total, line.data(), copy);
+    total += copy;
+    buf[total++] = '\n';
 
-    // File path
     if (g_file != INVALID_HANDLE_VALUE) {
         DWORD written = 0;
-        if (n > 0) {
-            WriteFile(g_file, prefix, static_cast<DWORD>(n), &written, nullptr);
+        WriteFile(g_file, buf, static_cast<DWORD>(total), &written, nullptr);
+        // Durability only where it matters: a crash must not lose its own
+        // ERR/WRN context. INF/DBG ride the OS write-behind cache.
+        if (static_cast<int>(lvl) <= static_cast<int>(Level::Warn)) {
+            FlushFileBuffers(g_file);
         }
-        WriteFile(g_file, line.data(), static_cast<DWORD>(line.size()), &written, nullptr);
-        const char nl = '\n';
-        WriteFile(g_file, &nl, 1, &written, nullptr);
-        FlushFileBuffers(g_file);
     }
 
-    // Debugger mirror — shows in Visual Studio Output window and DebugView.
-    // Building one wide string; fine since log path is not hot.
-    std::string dbg;
-    dbg.reserve(static_cast<size_t>(n) + line.size() + 10);
-    dbg.append("[fw_native] ");
-    dbg.append(prefix, prefix + (n > 0 ? n : 0));
-    dbg.append(line);
-    dbg.push_back('\n');
-    OutputDebugStringA(dbg.c_str());
+    // Debugger mirror — only worth its kernel round-trip when someone listens.
+    if (g_debugger_present) {
+        buf[total] = '\0';
+        OutputDebugStringA(buf);
+    }
 }
 } // namespace
 
 void init(const std::wstring& path, Level level) {
     std::lock_guard lk(g_mutex);
     g_level.store(level, std::memory_order_relaxed);
+    g_debugger_present = (IsDebuggerPresent() != FALSE);   // Build 68.3
 
     if (g_file != INVALID_HANDLE_VALUE) {
         CloseHandle(g_file);

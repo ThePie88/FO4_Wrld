@@ -1596,6 +1596,193 @@ std::unordered_map<std::uint32_t, HandoffBlendEntry> g_handoff_blend;
 std::shared_mutex g_recent_fire_mtx;
 std::unordered_map<std::uint32_t, std::uint64_t> g_recent_fire_ts;
 
+// ============================================================================
+// Build 67 — MAIN-THREAD STALL WATCHDOG (freeze forensics). See header.
+//
+// Design constraints:
+//   - The capture must work on a thread that is NOT cooperating (it is hung),
+//     so: SuspendThread + GetThreadContext + a raw stack SCAN (return-address
+//     heuristic: any qword on the stack that points into the game EXE or this
+//     DLL). No StackWalk64 (needs dbghelp + symbols), no RtlCaptureStackBackTrace
+//     (current-thread only).
+//   - NOTHING is logged while the main thread is suspended — if it hung while
+//     holding the log/heap lock, logging would deadlock the watchdog too.
+//     Collect first, resume, then log.
+//   - SEH cages around every raw memory read (PE headers, stack scan).
+// ============================================================================
+namespace {
+
+std::atomic<std::uint64_t> g_mt_alive_ms{0};
+std::atomic<std::uint32_t> g_mt_tid{0};
+std::atomic<bool>          g_mt_watchdog_started{false};
+
+// Resolve [base, base+size) of the module containing `addr` (nullptr = the
+// game EXE). SEH-caged PE-header read; no C++ dtors (SEH-safe).
+bool wd_module_range(void* addr, std::uintptr_t* base,
+                     std::uintptr_t* size) noexcept {
+    HMODULE hm = nullptr;
+    if (addr) {
+        if (!GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCWSTR>(addr), &hm))
+            return false;
+    } else {
+        hm = GetModuleHandleW(nullptr);
+    }
+    if (!hm) return false;
+    __try {
+        auto* b   = reinterpret_cast<std::uint8_t*>(hm);
+        auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(b);
+        auto* nt  = reinterpret_cast<IMAGE_NT_HEADERS64*>(b + dos->e_lfanew);
+        *base = reinterpret_cast<std::uintptr_t>(b);
+        *size = nt->OptionalHeader.SizeOfImage;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Scan up to 16KB of stack upward from rsp; collect qwords that land in the
+// game EXE or our DLL (return-address heuristic). Partial scan on SEH is fine.
+int wd_scan_stack(std::uintptr_t rsp,
+                  std::uintptr_t gbase, std::uintptr_t gsize,
+                  std::uintptr_t fbase, std::uintptr_t fsize,
+                  std::uintptr_t* out, int out_cap) noexcept {
+    int n = 0;
+    __try {
+        const auto* p = reinterpret_cast<const std::uintptr_t*>(rsp);
+        for (int i = 0; i < 2048 && n < out_cap; ++i) {
+            const std::uintptr_t v = p[i];
+            if ((gsize && v >= gbase && v < gbase + gsize) ||
+                (fsize && v >= fbase && v < fbase + fsize)) {
+                out[n++] = v;
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        // stack page boundary — keep what we have
+    }
+    return n;
+}
+
+DWORD WINAPI wd_thread_main(LPVOID) {
+    std::uintptr_t gbase = 0, gsize = 0, fbase = 0, fsize = 0;
+    wd_module_range(nullptr, &gbase, &gsize);
+    wd_module_range(reinterpret_cast<void*>(&wd_thread_main), &fbase, &fsize);
+    FW_LOG("[mt-watchdog] running: tid=%lu game=[0x%llX+0x%llX] fw=[0x%llX+0x%llX]",
+           static_cast<unsigned long>(g_mt_tid.load(std::memory_order_relaxed)),
+           static_cast<unsigned long long>(gbase),
+           static_cast<unsigned long long>(gsize),
+           static_cast<unsigned long long>(fbase),
+           static_cast<unsigned long long>(fsize));
+
+    bool armed = true;
+    int  captures = 0;
+    for (;;) {
+        Sleep(250);
+        const std::uint64_t alive = g_mt_alive_ms.load(std::memory_order_relaxed);
+        if (alive == 0) continue;
+        const std::uint64_t now = GetTickCount64();
+        const std::uint64_t stall = (now > alive) ? (now - alive) : 0;
+        if (stall < 500) { armed = true; continue; }
+        if (stall < 1500 || !armed || captures >= 5) continue;
+        armed = false;   // one capture per stall episode
+        ++captures;
+
+        const DWORD tid = g_mt_tid.load(std::memory_order_relaxed);
+        HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT |
+                                   THREAD_QUERY_INFORMATION,
+                               FALSE, tid);
+        if (!th) {
+            FW_ERR("[mt-watchdog] STALL %llums but OpenThread(tid=%lu) failed "
+                   "gle=%lu",
+                   static_cast<unsigned long long>(stall),
+                   static_cast<unsigned long>(tid), GetLastError());
+            continue;
+        }
+
+        // ---- suspended window: collect only, NO logging ----
+        CONTEXT ctx;
+        ZeroMemory(&ctx, sizeof(ctx));
+        ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+        std::uintptr_t frames[24];
+        int nf = 0;
+        bool got_ctx = false;
+        const DWORD sc = SuspendThread(th);
+        if (sc != static_cast<DWORD>(-1)) {
+            got_ctx = GetThreadContext(th, &ctx) != 0;
+            if (got_ctx) {
+                nf = wd_scan_stack(static_cast<std::uintptr_t>(ctx.Rsp),
+                                   gbase, gsize, fbase, fsize,
+                                   frames, 24);
+            }
+            ResumeThread(th);
+        }
+        CloseHandle(th);
+        // ---- resumed: now log freely ----
+
+        if (!got_ctx) {
+            FW_ERR("[mt-watchdog] CAPTURE #%d: main-thread STALL %llums — "
+                   "Suspend/GetThreadContext failed (sc=%ld gle=%lu)",
+                   captures, static_cast<unsigned long long>(stall),
+                   static_cast<long>(sc), GetLastError());
+            continue;
+        }
+
+        const std::uintptr_t rip = static_cast<std::uintptr_t>(ctx.Rip);
+        char where[64];
+        if (gsize && rip >= gbase && rip < gbase + gsize)
+            snprintf(where, sizeof(where), "FO4+0x%llX",
+                     static_cast<unsigned long long>(rip - gbase));
+        else if (fsize && rip >= fbase && rip < fbase + fsize)
+            snprintf(where, sizeof(where), "FW+0x%llX",
+                     static_cast<unsigned long long>(rip - fbase));
+        else
+            snprintf(where, sizeof(where), "EXT:0x%llX",
+                     static_cast<unsigned long long>(rip));
+        FW_ERR("[mt-watchdog] CAPTURE #%d: main-thread STALL %llums — "
+               "RIP=%s RSP=0x%llX RBP=0x%llX RCX=0x%llX RDX=0x%llX",
+               captures, static_cast<unsigned long long>(stall), where,
+               static_cast<unsigned long long>(ctx.Rsp),
+               static_cast<unsigned long long>(ctx.Rbp),
+               static_cast<unsigned long long>(ctx.Rcx),
+               static_cast<unsigned long long>(ctx.Rdx));
+
+        // Stack scan as one compact line ("G+rva" = game, "F+rva" = our DLL).
+        char buf[1024];
+        int  off = snprintf(buf, sizeof(buf),
+                            "[mt-watchdog]   stack-scan (%d hits):", nf);
+        for (int i = 0; i < nf && off > 0 &&
+                        off < static_cast<int>(sizeof(buf)) - 24; ++i) {
+            const std::uintptr_t v = frames[i];
+            if (gsize && v >= gbase && v < gbase + gsize)
+                off += snprintf(buf + off, sizeof(buf) - off, " G+0x%llX",
+                                static_cast<unsigned long long>(v - gbase));
+            else
+                off += snprintf(buf + off, sizeof(buf) - off, " F+0x%llX",
+                                static_cast<unsigned long long>(v - fbase));
+        }
+        FW_ERR("%s", buf);
+    }
+    return 0;
+}
+
+}  // namespace
+
+void note_main_thread_alive() noexcept {
+    g_mt_alive_ms.store(GetTickCount64(), std::memory_order_relaxed);
+    if (!g_mt_watchdog_started.exchange(true, std::memory_order_acq_rel)) {
+        g_mt_tid.store(GetCurrentThreadId(), std::memory_order_relaxed);
+        HANDLE h = CreateThread(nullptr, 0, &wd_thread_main, nullptr, 0, nullptr);
+        if (h) {
+            CloseHandle(h);
+        } else {
+            // No watchdog — heartbeat keeps updating, captures just won't fire.
+            g_mt_watchdog_started.store(false, std::memory_order_release);
+        }
+    }
+}
+
 void drain_npc_owner_state_apply_queue() {
     std::deque<PendingNPCOwnerState> local;
     {
@@ -1603,6 +1790,16 @@ void drain_npc_owner_state_apply_queue() {
         local.swap(g_npc_owner_queue);   // always drain to bound the queue
     }
     if (local.empty()) return;
+
+    // Build 67 — freeze forensics: bracket the drain with a START line. The
+    // 2026-06-11 stall left one unresolvable ambiguity: was this drain on the
+    // main thread's stack when it hung, or did the hang live in the 60Hz
+    // detour? The completion summary alone can't say (it never printed); a
+    // START line answers it for free at the next stall.
+    static std::atomic<std::uint64_t> s_drain_seq{0};
+    const auto dseq = s_drain_seq.fetch_add(1, std::memory_order_relaxed);
+    FW_DBG("dispatch: owner-state drain START #%llu (%zu entries)",
+           static_cast<unsigned long long>(dseq), local.size());
 
     // Build 65.c.28 — TELEPORT FREEZE GUARD.
     //
@@ -1639,6 +1836,14 @@ void drain_npc_owner_state_apply_queue() {
     // SetRotation engine call. KILL-SWITCH: kRawPinDuringTeleport=false restores
     // the old drop-batch behaviour.
     static constexpr bool kRawPinDuringTeleport = true;
+    // Build 67.1 — REVERTED the Build 67 is_load_in_progress() widening.
+    // Measured live (05:33 session, via the SUSPENDED-SAFE throttle math:
+    // 21 lines = first-10 + every-200th → ~2200 of 2344 drains on A, ~2800 of
+    // 2886 on B): the engine load byte is TRUE ~94-97% of NORMAL GAMEPLAY, so
+    // the widening silently routed nearly every drain to the degraded path —
+    // SetRotation skipped (stale yaw = the "raider running backwards" bug) and
+    // the Build-67 native proxy snap NEVER executed (gated !suspended). The
+    // byte is useless as a streaming gate; back to the teleport window only.
     const bool suspended = fw::engine::recently_teleported();
     if (suspended && !kRawPinDuringTeleport) {
         static std::atomic<std::uint64_t> s_load_skips{0};
@@ -1679,6 +1884,22 @@ void drain_npc_owner_state_apply_queue() {
         }
         void* actor = fw::engine::lookup_by_form_id(e.form_id);
         if (!actor) {
+            // ===== B6.6 POS-MEAS (read-only) — RESIDENCY MISS.
+            // Server relayed owner-state for this raider but it is NOT
+            // loaded/resident in THIS client's process (lookup -> null). We
+            // apply to nothing -> this client never shows the owner's pos for
+            // it -> hard desync. Logs WHICH fids so we can tell if the user's
+            // "raiders in different spots" is residency (B can't see it) vs
+            // apply-drift (B sees it but the engine pulls it off sync).
+            static std::atomic<std::uint64_t> g_posmeas_miss{0};
+            const auto pmm = g_posmeas_miss.fetch_add(
+                1, std::memory_order_relaxed);
+            if (pmm < 40 || (pmm % 20) == 0) {
+                FW_LOG("[pos-meas] RESIDENCY-MISS fid=0x%08X — relayed "
+                       "owner-state but actor not loaded here "
+                       "(apply to nothing -> desync)",
+                       e.form_id);
+            }
             ++missed;
             continue;
         }
@@ -1717,6 +1938,21 @@ void drain_npc_owner_state_apply_queue() {
         if (!suspended) {
             (void)fw::engine::aim_actor_at_target_rotation_only(
                 actor, e.yaw_rad);
+            // Build 66 — NATIVE char-controller proxy snap. We pin the VISIBLE
+            // pos above (apply_npc_pos), but the AI-locomotion proxy keeps an
+            // independent NATIVE pos that the non-owner's still-running AI
+            // advances → it diverges from the owner and surfaces as the
+            // "walks-in-place / not at the owner's spot / handoff snap". Snap
+            // the proxy to the SAME relayed pos via the engine's own flush-free,
+            // cell-grid-lock-free setter so the engine is natively AT the synced
+            // spot at all times. Gated !suspended (cell-stream): the vtbl[+416]
+            // leaf is still being RE'd, so we conservatively skip it while
+            // streaming. Toggle for the live test:
+            constexpr bool kNativeProxySync = true;
+            if (kNativeProxySync) {
+                (void)fw::engine::push_native_proxy_pos(
+                    actor, e.pos_x, e.pos_y, e.pos_z);
+            }
         }
 
         // Build 65.c.22 + c.23 — popola cache unificata pos/yaw/anim_state
@@ -1764,7 +2000,17 @@ void drain_npc_owner_state_apply_queue() {
             seh_set_actor_in_combat(actor);
         }
 
-        if (pos_ok) ++applied; else ++missed;
+        // Build 68.7 — MIRROR LOCOMOTION. anim_state 0/1/2 (idle/walk/run,
+        // now actually produced by the owner since 68.7's delta-pos
+        // derivation) drives the mirror's own anim graph via SpeedSampled,
+        // so the legs animate the translation instead of sliding in idle
+        // ("tronco di legno"). Guards, in order:
+        //   !suspended    — the c.21 crash was this setter mid cell-stream
+        //                   (graph-holder smart-ptr in init); never again.
+        //   !is_dying     — never drive a corpse's graph.
+        //   change-or-400ms — the engine may also write these vars; writing
+        //                   only on transition (+ a 400 ms refresh to win
+        //                   sustained disagreements) keeps us to
     }
     if (applied || missed || skipped_owner) {
         FW_DBG("dispatch: drained %zu owner-state entries "

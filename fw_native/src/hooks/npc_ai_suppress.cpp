@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <atomic>
 #include <cstdint>
+#include <cmath>      // B6.6 pos-meas diagnostic: std::sqrt for drift magnitude
 
 #include "../hook_manager.h"
 #include "../log.h"
@@ -392,24 +393,84 @@ static bool safe_read_combat_controller_active(void* actor) noexcept {
 // c.39a — cached module base (set at install) for reading the player singleton.
 std::atomic<std::uintptr_t> g_module_base{0};
 
-// c.39a — the LOCAL player's current combat-target form_id (read from its own
+// c.39a — the LOCAL player's current combat-target (read from its own
 // PlayerCharacter at Actor+0x380, written every frame by the engine's combat-
 // target mirror sub_140C5CCE0). This is the fix for the dead handoff trigger:
 // a NON-owner reads THIS on its own player to know "I'm fighting NPC X" — which
 // works even though X's mirror AI is suppressed and never sets X's own InCombat
 // bit. Returns 0 (no target) on null/SEH.
+//
+// Build 68.1 — HANDLE FIX (decomp-verified): the u32 at +0x380 is an
+// ObjectRefHandle, NOT a form id (engine reader funcs_0188.md:8261-8276
+// resolves it through the 0x1430DA390 handle table with generation checks).
+// Every pre-68.1 consumer compared this raw handle to a form id = permanent
+// false-negative (the [c39b-diag] "player_combat_target=0x0021D625" values
+// were handles all along). Resolve to the target's REAL form id first.
 static std::uint32_t read_local_player_combat_target_fid() noexcept {
     const std::uintptr_t base = g_module_base.load(std::memory_order_relaxed);
     if (!base) return 0;
+    std::uint32_t raw_handle = 0;
     __try {
         void* player = *reinterpret_cast<void* const*>(
             base + fw::offsets::PLAYER_SINGLETON_RVA);
         if (!player) return 0;
-        return *reinterpret_cast<const std::uint32_t*>(
+        raw_handle = *reinterpret_cast<const std::uint32_t*>(
             reinterpret_cast<const std::uint8_t*>(player) +
             fw::offsets::ACTOR_COMBAT_TARGET_FORMID_OFF);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return 0;
+    }
+    if (raw_handle == 0) return 0;
+    return fw::engine::resolve_handle_to_formid(raw_handle);
+}
+
+// Sphere proximity seed (idle-ownership upgrade) — kill-switch + hysteretic
+// radii. When ON, ANY nearby actor (except the local player) is observed so an
+// IDLE / unowned NPC enters the SAME ownership pipeline as a combat observe and
+// is force-mirrored on every client — fixing idle-desync (idle raiders/settlers
+// diverged because they were never owned). Bounded by the sphere distance + the
+// existing one-shot observe dedup → no UDP storm (the c.8 storm was UNBOUNDED
+// per-frame observation of ~170 actors; distance + dedup cap this to a one-time
+// burst, then 0/s). The server treats a proximity-only observe (NEGATIVE dist²)
+// as a no-engagement seed that yields INSTANTLY to a real fighter
+// (ownership.py PROXIMITY_SEED_ENABLED). Radii are GAME UNITS (~60-100 u/m, so
+// R_in ≈ 100-165 m) — small on purpose: sync kicks in "when a player can see
+// them", and at that range the owner renders the NPC full-detail = best pose
+// capture. Tune live. kProximitySphereEnabled=false → exact pre-upgrade gate.
+// Radii tuned down after the first live test: at R_in=10000 the sphere reached
+// raiders in a NEIGHBOURING streaming-edge cell (0xDD80, ~10000u away) that the
+// owner LOADS but does NOT high-process → it can't stream them → 2.5s heartbeat
+// timeout → release → reseed loop (~3s epoch churn = "synced only on aggro").
+// 7000u keeps the sphere INSIDE the owner's high-process bubble (the actors it
+// actually simulates every frame), so seeding sticks. Sync now starts a bit
+// closer ("when you're in the area"), which is the intended trade.
+static constexpr bool  kProximitySphereEnabled = true;
+// Build 67.2 — radius +20% (user call, empirical test for the distant-aggro
+// regression: distant raiders no longer go hostile on gunshots since the
+// sphere landed). 7000→8400 in, 9500→11400 out (hysteresis ratio preserved).
+static constexpr float kSphereR2_in  = 8400.0f * 8400.0f;    // own inside this
+static constexpr float kSphereR2_out = 11400.0f * 11400.0f;  // release past this
+
+// SEH-safe read of the LOCAL player's world position (PlayerCharacter singleton
+// + POS_OFF). Clone of read_local_player_combat_target_fid above — reads the
+// player singleton ONLY (never the raider actor), so it cannot fault on an
+// unloading NPC. Returns false on null/SEH (outs left untouched).
+static bool read_local_player_pos(float* out_x, float* out_y,
+                                  float* out_z) noexcept {
+    const std::uintptr_t base = g_module_base.load(std::memory_order_relaxed);
+    if (!base) return false;
+    __try {
+        void* player = *reinterpret_cast<void* const*>(
+            base + fw::offsets::PLAYER_SINGLETON_RVA);
+        if (!player) return false;
+        const float* p = reinterpret_cast<const float*>(
+            reinterpret_cast<const std::uint8_t*>(player) + fw::offsets::POS_OFF);
+        *out_x = p[0];
+        *out_y = p[1];
+        *out_z = p[2];
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
     }
 }
 
@@ -534,14 +595,58 @@ void __fastcall detour_actor_update_perframe(void* actor, float sim_time) {
         // KNOWN GAP: a pure-melee quest enemy that never fires AND never sets
         // CombatController+0x98 (a possible future boss) still wouldn't be caught —
         // revisit with a hostile-baseform-bounded S0 when we get to the boss.
+        // Build 68 (A1) — S4: the LOCAL player is actively fighting THIS npc
+        // (its combat target points at this fid). This is the fix for the
+        // 2026-06-11 ownership asymmetry: a peer fighting an NPC owned by the
+        // OTHER client generated NEITHER engage NOR damage threat, because on a
+        // mirror the NPC's own combat signals S1/S2/S3 are cleared by the c.36b
+        // +0x189 suppression and a keyframed body doesn't register Health
+        // damage. Result: the fighting non-owner stayed at proximity-only threat
+        // (~1.0) and the server's ABS_DELTA(3) hysteresis locked it out of ever
+        // re-acquiring the raider it was shooting. The player's OWN combat target
+        // is unsuppressed (it lives on the local PlayerCharacter, not the
+        // mirror), so it is a faithful "I am fighting this" signal → send a
+        // combat observe (engage, weight 10), not a proximity seed. Now the
+        // engage term reflects who is actually fighting, so ownership follows the
+        // fighter and ABS_DELTA works as designed (engage ~10 clears the 3 gap).
+        // Short-circuits: read_local_player_combat_target_fid() only runs when
+        // S1/S2/S3 are all false; fid != 0 is guaranteed above, so a 0 (no
+        // target) return cannot false-match.
         const std::uint32_t actor_flags = safe_read_actor_flags(actor);
         const bool combat_relevant =
             (actor_flags & ACTOR_FLAG_IN_COMBAT) != 0                                 // S1: InCombat bit
             || safe_read_combat_controller_active(actor)                              // S2: CombatController+0x98
-            || fw::dispatch::recently_fired(fid, fw::dispatch::RECENT_FIRE_WINDOW_MS);// S3: fired ≤1.5s
-        if (id_ok && combat_relevant) {
+            || fw::dispatch::recently_fired(fid, fw::dispatch::RECENT_FIRE_WINDOW_MS) // S3: fired ≤1.5s
+            || (read_local_player_combat_target_fid() == fid);                        // S4: local player fighting THIS npc
+
+        // S4 — sphere proximity seed (OR'd on, nothing removed). Any nearby
+        // actor except the local player (0x14) gets observed so an idle/unowned
+        // NPC enters ownership and is force-synced. Hysteresis via the existing
+        // tracked predicates (own inside R_in, keep until R_out — no new state).
+        bool proximity_seed = false;
+        float seed_dist2 = 0.0f;
+        if (kProximitySphereEnabled && id_ok && fid != 0x00000014u) {
+            float lx = 0.0f, ly = 0.0f, lz = 0.0f;
+            if (read_local_player_pos(&lx, &ly, &lz)) {
+                const float dx = px - lx, dy = py - ly, dz = pz - lz;
+                seed_dist2 = dx * dx + dy * dy + dz * dz;
+                const bool already = fw::ownership::is_owner_of(fid)
+                                  || fw::ownership::is_non_owner_tracked(fid);
+                proximity_seed = (seed_dist2 <= (already ? kSphereR2_out
+                                                         : kSphereR2_in));
+            }
+        }
+
+        if (id_ok && (combat_relevant || proximity_seed)) {
+            // Combat observe keeps its 0.0f (byte-identical to pre-upgrade). A
+            // PROXIMITY-ONLY seed carries the NEGATIVE-encoded dist² (-(d+1) is
+            // strictly <0 even at d==0) → the server reads the sign bit and
+            // treats it as a no-engagement idle seed.
+            const float wire_dist = combat_relevant
+                ? 0.0f
+                : -(seed_dist2 + 1.0f);
             fw::ownership::notify_observation(
-                fid, base_id, cell_id, px, py, pz, /*dist_sq=*/0.0f);
+                fid, base_id, cell_id, px, py, pz, wire_dist);
         }
 
         // Build 65.c.36b — mirror combat suppression + un-stick (PRE-orig, so
@@ -1284,11 +1389,32 @@ void __fastcall detour_actor_update_perframe(void* actor, float sim_time) {
     // OUR write is the last one before the render bake. This is the freeze:
     // it runs every frame (60Hz), so it beats the engine's 60Hz anim write
     // that the old 16Hz message-pump apply could not (→ the flicker is gone).
-    // Owners skip this (they drive their NPCs natively + TX below). All engine
-    // access is SEH-caged inside apply_npc_pose_to_actor; freshness-gated so a
-    // handoff/owner-drop falls back to native anim after kNpcPoseStaleMs.
+    // Owners skip this (they drive their NPCs natively + TX below).
+    // Freshness-gated so a handoff/owner-drop falls back to native anim after
+    // kNpcPoseStaleMs.
+    //
+    // Build 68.4 — CORRECTION to the old claim on this block ("All engine
+    // access is SEH-caged inside apply_npc_pose_to_actor"): SEH was NEVER a
+    // safety guarantee here and that sentence is what gave us false confidence
+    // for weeks. A heap block that the engine freed and its allocator recycled
+    // is still committed and still writable, so a write through a stale bone
+    // pointer SUCCEEDS SILENTLY and raises nothing for __except to catch — it
+    // just corrupts whichever object now owns that memory (proven: the
+    // 2026-07-28 20:02:23 crash, our quaternion 1.0f found sitting in a
+    // MovementMessagePathEvent's smart-pointer slot). Safety now comes from
+    // OWNING the bones (refcount pin) plus a semantic detach test, both in
+    // scene_inject.cpp — not from the exception cage.
+    //
+    // Build 68.4 — DEATH GATE. This was the only block in this function
+    // lacking the guard the file already applies at the keyframe machine: once
+    // a relayed death lands, drain_npc_death_apply_queue un-keyframes the body
+    // and calls Actor::Kill, handing it to the Havok ragdoll solver — and we
+    // were still writing bone locals and running a subtree rebake on it for up
+    // to kNpcPoseHoldMs (500 ms) afterwards.
     if (fid != 0 && fid != 0xFFFFFFFFu && actor &&
-        fw::ownership::is_non_owner_tracked(fid)) {
+        fw::ownership::is_non_owner_tracked(fid) &&
+        !fw::hooks::is_dying(fid) &&
+        !actor_knocked_or_dead(actor)) {
         fw::native::apply_npc_pose_to_actor(actor, fid);
     }
 
@@ -1384,6 +1510,57 @@ void __fastcall detour_actor_update_perframe(void* actor, float sim_time) {
                 const bool latched = (it != s_anim_latch.end())
                                   && (now_tc - it->second < kAnimLatchMs);
                 anim_state = latched ? 3u /* AIMING */ : 0u /* IDLE */;
+            }
+
+            // Build 68.7 — LOCOMOTION. Measured 2026-07-29: every owned actor
+            // that actually MOVED (13 of them, travelling 493 to 4,353 units)
+            // relayed anim=0 for its entire life — combat samples were 0, 1 or
+            // 3 in total. The mirror was therefore told "I am standing still"
+            // while its body translated across the map, so its anim graph did
+            // the only correct thing for that input and played IDLE: the
+            // "raider slides like a wooden log" report. Bones were never the
+            // cause (they are only ~4-7 aim-chain joints); legs have ALWAYS
+            // been driven by the mirror's own graph, and a graph needs a SPEED
+            // input to walk.
+            //
+            // The protocol and the receiver already support this and always
+            // have: anim_state 1 = WALKING -> SpeedSampled 100, 2 = RUNNING ->
+            // SpeedSampled 200 (engine_calls.h:294-296). The owner simply
+            // never produced those values. Derive them from the position delta
+            // we are ALREADY sampling at 60 Hz — no new engine reads, no new
+            // wire fields, nothing to race with the engine's own writers.
+            // Combat states keep priority: a raider aiming while strafing must
+            // stay AIMING, otherwise we would trade a broken walk for a broken
+            // stance.
+            if (anim_state == 0u) {
+                struct LocoSample { float x, y, z; std::uint64_t t_ms; };
+                static std::mutex s_loco_mtx;
+                static std::unordered_map<std::uint32_t, LocoSample> s_loco;
+                const std::uint64_t now_tc = GetTickCount64();
+                std::lock_guard lk(s_loco_mtx);
+                auto it = s_loco.find(fid);
+                if (it != s_loco.end()) {
+                    const std::uint64_t dt = now_tc - it->second.t_ms;
+                    // Sample over >=100 ms so 60 Hz jitter cannot masquerade as
+                    // speed, and drop stale samples (a gap means a teleport /
+                    // re-load, whose delta is meaningless).
+                    if (dt >= 100 && dt <= 1000) {
+                        const float dx = opx - it->second.x;
+                        const float dy = opy - it->second.y;
+                        const float dz = opz - it->second.z;
+                        const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+                        // units per second. Vanilla FO4: walk ~130, run ~400.
+                        const float ups = dist * 1000.0f
+                                        / static_cast<float>(dt);
+                        if (ups >= 260.0f)      anim_state = 2u;  // RUNNING
+                        else if (ups >= 40.0f)  anim_state = 1u;  // WALKING
+                        it->second = LocoSample{opx, opy, opz, now_tc};
+                    } else if (dt > 1000) {
+                        it->second = LocoSample{opx, opy, opz, now_tc};
+                    }
+                } else {
+                    s_loco.emplace(fid, LocoSample{opx, opy, opz, now_tc});
+                }
             }
 
             // Throttled per-signal diagnostic. Resolution: first 30 logged,
@@ -1486,6 +1663,10 @@ void __fastcall detour_actor_update_perframe(void* actor, float sim_time) {
     // deferred during the window. KILL-SWITCH: kRawPinDuringTeleport=false →
     // revert to the old skip-during-window behaviour.
     static constexpr bool kRawPinDuringTeleport = true;
+    // Build 67.1 — REVERTED the Build 67 is_load_in_progress() widening
+    // (matches the 10Hz drain revert): the engine load byte measured TRUE in
+    // ~94-97% of normal-gameplay drains, so the widening silently starved the
+    // 60Hz yaw apply (stale facing on every mirror = "running backwards").
     const bool suspended = fw::engine::recently_teleported();
     if (fid != 0 && fid != 0xFFFFFFFFu && actor &&
         (!suspended || kRawPinDuringTeleport)) {
@@ -1494,6 +1675,42 @@ void __fastcall detour_actor_update_perframe(void* actor, float sim_time) {
             if (fw::dispatch::get_interpolated_owner_state(
                     fid, GetTickCount64(), &isnap))
             {
+                // ===== B6.6 POS-MEAS (read-only diagnostic) ==============
+                // This detour is POST-orig: Actor+0xD0 here = the pos the
+                // engine computed for the raider THIS frame, BEFORE our
+                // override below. isnap = the owner's synced target. The
+                // delta measures how far the engine's own AI moved the
+                // raider away from sync since our last re-pin:
+                //   drift~0  -> engine isn't competing; our apply holds and
+                //               the raider IS synced          [posfix_idle]
+                //   drift>0  -> engine runs its own path; between our 60Hz
+                //               re-pins the body sits at the engine pos, so
+                //               sync is "us vs engine"     [posfix_foundation]
+                // Settles the two contradicting agents with a number.
+                {
+                    float eng_x = 0.0f, eng_y = 0.0f, eng_z = 0.0f;
+                    if (safe_read_actor_identity(actor, nullptr, nullptr,
+                                                 &eng_x, &eng_y, &eng_z)) {
+                        const float ddx = eng_x - isnap.pos_x;
+                        const float ddy = eng_y - isnap.pos_y;
+                        const float ddz = eng_z - isnap.pos_z;
+                        const float drift =
+                            std::sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
+                        static std::atomic<std::uint64_t> g_posmeas_no{0};
+                        const auto pm = g_posmeas_no.fetch_add(
+                            1, std::memory_order_relaxed);
+                        if (pm < 40 || (pm % 20) == 0 || drift > 75.0f) {
+                            FW_LOG("[pos-meas] NONOWNER fid=0x%08X "
+                                   "eng=(%.0f,%.0f,%.0f) "
+                                   "synced=(%.0f,%.0f,%.0f) drift=%.1f%s",
+                                   fid, eng_x, eng_y, eng_z,
+                                   isnap.pos_x, isnap.pos_y, isnap.pos_z,
+                                   drift,
+                                   drift > 75.0f ? "  <<< ENGINE COMPETES"
+                                                 : "");
+                        }
+                    }
+                }
                 if (suspended) {
                     // SAFE pin: raw writes only, skip vt[202] + SetRotation.
                     fw::engine::apply_npc_pos_raw(
@@ -1503,6 +1720,24 @@ void __fastcall detour_actor_update_perframe(void* actor, float sim_time) {
                                               isnap.pos_x, isnap.pos_y, isnap.pos_z);
                     (void)fw::engine::aim_actor_at_target_rotation_only(
                         actor, isnap.yaw_rad);
+                    // Build 68.7 — LOCOMOTION INPUT. This is the strict
+                    // !suspended, 60 Hz, POST-orig, main-thread slot — every
+                    // safety condition the c.21 graph-var crash needed (that
+                    // crash was calling the setter mid cell-stream). Feed the
+                    // mirror's own anim graph the owner's WALKING(1)/RUNNING(2)
+                    // speed so the legs actually move; the engine keeps
+                    // overwriting SpeedSampled toward 0 (the warp zeroes body
+                    // velocity), so we MUST win as the last writer each frame,
+                    // exactly like the c.22 InCombat bit. Only drive 1/2 — for
+                    // IDLE the engine's own 0 is correct and re-asserts within a
+                    // frame when a raider stops, so we skip it and pay the
+                    // setter cost only for actively-moving mirrors. Combat
+                    // stances (>=3) are owned by the aim/suppress path;
+                    // apply_npc_locomotion returns false for them.
+                    if (isnap.anim_state == 1u || isnap.anim_state == 2u) {
+                        (void)fw::engine::apply_npc_locomotion(
+                            actor, isnap.anim_state);
+                    }
                 }
 
                 // Build 65.c.30 — stash the pose we just applied as the FROM
@@ -1524,6 +1759,25 @@ void __fastcall detour_actor_update_perframe(void* actor, float sim_time) {
                 }
             }
         } else {
+            // ===== B6.6 POS-MEAS (read-only) — owner-side actual pos.
+            // This client OWNS the raider (vanilla AI drives it = the
+            // authoritative ground-truth). The OTHER client logs NONOWNER
+            // synced=(...) for the same fid; that synced target should track
+            // THIS pos if the relay is fresh. Owner-pos vs the other client's
+            // synced diverging => relay/freshness gap, not an apply gap.
+            if (fw::ownership::is_owner_of(fid)) {
+                float omx = 0.0f, omy = 0.0f, omz = 0.0f;
+                if (safe_read_actor_identity(actor, nullptr, nullptr,
+                                             &omx, &omy, &omz)) {
+                    static std::atomic<std::uint64_t> g_posmeas_o{0};
+                    const auto pmo = g_posmeas_o.fetch_add(
+                        1, std::memory_order_relaxed);
+                    if (pmo < 40 || (pmo % 20) == 0) {
+                        FW_LOG("[pos-meas] OWNER fid=0x%08X "
+                               "pos=(%.0f,%.0f,%.0f)", fid, omx, omy, omz);
+                    }
+                }
+            }
             // Build 65.c.44 — HANDOFF COMMIT (replaces the c.30 visible-blend).
             // The c.30 blend smoothed the VISIBLE pos from the last-synced pose
             // (near the owner) TOWARD B's engine pose — which is B's internally-

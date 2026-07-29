@@ -187,6 +187,22 @@ ActorResolveWeaponSlotFn g_resolve_weapon_slot = nullptr;
 using AimSetTargetFn = void (*)(void* aim_controller, const float* xyz);
 AimSetTargetFn g_aim_set_target = nullptr;
 
+// Build 66 — native char-controller proxy snap.
+// sub_140C5C830(actor[, a2, a3]) → char-controller (uses only actor; a2/a3 are
+//   forwarded-but-ignored by the inner sub_140D342A0). Pure accessor.
+using ActorGetCharCtrlFn = void* (*)(void* actor, void* a2, void* a3);
+// sub_141894670(charController, pos_units[3]) → ×0.0142875 → vtbl[+416](warp=1).
+using CharCtrlSetPosFn   = std::int64_t (*)(void* char_controller, float* pos_units);
+ActorGetCharCtrlFn g_get_char_controller = nullptr;
+CharCtrlSetPosFn   g_charctrl_setpos     = nullptr;
+// Expected controller vtable addresses (module_base + RVA), resolved at init.
+// Used as a fail-safe before snapping. Build 67: BOTH live classes accepted —
+// humanoid NPCs use bhkCharRigidBodyController (decomp-proven; the proxy only
+// goes to the local player/VATS), and the wrapper's hardcoded force flag makes
+// the rigid-body slot-52 an exact hard-snap too (no fling path reachable).
+std::uintptr_t     g_charproxy_vtbl_addr = 0;
+std::uintptr_t     g_charrb_vtbl_addr    = 0;
+
 // Cached absolute address of CombatAimController vtable (computed at init
 // from module_base + COMBAT_AIM_CONTROLLER_VTBL_RVA). Used by
 // resolve_actor_aim_controller_for_slot to filter BSTArray entries.
@@ -945,6 +961,14 @@ bool init(std::uintptr_t module_base) {
         module_base + offsets::ACTOR_RESOLVE_WEAPON_SLOT_RVA);
     g_aim_set_target = reinterpret_cast<AimSetTargetFn>(
         module_base + offsets::AIM_SET_TARGET_RVA);
+
+    // Build 66 — native char-controller proxy snap (getter + setter + vtbl).
+    g_get_char_controller = reinterpret_cast<ActorGetCharCtrlFn>(
+        module_base + offsets::ACTOR_GET_CHARCTRL_RVA);
+    g_charctrl_setpos = reinterpret_cast<CharCtrlSetPosFn>(
+        module_base + offsets::CHARCTRL_SETPOS_RVA);
+    g_charproxy_vtbl_addr = module_base + offsets::CHARPROXY_VTBL_RVA;
+    g_charrb_vtbl_addr    = module_base + offsets::CHARRB_VTBL_RVA;
     g_aim_ctrl_vtbl_addr =
         module_base + offsets::COMBAT_AIM_CONTROLLER_VTBL_RVA;
     FW_LOG("engine: puppet-fire init  state_setter=%p slot_resolver=%p "
@@ -5925,6 +5949,100 @@ bool apply_npc_pos_raw(void* actor, float x, float y, float z) noexcept {
     return wrote_logical;
 }
 
+// Build 66 — see header. Snap the native AI char-controller proxy to (x,y,z)
+// world-units via the engine's own flush-free, lock-free setter. Returns false
+// (benign) if the actor has no AIProcess/proxy or on SEH.
+bool push_native_proxy_pos(void* actor, float x, float y, float z) noexcept {
+    if (!g_ready.load(std::memory_order_acquire)) return false;
+    if (!actor) return false;
+    if (!g_get_char_controller || !g_charctrl_setpos) {
+        FW_ERR("engine: push_native_proxy_pos — fn pointer not resolved");
+        return false;
+    }
+
+    static std::atomic<std::uint64_t> s_calls{0};
+    static std::atomic<std::uint64_t> s_seh{0};
+    static std::atomic<std::uint64_t> s_nocc{0};
+
+    // (1) Resolve the char-controller from the actor (AIProc@+0x300 → proxy).
+    void* cc = nullptr;
+    __try {
+        cc = g_get_char_controller(actor, nullptr, nullptr);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        const auto sn = s_seh.fetch_add(1, std::memory_order_relaxed);
+        if (sn < 5) {
+            FW_ERR("engine: push_native_proxy_pos SEH (getter) #%llu actor=%p",
+                   static_cast<unsigned long long>(sn), actor);
+        }
+        return false;
+    }
+    if (!cc) {
+        // No AIProcess / no proxy (unloaded or process-less actor) — nothing to
+        // snap. Common + benign; log sparsely.
+        const auto nn = s_nocc.fetch_add(1, std::memory_order_relaxed);
+        if (nn < 10) {
+            FW_DBG("engine: push_native_proxy_pos — actor=%p has no char-"
+                   "controller (no AIProcess/proxy)", actor);
+        }
+        return false;
+    }
+
+    // (2) Fail-safe: accept BOTH live controller classes (Build 67 — the
+    // decomp swarm proved humanoid NPCs get bhkCharRigidBodyController; the
+    // proxy only goes to the local player/VATS, so Build 66's proxy-only
+    // check skipped 100% of raiders). Both classes' vtbl[+416] is an exact
+    // hard-snap (the wrapper hardcodes the force flag — the rigid-body's
+    // delta→velocity fling path is unreachable). Anything else (listener/
+    // subobject vtbl, garbage pointer) is rejected. The setter takes
+    // world-units (×0.0142875 → meters internally) and dispatches
+    // vtbl[+416](pos_meters, warp=1) — same pos we pin to Actor+0xD0.
+    static std::atomic<std::uint64_t> s_wrongvt{0};
+    float pos[3] = {x, y, z};
+    bool snapped = false;
+    __try {
+        const std::uintptr_t vtbl = *reinterpret_cast<std::uintptr_t*>(cc);
+        const bool known =
+            (g_charproxy_vtbl_addr != 0 && vtbl == g_charproxy_vtbl_addr) ||
+            (g_charrb_vtbl_addr    != 0 && vtbl == g_charrb_vtbl_addr);
+        if (known) {
+            (void)g_charctrl_setpos(cc, pos);
+            snapped = true;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        const auto sn = s_seh.fetch_add(1, std::memory_order_relaxed);
+        if (sn < 5) {
+            FW_ERR("engine: push_native_proxy_pos SEH (setter) #%llu actor=%p "
+                   "cc=%p pos=(%.1f,%.1f,%.1f)",
+                   static_cast<unsigned long long>(sn), actor, cc, x, y, z);
+        }
+        return false;
+    }
+    if (!snapped) {
+        const auto wn = s_wrongvt.fetch_add(1, std::memory_order_relaxed);
+        if (wn < 10 || (wn % 500) == 0) {
+            FW_DBG("engine: push_native_proxy_pos #w%llu — actor=%p cc=%p "
+                   "UNKNOWN controller vtbl (neither proxy nor rigid-body) — "
+                   "snap skipped", static_cast<unsigned long long>(wn),
+                   actor, cc);
+        }
+        return false;
+    }
+
+    const auto cn = s_calls.fetch_add(1, std::memory_order_relaxed);
+    if (cn < 10) {
+        FW_LOG("engine: push_native_proxy_pos #%llu actor=%p cc=%p "
+               "pos=(%.1f,%.1f,%.1f) — char-controller proxy snapped "
+               "(native pos, no anim-flush, no cell-grid lock)",
+               static_cast<unsigned long long>(cn), actor, cc, x, y, z);
+    } else if ((cn % 100) == 0) {
+        FW_DBG("engine: push_native_proxy_pos #%llu (heartbeat, seh=%llu, "
+               "nocc=%llu)", static_cast<unsigned long long>(cn),
+               s_seh.load(std::memory_order_relaxed),
+               s_nocc.load(std::memory_order_relaxed));
+    }
+    return true;
+}
+
 // B6.6w5 — engine load-in-progress byte read.
 bool is_load_in_progress() noexcept {
     if (!g_ready.load(std::memory_order_acquire)) return false;
@@ -7247,6 +7365,72 @@ static bool actor_baseform_valid(void* actor) noexcept {
 // recursive write-lock; concurrent reader threads would tolerate a
 // transient zero-handle (engine's resolve_handle returns null → skip).
 //
+// Build 68.1 — public handle→formid resolver. The u32 at Actor+0x380 (the
+// "combat target" slot sub_140C5CCE0 mirrors from HighProcess+0x6C) is an
+// ObjectRefHandle, NOT a form id (decomp: funcs_0188.md:8261-8276 resolves it
+// through the 0x1430DA390 handle table with generation checks). This wrapper
+// resolves such a handle to the target's real form id via the anon-namespace
+// resolve_handle_inline above (active bit + generation + actor cross-check),
+// so callers can compare apples to apples. Returns 0 on null/stale/SEH.
+std::uint32_t resolve_handle_to_formid(std::uint32_t handle) noexcept {
+    void* actor = resolve_handle_inline(handle, g_handle_table_base);
+    if (!actor) return 0;
+    __try {
+        return *reinterpret_cast<const std::uint32_t*>(
+            reinterpret_cast<const std::uint8_t*>(actor) +
+            offsets::FORMID_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+// Build 68.7 — see header. Drive the mirror's anim graph with the owner's
+// locomotion state so the legs walk/run instead of sliding in an idle pose.
+// Reuses the SAME setter + pre-minted strings the deprecated c.19 apply used;
+// the c.21 crash was calling it MID CELL-STREAM (graph-holder smart-ptr in
+// init), so the caller MUST gate on !suspended + main-thread.
+bool apply_npc_locomotion(void* actor, std::uint8_t anim_state) noexcept {
+    if (!g_ready.load(std::memory_order_acquire)) return false;
+    if (!actor) return false;
+    if (!g_set_graph_var_float
+        || !g_bs_speed_sampled.pool_entry
+        || !g_bs_direction.pool_entry) {
+        return false;
+    }
+    // Only LOCOMOTION states are ours: 0=IDLE 1=WALKING 2=RUNNING ->
+    // SpeedSampled 0/100/200. Combat states (>=3) are driven by the
+    // suppression/aim path — never overwrite an aiming stance with a walk.
+    float speed_target;
+    switch (anim_state) {
+        case 0: speed_target = 0.0f;   break;   // IDLE
+        case 1: speed_target = 100.0f; break;   // WALKING
+        case 2: speed_target = 200.0f; break;   // RUNNING
+        default: return false;                  // combat/other — not ours
+    }
+    auto* holder = reinterpret_cast<std::uint8_t*>(actor)
+                 + offsets::IANIMGRAPHHOLDER_OFF;
+    static std::atomic<std::uint64_t> s_calls{0};
+    static std::atomic<std::uint64_t> s_seh{0};
+    __try {
+        g_set_graph_var_float(holder, &g_bs_speed_sampled, speed_target);
+        g_set_graph_var_float(holder, &g_bs_direction, 0.0f);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        const auto sn = s_seh.fetch_add(1, std::memory_order_relaxed);
+        if (sn < 5) {
+            FW_ERR("engine: apply_npc_locomotion SEH actor=%p anim=%u",
+                   actor, static_cast<unsigned>(anim_state));
+        }
+        return false;
+    }
+    const auto cn = s_calls.fetch_add(1, std::memory_order_relaxed);
+    if (cn < 10) {
+        FW_LOG("engine: apply_npc_locomotion #%llu actor=%p anim=%u speed=%.0f",
+               static_cast<unsigned long long>(cn), actor,
+               static_cast<unsigned>(anim_state), speed_target);
+    }
+    return true;
+}
+
 // Returns true if walk completed (with or without purges), false on SEH.
 bool purge_stale_known_targets(void* controller) noexcept {
     if (!controller || !g_handle_table_base) return false;

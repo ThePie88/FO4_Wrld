@@ -172,6 +172,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
             "npc_crouch_rx": 0,        # NPC crouch
             "npc_crouch_relayed": 0,   # NPC crouch
             "npc_damage_claims_rx": 0,  # c.39b
+            "npc_death_replayed": 0,    # 68.9 — kills re-sent to late arrivals
         }
 
     # ----- asyncio callbacks
@@ -1160,6 +1161,92 @@ class ServerProtocol(asyncio.DatagramProtocol):
     ) -> None:
         self._counters["ownership_observed"] += 1
 
+        # Build 68.9 — REPLAY A MISSED DEATH TO A LATE ARRIVAL.
+        #
+        # NPC death is an EVENT, broadcast once. A peer that did not have the
+        # actor loaded at that instant (watching from out of range, or still
+        # loading after its own respawn) applied it to nothing — and nothing
+        # ever told it again, so it kept a LIVE copy of an NPC the other client
+        # sees as a corpse. Worse, `is_recently_dead` then blocked it from even
+        # claiming the fid, so the divergence was permanent for the whole TTL.
+        #
+        # The server is the only party that knows the truth, so: the moment a
+        # peer observes a fid we know is dead, re-send it the SAME reliable
+        # NPC_DEATH_FROM_OWNER it missed. The client path is already idempotent
+        # (g_killed_fids dedup), so a peer that DID apply the original death
+        # just drops the duplicate. Observation is the right trigger because it
+        # fires exactly when the actor becomes present for that client (the
+        # proximity sphere seeds it on approach), which is when its local copy
+        # exists and can actually be killed.
+        # TODO (deaths must be STATE, not only an EVENT — replay-on-observe is
+        # only the first half). The block below re-sends a missed kill when a
+        # peer OBSERVES a known-dead fid, which covers "B walks up to a corpse".
+        # It does NOT cover the cases that actually leave a dead raider walking
+        # around on a distant client:
+        #   1. LOADED BUT UNOBSERVED. The proximity sphere only observes within
+        #      ~8400 units, while FO4 keeps actors loaded far beyond that. A
+        #      peer holding a live copy just outside the sphere is never told,
+        #      and nothing re-checks it.
+        #   2. ONE-SHOT OBSERVE. A proximity seed fires once per fid (it must —
+        #      refreshing it would let a merely-near peer accrue ownership), so
+        #      a peer that had already seeded the NPC before wandering off may
+        #      never emit another observe to trigger this replay.
+        #   3. TTL EXPIRY. `_DEAD_FID_TTL_MS` forgets the kill; a peer that
+        #      returns later gets no replay and keeps its live copy forever.
+        #   4. CELL RELOAD. The returning client re-streams the cell and spawns
+        #      a FRESH live actor for that REFR — the kill has to be re-applied
+        #      after the load, not once at death time.
+        # METHOD (dead-roster reconciliation):
+        #   - Server: keep a per-cell authoritative set {fid: (pos, ts)} of
+        #     everything killed this session (promote `_dead_fids`/`_dead_pos`
+        #     from a short TTL to session-lifetime, pruned only on a real
+        #     respawn/cell-reset signal).
+        #   - Wire: add NPC_DEAD_ROSTER (S->C, reliable, chunked like the other
+        #     roster messages) carrying the dead fids for the cells that peer
+        #     currently has loaded.
+        #   - Send it on HELLO/join, on every peer cell-change, and on a slow
+        #     timer (~5 s) as a self-healing sweep — the same "sweep beats
+        #     events" reasoning used for the bone-cache release: a periodic
+        #     reconcile cannot miss a trigger because it does not depend on one.
+        #   - Client: for each fid in the roster, lookup_by_form_id; if it
+        #     resolves, is alive, and is not already in `g_killed_fids`, apply
+        #     the same death path (mark_dying -> motion dynamic -> raw-pin at
+        #     the relayed pos -> Actor::Kill). Idempotent by construction.
+        #   This makes "dead" a property of the world the server owns, so a
+        #   client can join late, walk in from any distance, or reload a cell
+        #   and still converge — instead of depending on being in the right
+        #   place at the right millisecond.
+        dead_pos = self.ownership.dead_replay_pos(payload.form_id, now_ms)
+        if dead_pos is not None:
+            px, py, pz = dead_pos
+            if (px, py, pz) == (0.0, 0.0, 0.0):
+                # Death recorded before we kept positions — fall back to where
+                # the observer reports the body, which is its local corpse pos.
+                px, py, pz = payload.pos_x, payload.pos_y, payload.pos_z
+            try:
+                raw = session.channel.send_reliable(
+                    MessageType.NPC_DEATH_FROM_OWNER,
+                    NPCDeathFromOwnerPayload(
+                        form_id=payload.form_id,
+                        killer_form_id=0,
+                        pos_x=px, pos_y=py, pos_z=pz,
+                        ragdoll_x=0.0, ragdoll_y=0.0, ragdoll_z=0.0,
+                        damage=0.0, hit_zone=0, flags=0,
+                        ts_ms=int(now_ms) & 0xFFFFFFFFFFFFFFFF,
+                    ),
+                    now_ms,
+                )
+                self._send_raw(session, raw)
+                self._counters["npc_death_replayed"] = \
+                    self._counters.get("npc_death_replayed", 0) + 1
+                log.info(
+                    "npc_death REPLAY fid=0x%X -> %s (observed a known-dead NPC "
+                    "at pos=%.0f,%.0f,%.0f)",
+                    payload.form_id, session.peer_id, px, py, pz)
+            except ChannelError:
+                pass
+            return   # dead NPCs are never claimed / re-elected
+
         # Build 65.c.27 — RNG AGGRO ownership election.
         #
         # For a NOT-yet-owned raider, instead of "first observer claims"
@@ -1527,7 +1614,9 @@ class ServerProtocol(asyncio.DatagramProtocol):
         # re-observes the corpse → fresh live record → reeval re-elects → the new
         # owner's handoff MoveTo revives it = the "MORTO MA NON MORTO" zombie +
         # the 0xC0F510 crash feeder. See ownership.OwnershipRegistry.note_dead.
-        self.ownership.note_dead(fid, now_ms)
+        self.ownership.note_dead(
+            fid, now_ms,
+            (rec.last_pos_x, rec.last_pos_y, rec.last_pos_z))   # 68.9 replay pos
         # Release ownership (forge an unload-style release), like the death
         # handler, so a respawn re-elects cleanly.
         change = self.ownership.on_unload(
@@ -1568,6 +1657,19 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 self._send_raw(sess, raw)
             except ChannelError:
                 pass
+        # Build 68.9 — REMEMBER THE DEATH. This client-reported path never
+        # registered the fid as dead (only the server-driven pool kill at
+        # _fire_npc_death did), so after relaying once the server forgot it
+        # happened. Any peer that had the actor unloaded at that moment — the
+        # exact case of a client watching from out of range, or still loading
+        # after its own respawn — applied the event to nothing and had no way to
+        # ever learn the NPC was dead. Recording it here makes the replay in
+        # _handle_npc_observed work for BOTH death paths, and also arms the
+        # existing anti-resurrection guards (is_recently_dead) for kills the
+        # clients report themselves.
+        self.ownership.note_dead(
+            payload.form_id, now_ms,
+            (payload.pos_x, payload.pos_y, payload.pos_z))
         # Forge an unload-style release.
         change = self.ownership.on_unload(
             NPCUnloadPayload(
@@ -2440,6 +2542,39 @@ async def run_server(cfg: Config) -> None:
         lambda: ServerProtocol(state),
         local_addr=(cfg.host, cfg.port),
     )
+    # Build 67 — harden the UDP socket on Windows (SIO_UDP_CONNRESET=FALSE).
+    # When a peer's process dies, our earlier sends to it bounce back as ICMP
+    # port-unreachable; by default WinSock surfaces those as WSAECONNRESET
+    # (WinError 10054) on the RECEIVE path of this socket. Observed live
+    # (2026-06-11 04:38:58): one 10054 from dead client B froze the server's
+    # entire rx path (rx_frames stuck at 2745) and falsely timed out client A,
+    # which was provably alive and transmitting. Disabling the connreset
+    # report makes the socket swallow those ICMP bounces entirely — one dead
+    # peer can no longer blind the server to everyone else.
+    if sys.platform == "win32":
+        _sock = transport.get_extra_info("socket")
+        if _sock is not None:
+            try:
+                import ctypes
+                SIO_UDP_CONNRESET = 0x9800000C
+                _in = ctypes.c_ulong(0)       # FALSE → no connreset reports
+                _ret = ctypes.c_ulong(0)
+                _rc = ctypes.windll.ws2_32.WSAIoctl(
+                    ctypes.c_void_p(_sock.fileno()),
+                    ctypes.c_ulong(SIO_UDP_CONNRESET),
+                    ctypes.byref(_in), ctypes.c_ulong(ctypes.sizeof(_in)),
+                    None, ctypes.c_ulong(0),
+                    ctypes.byref(_ret), None, None,
+                )
+                if _rc == 0:
+                    log.info("server: SIO_UDP_CONNRESET disabled — "
+                             "WinError 10054 from dead peers is now swallowed")
+                else:
+                    log.warning("server: WSAIoctl(SIO_UDP_CONNRESET) failed "
+                                "rc=%d (continuing unhardened)", _rc)
+            except Exception as e:
+                log.warning("server: SIO_UDP_CONNRESET setup failed: %s "
+                            "(continuing unhardened)", e)
     # B6.6w2: wire npc_brain + raider_brain into the protocol BEFORE
     # the event loop starts dispatching incoming datagrams.
     # Single-threaded asyncio so no race vs NPC_DISCOVER handler.

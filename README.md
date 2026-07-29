@@ -6,6 +6,27 @@ This project uses unconventional approaches in several critical areas (scene gra
 Fallout 4 1.11.191 next-gen — multiplayer mod (FoM-lite framework).
 Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 
+> **Status (2026-07-29):** **N hardening — stability, position, locomotion,
+> aggro.** This does not close branch N, it hardens it. The recurring client
+> crashes were one bug: writes through stale bone pointers into recycled heap
+> (caught red-handed as `1.0f` sitting where a smart pointer belongs, in a
+> `PathingRequest` destructor). Fixed with the engine's own lifetime protocol —
+> every cached bone is refcount-pinned at +0x08, so the free becomes impossible
+> rather than unlikely, plus a one-deref parent probe that detects detachment.
+> Raiders standing in the wrong place were not drift (measured 0.0 on 4,591 of
+> 5,133 samples): the owner-state batch streamed the same first 17 NPCs forever,
+> so 12 of 29 owned actors never received a position at all. Mirrors sliding
+> like logs were not the bones either — every moving NPC was relayed as `idle`,
+> so the graph played idle; the owner now derives WALKING/RUNNING from the
+> position delta. Aggro had three separate defects: the engage signal was
+> stamped once and decayed to zero forever, `Actor+0x380` is a handle and not a
+> form id (so "am I fighting this NPC" was dead from birth), and the proximity
+> tie-break was mathematically inert (weight 1.0 against a required delta of
+> 3.0). Deaths are now remembered by the server and replayed to peers that were
+> too far to receive them. Also: our own logger was the stutter (0.525 ms per
+> line, fsync per line), and the crouch channel had been silently dead on a
+> `WM_APP` id collision. Wire proto v18. See [CHANGELOG.md](CHANGELOG.md).
+>
 > **Status (2026-06-06):** **N3 shared HP — DONE; N4 player death — DONE.** The
 > shared-HP enemy bar is now LIVE on both clients — the non-owner's local Health
 > is driven to the combined server pool, so the vanilla enemy-health bar reads it
@@ -147,9 +168,9 @@ in real time).
 | ↳ **B6.11** Time of day + weather sync | ⏳ — GlobalVar `GameHour` + Sky weather state |
 | ↳ **B6.12** Workshop / settlement build state sync | ⏳ — major epic; build/scrap/move workshop refs + furniture |
 | ↳ **B6.13** Power Armor frame + worn-state sync | ⏳ — chassis is a REFR with its own state (location, per-piece HP, fusion core); player-in-PA = chassis attached to player. Both visibilities require sync. Re-scoped from M9 to B6 (2026-05-04) — fundamentally world-state, not an equip event |
-| **N** NPC co-op combat *(split out from B6.5 / B6.6 — grew into its own epic; my first iteration on the game's AI)* | 🟡 N2 + N3 + N4 done — shared-HP boss mechanic + player death complete; N1 (pos/pose) reopened partial for raider anim+pos hardening; scope still hostile raiders, creature roster pending |
-| ↳ **N1** NPC actor pos + pose sync (owner-driven) | 🟡 REOPENED partial (v0.6.2, 2026-06-06) — was ✅ done (v0.6.0): each raider is owned by one client whose vanilla engine runs its AI and streams pos + full-body pose (~30 Hz); the non-owner mirrors it (pos-pinned, Havok-keyframed); teleport-on-handoff fixed via `Actor::MoveTo` (doProcessUpdate=1). REOPENED because small raider anim + position glitches remain to harden at FIRST contact with a client and POST-mortem. |
-| ↳ **N2** NPC combat target + aggro + death sync (owner-driven threat table) | ✅ done (v0.6.0, 2026-06-01) — the Python server holds a threat table and elects the owner from whoever the raiders natively aggro (engine-native: noise / line of sight), with hysteresis anti-thrash; live aggro hand-off; bidirectional death-sync (corpse + ragdoll at the synced pos, either client's kill propagates). Scope: hostile raiders. |
+| **N** NPC co-op combat *(split out from B6.5 / B6.6 — grew into its own epic; my first iteration on the game's AI)* | 🟡 N2 + N3 + N4 done; **hardened in v0.6.3** (stale-pointer crash class closed via NiRefObject pinning, owner-state starvation fixed, locomotion relayed, 3 aggro defects fixed, deaths replayed to distant peers). N1 still open: creature pose schema + post-mortem hardening. Scope still hostile raiders. |
+| ↳ **N1** NPC actor pos + pose sync (owner-driven) | 🟡 REOPENED partial (v0.6.2) — **major hardening in v0.6.3** (2026-07-29): the owner-state batch was capped at 17 entries with no rotation, so 12 of 29 owned NPCs never received a position at all (measured drift where data DID arrive: 0.0 on 4,591/5,133 samples) — now multi-batch, everyone at full 10 Hz; the engine's NATIVE position (AI char-controller proxy) is snapped via `sub_141894670` so it tracks the owner instead of diverging; locomotion is derived from the position delta and relayed (`anim=1/2 → SpeedSampled 100/200`), fixing the "slides like a log" mirrors; the bone cache is now refcount-pinned (+0x08) with a parent-detach probe, which closed the whole stale-pointer crash class. STILL OPEN: creature (non-humanoid) pose bleeds through a 1-name-match gate — a mole rat was seen stretched toward a map coordinate, needs a skeleton-schema gate, TODO in `scene_inject.cpp`; POST-mortem corpse hardening; leveled-list divergence means the same REFR can be a different NPC per client. |
+| ↳ **N2** NPC combat target + aggro + death sync (owner-driven threat table) | ✅ done (v0.6.0, 2026-06-01) — the Python server holds a threat table and elects the owner from whoever the raiders natively aggro (engine-native: noise / line of sight), with hysteresis anti-thrash; live aggro hand-off; bidirectional death-sync (corpse + ragdoll at the synced pos, either client's kill propagates). Scope: hostile raiders. **v0.6.3 fixed three defects that made ownership effectively immovable**: the engage signal was stamped once per NPC and decayed to zero forever (across 1,711 evaluations the challenger threat never exceeded 1.0, so only damage could move aggro — combat observes now refresh at 1.5 s); `Actor+0x380` is an ObjectRefHandle and not a form id, so the "I am fighting this NPC" signal was a permanent false negative (now resolved through the handle table); and the proximity tie-break was mathematically inert (weight 1.0 vs a required delta of 3.0 — raised to 6.0 so it can break the engage tie two fighting clients produce). Deaths are also remembered server-side and replayed to peers that were out of range when they fired. |
 | ↳ **N3** Shared authoritative HP / damage | ✅ done (v0.6.2, 2026-06-06) — both clients deplete ONE server-held HP pool (damage captured at the engine HP-write funnel `sub_140CC9650`, FINAL post-resist; DLL floor-1 clamp stops either client soloing the kill; server fires the kill at pool=0). v0.6.2 closed it: the enemy-health HUD now shows the LIVE combined pool on both clients (the non-owner's local Health is driven to the pool fraction so the vanilla bar reads it — `max = GetCurrent − cell`, since the AVO GetMax leaf mis-reads), the aggro/first shot is no longer lost (claimed pre-tracking, server-buffered until the NPC registers), and multi-feeder + server-driven death are confirmed. The HUD bar is GREEN (non-hostile color — handy as a "this client has no aggro" tell); a RED color is TODO. Wire proto v18. |
 | ↳ **N4** Player death + respawn sync | ✅ done (v0.6.2, 2026-06-06) — a client's death is vanilla: it ragdolls + respawns at Sanctuary, and the raiders re-aggro the surviving client (the threat table re-elects on the death). N1 / N2 already carry it — no extra wiring needed. |
 | **B7** Rust server port | ⏳ |

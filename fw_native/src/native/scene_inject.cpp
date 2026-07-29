@@ -24,6 +24,8 @@
 #include "weapon_witness.h"  // read_parent_pub for detach-via-parent helper
 #include "synthetic_refr.h"  // M9 closure (2026-05-07): synthetic REFR weapon assembly
 #include "../ghost/actor_hijack.h"  // B6.6w5 Build 5: piggyback engine-native ghost spawn on the body inject event
+#include "../hooks/ownership_manager.h"  // Build 68.4: is_non_owner_tracked (bone-cache sweep)
+#include "../hooks/npc_ai_suppress.h"    // Build 68.4: is_dying (bone-cache sweep)
 
 #include <windows.h>
 #include <atomic>
@@ -10865,8 +10867,43 @@ bool read_local_3x3(void* bone, float mat3[9]) {
 
 // Write a 3x3 rotation to NiAVObject.m_kLocal (offset 0x30).
 // Same SIMD-padded layout as read above.
+// Build 68.4 — DETACH PROBE. Counted so the sweep/rebuild logic can react and
+// so a silent "mirror stopped moving" can never hide (see g_detach_detected).
+std::atomic<std::uint64_t> g_detach_detected{0};
+std::atomic<std::uint64_t> g_writes_suppressed{0};
+
+// Build 68.4 — THE one-deref test that says "this bone is still part of a live
+// tree". Decomp-proven COMPLETE: both destruction paths mutate exactly ONE
+// field on a node that survives (because someone still holds a reference) —
+// they null its parent at +0x28. ~NiNode (sub_1416BF930) does it via the 9-byte
+// thunk sub_1416C8CC0 `*(a1+40)=0` at 0x1416BF972, and NiNode::DetachChild
+// (sub_1416BE390) calls the identical thunk. Name (+0x10), vtable (+0x00) and
+// refcount (+0x08) are NEVER touched — which is exactly why the Build 68.2
+// name-probe could not see a detached-but-pinned node and had to go.
+// Requires the pin to be legal: we may only deref a node we hold a reference
+// on, otherwise this read itself hits recycled memory.
+bool bone_is_attached(void* bone) noexcept {
+    if (!bone) return false;
+    __try {
+        return *reinterpret_cast<void* const*>(
+            reinterpret_cast<const char*>(bone) + NIAV_PARENT_OFF) != nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 bool write_local_3x3(void* bone, const float mat3[9]) {
     if (!bone) return false;
+    // Build 68.4 — never write into a detached node. This is the guard that
+    // makes the whole crash class inert: a detached bone is either an orphan we
+    // pinned (harmless, but pointless to drive) or — without a pin — a freed
+    // block. SEH cannot catch the latter (recycled memory is mapped and
+    // writable), so the check must be semantic, not exceptional.
+    if (!bone_is_attached(bone)) {
+        g_detach_detected.fetch_add(1, std::memory_order_relaxed);
+        g_writes_suppressed.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
     __try {
         float* p = reinterpret_cast<float*>(
             reinterpret_cast<char*>(bone) + 0x30);
@@ -10912,6 +10949,11 @@ bool read_local_translate(void* bone, float t3[3]) {
 // root (index 0 / canonical root name).
 bool write_local_translate(void* bone, const float t3[3]) {
     if (!bone) return false;
+    if (!bone_is_attached(bone)) {          // Build 68.4 — see write_local_3x3
+        g_detach_detected.fetch_add(1, std::memory_order_relaxed);
+        g_writes_suppressed.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
     __try {
         float* p = reinterpret_cast<float*>(
             reinterpret_cast<char*>(bone) + 0x60);
@@ -11575,6 +11617,49 @@ constexpr std::uint64_t kNpcPoseCapturePeriodMs = 33;
 // (hits==0 still drops — a pure-sentinel packet is wasted bytes.)
 constexpr int kNpcPoseMinMatch = 1;
 
+// TODO (Build 68.9 — CROSS-SKELETON POSE BLEED, diagnosed 2026-07-29, NOT yet
+// fixed). Symptom: on the NON-OWNER client one mole rat out of the 3-4 on
+// screen had part of its body STRETCHED toward a fixed map coordinate — the
+// same failure the player ghost had months ago.
+//
+// Mechanism (log-confirmed): `canonical` is the HUMAN joint list taken from the
+// ghost skel.nif, but this gate only requires ONE coincidental name match, so a
+// creature whose skeleton happens to share a few generic node names (COM,
+// Pelvis, Bip01, ...) passes and is sent a HUMAN pose. Measured this session:
+//     0x191750 matched=0  -> correctly skipped
+//     0x9813C  matched=0  -> correctly skipped
+//     0x1D16C8 matched=6/80 (walked=41) -> POSE SENT
+//     0x1D16CD matched=6/80 (walked=84) -> POSE SENT
+// and on the mirror: `0x001D16C8 wrote=6 crouch=1`. That explains "only 1 of
+// the 3-4 mole rats": the ones with zero name collisions are filtered, the ones
+// with a few are not.
+//
+// The STRETCH specifically comes from the CROUCH channel, not the rotations:
+// crouch calls write_local_translate, i.e. an absolute local POSITION taken
+// from a HUMAN COM/Pelvis and written onto a creature bone of the same name. A
+// wrong rotation deforms; a wrong translate teleports the bone and the skin
+// stretches to it. Rotations are comparatively benign (and unmatched joints
+// already ship kSentinelQw and are skipped on apply).
+//
+// WHY RAISING THIS CONSTANT IS NOT THE FIX: humanoid raiders themselves match
+// only 4-7 joints in the common case (0x57A6B/0x74E50/0x19E13x all matched 4-5,
+// while 0x46459 and 0x9813F matched 75) — the match COUNT does not separate
+// "human at low LOD" from "creature with name collisions". Any threshold that
+// excludes a 6-match mole rat also excludes half the raiders and re-creates the
+// wooden-log regression this constant was lowered to 1 to fix.
+//
+// PROPER FIX (two steps, in this order):
+//   1. Stop the bleeding: do NOT send/apply the crouch TRANSLATE channel for an
+//      actor that is not verified as sharing the canonical skeleton schema.
+//      This alone removes the stretch, since translate is the only write that
+//      can displace geometry.
+//   2. Gate on SCHEMA, not on count: verify the actor's skeleton actually is
+//      the canonical one before sending any pose — e.g. via the base form's
+//      race/skeleton path, or by requiring signature human joints a creature
+//      cannot own (checked against the real matched-name sets, which are not
+//      logged today — add that dump first).
+// Until then creatures are relayed pos-only, which is the correct degradation.
+
 // c.37.1 — drop a relayed pose this many ms after it arrived (LOCAL receipt
 // clock, no cross-machine skew). When the owner stops streaming (handoff,
 // death, walked away), the mirror falls back to its native anim after this.
@@ -11602,6 +11687,21 @@ std::unordered_map<std::uint32_t, RemoteNpcPoseSlot>  g_remote_npc_pose;  // fid
 // so no mutex. Rebuilt when the actor's Get3D root changes (3D reload).
 struct NpcBoneCache {
     void*              root = nullptr;   // Get3D(actor) when ptrs were built
+    // Build 68.2 — the actor the ptrs were built for + a REVALIDATION stamp.
+    // `root` alone is NOT a safe validity key: when an NPC's 3D is torn down
+    // and rebuilt, the allocator very often hands back the SAME address (same
+    // size class), so `cache.root == a3d` compared equal while every cached
+    // BONE pointer underneath was already freed → we then wrote quaternions
+    // (1.0f) into recycled heap. Live 2026-07-28 20:02:23 on client B that
+    // landed inside the pathing/movement allocations: the crash was a
+    // MovementMessagePathEvent / PathingRequest dtor doing
+    // `lock xadd [rcx+8]` (refcount release) with rcx = 0x3F800000 — the IEEE
+    // bits of 1.0f, i.e. our own pose write sitting where a smart-pointer
+    // should be (RVA 0x1DEFE3E, fault addr 0x3F800008 = 0x3F800000+8).
+    void*              owner_actor = nullptr;  // actor the ptrs belong to
+    std::uint64_t      last_check_ms = 0;      // last liveness revalidation
+    std::uint64_t      last_touch_ms = 0;      // Build 68.4 — for the age sweep
+    bool               pinned = false;         // Build 68.4 — ptrs hold +1 refs
     std::vector<void*> ptrs;             // ptrs[i] ↔ canonical[i] (may be null)
     // c.38 — per-bone last-applied quaternion (nlerp smoothing state). We
     // glide each bone toward the latest relayed pose instead of snapping, so
@@ -11614,6 +11714,79 @@ struct NpcBoneCache {
     bool primed = false;                 // false → first frame snaps (no glide-in)
 };
 std::unordered_map<std::uint32_t, NpcBoneCache> g_npc_bone_cache;
+
+// ====================================================================
+// Build 68.4 — THE PIN. Reference-count every cached bone so the engine
+// physically cannot free it while we hold a pointer to it.
+//
+// WHY THIS CLOSES THE CRASH CLASS (decomp-proven, not heuristic): the ONLY
+// code that frees a NiNode is its scalar deleting destructor sub_1416BF930,
+// which has ZERO direct callers in the whole binary — it is reachable solely
+// through vtable slot 0, invoked solely by NiRefObject::DeleteThis
+// (sub_1416BA6D0, vtable slot 1), which is invoked solely from
+// `if (_InterlockedExchangeAdd(obj+8, -1) == 1) vt[1](obj)` sites. Therefore
+//     free  <=>  refcount transitions 1 -> 0.
+// Holding +1 keeps the count >= 1, so the block is never freed, never
+// recycled, and a stale write lands in an object we legally own: INERT by
+// construction instead of "unlikely". That is the difference from Build 68.2,
+// which sampled one bone every 300 ms while ~22,000 bone writes/s went past it.
+//
+// This is NOT a new technique for us: scene_inject.cpp:699 already pre-bumps
+// this exact counter before AttachChild ("the canonical engine pattern"), and
+// skin_rebind.cpp:457 niptr_release is a working release implementation.
+//
+// PAIRING INVARIANT: these two functions are the ONLY places that may touch a
+// cached bone's refcount, and every ptr stored in NpcBoneCache::ptrs is
+// incref'd exactly once and decref'd exactly once. MAIN THREAD ONLY — reaching
+// zero runs ~NiNode, which calls the engine allocator.
+void ni_incref(void* obj) noexcept {
+    if (!obj) return;
+    __try {
+        _InterlockedIncrement(reinterpret_cast<volatile long*>(
+            reinterpret_cast<char*>(obj) + NIAV_REFCOUNT_OFF));
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+void ni_decref(void* obj) noexcept {
+    if (!obj) return;
+    __try {
+        const long prev = _InterlockedExchangeAdd(
+            reinterpret_cast<volatile long*>(
+                reinterpret_cast<char*>(obj) + NIAV_REFCOUNT_OFF), -1);
+        if (prev == 1) {
+            using DtorFn = void(__fastcall*)(void*);
+            auto vt = *reinterpret_cast<void***>(obj);
+            reinterpret_cast<DtorFn>(vt[1])(obj);   // NiRefObject::DeleteThis
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+// Build 68.4 — accounting. The invariant pins_taken - pins_released == live
+// pins must hold at all times; drift means an orphaned incref (the leak mode).
+std::atomic<std::uint64_t> g_pins_taken{0};
+std::atomic<std::uint64_t> g_pins_released{0};
+std::atomic<std::uint64_t> g_cache_rebuilds{0};
+std::atomic<std::uint64_t> g_released_ownership{0};
+std::atomic<std::uint64_t> g_released_age{0};
+
+// Drop every reference held by one cache entry. Idempotent (clears ptrs).
+void unpin_cache_entry(NpcBoneCache& c) noexcept {
+    if (c.pinned) {
+        for (void* p : c.ptrs) {
+            if (p) {
+                ni_decref(p);
+                g_pins_released.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        c.pinned = false;
+    }
+    c.ptrs.clear();
+    c.applied.clear();
+    c.is_upper.clear();
+    c.root = nullptr;
+    c.owner_actor = nullptr;
+    c.primed = false;
+}
 
 // NPC crouch — per-fid cache of the owner's latest COM/Pelvis translations
 // (the NPC analogue of g_remote_crouch for the ghost). Net thread writes via
@@ -11763,9 +11936,9 @@ void capture_and_send_npc_pose(void* actor, std::uint32_t form_id) {
         static std::atomic<std::uint64_t> s_skip{0};
         const auto sc = s_skip.fetch_add(1, std::memory_order_relaxed);
         if (sc < 20 || (sc % 600) == 0) {
-            FW_LOG("[npc-pose-tx] fid=0x%08X SKIP low-match (matched=%d < %d) "
-                   "a3d=%p — owner copy too coarse", form_id, hits,
-                   kNpcPoseMinMatch, a3d);
+            FW_LOG("[npc-pose-tx] fid=0x%08X SKIP low-match (matched=%d < %d "
+                   "walked=%zu) a3d=%p — owner copy too coarse", form_id, hits,
+                   kNpcPoseMinMatch, bone_map.size(), a3d);
         }
         return;
     }
@@ -11778,8 +11951,20 @@ void capture_and_send_npc_pose(void* actor, std::uint32_t form_id) {
     static std::atomic<std::uint64_t> s_cap{0};
     const auto c = s_cap.fetch_add(1, std::memory_order_relaxed);
     if (c < 20 || (c % 600) == 0) {
-        FW_LOG("[npc-pose-tx] fid=0x%08X sent %zu joints (matched=%d) a3d=%p",
-               form_id, n, hits, a3d);
+        // Build 68.5 — bone_map.size() is the discriminator for the "mirror
+        // slides without moving its legs" symptom. Measured: EVERY npc fid
+        // reports matched=4-7 of 80, yet some actors have reported 75, so the
+        // canonical names DO match when the tree is complete. Two candidate
+        // causes remain and this one number separates them:
+        //   walked >> matched  → the walk found a full skeleton but the names
+        //                        do not line up (naming/canonical problem);
+        //   walked ~= matched  → the walk itself only reached a handful of
+        //                        nodes (partial/LOD 3D, or the untyped child
+        //                        read at +0x128 bailing on a non-NiNode).
+        // Only the legs' bones are missing today, which is exactly why the
+        // body translates while the legs never animate.
+        FW_LOG("[npc-pose-tx] fid=0x%08X sent %zu joints (matched=%d walked=%zu) "
+               "a3d=%p", form_id, n, hits, bone_map.size(), a3d);
     }
 
     // === NPC crouch capture (SEPARATE additive channel) ==================
@@ -11921,18 +12106,58 @@ void apply_npc_pose_to_actor(void* actor, std::uint32_t form_id) {
     if (!a3d) return;
 
     // Resolve / refresh the canonical-aligned bone-ptr cache for this fid.
+    //
+    // Build 68.4 — REBUILD TRIGGERS. The Build 68.2 NAME probe is GONE: it is
+    // provably defeated by the pin below. ~NiNode touches exactly ONE field on
+    // a node that survives its parent (the parent ptr at +0x28, via the thunk
+    // sub_1416C8CC0 at 0x1416BF972) and never the name at +0x10 — so a pinned,
+    // detached bone reports its correct canonical name FOREVER and the name
+    // probe would never fire again. The detach test now lives where it belongs:
+    // one deref at the top of write_local_3x3 / write_local_translate
+    // (bone_is_attached), which is O(1), complete, same-frame, and shared by
+    // the NPC pose, the crouch channel and the ghost path alike.
+    // A suppressed write here means the tree was rebuilt → force a rebuild.
     NpcBoneCache& cache = g_npc_bone_cache[form_id];
-    if (cache.root != a3d || cache.ptrs.empty()) {
+    cache.last_touch_ms = now;                   // for the age sweep
+    const bool detached =
+        (!cache.ptrs.empty() && cache.pinned && !bone_is_attached(cache.ptrs[0])
+         && cache.ptrs[0] != nullptr);
+    if (detached) {
+        FW_WRN("[npc-pose-drive] fid=0x%08X skeleton REBUILT (cached bones "
+               "detached, parent=null) — rebuilding cache", form_id);
+    }
+    if (cache.root != a3d || cache.owner_actor != actor
+        || cache.ptrs.empty() || detached) {
         std::vector<std::string> canonical;
         {
             std::lock_guard<std::mutex> lk(g_canonical_mutex);
             canonical = g_canonical_names;
         }
         if (canonical.empty()) return;
+        // Build 68.4 — CLOSE THE PROMOTE RACE. We are about to turn raw
+        // pointers produced by a walk into strong references; that is only
+        // legal if the tree is guaranteed alive for the duration. Take a
+        // TRANSIENT reference on the root first, then RE-READ the actor's 3D
+        // slot and confirm it still points at what we pinned. The root ref is
+        // dropped before we return — deliberately never held across frames,
+        // because the engine's frame-amortized destruction queue
+        // (sub_1416C9C80) only enqueues when refcount <= 2, and a persistent
+        // +1 from us would push a whole-subtree teardown out of the engine's
+        // time-budgeted path and into our own detour. Same reasoning as the
+        // pre-bump at scene_inject.cpp:699 before AttachChild.
+        ni_incref(a3d);
+        void* a3d_recheck = get_actor_3d(actor);
+        if (a3d_recheck != a3d) {
+            ni_decref(a3d);
+            return;                       // torn down under us — retry next frame
+        }
         bone_copy::g_verbose_player_walk = false;
         std::unordered_map<std::string, void*> bone_map;
         bone_copy::walk_player_nested(a3d, 0, bone_map);
-        if (bone_map.empty()) return;
+        if (bone_map.empty()) { ni_decref(a3d); return; }
+        // Drop the previous generation's references before overwriting ptrs.
+        unpin_cache_entry(cache);
+        g_cache_rebuilds.fetch_add(1, std::memory_order_relaxed);
         const std::size_t n = std::min<std::size_t>(
             canonical.size(), static_cast<std::size_t>(fw::net::MAX_POSE_BONES));
         cache.ptrs.assign(n, nullptr);
@@ -11941,9 +12166,20 @@ void apply_npc_pose_to_actor(void* actor, std::uint32_t form_id) {
             auto mit = bone_map.find(canonical[i]);
             cache.ptrs[i] = (mit != bone_map.end()) ? mit->second : nullptr;
             cache.is_upper[i] = bone_is_upper_body(canonical[i]) ? 1u : 0u;
+            // Build 68.4 — PIN: take our own reference on every bone we will
+            // later write. From here the engine cannot free these nodes, so a
+            // write through this cache can never land in recycled memory.
+            if (cache.ptrs[i]) {
+                ni_incref(cache.ptrs[i]);
+                g_pins_taken.fetch_add(1, std::memory_order_relaxed);
+            }
         }
+        cache.pinned = true;            // Build 68.4
         cache.root = a3d;
+        cache.owner_actor = actor;      // Build 68.2
+        cache.last_check_ms = now;      // Build 68.2
         cache.primed = false;   // c.38 — snap once after a (re)build
+        ni_decref(a3d);                 // Build 68.4 — release transient root ref
     }
 
     // c.38 — keep the nlerp state buffer aligned to the ptr layout.
@@ -12085,6 +12321,83 @@ void apply_npc_pose_to_actor(void* actor, std::uint32_t form_id) {
                "(60Hz post-orig) a3d=%p",
                form_id, wrote, apply_n, crouch_wrote, hold ? 1 : 0,
                static_cast<unsigned long long>(pose_age), a3d);
+    }
+}
+
+// Build 68.4 — see scene_inject.h for why release is sweep-driven, not
+// event-driven. MAIN THREAD ONLY.
+void release_npc_bone_cache(std::uint32_t form_id) {
+    auto it = g_npc_bone_cache.find(form_id);
+    if (it == g_npc_bone_cache.end()) return;
+    unpin_cache_entry(it->second);
+    g_npc_bone_cache.erase(it);
+}
+
+void sweep_npc_bone_caches() {
+    using namespace std::chrono;
+    const std::uint64_t now = duration_cast<milliseconds>(
+        steady_clock::now().time_since_epoch()).count();
+
+    static std::uint64_t s_last_sweep_ms = 0;
+    static constexpr std::uint64_t kSweepIntervalMs = 250;
+    static constexpr std::uint64_t kMaxIdleMs       = 2000;
+    if (now - s_last_sweep_ms < kSweepIntervalMs) return;
+    s_last_sweep_ms = now;
+
+    for (auto it = g_npc_bone_cache.begin(); it != g_npc_bone_cache.end(); ) {
+        const std::uint32_t fid = it->first;
+        NpcBoneCache& c = it->second;
+        // Three independent release conditions. (1) and (2) are the events an
+        // event-driven design would have to catch and would miss; (3) is the
+        // backstop that makes the pin bounded no matter what happens.
+        const bool no_longer_mirror = !fw::ownership::is_non_owner_tracked(fid);
+        const bool dying            = fw::hooks::is_dying(fid);
+        const bool idle             = (now - c.last_touch_ms) > kMaxIdleMs;
+        if (no_longer_mirror || dying || idle) {
+            if (no_longer_mirror || dying)
+                g_released_ownership.fetch_add(1, std::memory_order_relaxed);
+            else
+                g_released_age.fetch_add(1, std::memory_order_relaxed);
+            unpin_cache_entry(c);
+            it = g_npc_bone_cache.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    // Accounting, once per second. The invariant that must ALWAYS hold:
+    //   pins_taken - pins_released == sum of non-null ptrs still cached
+    // Any drift is an orphaned incref = the leak mode, and it must be loud.
+    static std::uint64_t s_last_report_ms = 0;
+    if (now - s_last_report_ms >= 1000) {
+        s_last_report_ms = now;
+        std::uint64_t live = 0;
+        for (auto& kv : g_npc_bone_cache)
+            for (void* p : kv.second.ptrs) if (p) ++live;
+        const auto taken = g_pins_taken.load(std::memory_order_relaxed);
+        const auto rel   = g_pins_released.load(std::memory_order_relaxed);
+        const auto det   = g_detach_detected.load(std::memory_order_relaxed);
+        if (live || taken != rel) {
+            FW_LOG("[bone-pin] entries=%zu live_pins=%llu taken=%llu released=%llu "
+                   "balance=%lld rebuilds=%llu detached=%llu suppressed=%llu "
+                   "rel_own=%llu rel_age=%llu",
+                   g_npc_bone_cache.size(),
+                   static_cast<unsigned long long>(live),
+                   static_cast<unsigned long long>(taken),
+                   static_cast<unsigned long long>(rel),
+                   static_cast<long long>(
+                       static_cast<long long>(taken - rel) -
+                       static_cast<long long>(live)),
+                   static_cast<unsigned long long>(
+                       g_cache_rebuilds.load(std::memory_order_relaxed)),
+                   static_cast<unsigned long long>(det),
+                   static_cast<unsigned long long>(
+                       g_writes_suppressed.load(std::memory_order_relaxed)),
+                   static_cast<unsigned long long>(
+                       g_released_ownership.load(std::memory_order_relaxed)),
+                   static_cast<unsigned long long>(
+                       g_released_age.load(std::memory_order_relaxed)));
+        }
     }
 }
 
@@ -12231,6 +12544,18 @@ void on_inject_message() {
         void** world_sg_slot = reinterpret_cast<void**>(base + WORLD_SG_SINGLETON_RVA);
         void* world_sg = *world_sg_slot;
         if (world_sg) {
+            // Build 68.4-fix — DO NOT GATE THIS CALL OFF. It looks like a
+            // diagnostic dump, but the walk is ALSO the capture pass the ghost
+            // inject depends on: it populates g_first_bstri_shape (shader/
+            // geometry donor — inject_cube bails without it, :870) and the
+            // ShadowSceneNode for the M2 attach (scene_walker.cpp:205-225).
+            // Gating it off in 68.4 killed ghost spawn on BOTH clients ("i
+            // ghost non appaiono"). The 1,499 ms freeze this dump once caused
+            // was the OLD logger's per-line fsync — with the 68.3 logger the
+            // ~2,850 lines are buffered WriteFiles (few ms total), so the walk
+            // can stay. If the log noise ever matters, add a quiet flag to
+            // walk_and_dump_scene that keeps the captures and skips the
+            // per-node FW_LOG — never skip the walk itself.
             walk_and_dump_scene(world_sg, /*max_depth=*/5);
         }
     }

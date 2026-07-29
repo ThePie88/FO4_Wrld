@@ -303,6 +303,20 @@ void enqueue_npc_owner_state_apply(
     const std::vector<PendingNPCOwnerState>& entries);
 void drain_npc_owner_state_apply_queue();
 
+// Build 67 — MAIN-THREAD liveness heartbeat + stall watchdog.
+//
+// The 2026-06-11 fatal freeze left zero forensics: the main thread stopped
+// draining (qsize 11→55) with no exception, no stack, no RIP — and the
+// process was killed before the stall could be characterized. This is the
+// fix: fw_wndproc calls note_main_thread_alive() on every message; the first
+// call records the main thread id and spawns a watchdog thread. When the
+// heartbeat goes stale >1.5s the watchdog SuspendThread's the main thread,
+// reads RIP/RSP via GetThreadContext, scans the stack for game/DLL return
+// addresses, resumes, then logs everything as RVAs ([mt-watchdog] lines).
+// One capture per stall episode (re-arms when the heartbeat resumes), max 5
+// per session. A captured stack ends any future where-did-it-hang debate.
+void note_main_thread_alive() noexcept;
+
 // Build 65.c.22 — InCombat-flag propagation cache for non-owner side.
 //
 // Diagnosi (Agent 2 forensics): pos+yaw apply 100% riuscito, MA bit 0x4000

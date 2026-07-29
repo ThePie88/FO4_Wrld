@@ -41,14 +41,23 @@ constexpr UINT FW_MSG_STRADAB_INJECT     = WM_APP + 0x45;
 constexpr UINT FW_MSG_STRADAB_POS_UPDATE = WM_APP + 0x46;
 constexpr UINT FW_MSG_STRADAB_BONE_TICK  = WM_APP + 0x47;
 constexpr UINT FW_MSG_STRADAB_POSE_APPLY = WM_APP + 0x48;
-//   c.37.0 NPC pose apply. NOTE: 0x49 is already FW_MSG_DOOR_APPLY
-//   (main_thread_dispatch.h) — 0x42..0x55 are all taken across the various
-//   headers, so this uses 0x56 (first free slot) to avoid the WndProc
-//   collision that silently routed our PostMessage to the door handler.
-constexpr UINT FW_MSG_STRADAB_NPC_POSE_APPLY = WM_APP + 0x56;
-//   v16 ghost crouch apply. 0x42..0x56 are all taken across the various
-//   headers (see grep of "WM_APP + 0x"); 0x57 is the first free slot.
-constexpr UINT FW_MSG_STRADAB_CROUCH_APPLY   = WM_APP + 0x57;
+//   c.37.0 NPC pose apply — Build 67.1 RENUMBERED 0x56 → 0x58. After this
+//   header claimed 0x56, main_thread_dispatch.h:77 later assigned the SAME
+//   value to FW_MSG_NPC_DEATH_APPLY (Build 65.c.47); the death case sits
+//   EARLIER in fw_wndproc and returns 0, so our pose-apply message was eaten
+//   on every post (survived only because the 60Hz post-orig drive reads the
+//   per-fid slot directly — the message is just an early wake-up).
+constexpr UINT FW_MSG_STRADAB_NPC_POSE_APPLY = WM_APP + 0x58;
+//   v16 ghost crouch apply — Build 67.1 RENUMBERED 0x57 → 0x59. Same stomp:
+//   main_thread_dispatch.h:78 later assigned 0x57 to
+//   FW_MSG_NPC_POOL_HEALTH_APPLY (HP bar); its WndProc case precedes ours and
+//   returns 0, so on_pose_crouch_apply_message NEVER ran — measured live
+//   (05:33 session): server relayed 58,351 crouch msgs, [crouch-rx] logged 0.
+//   Unlike the NPC pose, the ghost crouch has NO 60Hz fallback (the message
+//   IS the apply) → the ghost crouch channel was completely dead = the
+//   "crouch raises the legs instead of lowering the torso" regression.
+//   0x58/0x59 verified free across every header (grep "WM_APP + 0x").
+constexpr UINT FW_MSG_STRADAB_CROUCH_APPLY   = WM_APP + 0x59;
 
 // Arm a worker thread that, after delay_ms milliseconds, PostMessages
 // FW_MSG_STRADAB_INJECT to the main FO4 window. The WndProc subclass
@@ -150,6 +159,23 @@ void on_npc_pose_apply_message();  // c.37.0 message-pump apply (retired by c.37
 // is the last writer before the render bake (kills the 60Hz/16Hz flicker).
 // Self-gates on freshness; no-op if no fresh pose for this fid. SEH-caged.
 void apply_npc_pose_to_actor(void* actor, std::uint32_t form_id);
+
+// Build 68.4 — bone-cache lifetime sweep. MAIN THREAD ONLY (it may drop the
+// last reference on a bone, which runs ~NiNode → the engine allocator).
+//
+// Release is deliberately driven by a SWEEP rather than by lifetime events:
+// apply_npc_pose_to_actor is only ever called while a fid is
+// is_non_owner_tracked (npc_ai_suppress.cpp), so the instant we WIN ownership
+// it stops being called and any release logic living inside it could never
+// fire — the crash session had 9 ownership handoffs in 168 s, i.e. 9 permanent
+// pinned-subtree leaks under an event-driven design. A sweep cannot miss an
+// event because it does not depend on events. Call it from the existing
+// unconditional main-thread heartbeat; it self-throttles to ~250 ms.
+void sweep_npc_bone_caches();
+
+// Drop every reference held for one fid and forget it. Safe to call for a fid
+// that has no cache entry. MAIN THREAD ONLY.
+void release_npc_bone_cache(std::uint32_t form_id);
 
 // NPC crouch — the NPC analogue of store_remote_crouch (ghost crouch), but
 // keyed by NPC form_id. The owner captures its raider's COM/Pelvis +0x60

@@ -1073,6 +1073,48 @@ bool apply_npc_pos(void* actor, float x, float y, float z) noexcept;
 // 10 + every 100th logged.
 bool apply_npc_pos_raw(void* actor, float x, float y, float z) noexcept;
 
+// Build 66 — NATIVE char-controller proxy snap (the missing native-pos sync).
+//
+// apply_npc_pos / apply_npc_pos_raw pin only the VISIBLE pos (Actor+0xD0 + NIF).
+// The AI-locomotion proxy (bhkCharacterController, a SEPARATE Havok object from
+// the rigid body c.41b keyframes) keeps an independent NATIVE pos that the
+// non-owner's AI advances → it diverges from the owner and surfaces on
+// handoff/gap (the "walks in place / not at owner's spot" native divergence).
+//
+// This snaps the proxy to (x,y,z) world-units using the engine's OWN setter:
+//   cc = sub_140C5C830(actor)  (pure accessor: AIProc@+0x300 → *(*(AIProc+8)+992))
+//   sub_141894670(cc, {x,y,z}) (×0.0142875 units->meters, vtbl[+416](pos, warp=1))
+// NO anim-graph flush, NO cell-grid spinlock — the lock-free counterpart of the
+// engine's init snap sub_1418946E0(cc, actor+0xD0) (sub_140E0DAF0:2337).
+//
+// Caller passes the SAME world-units pos it pins to Actor+0xD0. SEH-caged,
+// null-guarded (returns false if no AIProcess / no proxy). Main-thread only.
+// CALLER MUST gate out during a cell-stream (the vtbl[+416] leaf body is
+// unread — RE in progress — so we conservatively avoid it while streaming).
+bool push_native_proxy_pos(void* actor, float x, float y, float z) noexcept;
+
+// Build 68.1 — resolve a 32-bit ObjectRefHandle (e.g. the combat-target slot
+// at Actor+0x380 — decomp-proven to be a HANDLE, not a form id) to the target
+// actor's form id via the global handle table, with full active-bit +
+// generation + actor cross-check validation. Returns 0 on null/stale/SEH.
+std::uint32_t resolve_handle_to_formid(std::uint32_t handle) noexcept;
+
+// Build 68.7 — MIRROR LOCOMOTION INPUT. Drives the mirror's own anim graph
+// with the owner's relayed locomotion state (anim_state 0=IDLE 1=WALKING
+// 2=RUNNING → SpeedSampled 0/100/200 + Direction 0) via the pre-minted
+// BSFixedStrings and the engine's SetGraphVariableFloat. This is the fix for
+// the "wooden log" mirrors: legs were ALWAYS animated by the mirror's local
+// graph, and a graph needs a speed INPUT to play a walk — we translated the
+// body while telling the graph "you are standing still".
+//
+// The setter machinery is the same one the deprecated c.19
+// apply_npc_state_to_actor used; the c.21 crash was NOT the setter itself but
+// calling it during a cell-stream (graph-holder smart-ptr mid-init). CALLER
+// CONTRACT: main thread only, and NEVER while the teleport/stream guard is
+// active (`suspended`) or the fid is dying. Returns false on missing
+// prerequisites / SEH.
+bool apply_npc_locomotion(void* actor, std::uint8_t anim_state) noexcept;
+
 // ============================================================================
 // B6.6w5 Build 29 — Engine-native CombatTargetSelectorFixed installation.
 //

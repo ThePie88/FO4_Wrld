@@ -57,7 +57,12 @@ NATIVE_MODE: bool = True
 # Set to "debug" to dump the container-hook diagnostic trace
 # ([container] ENTRY / OBSERVE / SUBMIT / ACK / calling g_orig_add / returned)
 # and other fine-grained lines. Production default: "info".
-DLL_LOG_LEVEL: str = "debug"
+# Build 68.4 — debug -> info. At debug the DLL emitted 26,054 lines in 168 s
+# (155/s) from the game main thread; DBG alone was 10,988 of them (42%). INF
+# still carries every diagnostic we actually read (pos-meas, ownership, pose
+# drive, bone-pin accounting) plus all WRN/ERR. Set back to "debug" only when
+# chasing something that needs the per-frame dispatch trace.
+DLL_LOG_LEVEL: str = "info"
 
 
 # ------------------------------------------------------------------ client defaults

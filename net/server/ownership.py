@@ -85,7 +85,16 @@ CLOSENESS_THRESHOLD: float = 0.30   # challenger.dist_sq < 0.30 × owner.dist_sq
 # If the owner's heartbeat is older than this, the registry forces a
 # re-election (Rule 5 health gate). Set above the 2 Hz heartbeat period
 # (500 ms) with comfortable slack for jittery networks.
-HEARTBEAT_TIMEOUT_MS: float = 2500.0
+# Sphere upgrade (idle-sync fix A) — 2500→8000. A proximity-seeded IDLE NPC in a
+# slow ProcessLists tier (Low / round-robin) is ticked only ~every 3 s, so the
+# owner's FIRST record_owned_state (which starts its heartbeat) can land a few
+# seconds AFTER the claim. At 2500 ms the server released it ~0.5 s BEFORE that
+# first tick → reseed loop (~3 s epoch churn = the 0xDD80 oscillators). 8000 ms
+# clears the observed tick period with margin, so the owner survives to its next
+# tick, attaches the snapshot, and heartbeats continuously. Trade: a genuinely-
+# gone NPC (disconnect / cell-unload) is released ~5.5 s later — cosmetic. If a
+# slower-than-8 s tier still oscillates, switch to seed-cadence gating (route B').
+HEARTBEAT_TIMEOUT_MS: float = 8000.0
 
 # Grace period after a peer first claims an NPC: no other peer can
 # preempt during this window. Avoids cell-load contention spam.
@@ -171,7 +180,22 @@ COMBAT_HANDOFF_STICKINESS_MS: float = 1500.0
 THREAT_OWNERSHIP: bool = True       # master switch: threat table vs legacy RNG
 
 THREAT_W_ENGAGE: float = 10.0       # weight of active engagement (combat-target)
-THREAT_W_DISTANCE: float = 1.0      # weight of proximity (tie-break)
+# Build 68.8 — 1.0 -> 6.0. The docstring calls proximity "the tie-break", but
+# with weight 1.0 it was mathematically INCAPABLE of breaking anything: the
+# score is normalised to [0,1], so its maximum possible contribution was 1.0
+# while a handoff needs THREAT_MIN_ABS_DELTA = 3.0. Measured 2026-07-29, after
+# the engage signal was revived (68.5): with BOTH clients fighting the same
+# raider each side scores engage 1.0 * 10 = 10, giving "chal 10.99 vs owner
+# 10.89" — a dead heat that neither FLIP_MARGIN (needs 14.2) nor ABS_DELTA
+# (needs +3) can resolve, so ownership froze on whoever saw the NPC first and
+# only a damage claim (weight 30 -> 16-17) could ever move it. That is exactly
+# the report: "only who enters the raiders' vision first has aggro, or who hits
+# them". At 6.0 proximity can decide an engage tie when one player is clearly
+# closer, while staying far below the damage weight so a real fighter still
+# wins over a merely-near bystander. Anti-thrash is unaffected: MIN_HOLD (2 s)
+# and the post-flip COMMIT band (needs +8 within 5 s) both still apply, and 6.0
+# cannot reach 8.0 on its own.
+THREAT_W_DISTANCE: float = 6.0      # weight of proximity (tie-break)
 # c.39b — damage is the DOMINANT real-threat input: ownership follows whoever
 # actually deals the most damage. The damage term is a per-peer decayed sum
 # normalized to [0,1] (full at DAMAGE_NORM accumulated), so W_DAMAGE > W_ENGAGE
@@ -226,13 +250,27 @@ THREAT_MIN_ABS_DELTA: float = 3.0
 # STRONGER than the steady gate and the steady gate is unchanged, enabling it can
 # only REDUCE handoffs, never delay a legit switch that occurs after the window.
 # It closes the "post-flip parity bounce": one isolated non-owner burst (a 20-dmg
-# hit ≈ +7.5 threat) can no longer flip a freshly-handed raider back. 3500ms ≈
-# the THREAT_DAMAGE_WINDOW_MS(4000) horizon, so by the band's end the loser's
-# residual banked damage has decayed (any lead left is a real current lead).
-# COMMIT_ABS_DELTA=8 sits just above a single burst's term + far above the
-# distance ceiling(1). DISABLE: set COMMIT_WINDOW_MS = THREAT_MIN_HOLD_MS.
-THREAT_COMMIT_WINDOW_MS: float = 3500.0
+# hit ≈ +7.5 threat) can no longer flip a freshly-handed raider back. A-H5: 5000ms
+# (was 3500) sits PAST the THREAT_DAMAGE_WINDOW_MS(4000) horizon, so by the band's
+# end the loser's residual banked damage has fully decayed (any lead left is a real
+# current lead) — and it covers the observed ~4s thrash spacing that 3500 missed.
+# COMMIT_ABS_DELTA=8 sits just above a single burst's term + far above the distance
+# ceiling(1). DISABLE: set COMMIT_WINDOW_MS = THREAT_MIN_HOLD_MS.
+THREAT_COMMIT_WINDOW_MS: float = 5000.0   # A-H5: 3500→5000 (thrash flips at ~4s)
 THREAT_COMMIT_ABS_DELTA: float = 8.0
+
+# Sphere upgrade (proximity idle-ownership) — server-side master guard.
+# When True, an NPC_OBSERVED whose observer_distance_sq is NEGATIVE is treated
+# as a PROXIMITY-ONLY seed (the client encodes a proximity sphere hit as a
+# negative dist²; dist² is always >=0 so the sign bit is a free, zero-wire-cost
+# discriminator). A proximity seed claims ownership of an IDLE/unowned raider
+# but injects NO engagement, so its threat stays pure-proximity (<=1) — and it
+# yields INSTANTLY to a real fighter (MIN_HOLD/COMMIT bypassed for a
+# proximity-seeded owner; FLIP_MARGIN + MIN_ABS_DELTA stay unconditional, so
+# idle-vs-idle still cannot flip). When False, a negative dist is read as a
+# normal combat observe (abs()'d), so a mismatched client/server build degrades
+# safely to legacy behaviour. Set False to disable the whole feature server-side.
+PROXIMITY_SEED_ENABLED: bool = True
 
 
 # ---------------------------------------------------------------- records
@@ -273,6 +311,16 @@ class NPCOwnership:
     #           already re-rolled → FINAL, sticky, never re-rolled again
     #           (honours the "static RNG" intent).
     provisional: bool = False
+
+    # Sphere upgrade — True iff this record was created by a PROXIMITY-only seed
+    # (an unowned IDLE raider entered a client's sphere) and has NOT yet seen
+    # real combat. While True the owner is a passive idle anchor: reeval bypasses
+    # the MIN_HOLD/COMMIT anti-thrash gates so a real fighter takes the raider
+    # INSTANTLY (no 0-2s wrong-owner window). Cleared the moment the OWNER
+    # engages (its own damage / anim>=3) or the raider hands off to a fighter —
+    # after which the full hysteresis applies again. Idle-vs-idle stays flap-proof
+    # via the unconditional MIN_ABS_DELTA(3) gate (idle threat <=1 < 3).
+    proximity_seeded: bool = False
 
     # Build 65.c.35 — per-peer engagement timestamps for the threat table.
     #   peer_id → last ms that peer was observed/claimed/owner-engaged this
@@ -352,6 +400,9 @@ class OwnershipRegistry:
         # _DEAD_FID_TTL_MS are pruned so a legit respawn (cell reset, well after
         # the fight) can re-elect.
         self._dead_fids: dict[int, float] = {}
+        # Build 68.9 — fid → position it died at, for replaying the kill to a
+        # peer that observes the NPC after the death event already fired.
+        self._dead_pos: dict[int, tuple[float, float, float]] = {}
         # N3 first-shot fix — TTL buffer for damage claims whose fid is not yet
         # registered (the AGGRO shot: the client claims it before NPC_OBSERVED
         # registers the NPC, so apply_hp_claim returns None). fid ->
@@ -404,10 +455,34 @@ class OwnershipRegistry:
     # 2 s is a safe margin and bounds the buffer for NPCs shot once but never tracked.
     _PENDING_DMG_TTL_MS = 2000.0
 
-    def note_dead(self, fid: int, now_ms: float) -> None:
+    def note_dead(self, fid: int, now_ms: float,
+                  pos: Optional[tuple[float, float, float]] = None) -> None:
         """Record that `fid` was just killed (pool=0). Survives the record
-        deletion _fire_npc_death does right after."""
+        deletion _fire_npc_death does right after.
+
+        Build 68.9 — also remember WHERE it died. NPC death is an EVENT, so a
+        peer that had the actor unloaded when it fired (out of range, still
+        loading, mid-respawn) applied it to nothing and never learned about it:
+        walking up later it saw a live raider that the other client sees as a
+        corpse, and `is_recently_dead` then blocked it from even claiming the
+        NPC, so the divergence was permanent. The server is the one component
+        that knows the truth, so it now keeps the death POSITION and can replay
+        the kill to any peer that observes the fid afterwards (see
+        `dead_replay_pos` / main._handle_npc_observed)."""
         self._dead_fids[fid] = now_ms
+        if pos is not None:
+            self._dead_pos[fid] = pos
+
+    def dead_replay_pos(
+        self, fid: int, now_ms: float
+    ) -> Optional[tuple[float, float, float]]:
+        """Build 68.9 — if `fid` is known-dead and still within the TTL, return
+        the position it died at (or (0,0,0) if it was recorded before we started
+        keeping positions). None means "not known-dead", i.e. nothing to replay.
+        """
+        if not self.is_recently_dead(fid, now_ms):
+            return None
+        return self._dead_pos.get(fid, (0.0, 0.0, 0.0))
 
     def is_recently_dead(self, fid: int, now_ms: float) -> bool:
         """True if `fid` died within the TTL → must NOT be re-created/re-elected
@@ -417,6 +492,7 @@ class OwnershipRegistry:
             return False
         if (now_ms - t) > self._DEAD_FID_TTL_MS:
             del self._dead_fids[fid]
+            self._dead_pos.pop(fid, None)      # Build 68.9 — prune in lockstep
             return False
         return True
 
@@ -538,15 +614,21 @@ class OwnershipRegistry:
         if existing.cell_id == 0:
             existing.cell_id = payload.cell_id
 
-        # Build 65.c.35 — record this peer's engagement (NPC_OBSERVED is
+        # Build 65.c.35 — record this peer's engagement (a COMBAT NPC_OBSERVED is
         # InCombat-gated, so observing == this peer's engine has LOS + aggro'd
         # the NPC = our threat "engagement" input). Feeds _compute_threat.
-        if THREAT_OWNERSHIP:
+        # Sphere upgrade — a PROXIMITY-only re-observe (negative dist²) must NOT
+        # stamp engagement, else a merely-near peer would gain engage=1 and could
+        # displace the owner on pure proximity. Combat re-observes (dist>=0) are
+        # unchanged.
+        is_proximity = (PROXIMITY_SEED_ENABLED
+                        and payload.observer_distance_sq < 0.0)
+        if THREAT_OWNERSHIP and not is_proximity:
             existing.threat_engaged[peer_id] = now_ms
 
         # If the observer IS the current owner, just refresh distance.
         if existing.owner_peer_id == peer_id:
-            existing.owner_distance_sq = payload.observer_distance_sq
+            existing.owner_distance_sq = abs(payload.observer_distance_sq)
             return None
 
         # Build 65.c.35 — threat mode: a non-owner observing only records its
@@ -830,6 +912,13 @@ class OwnershipRegistry:
         # Dealing damage also counts as engagement (so the engage term + the
         # candidate set in reeval pick this peer up immediately).
         rec.threat_engaged[peer_id] = now_ms
+        # Sphere upgrade — if the OWNER itself deals damage it is no longer a
+        # passive idle seed → restore full MIN_HOLD/COMMIT hysteresis. A
+        # CHALLENGER's damage must NOT clear the flag: the seeded owner has to
+        # stay instantly-yielding until the handoff to that fighter completes
+        # (reeval clears it there).
+        if peer_id == rec.owner_peer_id:
+            rec.proximity_seeded = False
 
     def apply_hp_claim(
         self, form_id: int, peer_id: str, amount: float, max_hp: float,
@@ -885,6 +974,15 @@ class OwnershipRegistry:
             return None
         epoch = self._next_epoch
         self._next_epoch += 1
+        # Sphere upgrade — a PROXIMITY-only seed encodes its distance² as a
+        # NEGATIVE wire value. A proximity seed claims the idle raider but must
+        # NOT stamp engagement: its threat stays pure-proximity (<=1) so the
+        # unconditional MIN_ABS_DELTA(3) makes idle-vs-idle flips impossible and
+        # the first seeder is sticky, while a real fighter's damage/engage term
+        # instantly dwarfs it (and reeval bypasses MIN_HOLD for a seeded owner).
+        # PROXIMITY_SEED_ENABLED off / old client (+dist or 0.0) → normal observe.
+        is_proximity = (PROXIMITY_SEED_ENABLED
+                        and payload.observer_distance_sq < 0.0)
         rec = NPCOwnership(
             form_id=fid,
             owner_peer_id=observer_peer_id,
@@ -896,10 +994,12 @@ class OwnershipRegistry:
             last_pos_x=payload.pos_x,
             last_pos_y=payload.pos_y,
             last_pos_z=payload.pos_z,
-            owner_distance_sq=payload.observer_distance_sq,
+            owner_distance_sq=abs(payload.observer_distance_sq),
+            proximity_seeded=is_proximity,
         )
-        rec.threat_engaged[observer_peer_id] = now_ms
-        rec.last_engaged_ms = now_ms
+        if not is_proximity:
+            rec.threat_engaged[observer_peer_id] = now_ms
+            rec.last_engaged_ms = now_ms
         self._records[fid] = rec
         # N3 first-shot fix — fold any buffered aggro-shot damage into the brand-new
         # pool (drain-on-create; counted exactly once). Carried out via
@@ -988,12 +1088,35 @@ class OwnershipRegistry:
             # like "aggro never switches" when NORM was too high — surface the
             # numbers (throttled 1.5 s/fid) so a near-miss is never invisible.
             block: Optional[str] = None
-            if (now_ms - rec.since_ms) < THREAT_MIN_HOLD_MS:
+            # Sphere upgrade — a PROXIMITY-SEEDED idle owner must yield INSTANTLY
+            # to a real challenger. Today an idle raider is unowned, so the first
+            # fighter claims it with zero contest; the sphere inserts an idle
+            # owner, so without this bypass the legit fighter would be MIN_HOLD-
+            # blocked for up to 2 s and the raider would face the wrong player.
+            # FLIP_MARGIN + MIN_ABS_DELTA stay UNCONDITIONAL, so idle-vs-idle
+            # (both threats <=1, delta<3) still cannot flip — the first seeder
+            # stays sticky against other idle seeds. proximity_seeded is cleared
+            # the instant real combat lands (owner damage/anim>=3, or this very
+            # handoff), so combat-vs-combat thrash protection is never weakened.
+            seed_bypass = rec.proximity_seeded
+            if (not seed_bypass) and (now_ms - rec.since_ms) < THREAT_MIN_HOLD_MS:
                 block = "MIN_HOLD"
             elif best_threat < owner_threat * THREAT_FLIP_MARGIN:
                 block = "FLIP_MARGIN"
             elif (best_threat - owner_threat) < THREAT_MIN_ABS_DELTA:
                 block = "ABS_DELTA"
+            elif ((not seed_bypass)
+                  and (now_ms - rec.since_ms) < THREAT_COMMIT_WINDOW_MS
+                  and (best_threat - owner_threat) < THREAT_COMMIT_ABS_DELTA):
+                # A-H1 (c.45 FIX 1b — finally WIRED; the constants existed but
+                # reeval never consulted them). Post-flip COMMITMENT band: within
+                # COMMIT_WINDOW of taking the raider, a challenger must show a CLEAR
+                # lead (≥ COMMIT_ABS_DELTA=8), not the steady ABS_DELTA(3), to bounce
+                # it back. Kills the alternating-burst parity thrash (field log:
+                # 14.95 vs 10.38 = delta 4.57 at 4s flipped B→A→B). STRICTLY stronger
+                # than the steady gate → can only reduce flips, never delay a legit
+                # switch after the window.
+                block = "COMMIT"
             if block is not None:
                 last = self._threat_diag_last_ms.get(fid, 0.0)
                 if now_ms - last >= 1500.0:
@@ -1015,6 +1138,10 @@ class OwnershipRegistry:
             rec.since_ms = now_ms
             rec.last_heartbeat_ms = now_ms
             rec.last_engaged_ms = rec.threat_engaged.get(best_peer, now_ms)
+            # Sphere upgrade — the new owner won on real threat (damage/engage),
+            # so this raider is now combat-owned: drop the idle-seed bypass so
+            # the full MIN_HOLD/COMMIT anti-thrash protects the NEW owner.
+            rec.proximity_seeded = False
             log.info(
                 "ownership: THREAT handoff fid=0x%X %s → %s epoch=%d "
                 "(threat %.2f vs owner %.2f ×%.2f)",
@@ -1153,6 +1280,9 @@ class OwnershipRegistry:
         # fights, so it isn't displaced by a merely-closer challenger.
         if THREAT_OWNERSHIP:
             rec.threat_engaged[peer_id] = now_ms
+        # Sphere upgrade — the owner is now actively fighting this raider, so it
+        # is no longer a passive idle seed → restore full MIN_HOLD/COMMIT.
+        rec.proximity_seeded = False
 
     def on_engagement_claim(
         self,
@@ -1259,6 +1389,50 @@ class OwnershipRegistry:
             if age <= HEARTBEAT_TIMEOUT_MS:
                 continue
             old_owner = rec.owner_peer_id
+
+            # Build 68 (A3) — DIRECTED HANDOFF on heartbeat-stale instead of a
+            # silent drop-to-unowned. The stale owner stopped STREAMING this NPC
+            # (it left / fell into a slow tier), so it can no longer be the
+            # owner — but if ANOTHER peer has a LIVE engagement signal (it is
+            # actively fighting this NPC — see client S4 combat-target observe),
+            # hand ownership straight to that fighter. Without this, the release
+            # dropped the NPC to UNOWNED and whoever OBSERVED it first (often a
+            # passing/proximity peer, or the same stale owner re-seeding) won the
+            # ungated re-claim — the 2026-06-11 "aggro switched to the wrong
+            # client, original owner ABS_DELTA-locked-out" bug. A directed
+            # handoff removes both the unowned window and the proximity-claim
+            # race; the new owner gets a fresh heartbeat grace to start streaming.
+            live_engagers = [
+                (pid, eng) for pid, eng in rec.threat_engaged.items()
+                if pid != old_owner and eng > 0.0
+                and (now_ms - eng) <= THREAT_ENGAGE_WINDOW_MS
+            ]
+            if live_engagers:
+                new_owner = max(live_engagers, key=lambda x: x[1])[0]
+                new_epoch = self._next_epoch
+                self._next_epoch += 1
+                rec.owner_peer_id = new_owner
+                rec.epoch = new_epoch
+                rec.since_ms = now_ms
+                rec.last_heartbeat_ms = now_ms   # grace: new owner starts fresh
+                rec.last_engaged_ms = now_ms
+                rec.proximity_seeded = False
+                log.info(
+                    "ownership: stale-owner directed handoff fid=0x%X %s -> %s "
+                    "epoch=%d (owner heartbeat stale %.0fms; new owner engaged)",
+                    fid, old_owner, new_owner, new_epoch, age,
+                )
+                changes.append(OwnershipChange(
+                    form_id=fid,
+                    old_owner_peer_id=old_owner,
+                    new_owner_peer_id=new_owner,
+                    new_epoch=new_epoch,
+                    phase="handoff",
+                    reason=f"stale-owner-engaged-handoff-{int(age)}ms",
+                ))
+                continue
+
+            # No live engager → the owner truly left → release as before.
             new_epoch = self._next_epoch
             self._next_epoch += 1
             del self._records[fid]

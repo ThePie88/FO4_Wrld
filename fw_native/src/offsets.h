@@ -1228,7 +1228,14 @@ constexpr std::uintptr_t PKG_EVAL_CONDITIONS_RVA = 0x00768CC0;
 constexpr std::uintptr_t COMBAT_TARGET_SETTER_RVA = 0x00C5CCE0;
 
 // Actor field offsets exposed by hook #2 substitution.
-constexpr std::size_t    ACTOR_COMBAT_TARGET_FORMID_OFF = 0x380;   // u32 form_id
+// Build 68.1 — LABEL CORRECTED (decomp-verified): the u32 at Actor+0x380 is an
+// ObjectRefHandle, NOT a form id. Proof: engine reader funcs_0188.md:8261-8276
+// resolves it as `unk_1430DA390 + 16*(val & 0x1FFFFF)` with generation check
+// `& 0x3E00000` — that global IS our HANDLE_TABLE_BASE_RVA (0x030DA390) with
+// the documented 16-byte-entry layout. Any consumer comparing this value to a
+// form id compares garbage (the pre-68.1 S4 observe did exactly that = dead
+// signal). Resolve with engine_calls resolve_handle_to_formid() first.
+constexpr std::size_t    ACTOR_COMBAT_TARGET_FORMID_OFF = 0x380;   // u32 ObjectRefHandle (NOT formid!)
 constexpr std::size_t    ACTOR_FLAGS_720_OFF            = 0x2D0;   // u32 flags, bit 0x4000 = InCombat
 
 // HOOK #3 — CombatAimController::SetAimTarget (the aim-vector WRITER).
@@ -1898,6 +1905,51 @@ constexpr std::uintptr_t MOVCTRL_SET_DISABLED_RVA = 0x00DC80B0;
 constexpr std::size_t    MOVCTRL_DISABLED_BYTE_OFF = 0x1A1;
 // Actor field holding the MovementController pointer.
 constexpr std::size_t    ACTOR_MOVCTRL_PTR_OFF     = 0x318;
+
+// ============================================================================
+// Build 66 — native char-controller proxy snap (the missing native-pos sync).
+//
+// The AI-locomotion proxy (bhkCharacterController) is a SEPARATE Havok object
+// from the rigid body c.41b keyframes. We pin Actor+0xD0 (the VISIBLE pos) and
+// keyframe the rigid body, but never the proxy — so the proxy keeps an
+// independent NATIVE pos that the AI advances and that surfaces on handoff/gap
+// (the "walks in place / not at owner's spot" native divergence).
+//
+// These two engine funcs ARE the engine's own flush-free, cell-grid-lock-free
+// native-pos setter (RE-verified by hand against the decomp init-snap path):
+//   charController = sub_140C5C830(actor)              (funcs_0301.md:2591)
+//                  = sub_140D342A0(*(actor+0x300 AIProc)) = *(*(AIProc+8)+992)
+//                    — pure accessor (0x13 bytes): no lock, no alloc.
+//   sub_141894670(charController, pos_units[3])        (funcs_0515.md:14729)
+//                    — ×0.0142875 units->meters, then charController
+//                      ->vtbl[+416](pos_meters, warp=1). NO anim-graph call,
+//                      NO cell-grid lock. The engine itself snaps native->logical
+//                      with sub_1418946E0(cc, actor+0xD0) at controller init
+//                      (sub_140E0DAF0:2337). UNKNOWN (RE in progress): the
+//                      vtbl[+416] leaf body (07_vtables.txt empty / XrefsTo bug)
+//                      — its behavior under a live cell-stream is unread, hence
+//                      the call is gated out during cell-stream (!suspended).
+constexpr std::uintptr_t ACTOR_GET_CHARCTRL_RVA = 0x00C5C830;  // sub_140C5C830
+constexpr std::uintptr_t CHARCTRL_SETPOS_RVA    = 0x01894670;  // sub_141894670
+// Fail-safe vtable assert (Build 66; CORRECTED Build 67 by the decomp swarm).
+// The controller factory sub_140C5F0E0 hands bhkCharProxyController ONLY to
+// the local player / VATS singleton (funcs_0301.md:4941-4944); EVERY ordinary
+// humanoid NPC gets bhkCharRigidBodyController — which is why Build 66's
+// proxy-only guard rejected 100% of raiders (1419/1419 snaps skipped = no-op).
+// Both classes implement vtbl[+416] (slot 52: proxy=sub_1418B64E0,
+// rigid=sub_1418BA640). The wrapper sub_141894670 HARDCODES the force flag
+// (mov r9b,1 at 0x141894678 — Hex-Rays dropped the 4th arg), so on the
+// rigid-body controller it always takes the HARD-SNAP branch (sub_1415F2C50 =
+// hknp setBodyTransform keeping rotation, velocity zeroed) — the delta→
+// velocity "fling" path is unreachable through it, and the suspected
+// warp-distance clamp at funcs_0517.md:11117 is actually a fabs(delta)<=1e-6
+// did-it-move gate, NOT a clamp.
+// ACCEPT: proxy interface vtbl 0x26AAD70 (factory stores object+16, so *cc
+// shows the interface vtbl) and rigid-body PRIMARY vtbl 0x26AB4C8 (factory
+// stores object+0; ctor disasm `lea rax, ??_7bhkCharRigidBodyController@@6B@`).
+// REJECT: 0x26AAD08 (proxy listener subobject) / 0x26AB738 (rigid subobject).
+constexpr std::uintptr_t CHARPROXY_VTBL_RVA     = 0x026AAD70;  // bhkCharProxyController (interface vtbl at *cc)
+constexpr std::uintptr_t CHARRB_VTBL_RVA        = 0x026AB4C8;  // bhkCharRigidBodyController primary vtbl
 
 // ============================================================================
 // B6.6w5 — engine-native PlayerCharacter spawn path (no PlaceAtMe).

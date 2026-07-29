@@ -139,6 +139,78 @@ def test_epoch_increments_on_handoff():
     assert changes[0].new_epoch > e1
 
 
+# --------------------------------------------- Sphere: proximity idle-seed
+# A proximity-only observe encodes its distance² as a NEGATIVE wire value.
+# It claims an idle raider but injects no engagement (threat <= 1), is sticky
+# vs other idle seeds (unconditional ABS_DELTA), and yields INSTANTLY to a real
+# fighter (MIN_HOLD/COMMIT bypassed while proximity_seeded).
+
+
+def test_proximity_seed_creates_seeded_record_no_engage():
+    r = OwnershipRegistry()
+    c = r.assign_owner_by_threat(_obs(0x200, -100.0), "peerA", now_ms=0.0)
+    assert c is not None and c.new_owner_peer_id == "peerA"
+    rec = r.get(0x200)
+    assert rec.proximity_seeded is True
+    assert rec.threat_engaged == {}          # no engage stamp for a seed
+    assert rec.owner_distance_sq == 100.0     # stored as abs(neg)
+
+
+def test_proximity_seed_yields_instantly_to_real_fighter():
+    """The #1 design risk: a seeded idle owner must NOT MIN_HOLD-block a real
+    fighter. B opens fire at t=200; reeval at t=500 (well inside MIN_HOLD=2000)
+    must hand the raider to B, and the seed flag clears on the handoff."""
+    r = OwnershipRegistry()
+    r.assign_owner_by_threat(_obs(0x200, -100.0, x=0.0, y=0.0, z=0.0),
+                             "peerA", now_ms=0.0)
+    r.record_damage(0x200, "peerB", amount=30.0, now_ms=200.0)
+    positions = {"peerA": (50000.0, 0.0, 0.0), "peerB": (0.0, 0.0, 0.0)}
+    changes = r.reeval_threat_owners(positions, _AGGRO_SQ, now_ms=500.0)
+    assert len(changes) == 1
+    assert changes[0].phase == "handoff"
+    assert changes[0].new_owner_peer_id == "peerB"
+    assert r.is_owner("peerB", 0x200)
+    assert r.get(0x200).proximity_seeded is False
+
+
+def test_proximity_seed_sticky_vs_another_idle_seed():
+    """Idle-vs-idle stays flap-proof: a closer idle seed cannot steal a
+    proximity-seeded raider (both threats <= 1, unconditional ABS_DELTA blocks)."""
+    r = OwnershipRegistry()
+    r.assign_owner_by_threat(_obs(0x200, -100.0, x=0.0, y=0.0, z=0.0),
+                             "peerA", now_ms=0.0)
+    # B proximity-observes the same raider (negative dist → no engage).
+    r.on_observed(_obs(0x200, -50.0, x=0.0, y=0.0, z=0.0), "peerB", now_ms=100.0)
+    # B closer than A, neither fighting; eval PAST MIN_HOLD so only ABS_DELTA holds.
+    positions = {"peerA": (4000.0, 0.0, 0.0), "peerB": (500.0, 0.0, 0.0)}
+    changes = r.reeval_threat_owners(positions, _AGGRO_SQ, now_ms=3000.0)
+    assert changes == []
+    assert r.is_owner("peerA", 0x200)
+    assert r.get(0x200).proximity_seeded is True
+
+
+def test_proximity_seed_cleared_when_owner_fights():
+    r = OwnershipRegistry()
+    r.assign_owner_by_threat(_obs(0x200, -100.0), "peerA", now_ms=0.0)
+    assert r.get(0x200).proximity_seeded is True
+    r.record_damage(0x200, "peerA", amount=30.0, now_ms=100.0)   # OWNER fights
+    assert r.get(0x200).proximity_seeded is False
+    # A CHALLENGER's damage must NOT re-arm the seed flag.
+    r.record_damage(0x200, "peerB", amount=10.0, now_ms=200.0)
+    assert r.get(0x200).proximity_seeded is False
+
+
+def test_combat_observe_unchanged_not_seeded():
+    """Backward-compat: a normal COMBAT observe (dist >= 0) still stamps
+    engagement and is NOT proximity_seeded."""
+    r = OwnershipRegistry()
+    r.assign_owner_by_threat(_obs(0x200, 100.0), "peerA", now_ms=1000.0)
+    rec = r.get(0x200)
+    assert rec.proximity_seeded is False
+    assert rec.threat_engaged.get("peerA") == 1000.0
+    assert rec.owner_distance_sq == 100.0
+
+
 # ----------------------------------------------------------- Rule 5: health
 
 
@@ -203,6 +275,38 @@ def test_health_gate_keeps_fresh_owner():
     changes = r.periodic_tick(now_ms=HEARTBEAT_TIMEOUT_MS * 3)
     assert changes == []
     assert r.is_owner("peerA", 0x100)
+
+
+# ------------------------------------------- Build 68 (A3) directed handoff
+
+
+def test_stale_owner_directed_handoff_to_live_engager():
+    # A owns 0x100 then goes heartbeat-stale; B has a LIVE engage signal (it is
+    # fighting it). The stale-owner gate must HAND OFF to B, not drop to unowned.
+    r = OwnershipRegistry()
+    r.on_observed(_obs(0x100, 1000.0), "peerA", now_ms=0)     # A claims (hb=0)
+    # B combat-observes near the timeout → engage stamp, no ownership change.
+    r.on_observed(_obs(0x100, 2000.0), "peerB", now_ms=HEARTBEAT_TIMEOUT_MS)
+    changes = r.periodic_tick(now_ms=HEARTBEAT_TIMEOUT_MS + 100)
+    assert len(changes) == 1
+    assert changes[0].phase == "handoff"
+    assert changes[0].old_owner_peer_id == "peerA"
+    assert changes[0].new_owner_peer_id == "peerB"
+    assert r.is_owner("peerB", 0x100)        # record kept, owner swapped
+    assert r.get(0x100) is not None
+
+
+def test_stale_owner_no_live_engager_still_releases():
+    # A owns then goes stale; B's only engage is OLD (decayed past the window) →
+    # no live engager → fall back to the original release-to-unowned.
+    r = OwnershipRegistry()
+    r.on_observed(_obs(0x100, 1000.0), "peerA", now_ms=0)
+    r.on_observed(_obs(0x100, 2000.0), "peerB", now_ms=0)    # B engaged at t=0
+    changes = r.periodic_tick(now_ms=HEARTBEAT_TIMEOUT_MS + 100)
+    assert len(changes) == 1
+    assert changes[0].phase == "release"
+    assert changes[0].new_owner_peer_id is None
+    assert r.get(0x100) is None
 
 
 # ----------------------------------------------------------- unload + disco
@@ -290,3 +394,37 @@ def test_owned_by_subset():
     assert set(r.owned_by("peerA")) == {0x100, 0x101}
     assert set(r.owned_by("peerB")) == {0x200}
     assert r.owned_by("peerC") == []
+
+
+# ------------------------------------------- Build 68.9 dead-NPC replay
+
+
+def test_dead_replay_pos_returns_death_position():
+    # A death recorded with a position must be replayable while inside the TTL,
+    # so a peer that arrives later can be told the NPC is already a corpse.
+    r = OwnershipRegistry()
+    r.note_dead(0x300, now_ms=1000.0, pos=(11.0, 22.0, 33.0))
+    assert r.dead_replay_pos(0x300, now_ms=2000.0) == (11.0, 22.0, 33.0)
+
+
+def test_dead_replay_pos_none_for_live_fid():
+    # Never claim a live NPC is dead — that would corpse it on the observer.
+    r = OwnershipRegistry()
+    assert r.dead_replay_pos(0x301, now_ms=1000.0) is None
+
+
+def test_dead_replay_pos_expires_with_ttl():
+    # Past the TTL the fid is legitimately re-usable (respawn), so the replay
+    # must stop or we would kill the respawned NPC on sight.
+    r = OwnershipRegistry()
+    r.note_dead(0x302, now_ms=0.0, pos=(1.0, 2.0, 3.0))
+    late = OwnershipRegistry._DEAD_FID_TTL_MS + 1000.0
+    assert r.dead_replay_pos(0x302, now_ms=late) is None
+
+
+def test_dead_replay_pos_zero_when_position_unknown():
+    # note_dead without a position (legacy call site) still marks the fid dead;
+    # the caller substitutes the observer's own corpse position.
+    r = OwnershipRegistry()
+    r.note_dead(0x303, now_ms=1000.0)
+    assert r.dead_replay_pos(0x303, now_ms=1500.0) == (0.0, 0.0, 0.0)

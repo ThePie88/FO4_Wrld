@@ -235,3 +235,9 @@ Discord/.discord_token.local
 
 # -- Frida tracing scratch (one-off trace dumps keep reappearing as junk) ----
 tools/frida/
+
+# -- Raw chat transcript backups (PreCompact hook, hundreds of MB each) ------
+chat_backups/
+
+# -- Local agent instructions (not part of the project) ---------------------
+CLAUDE.md
