@@ -32,7 +32,7 @@ from typing import ClassVar, Union
 # ------------------------------------------------------------------ constants
 
 PROTOCOL_MAGIC: int = 0xFA
-PROTOCOL_VERSION: int = 18  # v18: NPC_HP_POOL_BCAST (shared-HP enemy bar)
+PROTOCOL_VERSION: int = 19  # v19: PIENUVO v0 — AUTH_CHALLENGE pair + HELLO auth tail
 # v16 (2026-05-31): ghost crouch — adds POSE_CROUCH_STATE (0x028E, C->S) and
 # POSE_CROUCH_BROADCAST (0x028F, S->peers). A SEPARATE, additive channel
 # alongside the working POSE_STATE/POSE_BROADCAST rotation pose: it replicates
@@ -138,6 +138,43 @@ MAX_PAYLOAD_SIZE: int = 1400   # stay under typical MTU 1500 minus IP+UDP header
 MAX_FRAME_SIZE: int = HEADER_SIZE + MAX_PAYLOAD_SIZE
 MAX_CLIENT_ID_LEN: int = 15   # ASCII, null-terminated in 16 bytes
 
+# ---- PIENUVO v0 auth (v19) ----
+# Identity = Ed25519 keypair owned by the launcher. The wire never carries the
+# private key: the server hands out a single-use 32-byte challenge, the
+# launcher signs DOMAIN+challenge, and HELLO carries (pubkey, challenge,
+# signature). Knowing someone's public ID is therefore worthless — proving the
+# identity requires the private key file.
+AUTH_PUBKEY_LEN: int = 32
+AUTH_CHALLENGE_LEN: int = 32
+AUTH_SIGNATURE_LEN: int = 64
+MAX_PLAYER_NAME_LEN: int = 15   # ASCII, null-terminated in 16 bytes
+# Domain separation: the launcher key only ever signs messages with this
+# prefix, so an attacker can't trick it into signing bytes that are valid in
+# some other protocol.
+AUTH_SIGN_DOMAIN: bytes = b"FWAUTH1"
+
+
+def auth_sign_message(server_addr: str, challenge: bytes) -> bytes:
+    """The exact bytes the launcher signs at login. Mirrored verbatim by
+    `MENU_PRINCIPALE/src-tauri/src/identity.rs::sign_challenge` — if one side
+    changes, logins break loudly rather than silently weakening.
+
+    Layout: DOMAIN || u16_le(len(addr)) || addr_utf8 || challenge
+
+    The ADDRESS is what makes the proof non-transferable. Without it the
+    signature says only "I answered some challenge", so a hostile server the
+    player clicks can fetch a nonce from a victim server, pass it through, and
+    replay the resulting proof there to log in as that player. Signing the
+    address the launcher actually dialed means such a relayed proof names the
+    attacker's server, and the victim server rejects it.
+
+    The length prefix prevents an address/challenge boundary ambiguity: without
+    it, ("1.2.3.4:31337", ch) and ("1.2.3.4:3133", b"7"+ch) would hash the same
+    bytes."""
+    addr = server_addr.encode("utf-8")
+    return (AUTH_SIGN_DOMAIN + len(addr).to_bytes(2, "little")
+            + addr + challenge)
+
 # Flag bitmask
 FLAG_RELIABLE: int = 0x01   # sender requires ACK for this frame
 FLAG_ACK_CARRIER: int = 0x02  # this frame piggybacks an ACK (future)
@@ -163,6 +200,33 @@ class MessageType(IntEnum):
     CONTAINER_STATE       = 0x0021   # server -> client: container inventory snapshot (chunked)
     QUEST_STATE_BOOT      = 0x0022   # v4: server -> client: quest-stage snapshot (chunked)
     GLOBAL_VAR_STATE_BOOT = 0x0023   # v4: server -> client: global-var snapshot (chunked)
+
+    # Discovery / server browser (0x003X) — OUT OF SESSION.
+    #
+    # These are the only messages a server or master answers WITHOUT an
+    # established session: they are stateless request/response, never reliable
+    # (no channel, no ACK, no retransmit — the caller just re-asks), and they
+    # never mutate world state. That is what lets a menu query a server it has
+    # not joined, and lets a client list servers before picking one.
+    #
+    # Topology:
+    #   client  --SERVER_INFO_REQUEST-->  game server      (direct IP:port)
+    #   client  <-SERVER_INFO_RESPONSE--  game server
+    #   server  --MASTER_REGISTER----->   master           (only if public)
+    #   client  --MASTER_LIST_REQUEST->   master
+    #   client  <-MASTER_LIST_RESPONSE-   master           (chunked)
+    #
+    # A public server registers itself by heartbeating the master; the master
+    # records the SOURCE address of that heartbeat, which is the server's
+    # public ip:port as seen from outside. That both avoids trusting a
+    # self-reported address and keeps the NAT mapping alive.
+    SERVER_INFO_REQUEST   = 0x0030   # client -> server: "who are you?" (no session)
+    SERVER_INFO_RESPONSE  = 0x0031   # server -> client: name/players/version/motd
+    MASTER_REGISTER       = 0x0032   # server -> master: publish/refresh listing
+    MASTER_LIST_REQUEST   = 0x0033   # client -> master: give me public servers
+    MASTER_LIST_RESPONSE  = 0x0034   # master -> client: listing chunk
+    AUTH_CHALLENGE_REQUEST  = 0x0035  # launcher -> server: give me a login nonce
+    AUTH_CHALLENGE_RESPONSE = 0x0036  # server -> launcher: single-use 32B nonce
 
     # State replication (0x01XX) — unreliable, best-effort
     POS_STATE     = 0x0100   # client -> server: my pos+rot
@@ -303,7 +367,15 @@ def _decode_fixed_string(buf: bytes, max_len: int) -> str:
     null = field.find(b"\x00")
     if null < 0:
         raise ProtocolError("fixed string not null-terminated")
-    return field[:null].decode("ascii", errors="strict")
+    try:
+        return field[:null].decode("ascii", errors="strict")
+    except UnicodeDecodeError as e:
+        # A remote peer must never be able to raise something the frame-level
+        # handler does not catch: UnicodeDecodeError is a ValueError, so it
+        # escaped decode_frame's struct.error guard and reached the server's
+        # blanket except as a full traceback — one spammable packet per log
+        # storm. Non-ASCII in a fixed string is a malformed frame, nothing more.
+        raise ProtocolError(f"fixed string not ASCII: {e}") from None
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,17 +384,42 @@ class HelloPayload:
     client_version_major: int # u8
     client_version_minor: int # u8
     steam_id: int = 0         # u64; 0 = unavailable (B6.6w5+)
+    # v19 PIENUVO auth tail — all-or-nothing: either the full 144-byte block
+    # (pubkey + challenge + signature + display_name) is present, or none of
+    # it is and the HELLO counts as unauthenticated (server policy decides
+    # whether that is accepted).
+    auth_pubkey: bytes = b""     # 32B Ed25519 public key ("" = no auth)
+    auth_challenge: bytes = b""  # 32B server-issued nonce being answered
+    auth_signature: bytes = b""  # 64B sig over AUTH_SIGN_DOMAIN + challenge
+    display_name: str = ""       # ASCII max 15, cosmetic (identity is the key)
 
     _STRUCT_HEAD: ClassVar[struct.Struct] = struct.Struct("<BB")
     _STRUCT_TAIL: ClassVar[struct.Struct] = struct.Struct("<Q")
+    _AUTH_BLOCK_LEN: ClassVar[int] = (
+        AUTH_PUBKEY_LEN + AUTH_CHALLENGE_LEN + AUTH_SIGNATURE_LEN
+        + MAX_PLAYER_NAME_LEN + 1)   # 32+32+64+16 = 144
+
+    @property
+    def has_auth(self) -> bool:
+        return len(self.auth_pubkey) == AUTH_PUBKEY_LEN
 
     def encode(self) -> bytes:
-        return (
+        out = (
             _encode_fixed_string(self.client_id, MAX_CLIENT_ID_LEN)
             + self._STRUCT_HEAD.pack(
                 self.client_version_major, self.client_version_minor)
             + self._STRUCT_TAIL.pack(self.steam_id & 0xFFFFFFFFFFFFFFFF)
         )
+        if self.auth_pubkey:
+            if (len(self.auth_pubkey) != AUTH_PUBKEY_LEN
+                    or len(self.auth_challenge) != AUTH_CHALLENGE_LEN
+                    or len(self.auth_signature) != AUTH_SIGNATURE_LEN):
+                raise ProtocolError("HELLO auth block: bad field lengths")
+            out += (self.auth_pubkey + self.auth_challenge
+                    + self.auth_signature
+                    + _encode_fixed_string(self.display_name,
+                                           MAX_PLAYER_NAME_LEN))
+        return out
 
     @classmethod
     def decode(cls, data: bytes) -> "HelloPayload":
@@ -339,7 +436,20 @@ class HelloPayload:
         if len(data) >= off + head_size + tail_size:
             (steam_id,) = cls._STRUCT_TAIL.unpack_from(
                 data, off + head_size)
-        return cls(cid, vma, vmi, steam_id)
+        # v19 auth tail. A partial block is a protocol error, not leniency:
+        # truncation here would silently downgrade an authenticated login.
+        auth_off = off + head_size + tail_size   # 26
+        pk = ch = sig = b""
+        name = ""
+        if len(data) > auth_off:
+            if len(data) < auth_off + cls._AUTH_BLOCK_LEN:
+                raise ProtocolError("HELLO auth block truncated")
+            p = auth_off
+            pk = bytes(data[p:p + AUTH_PUBKEY_LEN]);     p += AUTH_PUBKEY_LEN
+            ch = bytes(data[p:p + AUTH_CHALLENGE_LEN]);  p += AUTH_CHALLENGE_LEN
+            sig = bytes(data[p:p + AUTH_SIGNATURE_LEN]); p += AUTH_SIGNATURE_LEN
+            name = _decode_fixed_string(data[p:], MAX_PLAYER_NAME_LEN)
+        return cls(cid, vma, vmi, steam_id, pk, ch, sig, name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3451,7 +3561,290 @@ Payload = Union[
 ]
 
 
+# ============================================================================
+# Discovery / server browser (0x003X) — OUT OF SESSION
+# ============================================================================
+# Stateless request/response. Never reliable, never session-bound, never
+# world-mutating: a menu must be able to ask "who are you?" of a server it has
+# not joined, and to list public servers before picking one.
+
+MAX_SERVER_NAME_LEN: int = 31    # ASCII, null-terminated in 32 bytes
+MAX_MOTD_LEN: int = 63           # ASCII, null-terminated in 64 bytes
+MAX_ADDR_LEN: int = 45           # fits an IPv6 literal, null-terminated in 46
+
+
+@dataclass(frozen=True, slots=True)
+class ServerInfoRequestPayload:
+    """C->S, no session. `nonce` is echoed back so a browser can match the
+    reply to the row it asked about and measure ping without keeping state."""
+
+    nonce: int                      # u32, client-chosen
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<I")
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(self.nonce)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "ServerInfoRequestPayload":
+        if len(data) < cls._STRUCT.size:
+            raise ProtocolError("SERVER_INFO_REQUEST truncated")
+        (nonce,) = cls._STRUCT.unpack_from(data, 0)
+        return cls(nonce)
+
+
+@dataclass(frozen=True, slots=True)
+class ServerInfoResponsePayload:
+    """S->C, no session. Everything one browser row needs.
+
+    players / max_players are live. passworded / public are advisory flags for
+    the UI. version_* lets the browser grey out incompatible servers BEFORE the
+    user tries to join (the join itself still rejects on mismatch).
+    """
+
+    nonce: int                      # u32, echoed from the request
+    name: str                       # ASCII <= MAX_SERVER_NAME_LEN
+    motd: str                       # ASCII <= MAX_MOTD_LEN
+    players: int                    # u8
+    max_players: int                # u8
+    version_major: int              # u8
+    version_minor: int              # u8
+    tick_rate_hz: int               # u16
+    passworded: bool                # u8
+    public: bool                    # u8
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IBBBBHBB")
+
+    def encode(self) -> bytes:
+        return (
+            self._STRUCT.pack(
+                self.nonce, self.players, self.max_players,
+                self.version_major, self.version_minor, self.tick_rate_hz,
+                1 if self.passworded else 0, 1 if self.public else 0)
+            + _encode_fixed_string(self.name, MAX_SERVER_NAME_LEN)
+            + _encode_fixed_string(self.motd, MAX_MOTD_LEN)
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "ServerInfoResponsePayload":
+        head = cls._STRUCT.size
+        need = head + (MAX_SERVER_NAME_LEN + 1) + (MAX_MOTD_LEN + 1)
+        if len(data) < need:
+            raise ProtocolError("SERVER_INFO_RESPONSE truncated")
+        (nonce, players, max_players, vmaj, vmin, tick,
+         passworded, public) = cls._STRUCT.unpack_from(data, 0)
+        name = _decode_fixed_string(data[head:], MAX_SERVER_NAME_LEN)
+        motd = _decode_fixed_string(
+            data[head + MAX_SERVER_NAME_LEN + 1:], MAX_MOTD_LEN)
+        return cls(nonce, name, motd, players, max_players, vmaj, vmin, tick,
+                   bool(passworded), bool(public))
+
+
+@dataclass(frozen=True, slots=True)
+class MasterRegisterPayload:
+    """Game server -> master, resent every heartbeat while `public` is set.
+
+    Deliberately carries NO address: the master uses the UDP source address of
+    the datagram as the server's public ip:port. That lists a NAT'd server at
+    the endpoint that actually works from outside, stops it from claiming
+    someone else's address, and the periodic heartbeat keeps the NAT mapping
+    open. Falling silent past the master's expiry de-lists it automatically, so
+    a crashed server disappears with no graceful goodbye needed.
+    """
+
+    name: str
+    motd: str
+    players: int                    # u8
+    max_players: int                # u8
+    version_major: int              # u8
+    version_minor: int              # u8
+    passworded: bool                # u8
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<BBBBB")
+
+    def encode(self) -> bytes:
+        return (
+            self._STRUCT.pack(
+                self.players, self.max_players,
+                self.version_major, self.version_minor,
+                1 if self.passworded else 0)
+            + _encode_fixed_string(self.name, MAX_SERVER_NAME_LEN)
+            + _encode_fixed_string(self.motd, MAX_MOTD_LEN)
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "MasterRegisterPayload":
+        head = cls._STRUCT.size
+        need = head + (MAX_SERVER_NAME_LEN + 1) + (MAX_MOTD_LEN + 1)
+        if len(data) < need:
+            raise ProtocolError("MASTER_REGISTER truncated")
+        players, max_players, vmaj, vmin, passworded = \
+            cls._STRUCT.unpack_from(data, 0)
+        name = _decode_fixed_string(data[head:], MAX_SERVER_NAME_LEN)
+        motd = _decode_fixed_string(
+            data[head + MAX_SERVER_NAME_LEN + 1:], MAX_MOTD_LEN)
+        return cls(name, motd, players, max_players, vmaj, vmin,
+                   bool(passworded))
+
+
+@dataclass(frozen=True, slots=True)
+class MasterListRequestPayload:
+    """C->master. `nonce` echoes back; `offset` pages the list so one response
+    always fits in a single datagram."""
+
+    nonce: int                      # u32
+    offset: int = 0                 # u16, index of the first entry wanted
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IH")
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(self.nonce, self.offset)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "MasterListRequestPayload":
+        if len(data) < cls._STRUCT.size:
+            raise ProtocolError("MASTER_LIST_REQUEST truncated")
+        nonce, offset = cls._STRUCT.unpack_from(data, 0)
+        return cls(nonce, offset)
+
+
+@dataclass(frozen=True, slots=True)
+class MasterServerEntry:
+    """One browser row: where to connect + what to show."""
+
+    address: str                    # "ip:port" as seen by the master
+    name: str
+    players: int                    # u8
+    max_players: int                # u8
+    version_major: int              # u8
+    version_minor: int              # u8
+    passworded: bool                # u8
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<BBBBB")
+    SIZE: ClassVar[int] = (MAX_ADDR_LEN + 1) + (MAX_SERVER_NAME_LEN + 1) + 5
+
+    def encode(self) -> bytes:
+        return (
+            _encode_fixed_string(self.address, MAX_ADDR_LEN)
+            + _encode_fixed_string(self.name, MAX_SERVER_NAME_LEN)
+            + self._STRUCT.pack(
+                self.players, self.max_players,
+                self.version_major, self.version_minor,
+                1 if self.passworded else 0)
+        )
+
+    @classmethod
+    def decode_from(cls, data: bytes, off: int) -> "MasterServerEntry":
+        if len(data) < off + cls.SIZE:
+            raise ProtocolError("MasterServerEntry truncated")
+        address = _decode_fixed_string(data[off:], MAX_ADDR_LEN)
+        o = off + MAX_ADDR_LEN + 1
+        name = _decode_fixed_string(data[o:], MAX_SERVER_NAME_LEN)
+        o += MAX_SERVER_NAME_LEN + 1
+        players, max_players, vmaj, vmin, passworded = \
+            cls._STRUCT.unpack_from(data, o)
+        return cls(address, name, players, max_players, vmaj, vmin,
+                   bool(passworded))
+
+
+# How many rows fit in one datagram (8 B header + N * entry).
+MAX_SERVERS_PER_LIST_FRAME: int = (MAX_PAYLOAD_SIZE - 8) // MasterServerEntry.SIZE
+
+
+@dataclass(frozen=True, slots=True)
+class MasterListResponsePayload:
+    """master->C. `total` is the full count, so the browser knows whether to
+    ask for another page starting at offset + len(entries)."""
+
+    nonce: int                      # u32
+    offset: int                     # u16, index of entries[0]
+    total: int                      # u16, servers currently known to the master
+    entries: tuple
+
+    _HEADER: ClassVar[struct.Struct] = struct.Struct("<IHH")
+
+    def encode(self) -> bytes:
+        if len(self.entries) > MAX_SERVERS_PER_LIST_FRAME:
+            raise ProtocolError(
+                "too many servers in one frame: %d" % len(self.entries))
+        return (self._HEADER.pack(self.nonce, self.offset, self.total)
+                + b"".join(e.encode() for e in self.entries))
+
+    @classmethod
+    def decode(cls, data: bytes) -> "MasterListResponsePayload":
+        if len(data) < cls._HEADER.size:
+            raise ProtocolError("MASTER_LIST_RESPONSE truncated header")
+        nonce, offset, total = cls._HEADER.unpack_from(data, 0)
+        body = len(data) - cls._HEADER.size
+        n = body // MasterServerEntry.SIZE
+        entries = tuple(
+            MasterServerEntry.decode_from(
+                data, cls._HEADER.size + i * MasterServerEntry.SIZE)
+            for i in range(n)
+        )
+        return cls(nonce, offset, total, entries)
+
+
+@dataclass(frozen=True, slots=True)
+class AuthChallengeRequestPayload:
+    """launcher->S, out-of-session like SERVER_INFO_REQUEST. `nonce_echo` is a
+    client-chosen correlation id echoed back verbatim, so a launcher with
+    several outstanding requests can match answers to questions."""
+
+    nonce_echo: int   # u64
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<Q")
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(self.nonce_echo & 0xFFFFFFFFFFFFFFFF)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "AuthChallengeRequestPayload":
+        if len(data) < cls._STRUCT.size:
+            raise ProtocolError("AUTH_CHALLENGE_REQUEST truncated")
+        (nonce_echo,) = cls._STRUCT.unpack_from(data, 0)
+        return cls(nonce_echo)
+
+
+@dataclass(frozen=True, slots=True)
+class AuthChallengeResponsePayload:
+    """S->launcher. `challenge` is single-use with a short server-side TTL: it
+    is consumed by the HELLO that answers it (or expires). `ttl_s` tells the
+    launcher how long it can sit on the challenge before launching the game —
+    the game boot takes ~40s, so the server TTL must comfortably exceed it."""
+
+    nonce_echo: int    # u64, mirrors the request
+    challenge: bytes   # 32B random
+    ttl_s: int         # u16, seconds of validity from now
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<QH")
+
+    def encode(self) -> bytes:
+        if len(self.challenge) != AUTH_CHALLENGE_LEN:
+            raise ProtocolError("AUTH_CHALLENGE_RESPONSE: bad challenge len")
+        return (self._STRUCT.pack(self.nonce_echo & 0xFFFFFFFFFFFFFFFF,
+                                  self.ttl_s & 0xFFFF)
+                + self.challenge)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "AuthChallengeResponsePayload":
+        need = cls._STRUCT.size + AUTH_CHALLENGE_LEN
+        if len(data) < need:
+            raise ProtocolError("AUTH_CHALLENGE_RESPONSE truncated")
+        nonce_echo, ttl_s = cls._STRUCT.unpack_from(data, 0)
+        challenge = bytes(data[cls._STRUCT.size:need])
+        return cls(nonce_echo, challenge, ttl_s)
+
+
 _TYPE_TO_PAYLOAD_CLS: dict[int, type] = {
+    MessageType.SERVER_INFO_REQUEST:   ServerInfoRequestPayload,
+    MessageType.SERVER_INFO_RESPONSE:  ServerInfoResponsePayload,
+    MessageType.MASTER_REGISTER:       MasterRegisterPayload,
+    MessageType.MASTER_LIST_REQUEST:   MasterListRequestPayload,
+    MessageType.MASTER_LIST_RESPONSE:  MasterListResponsePayload,
+    MessageType.AUTH_CHALLENGE_REQUEST:  AuthChallengeRequestPayload,
+    MessageType.AUTH_CHALLENGE_RESPONSE: AuthChallengeResponsePayload,
+
     MessageType.HELLO:            HelloPayload,
     MessageType.WELCOME:          WelcomePayload,
     MessageType.PEER_JOIN:        PeerJoinPayload,

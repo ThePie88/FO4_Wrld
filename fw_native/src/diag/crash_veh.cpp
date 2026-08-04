@@ -3,7 +3,9 @@
 #include <windows.h>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 
+#include "../audit.h"
 #include "../log.h"
 
 namespace fw::diag {
@@ -11,10 +13,105 @@ namespace fw::diag {
 namespace {
 
 std::atomic<std::uint64_t> g_av_count{0};
+std::atomic<bool>          g_user_shutdown{false};   // Build 69r — ALT+F4 seen
 std::uintptr_t g_game_base = 0;
 std::uintptr_t g_game_end  = 0;
 std::uintptr_t g_self_base = 0;
 std::uintptr_t g_self_end  = 0;
+
+// ---------------------------------------------------------------------------
+// Build 69p (2026-08-04) — REFR-O-SCOPE.
+//
+// The 69o write ring proved no fw store touches the crash victims; the open
+// question became WHO the victim is. The crash family is always
+// TESObjectCELL::DetachReference(cell from refr+0xB8) on a cell with a
+// garbage/NULL vtable — but the registers at the fault were never decoded, so
+// the refr's identity (a mirrored raider? the dog? our synthetic ghost dup?)
+// stayed anonymous. These probes SEH-read every crash register (and the top
+// stack qwords) AS IF it were a TESForm/TESObjectREFR and print vtable RVA +
+// form ID + flags + parentCell, so the next crash names its victim.
+//
+// TESForm layout used (FO4 1.11.191): +0x00 vtable, +0x10 form flags (u32),
+// +0x14 formID (u32, = offsets::FORMID_OFF), +0x1A formType (u8),
+// +0xB8 parentCell (TESObjectREFR only, = offsets::PARENT_CELL_OFF).
+
+struct HeadProbe {
+    std::uint64_t vt    = 0;
+    std::uint32_t flags = 0;
+    std::uint32_t fid   = 0;
+    std::uint8_t  ftype = 0;
+};
+
+// Read the TESForm head fields. Returns 0 on any fault (partial data dropped).
+int probe_form_head(std::uint64_t p, HeadProbe* out) noexcept {
+    __try {
+        const auto* b = reinterpret_cast<const std::uint8_t*>(p);
+        out->vt    = *reinterpret_cast<const std::uint64_t*>(b);
+        out->flags = *reinterpret_cast<const std::uint32_t*>(b + 0x10);
+        out->fid   = *reinterpret_cast<const std::uint32_t*>(b + 0x14);
+        out->ftype = *(b + 0x1A);
+        return 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
+int probe_qword(std::uint64_t p, std::uint64_t* out) noexcept {
+    __try {
+        *out = *reinterpret_cast<const std::uint64_t*>(p);
+        return 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
+bool plausible_heap_ptr(std::uint64_t v) noexcept {
+    return v >= 0x10000 && v < 0x0000800000000000ULL && (v & 7) == 0;
+}
+
+// Format a vtable pointer: game RVA if inside the image (this alone names the
+// object's dynamic type via re/engine_rtti_catalog.md), raw value otherwise.
+void fmt_vt(std::uint64_t vt, char* out, std::size_t n) noexcept {
+    if (g_game_base && vt >= g_game_base && vt < g_game_end) {
+        std::snprintf(out, n, "game+0x%llX",
+                      static_cast<unsigned long long>(vt - g_game_base));
+    } else {
+        std::snprintf(out, n, "0x%llX", static_cast<unsigned long long>(vt));
+    }
+}
+
+// Probe one value and, if it reads like an object, print a one-line dossier.
+void refr_scope_one(const char* name, std::uint64_t v) noexcept {
+    if (!plausible_heap_ptr(v)) return;
+    HeadProbe h{};
+    if (!probe_form_head(v, &h)) return;
+
+    char vtb[48];
+    fmt_vt(h.vt, vtb, sizeof(vtb));
+
+    // parentCell leg — only meaningful for refr-like objects, but reading it
+    // unconditionally costs nothing and a garbage value is itself a datum.
+    std::uint64_t cell = 0;
+    char cellinfo[96];
+    if (probe_qword(v + 0xB8, &cell) && plausible_heap_ptr(cell)) {
+        HeadProbe ch{};
+        if (probe_form_head(cell, &ch)) {
+            char cvtb[48];
+            fmt_vt(ch.vt, cvtb, sizeof(cvtb));
+            std::snprintf(cellinfo, sizeof(cellinfo),
+                          "cell=0x%llX{vt=%s fid=0x%08X}",
+                          static_cast<unsigned long long>(cell), cvtb, ch.fid);
+        } else {
+            std::snprintf(cellinfo, sizeof(cellinfo),
+                          "cell=0x%llX{UNREADABLE}",
+                          static_cast<unsigned long long>(cell));
+        }
+    } else {
+        std::snprintf(cellinfo, sizeof(cellinfo), "cell=0x%llX",
+                      static_cast<unsigned long long>(cell));
+    }
+
+    FW_ERR("[refr-scope] %s=0x%llX: vt=%s flags=0x%08X fid=0x%08X "
+           "type=0x%02X %s",
+           name, static_cast<unsigned long long>(v), vtb, h.flags, h.fid,
+           h.ftype, cellinfo);
+}
 
 LONG WINAPI veh_handler(EXCEPTION_POINTERS* info) noexcept {
     if (!info || !info->ExceptionRecord || !info->ContextRecord) {
@@ -55,10 +152,15 @@ LONG WINAPI veh_handler(EXCEPTION_POINTERS* info) noexcept {
     const std::uintptr_t rva =
         rip_in_game ? (rip - g_game_base) : 0;
 
-    FW_ERR("[crash-veh] AV #%llu rip=0x%llX RVA=0x%llX in_game=%d "
+    FW_ERR("[crash-veh] AV #%llu%s rip=0x%llX RVA=0x%llX in_game=%d "
            "fault=%s addr=0x%llX rsp=0x%llX rbp=0x%llX "
            "rcx=0x%llX rdx=0x%llX r8=0x%llX",
            static_cast<unsigned long long>(n),
+           // Build 69r — teardown stamp: this AV happened AFTER the user
+           // closed the window (ALT+F4); it is shutdown fallout, not a
+           // gameplay crash.
+           g_user_shutdown.load(std::memory_order_relaxed)
+               ? " (teardown=1 ALT+F4)" : "",
            static_cast<unsigned long long>(rip),
            static_cast<unsigned long long>(rva),
            rip_in_game ? 1 : 0,
@@ -81,6 +183,55 @@ LONG WINAPI veh_handler(EXCEPTION_POINTERS* info) noexcept {
                sp[0], sp[1], sp[2], sp[3], sp[4], sp[5], sp[6], sp[7]);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         FW_ERR("[crash-veh]   stack: <unreadable>");
+    }
+
+    // Build 69p (2026-08-04) — full register set (the first line only prints
+    // rsp/rbp/rcx/rdx/r8; DetachReference keeps the REFR in rsi) + the
+    // refr-o-scope over every register and the top stack qwords: the next
+    // crash prints its victim's form ID and vtable RVA instead of an
+    // anonymous pointer. Capped at the first 3 AVs to bound log noise.
+    if (n < 3) {
+        const CONTEXT* c = info->ContextRecord;
+        FW_ERR("[crash-veh]   regs2: rax=0x%llX rbx=0x%llX rsi=0x%llX "
+               "rdi=0x%llX r9=0x%llX r10=0x%llX r11=0x%llX r12=0x%llX "
+               "r13=0x%llX r14=0x%llX r15=0x%llX",
+               static_cast<unsigned long long>(c->Rax),
+               static_cast<unsigned long long>(c->Rbx),
+               static_cast<unsigned long long>(c->Rsi),
+               static_cast<unsigned long long>(c->Rdi),
+               static_cast<unsigned long long>(c->R9),
+               static_cast<unsigned long long>(c->R10),
+               static_cast<unsigned long long>(c->R11),
+               static_cast<unsigned long long>(c->R12),
+               static_cast<unsigned long long>(c->R13),
+               static_cast<unsigned long long>(c->R14),
+               static_cast<unsigned long long>(c->R15));
+        refr_scope_one("rax", c->Rax);  refr_scope_one("rbx", c->Rbx);
+        refr_scope_one("rcx", c->Rcx);  refr_scope_one("rdx", c->Rdx);
+        refr_scope_one("rsi", c->Rsi);  refr_scope_one("rdi", c->Rdi);
+        refr_scope_one("rbp", c->Rbp);  refr_scope_one("r8",  c->R8);
+        refr_scope_one("r9",  c->R9);   refr_scope_one("r10", c->R10);
+        refr_scope_one("r11", c->R11);  refr_scope_one("r12", c->R12);
+        refr_scope_one("r13", c->R13);  refr_scope_one("r14", c->R14);
+        refr_scope_one("r15", c->R15);
+        // Stack qwords often hold the object the faulting frame was working
+        // on (this crash family spills the refr before the vcall).
+        for (int i = 0; i < 8; ++i) {
+            std::uint64_t sv = 0;
+            if (!probe_qword(rsp + 8ull * i, &sv)) break;
+            char nm[8];
+            std::snprintf(nm, sizeof(nm), "st%d", i);
+            refr_scope_one(nm, sv);
+        }
+    }
+
+    // Build 69o (2026-08-04) — dump the write ring on the FIRST AV only.
+    // Answers "did any fw store land near the registers this crash was
+    // holding?" directly in the log, and drops the full ring to
+    // fw_writes.bin for offline queries. Internally idempotent, so later
+    // AVs in the 30-cap window cost nothing.
+    if (n == 0) {
+        fw::audit::wring_dump_crash(info->ContextRecord, fault_addr);
     }
 
     return EXCEPTION_CONTINUE_SEARCH;
@@ -123,6 +274,10 @@ LONG WINAPI unhandled_filter(EXCEPTION_POINTERS* info) noexcept {
 }
 
 } // namespace
+
+void note_user_shutdown() noexcept {
+    g_user_shutdown.store(true, std::memory_order_relaxed);
+}
 
 void install_crash_veh(std::uintptr_t module_base) {
     g_game_base = module_base;

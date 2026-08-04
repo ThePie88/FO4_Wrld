@@ -22,4 +22,10 @@ namespace fw::diag {
 
 void install_crash_veh(std::uintptr_t module_base);
 
+// Build 69r (2026-08-04) — called by fw_wndproc on WM_CLOSE / SC_CLOSE
+// (user ALT+F4). Every AV the VEH logs afterwards is stamped teardown=1,
+// so force-close fallout can never again be mistaken for a gameplay crash
+// (it happened twice with the 0x16632B9 teardown signature).
+void note_user_shutdown() noexcept;
+
 } // namespace fw::diag

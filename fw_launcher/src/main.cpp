@@ -75,6 +75,47 @@ char prompt_side() {
 //   'A' / 'B' if valid --side given
 //   0         if --side not present (fall through to prompt)
 //  '!' (0x21) if --side is present but malformed (immediate error — no prompt)
+// Build 69 — external-launcher mode. Returns the value of `--connect
+// <host:port>`, or an empty string if absent.
+//
+// When present we must NOT prompt for a side: the launcher spawns us
+// non-interactively and reads our stdout, so a prompt would hang forever
+// waiting on a stdin nobody is attached to. --side stays available (the
+// two-instance local test still needs it) but defaults to A.
+std::wstring parse_connect(int argc, wchar_t** argv) {
+    for (int i = 1; i < argc; ++i) {
+        if (std::wcscmp(argv[i], L"--connect") == 0) {
+            if ((i + 1) >= argc) return L"";
+            return std::wstring(argv[i + 1]);
+        }
+    }
+    return L"";
+}
+
+// Generic "--flag value" scan for the v19 auth passthrough (--auth, --name).
+// We forward these verbatim to the python launcher; validation happens there
+// and in the DLL's config parser — duplicating it here would just create a
+// third place for the format to drift.
+// Presence test for a valueless switch (e.g. --no-mirror-suppress). Kept
+// separate from parse_value_flag because a boolean flag has no argument to
+// consume — treating it as one would swallow the next real option.
+bool has_flag(int argc, wchar_t** argv, const wchar_t* flag) {
+    for (int i = 1; i < argc; ++i) {
+        if (std::wcscmp(argv[i], flag) == 0) return true;
+    }
+    return false;
+}
+
+std::wstring parse_value_flag(int argc, wchar_t** argv, const wchar_t* flag) {
+    for (int i = 1; i < argc; ++i) {
+        if (std::wcscmp(argv[i], flag) == 0) {
+            if ((i + 1) >= argc) return L"";
+            return std::wstring(argv[i + 1]);
+        }
+    }
+    return L"";
+}
+
 char parse_side(int argc, wchar_t** argv) {
     for (int i = 1; i < argc; ++i) {
         if (std::wcscmp(argv[i], L"--side") == 0) {
@@ -111,11 +152,22 @@ std::wstring shell_quote(const std::wstring& s) {
 int wmain(int argc, wchar_t** argv) {
     std::setlocale(LC_ALL, "");
 
-    std::wprintf(L"FalloutWorld / FoM-lite native launcher\n");
+    // Parsed FIRST because it decides where our own chatter goes. In
+    // external-launcher mode stdout belongs to the JSON event stream the
+    // launcher parses line by line, so every human-facing line we print must
+    // go to stderr instead — otherwise our banner is the first thing it tries
+    // to parse as JSON. For the same reason we never pause on Enter there:
+    // nobody is attached to stdin.
+    const std::wstring connect_addr = parse_connect(argc, argv);
+    const bool  headless = !connect_addr.empty();
+    FILE* const say      = headless ? stderr : stdout;
+
+    std::fwprintf(say, L"FalloutWorld / FoM-lite native launcher\n");
 
     // 1) Determine side. --side A/B preferred; fall back to interactive prompt
     //    for the "double-clicked the exe" UX. A malformed --side errors out
     //    immediately rather than falling through to the prompt.
+
     char side = parse_side(argc, argv);
     if (side == '!') {
         std::fwprintf(stderr,
@@ -123,8 +175,11 @@ int wmain(int argc, wchar_t** argv) {
         return 1;
     }
     if (side == 0) {
-        char c = prompt_side();
-        if (c == 'A' || c == 'B') side = c;
+        // --connect implies non-interactive: the external launcher spawns us
+        // and reads stdout, so a prompt would block forever on a stdin nobody
+        // is attached to. Default to A instead.
+        side = connect_addr.empty() ? prompt_side() : 'A';
+        if (side != 'A' && side != 'B') side = 0;
     }
     if (side != 'A' && side != 'B') {
         std::fwprintf(stderr,
@@ -139,18 +194,20 @@ int wmain(int argc, wchar_t** argv) {
         std::fwprintf(stderr,
             L"[FoM] ERROR: python.exe not found in PATH.\n"
             L"       Install Python 3.12+ (https://python.org) or fix PATH.\n");
-        std::wprintf(L"Press Enter to close...");
-        std::fflush(stdout);
-        (void)std::getchar();
+        if (!headless) {   // no one is there to press Enter
+            std::wprintf(L"Press Enter to close...");
+            std::fflush(stdout);
+            (void)std::getchar();
+        }
         return 1;
     }
     const std::wstring cwd = get_exe_dir();
 
-    std::wprintf(L"[FoM] python  : %ls\n", py.c_str());
-    std::wprintf(L"[FoM] repo    : %ls\n", cwd.c_str());
-    std::wprintf(L"[FoM] side    : %c\n", side);
-    std::wprintf(L"[FoM] starting Python launcher...\n\n");
-    std::fflush(stdout);
+    std::fwprintf(say, L"[FoM] python  : %ls\n", py.c_str());
+    std::fwprintf(say, L"[FoM] repo    : %ls\n", cwd.c_str());
+    std::fwprintf(say, L"[FoM] side    : %c\n", side);
+    std::fwprintf(say, L"[FoM] starting Python launcher...\n\n");
+    std::fflush(say);
 
     // 3) Build a cmdline like:  "C:\...\python.exe" -u -m launcher.main --side A
     //    CreateProcessW needs a writable buffer for lpCommandLine.
@@ -159,6 +216,35 @@ int wmain(int argc, wchar_t** argv) {
     cmd  = shell_quote(py);
     cmd += L" -u -m launcher.main --side ";
     cmd += (side == 'A' ? L"A" : L"B");
+    if (!connect_addr.empty()) {
+        // Forwarded verbatim. We deliberately do NOT redirect the child's
+        // streams, so its JSON event lines land on OUR stdout and the external
+        // launcher reads them straight through.
+        cmd += L" --connect ";
+        cmd += shell_quote(connect_addr);
+    }
+    // v19 PIENUVO — login proof + display name, minted by the external
+    // launcher, forwarded verbatim down to the python launcher which writes
+    // them into fw_config.ini for the DLL.
+    const std::wstring auth_blob = parse_value_flag(argc, argv, L"--auth");
+    const std::wstring nickname  = parse_value_flag(argc, argv, L"--name");
+    const std::wstring client_id = parse_value_flag(argc, argv, L"--client-id");
+    if (!auth_blob.empty()) {
+        cmd += L" --auth ";
+        cmd += shell_quote(auth_blob);
+    }
+    if (!nickname.empty()) {
+        cmd += L" --name ";
+        cmd += shell_quote(nickname);
+    }
+    if (!client_id.empty()) {
+        cmd += L" --client-id ";
+        cmd += shell_quote(client_id);
+    }
+    // Build 69 control run — see start_client_B_TEST.bat.
+    if (has_flag(argc, argv, L"--no-mirror-suppress")) {
+        cmd += L" --no-mirror-suppress";
+    }
     std::wstring mutable_cmd = cmd;   // CreateProcess requires writable
 
     STARTUPINFOW si{};
@@ -180,9 +266,11 @@ int wmain(int argc, wchar_t** argv) {
         const DWORD err = GetLastError();
         std::fwprintf(stderr, L"[FoM] ERROR: CreateProcess failed (err=%lu)\n",
                       static_cast<unsigned long>(err));
-        std::wprintf(L"Press Enter to close...");
-        std::fflush(stdout);
-        (void)std::getchar();
+        if (!headless) {   // no one is there to press Enter
+            std::wprintf(L"Press Enter to close...");
+            std::fflush(stdout);
+            (void)std::getchar();
+        }
         return 2;
     }
 
@@ -201,10 +289,12 @@ int wmain(int argc, wchar_t** argv) {
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
 
-    std::wprintf(L"\n[FoM] Python launcher exited rc=%lu\n",
+    std::fwprintf(say, L"\n[FoM] Python launcher exited rc=%lu\n",
                  static_cast<unsigned long>(rc));
-    std::wprintf(L"Press Enter to close...");
-    std::fflush(stdout);
-    (void)std::getchar();
+    if (!headless) {
+        std::wprintf(L"Press Enter to close...");
+        std::fflush(stdout);
+        (void)std::getchar();
+    }
     return static_cast<int>(rc);
 }

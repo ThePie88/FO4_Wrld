@@ -80,11 +80,31 @@ class PeerSession:
     total_pos_updates: int = 0
     total_events: int = 0
 
+    # Build 69s (2026-08-04) — ownership quiescence for a dead/loading peer.
+    # A death-release NPC_UNLOAD burst stamps this; while it is in the
+    # future the peer is EXCLUDED from threat election (its POS_STATE keeps
+    # streaming the corpse position through the whole death-cam + LoadGame,
+    # and reeval was measured handing 7 NPCs TO the loading client 155ms
+    # before a crash). Cleared by the respawn teleport (a large accepted
+    # position jump) or by timeout.
+    combat_dead_until_ms: float = 0.0
+
     # B6.6w5 — Steam ID auth scaffolding. Populated from HELLO.steam_id
     # when the client connects. 0 = unavailable (legacy client OR Steam
-    # SDK not loaded on client at HELLO time). Future: validate against
-    # a whitelist + use as canonical peer identity instead of peer_id.
+    # SDK not loaded on client at HELLO time). NOTE (v19): this is a CLAIM,
+    # not an identity — Goldberg lets a pirate put any value here. The
+    # verified identity is `identity_hex` below. Phase-2 PIENUVO (Steam
+    # ticket check) is what will turn this claim into an attestation.
     steam_id: int = 0
+
+    # v19 PIENUVO — verified identity: hex of the Ed25519 pubkey whose
+    # challenge signature this session presented at HELLO. "" = the peer
+    # connected unauthenticated (manual FoM start / legacy client).
+    # Uniqueness across active sessions is enforced in accept_peer's
+    # caller via ServerState.find_identity().
+    identity_hex: str = ""
+    # v19 — cosmetic display name from the HELLO auth tail. NEVER a key.
+    display_name: str = ""
 
     # B6.6w5 — local form_id of the engine ghost-actor that represents
     # the OTHER peer on this client's screen. Sent by the client via
@@ -188,6 +208,9 @@ class ServerState:
     tick_rate_hz: int = 20
     server_version: tuple[int, int] = (1, 0)
     peer_timeout_ms: float = 5_000.0
+    # Dedicated-server capacity. accept_peer refuses past this with a reason
+    # the browser can show. 0 = unlimited (used by tests).
+    max_players: int = 0
 
     # TESNPC base formIDs used as ghost avatars in the rendering layer.
     # Kill/disable events targeting these bases are rejected at the validator
@@ -248,13 +271,29 @@ class ServerState:
         if existing is not None:
             self._remove_session(existing)
 
-        # Check peer_id uniqueness
-        if peer_id in self._sessions_by_peer_id:
-            return (None, "peer_id_taken")
+        # Same peer_id from a DIFFERENT address: either a genuine duplicate, or
+        # the same player reconnecting after a crash (the relaunched process
+        # gets a fresh UDP source port, so the addr-equality branch above
+        # cannot recognise it). Tell them apart by whether the old session is
+        # still ALIVE: a client that is still heartbeating is a real collision
+        # and must be refused, exactly as before; one that has gone silent past
+        # the timeout is a corpse and must not keep the id hostage.
+        prior = self._sessions_by_peer_id.get(peer_id)
+        if prior is not None:
+            if (now_ms - prior.last_seen_ms) <= self.peer_timeout_ms:
+                return (None, "peer_id_taken")
+            self._remove_session(prior)
 
         # Version check: same major required
         if client_version[0] != self.server_version[0]:
             return (None, "version_mismatch")
+
+        # Capacity. Checked AFTER the reconnect eviction on purpose: a player
+        # rejoining must not be told the server is full because their own ghost
+        # session is still occupying a slot.
+        if self.max_players > 0 and \
+                len(self._sessions_by_peer_id) >= self.max_players:
+            return (None, "server_full")
 
         session = PeerSession(
             session_id=next(self._session_id_counter),
@@ -274,6 +313,20 @@ class ServerState:
 
     def get_by_peer_id(self, peer_id: str) -> Optional[PeerSession]:
         return self._sessions_by_peer_id.get(peer_id)
+
+    def find_live_identity(self, identity_hex: str,
+                           now_ms: float) -> Optional[PeerSession]:
+        """v19: the session currently holding this verified identity, if it is
+        still alive (same staleness rule as the peer_id reconnect logic: a
+        silent-past-timeout session is a corpse, not a holder). Linear scan —
+        player counts here are single digits."""
+        if not identity_hex:
+            return None
+        for s in self._sessions_by_addr.values():
+            if (s.identity_hex == identity_hex
+                    and (now_ms - s.last_seen_ms) <= self.peer_timeout_ms):
+                return s
+        return None
 
     def all_sessions(self) -> list[PeerSession]:
         return list(self._sessions_by_addr.values())

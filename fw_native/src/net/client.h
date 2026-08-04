@@ -229,6 +229,14 @@ public:
     void enqueue_npc_owner_heartbeat(const NPCOwnerHeartbeatEntry* entries,
                                      std::size_t count);
 
+    // NPC_UNLOAD (reliable). Owner voluntarily releases one NPC — the
+    // server frees the record (epoch-checked) and broadcasts the change so
+    // other peers can re-claim on their next observe. Build 69q
+    // (2026-08-04): used at local player DEATH to despawn the ownership
+    // sphere explicitly instead of leaking it to the 8s heartbeat timeout
+    // (the "raiders turn to B only when the body despawns" lag).
+    void enqueue_npc_unload(const NPCUnloadPayload& p);
+
     // NPC_STATE_FROM_OWNER (unreliable, batched). Periodically (~10 Hz)
     // owner emits authoritative state for its owned NPCs. Server
     // validates ownership + epoch then relays to non-owners. Each entry

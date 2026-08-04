@@ -17,6 +17,7 @@ from typing import Optional
 
 from launcher import config, fo4_ini, fw_config
 from launcher.procutil import fallout_pids, wait_for_new_fallout_pid
+from launcher import connect as connect_api
 
 
 # ANSI palette
@@ -40,8 +41,17 @@ def enable_ansi_on_windows() -> None:
         pass
 
 
+LOG_TO_STDERR: bool = False
+"""External-launcher mode sends human logs to STDERR.
+
+stdout is then a pure machine channel — one JSON event per line — so the
+launcher can read it line by line without having to skip our colored prose.
+Set by run() when connect_addr is given."""
+
+
 def log(prefix: str, msg: str, *, color: str = "") -> None:
-    print(f"{prefix} {color}{msg}{RESET}", flush=True)
+    print(f"{prefix} {color}{msg}{RESET}", flush=True,
+          file=sys.stderr if LOG_TO_STDERR else sys.stdout)
 
 
 # ------------------------------------------------------------------ server
@@ -157,7 +167,10 @@ def pipe_output(proc: subprocess.Popen, prefix: str, stop_evt: threading.Event) 
                 if stop_evt.is_set(): break
                 line = line.rstrip()
                 if line:
-                    print(f"{prefix} {line}", flush=True)
+                    # Child output is human log: keep stdout clean for the
+                    # JSON event stream in external-launcher mode.
+                    print(f"{prefix} {line}", flush=True,
+                          file=sys.stderr if LOG_TO_STDERR else sys.stdout)
         except Exception:
             pass
     t = threading.Thread(target=worker, daemon=True, name=f"pipe-{prefix}")
@@ -172,8 +185,22 @@ def run(
     *,
     start_server: bool = True,
     python_exe: str = sys.executable,
+    connect_addr: Optional[str] = None,
+    auth_blob: str = "",
+    player_name: str = "",
+    client_id: str = "",
+    suppress_mirror_combat: bool = True,
 ) -> int:
-    """Full launcher flow. Blocks until Ctrl+C or child crashes."""
+    """Full launcher flow. Blocks until Ctrl+C or child crashes.
+
+    `connect_addr` ("host:port") is the external-launcher path: the player
+    picked a server in the browser, so we point the DLL at THAT address instead
+    of the hardcoded local one, and we report progress as JSON events on stdout
+    for the launcher to mirror into its overlay.
+    """
+    global LOG_TO_STDERR
+    if connect_addr:
+        LOG_TO_STDERR = True    # keep stdout a clean JSON event stream
     enable_ansi_on_windows()
     stop_evt = threading.Event()
     threads: list[threading.Thread] = []
@@ -220,6 +247,13 @@ def run(
             side,
             log_level=config.DLL_LOG_LEVEL,
             auto_load_save=side.auto_load_save,
+            server_addr=connect_addr,
+            # v19 PIENUVO: launcher-minted login proof, forwarded verbatim
+            # to the DLL. Empty when starting without the external launcher.
+            auth_blob=auth_blob,
+            player_name=player_name,
+            client_id=client_id or None,
+            suppress_mirror_combat=suppress_mirror_combat,
         )
         if side.auto_load_save:
             log(side.log_prefix,
@@ -246,18 +280,37 @@ def run(
             log(side.log_prefix, "server failed to listen in 45s", color=RED)
             return shutdown(1)
         log(side.log_prefix, "server up", color=GREEN)
+    elif connect_addr:
+        # Remote server chosen in the browser: it was already probed by
+        # preflight, and is_server_up() only ever inspects the LOCAL port, so
+        # there is nothing to check here. Carry on and launch the game.
+        log(side.log_prefix, f"connecting to remote server {connect_addr}",
+            color=GREEN)
     else:
-        log(side.log_prefix, "server not running and --no-server — aborting", color=RED)
+        log(side.log_prefix,
+            f"no server listening on {config.SERVER_HOST}:{config.SERVER_PORT}",
+            color=RED)
+        log(side.log_prefix,
+            "the server is a separate process now — start it first with "
+            "start_server.bat (or pass --with-server for the old all-in-one "
+            "mode)", color=YELLOW)
         return shutdown(1)
 
     # 2. Capture baseline FO4 PIDs, launch game
     pre_pids = fallout_pids()
     log(side.log_prefix, f"existing Fallout4.exe PIDs: {sorted(pre_pids) or 'none'}")
     log(side.log_prefix, f"launching {side.launcher_exe.name}...", color=CYAN)
+    if connect_addr:
+        connect_api.emit("launching", side=side.name)
     try:
         _ = launch_fo4(side)
     except FileNotFoundError as e:
         log(side.log_prefix, f"ERROR: {e}", color=RED)
+        if connect_addr:
+            connect_api.emit_error(
+                "game_not_found",
+                "Installazione di Fallout 4 non trovata. Verifica il percorso "
+                "del gioco nelle impostazioni.")
         return shutdown(1)
 
     # 3. Wait for new Fallout4.exe to appear
@@ -267,8 +320,18 @@ def run(
     if pid is None:
         log(side.log_prefix, "Fallout4.exe did not spawn in time — is Steam running? "
             "Side B: is ColdClient configured?", color=RED)
+        if connect_addr:
+            # The launcher started but no game process appeared: from the
+            # player's point of view the game "did not open", which is the same
+            # bucket as a missing install.
+            connect_api.emit_error(
+                "game_not_found",
+                "Il gioco non si e' avviato. Controlla che Steam sia in "
+                "esecuzione e che Fallout 4 sia installato correttamente.")
         return shutdown(1)
     log(side.log_prefix, f"Fallout4.exe PID={pid} detected", color=GREEN)
+    if connect_addr:
+        connect_api.emit("game_launched", pid=pid)
 
     client_proc: Optional[subprocess.Popen] = None
 

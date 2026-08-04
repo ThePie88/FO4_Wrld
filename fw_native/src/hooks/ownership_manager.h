@@ -77,6 +77,32 @@ bool epoch_for(std::uint32_t form_id, std::uint32_t* out_epoch);
 // Diagnostic: how many NPCs are currently in the local map.
 std::uint64_t tracked_count();
 
+// Build 69q (2026-08-04) — DEATH SPHERE DESPAWN.
+//
+// At local player death the ownership sphere used to linger: the stand-down
+// gates all TX, so the server only released our NPCs via the 8s heartbeat
+// timeout, and the peer's raiders stayed frozen mirrors until then (the
+// observed "raiders turn toward B only when the body despawns" lag).
+// This sends one reliable NPC_UNLOAD per owned fid (epoch-checked server
+// side), then clears the owned TX cache so heartbeats stop instantly. The
+// server broadcasts each release; every peer's PHASE_2 handler already
+// resets its observe-dedup for the fid, so the survivor re-observes and
+// claims on its very next frame. Returns how many releases were sent.
+std::size_t release_all_owned_on_death();
+
+// Build 69q — enumerate every fid in the local ownership map (owned AND
+// peer-owned mirrors), up to `cap`. Used by the death-time cell
+// re-coherence sweep in npc_ai_suppress. Returns the count written.
+std::size_t collect_tracked_fids(std::uint32_t* out, std::size_t cap);
+
+// Build 69s (2026-08-04) — ownership quiescence. PHASE_2 claim-inserts that
+// arrive while the local death stand-down is open are queued instead of
+// applied (releases still apply instantly); npc_ai_suppress calls this at
+// stand-down close to apply them in arrival order. See the block comment in
+// ownership_manager.cpp for the 69r evidence (mid-load mirror re-tracking
+// 155ms before the 17:46 fault).
+void drain_deferred_phase2_claims() noexcept;
+
 // Diagnostic: number of (PHASE_2, BCAST entry) applications since init.
 std::uint64_t phase2_applied();
 std::uint64_t bcast_applied();

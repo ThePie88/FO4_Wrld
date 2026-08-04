@@ -30,6 +30,23 @@ log_level = {log_level}
 # The save name is the filename (no path, no .fos extension) from
 # %USERPROFILE%\\Documents\\My Games\\Fallout4\\Saves\\.
 auto_load_save = {auto_load_save}
+
+# v19 PIENUVO auth. Minted by the external launcher per-login:
+# pubkeyhex:challengehex:sighex (64:64:128 chars). The DLL forwards the
+# triple verbatim in HELLO; it does no crypto. Empty = unauthenticated
+# session (manual start without the launcher).
+auth_blob = {auth_blob}
+# Cosmetic display name shown to other players. Identity is the key above.
+player_name = {player_name}
+
+# Build 69 A/B — mirror combat suppression (c.36b). true = shipping behaviour:
+# a non-owner writes 1 to HighProcess+0x189 on every mirrored NPC each frame.
+# That byte is the engine's own StopCombat request flag, and the hp-churn probe
+# measured the result: 0 of 181,728 sampled ticks kept it, and all 106
+# HighProcess allocations died within 1 tick.
+# Set to false to run the control experiment (expect mirrors to aim at you and
+# the combat-crouch sliding to come back while it is off).
+suppress_mirror_combat = {suppress_mirror_combat}
 """
 
 
@@ -38,6 +55,11 @@ def write_for_side(
     *,
     log_level: str = "info",
     auto_load_save: str = "",
+    server_addr: str | None = None,
+    auth_blob: str = "",
+    player_name: str = "",
+    client_id: str | None = None,
+    suppress_mirror_combat: bool = True,
 ) -> Path:
     """Write fw_config.ini into the game directory that holds `side.launcher_exe`.
 
@@ -47,14 +69,30 @@ def write_for_side(
     Returns the path written."""
     game_dir = side.launcher_exe.parent
     path = game_dir / "fw_config.ini"
+    # `server_addr` is the whole point of the external launcher: the player
+    # picks a row in the server browser and the game must boot pointed at THAT
+    # address. Without it the DLL always connected to the hardcoded
+    # config.SERVER_HOST:SERVER_PORT, which only ever worked for local testing.
+    if server_addr:
+        host, _, port_s = server_addr.rpartition(":")
+        srv_host, srv_port = host, int(port_s)
+    else:
+        srv_host, srv_port = config.SERVER_HOST, config.SERVER_PORT
+    # v19: the external launcher derives a per-identity client_id, because
+    # every launcher-started game used to send the hardcoded "player_A" —
+    # two players collided on peer_id_taken and a public server could hold
+    # exactly one of them.
     content = TEMPLATE.format(
-        server_host=config.SERVER_HOST,
-        server_port=config.SERVER_PORT,
-        client_id=side.peer_id,
+        server_host=srv_host,
+        server_port=srv_port,
+        client_id=(client_id or side.peer_id),
         ghost_peer=side.other_peer_id,
         ghost_formid=side.ghost_formid,
         log_level=log_level,
         auto_load_save=auto_load_save,
+        auth_blob=auth_blob,
+        player_name=player_name,
+        suppress_mirror_combat=("true" if suppress_mirror_combat else "false"),
     )
     path.write_text(content, encoding="utf-8")
     return path

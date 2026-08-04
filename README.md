@@ -6,6 +6,35 @@ This project uses unconventional approaches in several critical areas (scene gra
 Fallout 4 1.11.191 next-gen — multiplayer mod (FoM-lite framework).
 Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 
+> **Status (2026-08-04):** **PIENUVO auth v0 + the player-death crash closed
+> (v0.6.4).** Identity first: every client now proves an Ed25519 keypair
+> instead of claiming a name. The launcher keeps the seed in a DPAPI-wrapped
+> vault, signs the server's challenge bound to the server address, and hands
+> the triple to the game via `FoM.exe --auth`; HELLO carries an optional
+> 144 byte auth tail (wire v19), verification runs on vendored pure-Python
+> ed25519, and a minimal master server (`net/master/`) handles discovery.
+> `FoM.exe --connect` speaks pure JSON on stdout for the external
+> server-browser launcher. Second: the crash that fired on the respawn load
+> after a player death is closed. It was a freed-cell vcall in
+> `TESObjectCELL::DetachReference`, produced by three cooperating defects:
+> mirror driving via `vt[202]` re-hashes the actor in its current cell grid
+> without ever re-filing `refr+0xB8`; the non-owner bail hooks kept eating
+> the engine's own repair writes through the death window (650+ suppressed
+> in one window, one from inside the engine's MoveTo worker); and the threat
+> election kept scoring the dead client's frozen corpse position, handing it
+> 7 NPCs 155 ms before one crash. Fix: a reliable NPC_UNLOAD per owned NPC
+> at death (raiders flip to the survivor within a frame), full engine
+> passthrough on the bail hooks from death to stand-down close, and
+> ownership quiescence on both ends (claims deferred client-side, the dead
+> session excluded from election server-side until its respawn jump).
+> Validated: 4 two-client sessions, 8 deaths, 0 crashes, with the previously
+> suppressed engine writes now visibly passing in the logs. Crash forensics
+> stay in the tree: a 524k-record write ring dumped by the VEH on any AV, a
+> register prober that names the crash victim by form id, and an ALT+F4
+> marker that stamps teardown AVs so a force-close can never again be
+> mistaken for a gameplay crash. Wire proto v19, 405 server tests. See
+> [CHANGELOG.md](CHANGELOG.md).
+>
 > **Status (2026-07-29):** **N hardening — stability, position, locomotion,
 > aggro.** This does not close branch N, it hardens it. The recurring client
 > crashes were one bug: writes through stale bone pointers into recycled heap
@@ -51,36 +80,6 @@ Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 > Concord raiders; PARTIAL — wants broader testing and other creatures. Wire
 > proto v17. See [CHANGELOG.md](CHANGELOG.md).
 >
-> **Status (2026-06-01):** **N1 / N2 — owner-driven NPC combat sync.** My
-> first iteration on the game's AI. Hostile raiders (the Concord cluster)
-> now fight both players together, synced across clients: world position,
-> full-body pose/animation, aggro ownership with live hand-off, and death
-> (ragdoll + corpse). Each raider is owned by exactly one client whose
-> vanilla engine runs its AI and streams its pos + pose at ~30 Hz; the
-> other client mirrors it — position-pinned, Havok-keyframed — and corpses
-> it on a relayed kill. The Python server holds the ownership / threat
-> table and elects the owner from whoever the raiders natively aggro
-> (noise / line of sight), so both players are real threats. This work
-> started as the B6.5 / B6.6 wedges of the B6 world-state epic, but it grew
-> large enough to graduate into its own milestone branch (N) — and it
-> replaces that earlier stack, where raiders were frozen and immortal.
-> Scope today is hostile raiders only; other creatures and a shared-HP
-> boss are the next wedges. Working tree, first commit of the N branch
-> (v0.6.0); shared authoritative HP and the ~1 s aggro-switch idle are not
-> done yet. See [CHANGELOG.md](CHANGELOG.md).
->
-> **Status (2026-05-12):** **B6.5 / B6.6 NPC AI sync infrastructure WIP** —
-> tracked raiders are frozen, immortal, and visually neutral on both
-> peers (no aim, no head tracking, no hostile barks, no hit reaction).
-> 10 MinHook detours cover the NPC AI / combat decision pipeline;
-> Python server-side combat brain scaffold in
-> `net/server/raider_brain.py` (25 passing unit tests). Headline hook:
-> `Actor::vt[255] = sub_140CCFDF0` — bailing this single per-actor
-> per-frame combat orchestrator short-circuits target promotion, fire
-> decide, dispatch attack, and aim update in one shot. Working tree,
-> no tag. Server-driven aggro / damage flow / movement substitution
-> are the next wedges. See [CHANGELOG.md](CHANGELOG.md).
-
 ---
 
 ## Demo
@@ -140,7 +139,8 @@ in real time).
 |-----------|--------|
 | **B0** Networking + native client port | ✅ done — 196+ pytest, byte-identical protocol |
 | **B1** Container pre-mutation block | ✅ done — concurrent TAKE dup race closed |
-| **B2** Launcher (`FoM.exe`) | ✅ done — drop-in for `start_A.bat`/`start_B.bat` |
+| **B2** Launcher (`FoM.exe`) | ✅ done — drop-in for `start_A.bat`/`start_B.bat`. v0.6.4 adds `--connect`: pure JSON on stdout, banners on stderr, pass-through of `--auth`/`--name`/`--client-id`, the machine interface for the external server-browser launcher |
+| **P0** PIENUVO identity + auth (Ed25519 challenge-response, launcher vault, master server) | ✅ done (v0.6.4, 2026-08-04) — client id = `fw` + 13 hex of the pubkey hash, works on Steam and every non-Steam platform; signature binds the server address so a blob replays nowhere else; HELLO auth tail (wire v19), per-source challenge registry, vendored pure-Python ed25519, `net/master/` discovery server. 405 pytest |
 | **B3** Auto-load save (delayed LoadGame via WndProc subclass) | ✅ done |
 | **B4** Worldstate sync (GlobalVar + QuestStage) | 🟡 GlobalVar shipped; QuestStage RE done, apply pending wire |
 | **M5–M6** Strada B ghost body (NIF native injection + textures) | ✅ done — body + head + hands textured, scene graph attached |
@@ -168,11 +168,11 @@ in real time).
 | ↳ **B6.11** Time of day + weather sync | ⏳ — GlobalVar `GameHour` + Sky weather state |
 | ↳ **B6.12** Workshop / settlement build state sync | ⏳ — major epic; build/scrap/move workshop refs + furniture |
 | ↳ **B6.13** Power Armor frame + worn-state sync | ⏳ — chassis is a REFR with its own state (location, per-piece HP, fusion core); player-in-PA = chassis attached to player. Both visibilities require sync. Re-scoped from M9 to B6 (2026-05-04) — fundamentally world-state, not an equip event |
-| **N** NPC co-op combat *(split out from B6.5 / B6.6 — grew into its own epic; my first iteration on the game's AI)* | 🟡 N2 + N3 + N4 done; **hardened in v0.6.3** (stale-pointer crash class closed via NiRefObject pinning, owner-state starvation fixed, locomotion relayed, 3 aggro defects fixed, deaths replayed to distant peers). N1 still open: creature pose schema + post-mortem hardening. Scope still hostile raiders. |
+| **N** NPC co-op combat *(split out from B6.5 / B6.6 — grew into its own epic; my first iteration on the game's AI)* | 🟡 N2 + N3 + N4 done; **hardened in v0.6.3** (stale-pointer crash class closed via NiRefObject pinning, owner-state starvation fixed, locomotion relayed, 3 aggro defects fixed, deaths replayed to distant peers); **v0.6.4 closed the respawn-load crash** (freed-cell vcall in DetachReference: death release + engine passthrough in the death window + ownership quiescence, 8 deaths / 0 crashes). N1 still open: creature pose schema + post-mortem hardening. Scope still hostile raiders. |
 | ↳ **N1** NPC actor pos + pose sync (owner-driven) | 🟡 REOPENED partial (v0.6.2) — **major hardening in v0.6.3** (2026-07-29): the owner-state batch was capped at 17 entries with no rotation, so 12 of 29 owned NPCs never received a position at all (measured drift where data DID arrive: 0.0 on 4,591/5,133 samples) — now multi-batch, everyone at full 10 Hz; the engine's NATIVE position (AI char-controller proxy) is snapped via `sub_141894670` so it tracks the owner instead of diverging; locomotion is derived from the position delta and relayed (`anim=1/2 → SpeedSampled 100/200`), fixing the "slides like a log" mirrors; the bone cache is now refcount-pinned (+0x08) with a parent-detach probe, which closed the whole stale-pointer crash class. STILL OPEN: creature (non-humanoid) pose bleeds through a 1-name-match gate — a mole rat was seen stretched toward a map coordinate, needs a skeleton-schema gate, TODO in `scene_inject.cpp`; POST-mortem corpse hardening; leveled-list divergence means the same REFR can be a different NPC per client. |
 | ↳ **N2** NPC combat target + aggro + death sync (owner-driven threat table) | ✅ done (v0.6.0, 2026-06-01) — the Python server holds a threat table and elects the owner from whoever the raiders natively aggro (engine-native: noise / line of sight), with hysteresis anti-thrash; live aggro hand-off; bidirectional death-sync (corpse + ragdoll at the synced pos, either client's kill propagates). Scope: hostile raiders. **v0.6.3 fixed three defects that made ownership effectively immovable**: the engage signal was stamped once per NPC and decayed to zero forever (across 1,711 evaluations the challenger threat never exceeded 1.0, so only damage could move aggro — combat observes now refresh at 1.5 s); `Actor+0x380` is an ObjectRefHandle and not a form id, so the "I am fighting this NPC" signal was a permanent false negative (now resolved through the handle table); and the proximity tie-break was mathematically inert (weight 1.0 vs a required delta of 3.0 — raised to 6.0 so it can break the engage tie two fighting clients produce). Deaths are also remembered server-side and replayed to peers that were out of range when they fired. |
 | ↳ **N3** Shared authoritative HP / damage | ✅ done (v0.6.2, 2026-06-06) — both clients deplete ONE server-held HP pool (damage captured at the engine HP-write funnel `sub_140CC9650`, FINAL post-resist; DLL floor-1 clamp stops either client soloing the kill; server fires the kill at pool=0). v0.6.2 closed it: the enemy-health HUD now shows the LIVE combined pool on both clients (the non-owner's local Health is driven to the pool fraction so the vanilla bar reads it — `max = GetCurrent − cell`, since the AVO GetMax leaf mis-reads), the aggro/first shot is no longer lost (claimed pre-tracking, server-buffered until the NPC registers), and multi-feeder + server-driven death are confirmed. The HUD bar is GREEN (non-hostile color — handy as a "this client has no aggro" tell); a RED color is TODO. Wire proto v18. |
-| ↳ **N4** Player death + respawn sync | ✅ done (v0.6.2, 2026-06-06) — a client's death is vanilla: it ragdolls + respawns at Sanctuary, and the raiders re-aggro the surviving client (the threat table re-elects on the death). N1 / N2 already carry it — no extra wiring needed. |
+| ↳ **N4** Player death + respawn sync | ✅ done (v0.6.2, 2026-06-06) — a client's death is vanilla: it ragdolls + respawns at Sanctuary, and the raiders re-aggro the surviving client (the threat table re-elects on the death). **v0.6.4 closed the death transition properly**: the respawn-load crash is fixed (see N row), and the aggro flip is now a message, not a timeout: one reliable NPC_UNLOAD per owned NPC at death, so the raiders turn on the survivor within a frame instead of after 8 s. |
 | **B7** Rust server port | ⏳ |
 
 ## Major RE achievements
@@ -199,6 +199,40 @@ in real time).
 
 Latest 3 patches summarized below. **Full version history in
 [CHANGELOG.md](CHANGELOG.md).**
+
+### v0.6.4 (2026-08-04) — PIENUVO auth v0 + player-death crash closed
+
+Tag v0.6.4, wire proto v19, 405 server tests.
+
+- **Identity** — every client proves an Ed25519 keypair instead of claiming
+  a name. Launcher-held seed in a DPAPI-wrapped vault; the signature binds
+  the server address so an auth blob replays nowhere else; HELLO carries an
+  optional 144 byte auth tail (legacy 26 byte HELLO still accepted). Client
+  id = `fw` + 13 hex of the pubkey hash: Steam and every non-Steam platform
+  get stable identities with zero platform dependencies. New `net/master/`
+  discovery server. `FoM.exe --connect` speaks pure JSON on stdout for the
+  external server-browser launcher.
+- **The crash** — an AV on the respawn load after a player death, roughly
+  one death in three: a freed-cell vcall in `TESObjectCELL::DetachReference`.
+  Three cooperating defects, each confirmed by a capture: mirror driving via
+  `vt[202]` re-hashes the actor in its current cell grid without re-filing
+  `refr+0xB8`; the non-owner bail hooks ate the engine's own repair writes
+  through the death window (650+ suppressed in one window, one from inside
+  the engine's MoveTo worker); the threat election kept scoring the dead
+  client's corpse position, handing it 7 NPCs 155 ms before one crash.
+- **The fix** — one reliable NPC_UNLOAD per owned NPC at death (raiders
+  flip to the survivor within a frame instead of after 8 s), full engine
+  passthrough on the bail hooks from death to stand-down close, and
+  ownership quiescence on both ends (claims deferred client-side, the dead
+  session excluded from election server-side until its respawn jump).
+  Validated: 4 two-client sessions, 8 deaths, 0 crashes.
+- **Forensics kept in the tree** — a 524k-record ring of every DLL write
+  into engine memory, dumped by the VEH on any AV with a crash-register
+  scan; a register prober that names the crash victim by form id; an ALT+F4
+  marker that stamps teardown AVs so a force-close is never again mistaken
+  for a gameplay crash.
+
+Full detail in [CHANGELOG.md](CHANGELOG.md).
 
 ### N3 (2026-06-05) — shared authoritative HP — PARTIAL
 
@@ -265,70 +299,6 @@ Scope today is hostile raiders only; other creatures and a shared-HP
 boss come later. Not done yet: shared authoritative HP (both clients
 deplete one server-held pool — required for a high-HP boss) and the ~1 s
 idle on aggro hand-off. Full per-hook / per-opcode detail in
-[CHANGELOG.md](CHANGELOG.md).
-
-### B6.5 / B6.6 WIP (2026-05-12) — NPC AI sync infrastructure — UNSTABLE
-
-Working tree, no tag. Cross-client behaviour today: tracked raiders
-are frozen, immortal, and visually neutral on both peers (no aim,
-no head tracking, no hostile barks, no hit reaction). 10 MinHook
-detours cover the NPC AI / combat decision pipeline; a Python
-server-side combat brain scaffold sits in `net/server/raider_brain.py`
-(25 passing unit tests). Server-driven aggression and damage flow
-are the next wedges.
-
-**RE pass.** 10-agent IDA pair arena on the Hex-Rays decomp;
-dossiers under `re/B6.6w0_pair_AGENT_{A1,A2,B1,B2,C1,C2,D1,D2,E1,E2}.md`.
-Two independent analysis paths per hook target. Headline finding:
-the per-actor combat brain entry is `Actor::vt[255] = sub_140CCFDF0`,
-called from `Main::TickFrame` via the AI fan-out chain. Bailing
-this one function for tracked NPCs short-circuits the entire
-combat pipeline — target promotion, fire decide, dispatch attack,
-aim update — in a single hook.
-
-**Unified freeze predicate.** `should_freeze_actor(form_id)` ORs
-two sources: the server cache (`movement_override` pushed via
-`NPC_STATE_BCAST`, symmetric across peers) and a local dynamic
-set auto-populated by `npc_ai_suppress` from the `InCombat` flag
-at `Actor+0x2D0 bit 0x4000`. Required after a B-vs-A asymmetry
-where dyn-set-only checks left some actors uncovered on one peer.
-
-**Hit-applier bail** (`sub_140CD2780`) — closed a deterministic
-crash where damaging a frozen raider AV'd 3 seconds later. Root
-cause: the engine's stagger and hit-react sub-handlers were
-writing into a frozen anim graph and leaving the state machine
-inconsistent for a later access. Bailing the orchestrator
-short-circuits all three downstream handlers; tracked NPCs are
-now invulnerable client-side and crash-free under fire. The
-target Actor was misidentified at `rcx+0x300` in the initial D2
-dossier; live test confirmed `rcx` itself is the target Actor.
-
-**AIProcess→fid reverse map.** Populated lazily by
-`npc_ai_suppress` (every Update_PerFrame fire reads `Actor+0x328`
-and inserts the pair under a shared_mutex). Used by the
-fire-decide and combat-target hooks where AIProcess is reachable
-via a TLS chain but the owner Actor is not directly available.
-
-**Server brain scaffold.** `net/server/raider_brain.py` (~430
-lines, 25 passing unit tests). Combat state machine per raider:
-target selection with hysteresis + lost-target timeout, fire
-cooldown gating, chest-height aim bias, shoot-to-aggro, damage
-application with lethal-tier transition, per-peer projection of
-`combat_target_form_id` / `aim_target_xyz` / `fire_this_tick`
-for each `NPC_STATE_BCAST` entry. Not yet wired into the main
-tick loop.
-
-**Wire proto v14** is already in place from earlier B6.5w12
-work and carries the fields the substitution path needs
-(`combat_target_form_id`, `aim_xyz`, `velocity_xyz`). No bump
-required for the MVP combat substitution.
-
-**Not done.** Server-driven aggro (raider attacks peer A on
-server command — needs conditional bail in `should_freeze_actor`
-plus Phase 2 substitution in `set_combat_target`); damage flow
-opcode (`PEER_HIT_REPORT` C→S + validation +
-`NPC_DAMAGE_TAKEN` BCAST); server-driven movement; `main.py`
-wiring of `raider_brain`. Full per-hook detail in
 [CHANGELOG.md](CHANGELOG.md).
 
 ## Why this exists

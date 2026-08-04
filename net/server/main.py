@@ -55,6 +55,11 @@ from protocol import (  # noqa: E402
     NPCStateFromOwnerPayload, NPCOwnerStateEntry,
     NPCFireFromOwnerPayload,
     NPCDeathFromOwnerPayload,
+    # Discovery / server browser (dedicated-server work)
+    MasterRegisterPayload,
+    ServerInfoResponsePayload,
+    # v19 PIENUVO auth
+    AuthChallengeRequestPayload, AuthChallengeResponsePayload,
     NPCDamageFromOwnerPayload,
     NPCEngagementClaimPayload,  # Build 65.c.23 — combat-driven handoff
     NPCPoseFromOwnerPayload,    # c.37.0 — full NPC pose replication
@@ -65,6 +70,9 @@ from protocol import (  # noqa: E402
     encode_frame, decode_frame,
 )
 from server.state import ServerState, PeerSession, SessionState, LockWorldState  # noqa: E402
+from server.auth import (  # noqa: E402
+    ChallengeRegistry, verify_hello_auth, sanitize_display_name,
+)
 from server.validator import (  # noqa: E402
     validate_pos_state, validate_actor_event, validate_container_op, RejectReason,
 )
@@ -124,6 +132,14 @@ class Config:
         log_level: str = "INFO",
         waypoints_dir: Optional[Path] = None,
         npc_tick_hz: int = 10,
+        # --- dedicated-server / server-browser identity -------------------
+        name: str = "FalloutWorld server",
+        motd: str = "",
+        max_players: int = 8,
+        public: bool = False,
+        master: Optional[str] = None,
+        require_auth: bool = False,
+        public_addr: Optional[str] = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -133,6 +149,21 @@ class Config:
         self.log_level = log_level
         self.waypoints_dir = waypoints_dir
         self.npc_tick_hz = npc_tick_hz
+        # Shown in the server browser. `public` alone does nothing: a server is
+        # listed only if it also has a `master` to heartbeat. Keeping them
+        # separate means you can run a public-facing server with the listing
+        # switched off (private match) without editing the address.
+        self.name = name
+        self.motd = motd
+        self.max_players = max_players
+        self.public = public
+        self.master = master
+        # v19 PIENUVO: refuse HELLOs that carry no verified identity.
+        self.require_auth = require_auth
+        # The public "host:port" players actually dial. Login proofs are signed
+        # over it, so without it the server cannot tell a proof meant for IT
+        # from one relayed by a hostile server.
+        self.public_addr = public_addr
 
 
 # ---------------------------------------------------------------- protocol handler
@@ -150,6 +181,28 @@ class ServerProtocol(asyncio.DatagramProtocol):
         # asyncio so no race on these fields).
         self.npc_brain: Optional[NPCBrain] = None
         self.raider_brain: Optional[RaiderBrain] = None
+        # Browser identity. Kept as a plain dict so run() can fill it from the
+        # Config without the protocol object needing to know about Config, and
+        # so tests can construct a ServerProtocol without one. Defaults make an
+        # un-configured server answer a SERVER_INFO_REQUEST sensibly instead of
+        # crashing.
+        self.browser_cfg: dict = {
+            "name": "FalloutWorld server",
+            "motd": "",
+            "max_players": 8,
+            "public": False,
+            "master": None,
+        }
+        # v19 PIENUVO — login challenge registry + policy. With
+        # require_auth=False an unauthenticated HELLO (manual FoM start,
+        # legacy client) still gets a session, it just carries no verified
+        # identity. Flip with --require-auth for public servers.
+        self.auth_challenges = ChallengeRegistry()
+        self.require_auth = False
+        # Address strings this server answers to, used to bind login proofs
+        # (see server.auth.verify_hello_auth). Empty = unbound: logins still
+        # work but a hostile server can relay a proof here. run() fills it.
+        self.auth_addrs: frozenset[str] = frozenset()
         # Build 65 — owner-driven NPC sync registry. See
         # `re/agents_20/SOLVER_02_owner_driven.md`. The registry is the
         # arbiter of which peer owns each tracked NPC at any moment.
@@ -204,6 +257,43 @@ class ServerProtocol(asyncio.DatagramProtocol):
             return
 
         mtype = frame.header.msg_type
+
+        # Discovery: answered WITHOUT a session, before anything else.
+        #
+        # A server browser must be able to ask "who are you?" of a server the
+        # player has not joined — that is the whole point of a browser row. So
+        # this is handled ahead of the session lookup, is never reliable (no
+        # channel, no ACK, no retransmit: the browser simply re-asks), and
+        # touches no world state. The nonce is echoed back so the caller can
+        # match the reply to the row it asked about and measure ping without
+        # keeping any state of its own.
+        if mtype == MessageType.SERVER_INFO_REQUEST:
+            self._counters["server_info_rx"] = \
+                self._counters.get("server_info_rx", 0) + 1
+            nonce = getattr(frame.payload, "nonce", 0)
+            self._send(addr, encode_frame(
+                MessageType.SERVER_INFO_RESPONSE, 0,
+                self._server_info(nonce), reliable=False))
+            return
+
+        # v19 PIENUVO — login nonce for the external launcher. Same
+        # out-of-session shape as SERVER_INFO_REQUEST (no channel, no ACK,
+        # the launcher re-asks on silence). The nonce is NOT bound to this
+        # source address on purpose: the HELLO that answers it comes from
+        # the game's socket, not the launcher's.
+        if mtype == MessageType.AUTH_CHALLENGE_REQUEST:
+            self._counters["auth_challenge_rx"] = \
+                self._counters.get("auth_challenge_rx", 0) + 1
+            echo = getattr(frame.payload, "nonce_echo", 0)
+            resp = AuthChallengeResponsePayload(
+                nonce_echo=echo,
+                challenge=self.auth_challenges.issue(source_ip=addr[0]),
+                ttl_s=int(self.auth_challenges.ttl_s()),
+            )
+            self._send(addr, encode_frame(
+                MessageType.AUTH_CHALLENGE_RESPONSE, 0, resp, reliable=False))
+            return
+
         session = self.state.get_by_addr(addr)
 
         # HELLO: bootstrap session if new. Retransmits fall through to channel dedup.
@@ -328,9 +418,93 @@ class ServerProtocol(asyncio.DatagramProtocol):
 
     # ----- handlers
 
+    # ----- discovery / browser listing
+
+    def _server_info(self, nonce: int) -> "ServerInfoResponsePayload":
+        """Live browser row for this server. Built fresh on every request so
+        the player count is never stale."""
+        cfg = self.browser_cfg
+        return ServerInfoResponsePayload(
+            nonce=nonce,
+            name=cfg["name"],
+            motd=cfg["motd"],
+            players=len(self.state.all_sessions()),
+            max_players=cfg["max_players"],
+            version_major=self.state.server_version[0],
+            version_minor=self.state.server_version[1],
+            tick_rate_hz=self.state.tick_rate_hz,
+            passworded=False,      # no password support yet — reserved
+            public=bool(cfg["public"]),
+        )
+
+    def master_register_payload(self) -> "MasterRegisterPayload":
+        """What we heartbeat to the master. Carries no address on purpose —
+        the master uses our UDP source address, which is the endpoint that
+        actually works from outside NAT."""
+        cfg = self.browser_cfg
+        return MasterRegisterPayload(
+            name=cfg["name"],
+            motd=cfg["motd"],
+            players=len(self.state.all_sessions()),
+            max_players=cfg["max_players"],
+            version_major=self.state.server_version[0],
+            version_minor=self.state.server_version[1],
+            passworded=False,
+        )
+
+    def _send_hello_reject(self, addr: tuple[str, int]) -> None:
+        """Best-effort, non-reliable WELCOME(accepted=False). The reject
+        REASON stays in the server log only — the wire payload has no reason
+        field, and adding one is not worth a protocol bump: the launcher's
+        preflight already diagnoses full/version problems before launch."""
+        reject = WelcomePayload(
+            session_id=0, accepted=False,
+            server_version_major=self.state.server_version[0],
+            server_version_minor=self.state.server_version[1],
+            tick_rate_hz=self.state.tick_rate_hz,
+        )
+        self._send(addr, encode_frame(
+            MessageType.WELCOME, 0, reject, reliable=False))
+        self._counters["rejections"] += 1
+
     def _handle_hello_initial(self, addr: tuple[str, int], payload, now_ms: float) -> None:
         if not isinstance(payload, HelloPayload):
             return
+
+        # v19 PIENUVO — verify BEFORE accept_peer so a bad login never
+        # allocates session state. Three outcomes:
+        #   auth ok      → session carries the verified identity
+        #   auth present but wrong → reject outright (never downgrade a
+        #                  failed proof to an anonymous session: the client
+        #                  ASKED to be identified and failed)
+        #   auth absent  → anonymous; allowed unless --require-auth
+        identity_hex = ""
+        if payload.has_auth:
+            result = verify_hello_auth(
+                self.auth_challenges, payload.auth_pubkey,
+                payload.auth_challenge, payload.auth_signature,
+                self.auth_addrs)
+            if not result.ok:
+                log.warning("rejecting %s (%s): %s", addr,
+                            payload.client_id, result.reason)
+                self._send_hello_reject(addr)
+                return
+            identity_hex = result.identity_hex
+            # One live session per identity — same staleness rule as
+            # peer_id_taken: a heartbeating holder wins, a corpse is evicted.
+            prior = self.state.find_live_identity(identity_hex, now_ms)
+            if prior is not None:
+                log.warning("rejecting %s (%s): identity_taken by %s",
+                            addr, payload.client_id, prior.peer_id)
+                self._send_hello_reject(addr)
+                return
+        elif self.require_auth:
+            log.warning("rejecting %s (%s): auth_required (unauthenticated "
+                        "HELLO on a --require-auth server)", addr,
+                        payload.client_id)
+            self._send_hello_reject(addr)
+            return
+
         session, reason = self.state.accept_peer(
             addr, payload.client_id,
             (payload.client_version_major, payload.client_version_minor),
@@ -338,25 +512,28 @@ class ServerProtocol(asyncio.DatagramProtocol):
         )
         if session is None:
             log.warning("rejecting %s (%s): %s", addr, payload.client_id, reason)
-            # Reply with rejection (best-effort, non-reliable)
-            reject = WelcomePayload(
-                session_id=0, accepted=False,
-                server_version_major=self.state.server_version[0],
-                server_version_minor=self.state.server_version[1],
-                tick_rate_hz=self.state.tick_rate_hz,
-            )
-            raw = encode_frame(MessageType.WELCOME, 0, reject, reliable=False)
-            self._send(addr, raw)
-            self._counters["rejections"] += 1
+            self._send_hello_reject(addr)
             return
 
-        # B6.6w5 — record Steam ID from HELLO. Future use: validate against
-        # whitelist, derive canonical peer identity, ghost-fid registration.
+        # B6.6w5 — record Steam ID from HELLO. It is a CLAIM (Goldberg can
+        # forge it); the verified identity is identity_hex below. Phase-2
+        # PIENUVO (Steam ticket) will attest the claim.
         session.steam_id = int(getattr(payload, "steam_id", 0)) & 0xFFFFFFFFFFFFFFFF
+        session.identity_hex = identity_hex
+        # Hostile input: strip control characters before it reaches a log line
+        # or another player's screen.
+        session.display_name = sanitize_display_name(payload.display_name)
+        # The join fully succeeded, so the nonce is spent now and not before:
+        # burning it on a server_full / identity_taken / bad-signature path
+        # would force the player back through the launcher for a fresh one.
+        if identity_hex:
+            self.auth_challenges.consume(payload.auth_challenge)
         sid_str = (f"steam_id={session.steam_id}"
                    if session.steam_id else "steam_id=UNAVAILABLE")
-        log.info("peer joined: %s from %s (sid=%d) %s",
-                 session.peer_id, addr, session.session_id, sid_str)
+        auth_str = (f"identity={identity_hex[:16]}… name='{session.display_name}'"
+                    if identity_hex else "identity=ANONYMOUS")
+        log.info("peer joined: %s from %s (sid=%d) %s %s",
+                 session.peer_id, addr, session.session_id, sid_str, auth_str)
 
         # WELCOME is reliable — client needs to know it's accepted
         welcome = self.state.welcome_for(session)
@@ -483,6 +660,21 @@ class ServerProtocol(asyncio.DatagramProtocol):
             log.info("reject POS from %s: %s %s",
                      session.peer_id, RejectReason(result.reason).name, result.detail)
             return
+
+        # Build 69s — the respawn teleport (Sanctuary is ~21k units from the
+        # raider camp) ends the combat-dead election exclusion: from here on
+        # the peer's position is live again. 8000u threshold clears on any
+        # real respawn while never triggering on corpse-cam drift.
+        if session.combat_dead_until_ms > now_ms and session.last_pos is not None:
+            dx = payload.x - session.last_pos.x
+            dy = payload.y - session.last_pos.y
+            if (dx * dx + dy * dy) > 8000.0 * 8000.0:
+                session.combat_dead_until_ms = 0.0
+                log.info(
+                    "peer %s: respawn jump detected (%.0f units) — "
+                    "combat-dead flag cleared, election candidate again",
+                    session.peer_id, (dx * dx + dy * dy) ** 0.5,
+                )
 
         session.last_pos = payload
         session.last_pos_at_ms = now_ms
@@ -1299,6 +1491,18 @@ class ServerProtocol(asyncio.DatagramProtocol):
     def _handle_npc_unload(
         self, session: PeerSession, payload: NPCUnloadPayload, now_ms: float
     ) -> None:
+        # Build 69s — an NPC_UNLOAD is either a cell unload or (since 69q)
+        # the client's DEATH RELEASE burst. Either way the sender is
+        # quiescing: mark it combat-dead so the threat election stops
+        # scoring its frozen corpse position and cannot hand NPCs TO a
+        # client that is about to run LoadGame. Cleared on the respawn
+        # jump in _handle_pos_state, 25s timeout as backstop.
+        if session.combat_dead_until_ms <= now_ms:
+            log.info(
+                "peer %s sent NPC_UNLOAD — combat-dead for election "
+                "until respawn jump (or +25s)", session.peer_id,
+            )
+        session.combat_dead_until_ms = now_ms + 25000.0
         change = self.ownership.on_unload(payload, session.peer_id, now_ms)
         if change is not None:
             self._emit_ownership_change(change, now_ms)
@@ -2281,6 +2485,10 @@ class ServerProtocol(asyncio.DatagramProtocol):
             for sess in self.state.all_sessions()
             if sess.last_pos is not None
             and (now_ms - sess.last_pos_at_ms) <= 3000.0
+            # Build 69s — a combat-dead (death-released, pre-respawn) peer
+            # is not an election candidate: its corpse position must not
+            # win proximity threat while its client is inside LoadGame.
+            and sess.combat_dead_until_ms <= now_ms
         }
         # Build 65.c.35 — THREAT re-evaluation (replaces the c.28 RNG re-roll).
         # Every tick, recompute each NPC's owner from per-peer threat
@@ -2466,6 +2674,39 @@ async def _periodic_snapshot(
             log.warning("snapshot failed: %s", e)
 
 
+MASTER_HEARTBEAT_S: float = 30.0
+"""How often a public server refreshes its listing. Must stay comfortably
+below the master's expiry window (MASTER_ENTRY_TTL_S) so one dropped datagram
+never de-lists a healthy server, and short enough to keep a NAT mapping open."""
+
+
+async def _master_heartbeat(protocol: ServerProtocol, master: str) -> None:
+    """Publish this server to the master, forever, while it is public.
+
+    Fire-and-forget UDP from the server's OWN socket — deliberately: the master
+    then sees the same source address players will connect to, which is what
+    makes NAT'd servers listable without any manual port bookkeeping. We never
+    wait for a reply; if the master is down the listing simply expires, and the
+    server keeps running for direct-IP joins.
+    """
+    try:
+        host, _, port_s = master.rpartition(":")
+        addr = (host, int(port_s))
+    except (ValueError, TypeError):
+        log.error("master: bad address %r — public listing disabled", master)
+        return
+    log.info("master: publishing to %s every %.0fs as %r",
+             master, MASTER_HEARTBEAT_S, protocol.browser_cfg["name"])
+    while True:
+        try:
+            protocol._send(addr, encode_frame(
+                MessageType.MASTER_REGISTER, 0,
+                protocol.master_register_payload(), reliable=False))
+        except Exception as e:                      # never kill the server
+            log.warning("master: heartbeat failed: %s", e)
+        await asyncio.sleep(MASTER_HEARTBEAT_S)
+
+
 async def _stats_logger(protocol: ServerProtocol, interval_s: float = 10.0) -> None:
     while True:
         await asyncio.sleep(interval_s)
@@ -2582,11 +2823,46 @@ async def run_server(cfg: Config) -> None:
     # NPC_DISCOVER events.
     protocol.npc_brain = npc_brain
     protocol.raider_brain = raider_brain
+    # Browser identity + listing policy (dedicated-server work).
+    protocol.browser_cfg = {
+        "name": cfg.name,
+        "motd": cfg.motd,
+        "max_players": cfg.max_players,
+        "public": cfg.public,
+        "master": cfg.master,
+    }
+    state.max_players = cfg.max_players
+    protocol.require_auth = cfg.require_auth
+    # Bind login proofs to the addresses this server answers to. The bind
+    # address covers local play (127.0.0.1:PORT); --public-addr is what a
+    # NAT'd/public server needs, because players dial its public address and
+    # sign THAT, which never equals a 0.0.0.0 bind.
+    addrs = {f"{cfg.host}:{cfg.port}"}
+    if cfg.public_addr:
+        addrs.add(cfg.public_addr.strip())
+    protocol.auth_addrs = frozenset(addrs)
+    if cfg.require_auth:
+        log.info("auth: --require-auth ON — anonymous HELLOs will be rejected")
+    log.info("auth: login proofs bound to %s", ", ".join(sorted(addrs)))
+    if not cfg.public_addr and cfg.host in ("0.0.0.0", "::"):
+        log.warning(
+            "auth: --public-addr not set and bound to %s — players dialing the "
+            "public address will sign an address this server does not "
+            "recognise and their logins will be REJECTED. Set --public-addr "
+            "to the host:port players actually use.", cfg.host)
+    log.info("server identity: name=%r max_players=%d public=%s master=%s",
+             cfg.name, cfg.max_players, cfg.public, cfg.master or "-")
+    if cfg.public and not cfg.master:
+        log.warning("--public set without --master: nothing to register with, "
+                    "server will only be reachable by direct IP:port")
     try:
         tasks = [
             asyncio.create_task(_periodic_tick(protocol, cfg.tick_rate_hz)),
             asyncio.create_task(_stats_logger(protocol)),
         ]
+        if cfg.public and cfg.master:
+            tasks.append(asyncio.create_task(
+                _master_heartbeat(protocol, cfg.master)))
         if cfg.snapshot_path is not None:
             tasks.append(asyncio.create_task(
                 _periodic_snapshot(protocol, cfg.snapshot_path, cfg.snapshot_interval_s)
@@ -2631,6 +2907,28 @@ def parse_args() -> Config:
                          "the NPC brain at startup (B6.5+)")
     ap.add_argument("--npc-tick-hz", type=int, default=10,
                     help="NPC brain tick rate Hz (default 10)")
+    # --- dedicated server / browser listing --------------------------------
+    ap.add_argument("--name", default="FalloutWorld server",
+                    help="server name shown in the browser (ASCII, <=31)")
+    ap.add_argument("--motd", default="",
+                    help="message of the day shown in the browser (<=63)")
+    ap.add_argument("--max-players", type=int, default=8,
+                    help="reject joins past this many peers (default 8)")
+    ap.add_argument("--public", action="store_true",
+                    help="advertise this server to the master so it appears "
+                         "in the public list (requires --master)")
+    ap.add_argument("--master", default=None,
+                    help="master server host:port to register with when "
+                         "--public is set, e.g. 203.0.113.7:31338")
+    ap.add_argument("--public-addr", default=None, metavar="HOST:PORT",
+                    help="the address players actually dial (e.g. "
+                         "203.0.113.7:31337). Login proofs are signed over it; "
+                         "required whenever the bind address is not what "
+                         "clients connect to (NAT, 0.0.0.0)")
+    ap.add_argument("--require-auth", action="store_true",
+                    help="reject HELLOs without a verified PIENUVO identity "
+                         "(launcher-signed challenge). Default: allow "
+                         "anonymous sessions for local testing")
     args = ap.parse_args()
     return Config(
         host=args.host, port=args.port,
@@ -2640,6 +2938,11 @@ def parse_args() -> Config:
         log_level=args.log_level,
         waypoints_dir=args.waypoints_dir,
         npc_tick_hz=args.npc_tick_hz,
+        name=args.name, motd=args.motd,
+        max_players=args.max_players,
+        public=args.public, master=args.master,
+        require_auth=args.require_auth,
+        public_addr=args.public_addr,
     )
 
 

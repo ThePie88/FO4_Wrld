@@ -30,6 +30,39 @@ namespace fw::hooks {
 // already installed.
 bool install_npc_ai_suppress(std::uintptr_t module_base);
 
+// Build 69 — A/B control for the c.36b mirror combat suppression, driven by
+// `suppress_mirror_combat` in fw_config.ini (default true = shipping
+// behaviour). Passing false stops the non-owner writing HighProcess+0x189,
+// which RE identified as the engine's own StopCombat request flag. Exists so
+// the hp-churn probe can be run with the suppression off WITHOUT a rebuild —
+// see the comment on Settings::suppress_mirror_combat. Expect the pre-c.36b
+// symptoms (mirrors aiming at the local player, combat-crouch sliding) while
+// it is off.
+void set_mirror_combat_suppression(bool enabled) noexcept;
+
+// Build 69c — called by the kill hook when the LOCAL player (form 0x14) dies.
+// Starts a stand-down window during which mirrored NPCs are allowed to stop
+// combat normally, so nothing we hold alive can outlive the respawn teleport
+// and the cell swap that follow. See the comment on detour_request_stop_combat.
+void note_local_player_death() noexcept;
+
+// Build 69d — true while the local player's death stand-down is running.
+// During it, NOTHING should write engine state for any NPC: the respawn
+// teleport re-elects ownership on proximity (13 flips in one second were
+// measured), and every flip switches an actor between owner-capture and
+// mirror-apply while the old cell is being unloaded. Two AVs at two different
+// addresses landed ~150 ms after that teleport. Callers on the network apply
+// path must consult this too — the per-frame detour bails on its own.
+bool in_local_death_standdown() noexcept;
+
+// Build 69r (2026-08-04) — A/B lever for the Build 69q death-recohere sweep,
+// default OFF (see config.h `death_recohere_sweep` for the full post-mortem:
+// decomp proved the MoveTo(cell=NULL) does NO cell re-file and instead plants
+// ExtraBadPosition + a "moved" changeform on every swept actor — payloads the
+// LoadGame walkers then consume). Called once from install_all with the
+// config value.
+void set_death_recohere_sweep(bool enabled) noexcept;
+
 // Diagnostic counters (atomic, lock-free reads).
 //   suppress: count of detour fires where form_id matched tracked set
 //             and original was skipped.

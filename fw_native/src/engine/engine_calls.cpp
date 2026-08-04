@@ -1,4 +1,5 @@
 #include "engine_calls.h"
+#include "../audit.h"
 
 #include <windows.h>
 #include <atomic>
@@ -17,6 +18,20 @@
 #include "../main_thread_dispatch.h"        // Build 55f: mark_raider_ghost_targeted_yaw
 
 namespace fw::engine {
+
+// Build 69m — SEH-caged form-id read for the mutation ledger. Local to this
+// file because the ledger has to name an actor at points where we only hold a
+// raw pointer, and those pointers can be mid-teardown.
+static std::uint32_t read_form_id_safe(void* actor) noexcept {
+    if (!actor) return 0;
+    __try {
+        return *reinterpret_cast<const std::uint32_t*>(
+            reinterpret_cast<const std::uint8_t*>(actor) + offsets::FORMID_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
 
 namespace {
 
@@ -2237,6 +2252,8 @@ bool apply_ghost_pos(float x, float y, float z) noexcept {
         coords[1] = y;
         coords[2] = z;
         raw_ok = true;
+        const float xyz_[3] = {x, y, z};   // Build 69o — write ring
+        fw::audit::wnote(fw::audit::WSite::kGhostPos, p, xyz_, 12);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         raw_ok = false;
     }
@@ -2271,6 +2288,7 @@ bool apply_ghost_pos(float x, float y, float z) noexcept {
         fw::hooks::tls_applying_remote = true;
         __try {
             g_set_position_engine(dup, xyz);
+            fw::audit::wnote(fw::audit::WSite::kEngSetPos, dup, xyz, 12);  // 69p
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             static std::atomic<std::uint64_t> seh_count{0};
             const auto n = seh_count.fetch_add(1, std::memory_order_relaxed);
@@ -2611,6 +2629,9 @@ bool apply_global_var(std::uint32_t global_form_id, float value) {
             return false;
         }
         *reinterpret_cast<float*>(bytes + offsets::TESGLOBAL_VALUE_OFF) = value;
+        fw::audit::wnote(fw::audit::WSite::kGlobalVar,
+                         bytes + offsets::TESGLOBAL_VALUE_OFF, &value, 4,
+                         global_form_id);  // Build 69o
         ok = true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -4065,6 +4086,10 @@ bool actor_atomic_teleport(void* actor,
 bool actor_teleport_handoff(void* actor,
                             float pos_x, float pos_y, float pos_z,
                             float yaw_rad) {
+    // Build 69m — the biggest single write we make: MoveTo with cell=NULL,
+    // worldspace=NULL and skip_area_check=1, which disables the guard that
+    // reads refr+0xB8. Distance is uncapped.
+    fw::audit::note(read_form_id_safe(actor), fw::audit::kTeleported, actor);
     if (!actor || !g_actor_atomic_teleport) return false;
     if (!g_ready.load(std::memory_order_acquire)) return false;
     bool ok = false;
@@ -4082,6 +4107,8 @@ bool actor_teleport_handoff(void* actor,
             /*do_process_update=*/static_cast<char>(1),
             /*skip_player_check=*/static_cast<char>(1),
             /*skip_area_check=*/static_cast<char>(1));
+        fw::audit::wnote(fw::audit::WSite::kEngMoveTo, actor, pos, 12,
+                         read_form_id_safe(actor));  // Build 69p
         ok = true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         FW_WRN("engine: SEH in actor_teleport_handoff actor=%p pos=(%.1f,%.1f,%.1f)",
@@ -4135,6 +4162,7 @@ bool set_actor_motion_keyframed(void* actor) {
 // silent no-op → the body never returned to Dynamic, which would have frozen
 // raider corpses (no ragdoll) and stuck the body Keyframed after a handoff.
 bool set_actor_motion_dynamic(void* actor) {
+    fw::audit::note(read_form_id_safe(actor), fw::audit::kHavokKeyframed, actor);
     if (!actor || !g_niav_set_motion_type) return false;
     if (!g_ready.load(std::memory_order_acquire)) return false;
     void* root3d = nullptr;
@@ -4158,6 +4186,8 @@ bool set_actor_motion_dynamic(void* actor) {
             /*a3=*/static_cast<char>(1),
             /*a4=*/static_cast<char>(0),
             /*activate_on_land=*/static_cast<std::uint8_t>(1));
+        fw::audit::wnote(fw::audit::WSite::kEngMotion, actor, nullptr, 0,
+                         read_form_id_safe(actor));  // Build 69p
         ok = true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         FW_WRN("engine: SEH in set_actor_motion_dynamic actor=%p root3d=%p",
@@ -4182,6 +4212,8 @@ bool kill_actor(void* victim, void* killer) noexcept {
                       /*a3=*/0.0f,
                       /*silent=*/static_cast<char>(1),
                       /*a5=*/static_cast<char>(0));
+        fw::audit::wnote(fw::audit::WSite::kEngKill, victim, nullptr, 0,
+                         read_form_id_safe(victim));  // Build 69p
         ok = true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         FW_WRN("engine: SEH in kill_actor victim=%p killer=%p", victim, killer);
@@ -5831,6 +5863,10 @@ bool disable_actor_movement(void* actor) noexcept {
 //
 // SEH-caged. First 10 + every 100th logged.
 bool apply_npc_pos(void* actor, float x, float y, float z) noexcept {
+    // Build 69m — ledger: vt[202] re-hashes the ref in its CURRENT parentCell
+    // grid and never writes refr+0xB8, so repeated calls can carry an actor
+    // far outside the cell it still believes it is in.
+    fw::audit::note(read_form_id_safe(actor), fw::audit::kPosApplied, actor);
     if (!g_ready.load(std::memory_order_acquire)) {
         FW_WRN("engine: apply_npc_pos called before init");
         return false;
@@ -5855,6 +5891,8 @@ bool apply_npc_pos(void* actor, float x, float y, float z) noexcept {
     bool seh_failed = false;
     __try {
         g_actor_setpos_vt202(actor, pos, 0);
+        fw::audit::wnote(fw::audit::WSite::kEngSetPos, actor, pos, 12,
+                         read_form_id_safe(actor));  // Build 69p
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         seh_failed = true;
     }
@@ -5887,6 +5925,7 @@ bool apply_npc_pos(void* actor, float x, float y, float z) noexcept {
 // Pure SEH-caged memory writes, NO engine call → cannot touch the global
 // cell-grid spinlock that makes vt[202] deadlock during a cell-stream.
 bool apply_npc_pos_raw(void* actor, float x, float y, float z) noexcept {
+    fw::audit::note(read_form_id_safe(actor), fw::audit::kPosAppliedRaw, actor);
     if (!g_ready.load(std::memory_order_acquire)) return false;
     if (!actor) return false;
 
@@ -5902,6 +5941,10 @@ bool apply_npc_pos_raw(void* actor, float x, float y, float z) noexcept {
         *reinterpret_cast<float*>(bytes + offsets::POS_OFF + 4) = y;
         *reinterpret_cast<float*>(bytes + offsets::POS_OFF + 8) = z;
         wrote_logical = true;
+        const float xyz_[3] = {x, y, z};   // Build 69o — write ring
+        fw::audit::wnote(fw::audit::WSite::kPosRaw,
+                         bytes + offsets::POS_OFF, xyz_, 12,
+                         read_form_id_safe(actor));
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         const auto sn = s_seh.fetch_add(1, std::memory_order_relaxed);
         if (sn < 5) {
@@ -5930,6 +5973,16 @@ bool apply_npc_pos_raw(void* actor, float x, float y, float z) noexcept {
                 *reinterpret_cast<float*>(n + offsets::NI_AV_WORLD_TRANSLATE_OFF + 0) = x;
                 *reinterpret_cast<float*>(n + offsets::NI_AV_WORLD_TRANSLATE_OFF + 4) = y;
                 *reinterpret_cast<float*>(n + offsets::NI_AV_WORLD_TRANSLATE_OFF + 8) = z;
+                // Build 69o — write ring: the NIF root pointer here comes
+                // from a per-call re-read of Actor+0xF0->+0x08, but the NODE
+                // it points at can still be a teardown-freed block.
+                const float xyz_[3] = {x, y, z};
+                fw::audit::wnote(fw::audit::WSite::kPosRawNif,
+                                 n + offsets::NI_AV_LOCAL_TRANSLATE_OFF,
+                                 xyz_, 12, read_form_id_safe(actor));
+                fw::audit::wnote(fw::audit::WSite::kPosRawNif,
+                                 n + offsets::NI_AV_WORLD_TRANSLATE_OFF,
+                                 xyz_, 12, read_form_id_safe(actor));
             }
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -7229,6 +7282,7 @@ void update_ghost_proxy_position(void* proxy,
     float xyz[3] = { x, y, z };
     __try {
         g_set_position_engine(proxy, xyz);
+        fw::audit::wnote(fw::audit::WSite::kEngSetPos, proxy, xyz, 12);  // 69p
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         static std::atomic<std::uint64_t> seh_count{0};
         const auto n = seh_count.fetch_add(1, std::memory_order_relaxed);

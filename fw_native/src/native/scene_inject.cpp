@@ -42,6 +42,7 @@
 #include <vector>
 
 #include "../log.h"
+#include "../audit.h"
 #include "../main_thread_dispatch.h"
 #include "../net/client.h"
 #include "../offsets.h"   // M9 wedge 2: TESObjectARMO/ARMA + lookup_by_form_id RVAs
@@ -212,6 +213,7 @@ void nistream_free(void* buf);
 namespace {
 
 // Function pointer types (all __fastcall on x64 Windows).
+using NiTArrayAllocFn  = void** (*)(unsigned int count);
 using AllocateFn       = void* (*)(void* pool, std::size_t size,
                                    std::uint32_t align, bool aligned_fb);
 using PoolInitFn       = void  (*)(void* pool, std::uint32_t* flag);
@@ -383,6 +385,7 @@ struct Resolved {
     void**    ssn_slot            = nullptr;   // qword_143E47A10 — ???
     void**    world_sg_slot       = nullptr;   // qword_1432D2228 — World SceneGraph
     AllocateFn        allocate    = nullptr;
+    NiTArrayAllocFn   nitarray_alloc = nullptr;   // Build 69n: sub_1416BFA70
     PoolInitFn        pool_init   = nullptr;
     NiNodeCtorFn      ninode_ctor = nullptr;
     FixedStrCreateFn  fs_create   = nullptr;
@@ -505,6 +508,7 @@ bool resolve_once() {
     g_r.ssn_slot        = reinterpret_cast<void**>(base + SSN_SINGLETON_RVA);
     g_r.world_sg_slot   = reinterpret_cast<void**>(base + WORLD_SG_SINGLETON_RVA);
     g_r.allocate        = reinterpret_cast<AllocateFn>      (base + ALLOCATE_FN_RVA);
+    g_r.nitarray_alloc  = reinterpret_cast<NiTArrayAllocFn> (base + NITARRAY_ALLOC_FN_RVA);
     g_r.pool_init       = reinterpret_cast<PoolInitFn>      (base + POOL_INIT_FN_RVA);
     g_r.ninode_ctor     = reinterpret_cast<NiNodeCtorFn>    (base + NINODE_CTOR_RVA);
     g_r.fs_create       = reinterpret_cast<FixedStrCreateFn>(base + FIXEDSTR_CREATE_RVA);
@@ -3737,18 +3741,50 @@ void* clone_nif_subtree_recursive(void* source, int depth, int max_depth) {
             // buffer overflow on grow, allocate with HEADROOM and set the
             // capacity field at +0x130 to match. 16 extra slots covers
             // every observed attach pattern (max 5-6 extra in practice).
+            // Build 69n (2026-08-04) — build the array with the ENGINE's own
+            // NiTArray allocator instead of hand-rolling it.
+            //
+            // WHAT WE DID BEFORE (kept for rollback):
+            //     engine_pool_alloc(cap_with_headroom * 8)
+            //   i.e. g_r.allocate(pool, cap*8, /*align=*/0x10, /*aligned=*/true)
+            //
+            // THREE THINGS WERE WRONG WITH IT, and only the third was visible:
+            //
+            //  1. NO COUNT HEADER. sub_1416BFA70 allocates 8*n+8 and writes n
+            //     into the header qword, returning base+8. Every engine path
+            //     that later touches the array reads that header: ~NiNode ->
+            //     sub_1416BFB00 does `count = *(base-8)`, releases that many
+            //     entries (a lock xadd plus a virtual DeleteThis on each) and
+            //     frees base-8; the grow path sub_1404E7B50 does the same. With
+            //     a raw cap*8 block the engine reads the tail of whatever pool
+            //     block precedes ours as the count.
+            //
+            //  2. WRONG ALLOCATOR FLAGS. sub_1416579C0's 4th argument is an
+            //     "aligned" flag: set, it can fall back to _aligned_malloc.
+            //     The engine's array free is sub_1422B7620 -> sub_141657E20(
+            //     pool, ptr, /*aligned=*/0) = plain free(). We allocated
+            //     aligned and left the engine to free() it. sub_1416BFA70
+            //     passes align=0 AND aligned=0, matching the free exactly.
+            //
+            //  3. The symptom we DID see and mistook for the disease: the
+            //     comment above blames a too-small array for
+            //     "[ERR] inject_body_nif: SEH attaching skel to body" and cures
+            //     it with 16 slots of headroom. That headroom only pushes the
+            //     grow — and with it the header read — past the 16th attach, so
+            //     the crash left the test window instead of leaving the code.
+            //     Headroom is KEPT (it is still correct to reserve capacity),
+            //     but it is no longer load-bearing.
             const std::uint16_t cap_with_headroom =
                 static_cast<std::uint16_t>(count + 16);
-            void** new_kids = reinterpret_cast<void**>(
-                engine_pool_alloc(static_cast<std::size_t>(cap_with_headroom)
-                                  * 8));
+            void** new_kids = g_r.nitarray_alloc
+                ? g_r.nitarray_alloc(cap_with_headroom)
+                : nullptr;
             if (new_kids) {
-                // Zero out the trailing slots so engine's count-based
-                // iteration doesn't wander off the end if it ever does
-                // capacity-bound walks (unlikely but defensive).
-                for (std::uint16_t i = count; i < cap_with_headroom; ++i) {
-                    new_kids[i] = nullptr;
-                }
+                // Build 69n — the trailing-slot zeroing loop that used to live
+                // here is gone: sub_1416BFA70 memsets the whole payload before
+                // returning, so every slot is already null. Nulls are legal
+                // entries — the engine's own SSN leaves slot 4 empty and
+                // AttachChild(reuseFirstEmpty) exists precisely to fill holes.
                 for (std::uint16_t i = 0; i < count; ++i) {
                     void* src_child = nullptr;
                     __try { src_child = src_kids[i]; }
@@ -3898,6 +3934,24 @@ bool inject_debug_cube(float x, float y, float z) {
     return ok;
 }
 
+// TODO (ghost lifecycle — this is what PEER_LEAVE must call, in the right
+// order). Today PEER_LEAVE only logs a line (net/client.cpp), so a peer that
+// disconnects leaves its ghost standing in the world forever, frozen at its
+// last position: nothing hides it, detaches it, or frees the slot for reuse.
+//
+// This function is already the correct teardown, and it is more than "remove
+// the body": it invalidates the body-geom cache and the cull contributor set
+// in lockstep, so the NEXT inject starts from empty and the first BODY-armor
+// attach performs the empty->non-empty transition that applies the cull flag.
+// Skipping that leaves the next ghost with stale culling.
+//
+// ORDERING (from shutdown(), which is the only correct caller today):
+// synthetic_refr::shutdown() MUST run first — pending assembly callbacks would
+// otherwise try to attach to a ghost that is being torn down. A PEER_LEAVE
+// handler has to cancel/settle that peer's in-flight work the same way before
+// detaching, and it must run on the main thread like every other scene-graph
+// mutation. Per-peer teardown also needs the pose/crouch/equip caches keyed by
+// that peer dropped, or the next player to occupy the slot inherits them.
 void detach_debug_cube() {
     void* cube = g_injected_cube.exchange(nullptr, std::memory_order_acq_rel);
     // M9 wedge 3: invalidate body geom cache + contributor set in lockstep
@@ -4765,6 +4819,7 @@ static bool seh_write_local_transform(void* node, const float xf[16]) {
     __try {
         char* base = reinterpret_cast<char*>(node) + NIAV_LOCAL_ROTATE_OFF;
         std::memcpy(base, xf, sizeof(float) * 16);
+        fw::audit::wnote(fw::audit::WSite::kNodeXform, base, xf, 64);  // 69o
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
@@ -7440,6 +7495,8 @@ bool seh_write_local_transform_geom(void* geom, const float xf[16]) {
     if (!geom || !xf) return false;
     __try {
         std::memcpy(reinterpret_cast<char*>(geom) + 0x30, xf, 64);
+        fw::audit::wnote(fw::audit::WSite::kGeomXform,
+                         reinterpret_cast<char*>(geom) + 0x30, xf, 64);  // 69o
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -10008,6 +10065,40 @@ bool local_player_in_world() {
     }
 }
 
+// TODO (ghost lifecycle — spawn must become EVENT-DRIVEN, but NOT naively).
+//
+// Today the ghost is injected on a TIMER: 30 s grace, then up to 8 s polling
+// for a remote snapshot, then inject ANYWAY. Consequences, all observed live:
+//   * client A alone spawns a T-posed ghost of B on top of itself ~38 s in,
+//     with B not even running (no pose/pos data has ever arrived);
+//   * whether a late-joining peer is visible at all depends on the local
+//     client having been up long enough for the fallback inject to have run.
+// That is luck, not design: the ghost body happens to pre-exist, so the first
+// POS_BROADCAST from a peer joining later simply moves it.
+//
+// DO NOT "fix" this by injecting directly from the PEER_JOIN handler. The 30 s
+// grace exists because of a real crash, documented below: the save-load flow
+// fires SEVERAL LoadGame events in a row and tears down the ShadowSceneNode
+// each time, so injecting in that window is a use-after-free during scene-graph
+// rebuild — and local_player_in_world() is NOT sufficient on its own, it passes
+// cleanly BETWEEN two LoadGames. A peer can join at exactly that moment.
+//
+// Correct shape (event decides WHAT, worker decides WHEN):
+//   1. PEER_JOIN records "a ghost is needed for peer X" in a pending set; it
+//      never touches the scene graph itself.
+//   2. This worker (or a re-armable equivalent) injects only once the scene is
+//      proven stable, and must be RE-ARMED after every LoadGame, because a
+//      cell/save reload destroys the SSN and any ghost attached to it.
+//   3. PEER_LEAVE releases that peer's ghost — see the TODO on
+//      detach_debug_cube for the ordering that has to be respected.
+//   4. Data arriving before the ghost exists must be QUEUED, not dropped. The
+//      pattern already exists for equipment (flush_pending_armor_ops /
+//      flush_pending_weapon_ops, drained at the end of inject); pose and pos
+//      need the same treatment instead of a fresh mechanism.
+// Blocking prerequisite for more than 2 players: g_injected_cube is a SINGLE
+// pointer, so exactly one remote peer can ever be rendered. Ghost identity is
+// also still static (ghost_map in fw_config.ini), which cannot work once peers
+// are dynamic — the server has to assign it at join.
 void arm_worker(unsigned int grace_delay_ms) {
     // RETURN TO T+30s GRACE — the aggressive polling approach (2026-04-23
     // earlier this day) caused crashes because we'd inject between
@@ -10732,6 +10823,25 @@ static void pos_update_seh(void* body, void* head,
 }
 
 void on_pos_update_message() {
+    // Build 69f/69i — DEATH STAND-DOWN covers the ghost APPLY path.
+    //
+    // The 2026-08-02 17:41 crash faulted at `call qword ptr [rax+148h]`
+    // (sub_1404CC240+0x404): a virtual call whose vtable slot held garbage on
+    // one run (READ addr=-1) and NULL on the next (EXEC at 0) — the same
+    // instruction and the same object, two stages of one free.
+    //
+    // This handler WRITES into the ghost NiNode we attached to the world scene
+    // graph (bone transforms, crouch translations, position). Writing into a
+    // node the engine is concurrently unlinking is exactly the race that
+    // leaves a half-freed vtable behind. The player is dead and looking at a
+    // load screen: there is nothing to render.
+    //
+    // NOTE the asymmetry with on_bone_tick_message, which is deliberately NOT
+    // gated: that one only SENDS our pose, and gating it froze the remote
+    // ghost standing upright instead of letting it ragdoll (Build 69f
+    // regression). Suppress writes, never sends.
+    if (fw::hooks::in_local_death_standdown()) return;
+
     void* body = g_injected_cube.load(std::memory_order_acquire);
     if (!body) return;
     void* head = g_injected_head.load(std::memory_order_acquire);
@@ -10914,6 +11024,13 @@ bool write_local_3x3(void* bone, const float mat3[9]) {
         std::uint64_t* flags = reinterpret_cast<std::uint64_t*>(
             reinterpret_cast<char*>(bone) + NIAV_FLAGS_OFF);
         *flags |= 0x2;
+        // Build 69o — write ring. This is THE prime suspect class for the
+        // float-pair heap smears: rotation rows are ±0.0f-rich and the
+        // bone_is_attached guard above cannot see a REALLOCATED block
+        // (its +0x28 then holds nonzero garbage and the guard passes).
+        // The paired dirty-flag RMW is deliberately not recorded — it is
+        // adjacent, same-dest and can't encode float pairs.
+        fw::audit::wnote(fw::audit::WSite::kBone3x3, p, mat3, 48);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -10971,6 +11088,7 @@ bool write_local_translate(void* bone, const float t3[3]) {
         std::uint64_t* flags = reinterpret_cast<std::uint64_t*>(
             reinterpret_cast<char*>(bone) + NIAV_FLAGS_OFF);
         *flags |= 0x2;
+        fw::audit::wnote(fw::audit::WSite::kBoneTrans, p, t3, 12);  // Build 69o
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -11102,6 +11220,24 @@ void* find_local_player_3d(std::uintptr_t base) {
 // ----- end M8P3.15 helpers --------------------------------------------
 
 void on_bone_tick_message() {
+    // Build 69i — NO stand-down gate here, and that is deliberate.
+    //
+    // Build 69f added one, and it caused a visible regression the user spotted:
+    // when a player died, their ghost stayed STANDING on the other client
+    // instead of ragdolling. Reason: there is no player-death message on the
+    // wire at all (kill_hook.cpp skips form 0x14 by design, and the session
+    // logs confirm kills_sent=0), so the ONLY thing that ever made a remote
+    // ghost fall over was this pose stream carrying the dying skeleton. Gate
+    // it and the ghost freezes mid-stride.
+    //
+    // It is also the wrong place for the gate: this handler READS our own
+    // player's bones and ENQUEUES them on the network (enqueue_pose_state /
+    // enqueue_pose_crouch_state). It writes nothing into the local scene
+    // graph — g_injected_cube is only loaded to check the ghost exists. The
+    // post-death crash comes from WRITING into engine objects being torn
+    // down, which is what the apply-side handlers do; sending bytes cannot
+    // fault on a freed vtable.
+
     // Force-disable the legacy diag log path. Without this, walk_player_nested
     // dumps ~500 lines per call × 20Hz = 10k lines/sec on FILE I/O. That
     // starves the FO4 main thread and freezes both clients.
@@ -11432,6 +11568,25 @@ void store_remote_pose(std::uint64_t ts_ms,
 }
 
 void on_pose_apply_message() {
+    // Build 69f/69i — DEATH STAND-DOWN covers the ghost APPLY path.
+    //
+    // The 2026-08-02 17:41 crash faulted at `call qword ptr [rax+148h]`
+    // (sub_1404CC240+0x404): a virtual call whose vtable slot held garbage on
+    // one run (READ addr=-1) and NULL on the next (EXEC at 0) — the same
+    // instruction and the same object, two stages of one free.
+    //
+    // This handler WRITES into the ghost NiNode we attached to the world scene
+    // graph (bone transforms, crouch translations, position). Writing into a
+    // node the engine is concurrently unlinking is exactly the race that
+    // leaves a half-freed vtable behind. The player is dead and looking at a
+    // load screen: there is nothing to render.
+    //
+    // NOTE the asymmetry with on_bone_tick_message, which is deliberately NOT
+    // gated: that one only SENDS our pose, and gating it froze the remote
+    // ghost standing upright instead of letting it ragdoll (Build 69f
+    // regression). Suppress writes, never sends.
+    if (fw::hooks::in_local_death_standdown()) return;
+
     void* ghost = g_injected_cube.load(std::memory_order_acquire);
     if (!ghost) return;
 
@@ -11535,6 +11690,25 @@ void store_remote_crouch(std::uint64_t ts_ms,
 }
 
 void on_pose_crouch_apply_message() {
+    // Build 69f/69i — DEATH STAND-DOWN covers the ghost APPLY path.
+    //
+    // The 2026-08-02 17:41 crash faulted at `call qword ptr [rax+148h]`
+    // (sub_1404CC240+0x404): a virtual call whose vtable slot held garbage on
+    // one run (READ addr=-1) and NULL on the next (EXEC at 0) — the same
+    // instruction and the same object, two stages of one free.
+    //
+    // This handler WRITES into the ghost NiNode we attached to the world scene
+    // graph (bone transforms, crouch translations, position). Writing into a
+    // node the engine is concurrently unlinking is exactly the race that
+    // leaves a half-freed vtable behind. The player is dead and looking at a
+    // load screen: there is nothing to render.
+    //
+    // NOTE the asymmetry with on_bone_tick_message, which is deliberately NOT
+    // gated: that one only SENDS our pose, and gating it froze the remote
+    // ghost standing upright instead of letting it ragdoll (Build 69f
+    // regression). Suppress writes, never sends.
+    if (fw::hooks::in_local_death_standdown()) return;
+
     // KILL-SWITCH: flip to false + rebuild to instantly disable the crouch
     // apply (e.g. if it ever regresses the ghost orientation/position).
     static const bool kGhostCrouchEnabled = true;
@@ -11744,6 +11918,9 @@ void ni_incref(void* obj) noexcept {
     __try {
         _InterlockedIncrement(reinterpret_cast<volatile long*>(
             reinterpret_cast<char*>(obj) + NIAV_REFCOUNT_OFF));
+        fw::audit::wnote(fw::audit::WSite::kRefInc,
+                         reinterpret_cast<char*>(obj) + NIAV_REFCOUNT_OFF,
+                         nullptr, 4);  // Build 69o
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
@@ -11753,7 +11930,14 @@ void ni_decref(void* obj) noexcept {
         const long prev = _InterlockedExchangeAdd(
             reinterpret_cast<volatile long*>(
                 reinterpret_cast<char*>(obj) + NIAV_REFCOUNT_OFF), -1);
+        fw::audit::wnote(fw::audit::WSite::kRefDec,
+                         reinterpret_cast<char*>(obj) + NIAV_REFCOUNT_OFF,
+                         &prev, 4);  // Build 69o — bytes = count BEFORE the dec
         if (prev == 1) {
+            // Build 69o — record the FREE before running it. If a block WE
+            // freed gets reallocated as the load's victim object, the ring
+            // shows "NIFREE dest=<obj>" a moment before engine writes there.
+            fw::audit::wnote(fw::audit::WSite::kNiFree, obj, nullptr, 0);
             using DtorFn = void(__fastcall*)(void*);
             auto vt = *reinterpret_cast<void***>(obj);
             reinterpret_cast<DtorFn>(vt[1])(obj);   // NiRefObject::DeleteThis
@@ -12079,6 +12263,13 @@ void store_npc_crouch(std::uint32_t form_id,
 void apply_npc_pose_to_actor(void* actor, std::uint32_t form_id) {
     if (!actor || form_id == 0 || form_id == 0xFFFFFFFFu) return;
 
+    // Build 69o — attribute this thread's leaf writes (write_local_3x3 /
+    // write_local_translate / ni_incref/decref see only bone pointers) to the
+    // NPC being driven. Not cleared on return: between drives the value just
+    // reads "last NPC processed", which is still the right attribution for
+    // any straggler write on this thread.
+    fw::audit::wctx_fid(form_id);
+
     // Snapshot the latest pose for this fid (net thread writes it).
     RemoteNpcPoseSlot slot;
     {
@@ -12170,6 +12361,7 @@ void apply_npc_pose_to_actor(void* actor, std::uint32_t form_id) {
             // later write. From here the engine cannot free these nodes, so a
             // write through this cache can never land in recycled memory.
             if (cache.ptrs[i]) {
+                if (i == 0) fw::audit::note(form_id, fw::audit::kBonesPinned, actor);
                 ni_incref(cache.ptrs[i]);
                 g_pins_taken.fetch_add(1, std::memory_order_relaxed);
             }
@@ -12333,7 +12525,129 @@ void release_npc_bone_cache(std::uint32_t form_id) {
     g_npc_bone_cache.erase(it);
 }
 
+// Build 69k — RELEASE EVERY BONE PIN *NOW*, called the instant the local
+// player dies, from the kill detour, on the main thread.
+//
+// THE TIMING IS THE WHOLE FIX. ni_decref only runs NiRefObject::DeleteThis
+// when OUR reference was the last one (`prev == 1`). That makes the moment we
+// release decisive:
+//
+//   during the death-cam limbo  the cell is intact and the engine still holds
+//                               its own references, so our decref goes N -> N-1
+//                               and no destructor runs. Free of charge.
+//   during the cell unload      the engine has already dropped its references,
+//                               ours is the last, 1 -> 0, and WE execute the
+//                               destructor from inside a WndProc while the
+//                               engine is mid-teardown. That is the AV at
+//                               sub_1404CC240+0x404.
+//   frozen (Build 69j)          we hold objects alive INTO the unload, keeping
+//                               NiNodes the engine wants gone. Measured: still
+//                               crashed, same instruction. Wrong answer.
+//
+// So we spend the 3-4 quiet seconds of the ragdoll animation — after death,
+// before the respawn teleport, while the old cell is still fully loaded and
+// the engine is quiescent — doing the teardown that would otherwise land in
+// the worst possible instant. The sweep then stays frozen for the rest of the
+// window because there is nothing left to release.
+// SEH-caged: owner_actor may already be torn down when we walk the cache.
+std::uint32_t safe_read_actor_cell_id(void* actor) noexcept {
+    if (!actor) return 0;
+    __try {
+        void* cell = *reinterpret_cast<void**>(
+            reinterpret_cast<std::uint8_t*>(actor) + fw::offsets::PARENT_CELL_OFF);
+        if (!cell) return 0;
+        // TESForm::formID lives at +0x14 on every form, cells included.
+        return *reinterpret_cast<const std::uint32_t*>(
+            reinterpret_cast<const std::uint8_t*>(cell) + 0x14);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+void release_all_npc_bone_pins() {
+    std::size_t entries = 0, pins = 0;
+
+    // Build 69l — name the CELL of every pinned actor before dropping it.
+    //
+    // The 2026-08-03 23:37 pair killed the "owner vs mirror" theory: client B
+    // OWNED the four raiders that killed it (server: all four assigned to
+    // player_B at 23:36:35) yet still crashed, while client A died owning its
+    // raiders and did not. What actually differed is WHICH actors were pinned:
+    // B held 0x19174F / 0x191750 / 0x19E13C-E / 0xA1A4E-59 — the SANCTUARY
+    // population, i.e. the cell it was about to respawn INTO, mirrored from the
+    // peer standing there. A, already at Sanctuary, had none.
+    //
+    // So the candidate rule is "we were mirroring actors in the DESTINATION
+    // cell". This line is what confirms or kills it: if the printed cell ids
+    // are consistently the respawn cell rather than the one being left, the
+    // rule holds and the fix has to restore every mirrored actor to vanilla at
+    // death, not merely unpin its bones (dropping all 35 pins at T+0 did NOT
+    // prevent the crash, so the pins were the symptom, not the cause).
+    for (auto& kv : g_npc_bone_cache) {
+        std::size_t n = 0;
+        if (kv.second.pinned) {
+            for (void* p : kv.second.ptrs) if (p) ++n;
+        }
+        FW_LOG("[bone-pin]   pinned fid=0x%08X cell=0x%08X pins=%zu",
+               kv.first, safe_read_actor_cell_id(kv.second.owner_actor), n);
+        pins += n;
+        unpin_cache_entry(kv.second);
+        ++entries;
+    }
+    g_npc_bone_cache.clear();
+    FW_LOG("[bone-pin] LIMBO RELEASE — dropped %zu pins across %zu cache "
+           "entries while the cell is still intact (engine still holds its "
+           "own refs, so no destructor runs here)", pins, entries);
+}
+
 void sweep_npc_bone_caches() {
+    // Build 69j — FREEZE THE SWEEP WHILE THE LOCAL PLAYER IS DEAD.
+    //
+    // This is the crash. Molecular teardown (2026-08-03) resolved the faulting
+    // frame to sub_1404CC240 = TESObjectCELL::DetachReference(cell, refr), and
+    // the faulting instruction to `call qword ptr [rax+148h]` at +0x404 — a
+    // virtual call on the cell taken from refr+0xB8. Every post-death AV we
+    // have (0x2A007D READ, 0x4CC644 EXEC-null, heap-EXEC) is that one site or
+    // its ExtraDataList twin, with a vtable slot holding recycled heap. The
+    // cell was freed while a reference still pointed at it.
+    //
+    // We are the ones freeing it. unpin_cache_entry -> ni_decref, and ni_decref
+    // runs `vt[1]` (NiRefObject::DeleteThis) itself whenever OUR reference is
+    // the last one. During a post-death cell unload the engine has already
+    // dropped its own references, so ours IS the last — and we execute the
+    // destructor from inside fw_wndproc, at a moment of our choosing rather
+    // than the engine's frame-amortised destruction queue.
+    //
+    // The trigger is `no_longer_mirror`, which flips on EVERY ownership
+    // handoff. The death second contains 12-15 of them (the server re-elects on
+    // proximity the instant the corpse teleports ~19,000 units), so a single
+    // 250 ms sweep can fire up to ~1,000 decrefs straight into the teardown.
+    // That is also the asymmetry: only the client that died has both the
+    // handoff storm and a cell swap. The survivor gets the same handoffs and
+    // does not crash, because it is not unloading anything.
+    //
+    // WHY FREEZING AND NOT "STOP PINNING": taking a reference is harmless. It
+    // is RELEASING that can run a destructor. Dropping the pins on death would
+    // BE the crash, not the cure. So the sweep goes quiet and the pins simply
+    // outlive the window — a bounded, temporary over-retention that ends the
+    // moment the stand-down closes and the cell has settled, at which point the
+    // same releases run against objects the engine is no longer touching.
+    //
+    // The surviving peer is unaffected: it is not in a stand-down, its sweep
+    // keeps running, and it rebuilds its caches against the new owner's stream
+    // normally.
+    if (fw::hooks::in_local_death_standdown()) {
+        static std::atomic<std::uint64_t> s_frozen{0};
+        const auto n = s_frozen.fetch_add(1, std::memory_order_relaxed);
+        if (n == 0 || (n % 400) == 0) {
+            FW_LOG("[bone-pin] death stand-down — sweep FROZEN, holding %zu "
+                   "cache entries pinned (freeze #%llu)",
+                   g_npc_bone_cache.size(),
+                   static_cast<unsigned long long>(n + 1));
+        }
+        return;
+    }
+
     using namespace std::chrono;
     const std::uint64_t now = duration_cast<milliseconds>(
         steady_clock::now().time_since_epoch()).count();
@@ -12402,6 +12716,25 @@ void sweep_npc_bone_caches() {
 }
 
 void on_npc_pose_apply_message() {
+    // Build 69f/69i — DEATH STAND-DOWN covers the ghost APPLY path.
+    //
+    // The 2026-08-02 17:41 crash faulted at `call qword ptr [rax+148h]`
+    // (sub_1404CC240+0x404): a virtual call whose vtable slot held garbage on
+    // one run (READ addr=-1) and NULL on the next (EXEC at 0) — the same
+    // instruction and the same object, two stages of one free.
+    //
+    // This handler WRITES into the ghost NiNode we attached to the world scene
+    // graph (bone transforms, crouch translations, position). Writing into a
+    // node the engine is concurrently unlinking is exactly the race that
+    // leaves a half-freed vtable behind. The player is dead and looking at a
+    // load screen: there is nothing to render.
+    //
+    // NOTE the asymmetry with on_bone_tick_message, which is deliberately NOT
+    // gated: that one only SENDS our pose, and gating it froze the remote
+    // ghost standing upright instead of letting it ragdoll (Build 69f
+    // regression). Suppress writes, never sends.
+    if (fw::hooks::in_local_death_standdown()) return;
+
     { static std::atomic<std::uint64_t> s_en{0};
       const auto ec = s_en.fetch_add(1, std::memory_order_relaxed);
       if (ec < 10 || (ec % 200) == 0) {

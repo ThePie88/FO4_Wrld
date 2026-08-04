@@ -104,7 +104,36 @@ constexpr std::uintptr_t NIREFOBJECT_VTABLE_RVA = 0x02462F88;
 // so attaching there just adds an extra indirection. For M1 we attach
 // directly to SSN to minimize scope.
 
-constexpr std::uintptr_t SSN_SINGLETON_RVA     = 0x03E47A10; // qword_143E47A10
+// ############################################################################
+// CORRECTED 2026-08-04 03:56 — this is NOT the ShadowSceneNode.
+//
+// WHAT WE BELIEVED (kept verbatim for rollback):
+//   SSN_SINGLETON_RVA = 0x03E47A10 was "the ShadowSceneNode singleton".
+//   The 2026-04-23 note below already half-caught it — it says the slot
+//   "actually points to NiCamera" — but concluded the real SSN was reachable
+//   through SCENEGRAPH_SSN_SHORTCUT_OFF instead. It is not: that shortcut
+//   resolves to the SAME camera (see its own corrected block below).
+//
+// WHAT IS PROVEN (full-decomp reconstruction, re/STRUCT_world_scenegraph.md):
+//   The ONLY writer of unk_143E47A10 is `unk_143E47A10 = *(_QWORD*)(World+320)`
+//   in sub_140C322C0, and World+320 (= +0x140) is filled by the BSSceneGraph
+//   ctor sub_1417EE450 with a 0x1A0-byte object built by sub_1416D0510, which
+//   writes &NiCamera::vftable and is named "<prefix>Root Camera".
+//   So this RVA and the +0x140 shortcut name one object: the root NiCamera.
+//   The REAL ShadowSceneNode (sizeof 0x330, ctor sub_1421B08A0, vtable
+//   0x142908F40, RTTI .?AVShadowSceneNode@@) is an ordinary CHILD of the World
+//   SceneGraph, attached by AttachChild(World, ssn, 1) in the same function —
+//   i.e. SceneGraph("World").children[1]. There is no pointer shortcut to it.
+//
+// VALUE UNCHANGED ON PURPOSE. The only consumer is the diagnostic log at
+// scene_inject.cpp:561/612 (whose own declaration at :384 already carries a
+// "???"). The ghost is attached to WORLD_SG_SINGLETON_RVA, not to this. So the
+// number stays and only its meaning is corrected — changing it would alter a
+// log line while pretending to be a doc fix. Renamed to say what it is.
+// ############################################################################
+constexpr std::uintptr_t ROOT_CAMERA_SINGLETON_RVA = 0x03E47A10; // qword_143E47A10 = NiCamera
+// Legacy spelling kept so nothing silently breaks; do not use in new code.
+constexpr std::uintptr_t SSN_SINGLETON_RVA     = 0x03E47A10; // MISNOMER — see above
 constexpr std::uintptr_t WORLD_SG_SINGLETON_RVA = 0x032D2228; // qword_1432D2228 (SceneGraph)
 
 // SceneGraph shortcut to ShadowSceneNode. Dossier M1 §1:
@@ -118,6 +147,34 @@ constexpr std::uintptr_t WORLD_SG_SINGLETON_RVA = 0x032D2228; // qword_1432D2228
 // starting FROM SSN. Attaching an object to World SceneGraph as a sibling
 // of SSN (not a child of it) means the renderer never reaches it.
 // Geometry must be a descendant of SSN to be drawn.
+// ############################################################################
+// CORRECTED 2026-08-04 03:56 — +0x140 is the root NiCamera, not the SSN.
+//
+// WHAT WE BELIEVED (kept for rollback): SCENEGRAPH_SSN_SHORTCUT_OFF = 0x140,
+// "SceneGraph stores a direct pointer to the SSN at 0x140 as a fast path".
+// The dossier line it quotes — "*(QWORD*)(World + 320) = SSN" — is the same
+// claim, and it is wrong at the source.
+//
+// WHAT IS PROVEN (re/STRUCT_world_scenegraph.md, re/STRUCT_niobject_ninode.md):
+// BSSceneGraph::BSSceneGraph (sub_1417EE450) allocates 0x1A0 bytes, runs the
+// NiCamera ctor sub_1416D0510 (which writes &NiCamera::vftable) and stores the
+// result at this+320. sub_1421C11B0, called from the same ctor, reads a1[40]
+// (= +0x140) and writes camera frustum fields into it. So +0x140 is the root
+// camera. This also explains the "vt[58] contained the string 'NiGeomet'"
+// puzzle recorded at scene_inject.cpp:702 — that read was done on the camera:
+// NiCamera's vtable is 0x14267DD50 and ENDS at slot 57, so slot 58 fell into
+// the adjacent .rdata string. NiCamera derives from NiAVObject and has no
+// AttachChild slot at all. On a real NiNode, slot 58 IS AttachChild
+// (sub_1416BE170), inherited unchanged by BSFadeNode, ShadowSceneNode and
+// SceneGraph. The conclusion drawn back then — "AttachChild is effectively
+// non-virtual here" — was right by accident, for a false reason.
+//
+// The constant has ZERO consumers (grep over fw_native/src/**.cpp), so this is
+// a documentation fix with no behavioural effect. Kept, renamed, so the wrong
+// name cannot be picked up again by mistake.
+// ############################################################################
+constexpr std::size_t SCENEGRAPH_ROOT_CAMERA_OFF  = 0x140;
+// Legacy spelling — MISNOMER, unused. Do not use in new code.
 constexpr std::size_t SCENEGRAPH_SSN_SHORTCUT_OFF = 0x140;
 
 // ============================================================================
@@ -227,8 +284,29 @@ constexpr std::uint64_t NIAV_FLAG_DYNAMIC      = 0x2000ull;
 //   +0x128  children ptr
 //   +0x130  capacity (u16)
 //   +0x132  count    (u16)
-//   +0x134  grow_by / flags
+//   +0x134  effSize  (u16) — CORRECTED 2026-08-04 03:56.
+//           WHAT WE BELIEVED: "grow_by / flags".
+//           WHAT IS PROVEN (re/STRUCT_niobject_ninode.md): +0x134 is the
+//           EFFECTIVE size (non-null children). sub_1416BE170 (AttachChild)
+//           increments it when an attach fills a null hole; sub_1404E7B50
+//           decrements it when releasing an entry; sub_1404EF3C0 gates growth
+//           on `maxSize - effSize < needed`. The NiNode ctor sub_1416BDFE0
+//           writes the qword 0x10000 at +0x134, i.e. effSize=0 AND growBy=1.
+//   +0x136  grow_by  (u16) — the real one. No constant defined; none needed yet.
 //   +0x138  always 0 initially
+// NiTArray<NiAVObject*> allocator — ADDED 2026-08-04 03:56.
+//   _QWORD* sub_1416BFA70(unsigned int count)
+// This is the ONLY correct way to build a children array. It allocates
+// 8*count+8, writes `count` into the header qword, zeroes the payload and
+// returns base+8. Critically it calls the pool with align=0 AND aligned=0,
+// which is what the matching free needs: ~NiNode -> sub_1416BFB00 reads the
+// count from base[-8] and frees base-8 through sub_1422B7620 ->
+// sub_141657E20(pool, ptr, /*aligned=*/0) = plain free(). Allocating with the
+// aligned flag set and letting the engine free() it is a heap mismatch.
+constexpr std::uintptr_t NITARRAY_ALLOC_FN_RVA  = 0x016BFA70; // sub_1416BFA70
+// The count header sits immediately BEFORE the pointer stored at +0x128.
+constexpr std::ptrdiff_t NITARRAY_COUNT_HDR_OFF = -8;
+
 constexpr std::size_t NINODE_CHILDREN_VT_OFF   = 0x120;
 constexpr std::size_t NINODE_CHILDREN_PTR_OFF  = 0x128;
 constexpr std::size_t NINODE_CHILDREN_CAP_OFF  = 0x130;

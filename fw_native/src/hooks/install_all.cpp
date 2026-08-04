@@ -84,6 +84,8 @@
 
 #include "install_all.h"
 
+#include "../config.h"   // Build 69: install_all reads cfg.suppress_mirror_combat
+
 #include "kill_hook.h"
 #include "container_hook.h"
 #include "put_hook.h"
@@ -235,6 +237,13 @@ InstallSummary install_all(std::uintptr_t module_base,
     //
     // DISABLE: everything else that touches AI/combat decisions.
     s.npc_ai_suppress_ok       = install_npc_ai_suppress(module_base);
+    // Build 69 — apply the A/B control AFTER install so the log line lands
+    // next to the detour's own install line. Default true = unchanged
+    // shipping behaviour; false is the hp-churn control experiment.
+    set_mirror_combat_suppression(cfg.suppress_mirror_combat);
+    // Build 69r — 69q death sweep default OFF (decomp post-mortem in
+    // config.h `death_recohere_sweep`).
+    set_death_recohere_sweep(cfg.death_recohere_sweep);
     s.ghost_ai_movement_ok     = false;  // BUILD64_DISABLED — install_ghost_ai_movement
     // Build 65.c.17 — re-enabled for owner-driven completeness. Predicate
     // flip from 65.c.3 already gates these: owner forces should_bail=false

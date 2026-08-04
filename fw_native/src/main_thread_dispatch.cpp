@@ -1363,6 +1363,14 @@ void drain_lock_apply_queue() {
 static constexpr bool kDeathSyncEnabled = true;
 
 void drain_npc_death_apply_queue() {
+    // Build 69j — same stand-down gate as the owner-state drain below. This
+    // queue calls set_actor_motion_dynamic (Havok SetMotionType on the 3D
+    // root), apply_npc_pos_raw (Actor+0xD0 + NIF writes) and kill_actor on
+    // whatever lookup_by_form_id returns. Running any of those against actors
+    // in a cell the engine is unloading is the same class of defect as the
+    // bone-cache sweep. Entries stay queued and drain when the window closes.
+    if (fw::hooks::in_local_death_standdown()) return;
+
     std::deque<PendingNPCDeath> local;
     {
         std::lock_guard lk(g_npc_death_mtx);
@@ -1436,6 +1444,14 @@ void drain_npc_death_apply_queue() {
 }
 
 void drain_npc_state_apply_queue() {
+    // Build 69j — same stand-down gate as the owner-state drain below. This
+    // queue calls set_actor_motion_dynamic (Havok SetMotionType on the 3D
+    // root), apply_npc_pos_raw (Actor+0xD0 + NIF writes) and kill_actor on
+    // whatever lookup_by_form_id returns. Running any of those against actors
+    // in a cell the engine is unloading is the same class of defect as the
+    // bone-cache sweep. Entries stay queued and drain when the window closes.
+    if (fw::hooks::in_local_death_standdown()) return;
+
     std::deque<PendingNPCStateEntry> local;
     {
         std::lock_guard lk(g_npc_mtx);
@@ -1867,6 +1883,22 @@ void drain_npc_owner_state_apply_queue() {
     }
 
     std::size_t applied = 0, missed = 0, skipped_owner = 0;
+    // Build 69d — do not apply ANY relayed NPC state while the local player's
+    // death stand-down is running. The respawn teleport re-elects ownership on
+    // proximity, so this batch can be addressed to actors of the cell we are
+    // leaving, mid-unload. Two AVs landed ~150 ms after that teleport. The
+    // per-frame detour bails on its own; this is the network-side twin.
+    if (fw::hooks::in_local_death_standdown()) {
+        static std::atomic<std::uint64_t> g_standdown_drops{0};
+        const auto n = g_standdown_drops.fetch_add(1, std::memory_order_relaxed);
+        if (n == 0 || (n % 200) == 0) {
+            FW_LOG("[pos-meas] death stand-down — dropping relayed owner-state "
+                   "batch (%zu entries, drop #%llu)",
+                   local.size(), static_cast<unsigned long long>(n + 1));
+        }
+        return;
+    }
+
     for (const auto& e : local) {
         if (e.form_id == 0 || e.form_id == 0xFFFFFFFFu ||
             e.form_id == 0x00000014u ||

@@ -43,6 +43,43 @@ bool parse_ghost_map(const std::string& raw,
     }
 }
 
+// Strict hex → bytes. Returns empty on any non-hex char or odd length.
+std::vector<std::uint8_t> parse_hex(const std::string& s) {
+    if (s.size() % 2 != 0) return {};
+    std::vector<std::uint8_t> out;
+    out.reserve(s.size() / 2);
+    auto nyb = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    for (std::size_t i = 0; i < s.size(); i += 2) {
+        const int hi = nyb(s[i]), lo = nyb(s[i + 1]);
+        if (hi < 0 || lo < 0) return {};
+        out.push_back(static_cast<std::uint8_t>((hi << 4) | lo));
+    }
+    return out;
+}
+
+// PIENUVO v0: "pubkeyhex:challengehex:sighex" (64:64:128 hex chars) → the
+// three byte vectors. All-or-nothing: any malformed piece drops the whole
+// blob, because a partial auth block would be rejected by the server anyway.
+bool parse_auth_blob(const std::string& raw, Settings* s) {
+    const auto c1 = raw.find(':');
+    if (c1 == std::string::npos) return false;
+    const auto c2 = raw.find(':', c1 + 1);
+    if (c2 == std::string::npos) return false;
+    auto pk  = parse_hex(trim(raw.substr(0, c1)));
+    auto ch  = parse_hex(trim(raw.substr(c1 + 1, c2 - c1 - 1)));
+    auto sig = parse_hex(trim(raw.substr(c2 + 1)));
+    if (pk.size() != 32 || ch.size() != 32 || sig.size() != 64) return false;
+    s->auth_pubkey    = std::move(pk);
+    s->auth_challenge = std::move(ch);
+    s->auth_signature = std::move(sig);
+    return true;
+}
+
 // "127.0.0.1:31337" → (host, port). Returns false if port missing.
 bool parse_endpoint(const std::string& raw,
                     std::string* host_out, std::uint16_t* port_out)
@@ -133,20 +170,54 @@ Settings load(const std::filesystem::path& path) {
             }
         } else if (key == "auto_load_save") {
             s.auto_load_save = value;
+        } else if (key == "auth_blob") {
+            // Empty value = launcher ran without auth (manual FoM start) —
+            // not an error, just an unauthenticated session.
+            if (!value.empty() && !parse_auth_blob(value, &s)) {
+                FW_WRN("config: bad 'auth_blob' (want pkhex:chhex:sighex "
+                       "= 64:64:128 chars) — HELLO will be unauthenticated");
+            }
+        } else if (key == "player_name") {
+            s.player_name = value.substr(0, 15);
+        } else if (key == "suppress_mirror_combat") {
+            const auto& v = value;
+            if (v == "1" || v == "true" || v == "yes" || v == "on" ||
+                v == "TRUE" || v == "YES" || v == "ON") {
+                s.suppress_mirror_combat = true;
+            } else if (v == "0" || v == "false" || v == "no" || v == "off" ||
+                       v == "FALSE" || v == "NO" || v == "OFF") {
+                s.suppress_mirror_combat = false;
+            } else {
+                FW_WRN("config: bad 'suppress_mirror_combat' value: %s", v.c_str());
+            }
+        } else if (key == "death_recohere_sweep") {
+            // Build 69r — A/B lever for the (default-off) 69q death sweep.
+            const auto& v = value;
+            if (v == "1" || v == "true" || v == "yes" || v == "on" ||
+                v == "TRUE" || v == "YES" || v == "ON") {
+                s.death_recohere_sweep = true;
+            } else if (v == "0" || v == "false" || v == "no" || v == "off" ||
+                       v == "FALSE" || v == "NO" || v == "OFF") {
+                s.death_recohere_sweep = false;
+            } else {
+                FW_WRN("config: bad 'death_recohere_sweep' value: %s", v.c_str());
+            }
         } else {
             FW_WRN("config: %s:%d unknown key '%s' — ignoring",
                    path.string().c_str(), line_no, key.c_str());
         }
     }
 
-    FW_LOG("config: loaded from %s  server=%s:%u  client_id=%s  ghost=%s->0x%X  log=%s  auto_load_save=%s",
+    FW_LOG("config: loaded from %s  server=%s:%u  client_id=%s  ghost=%s->0x%X  log=%s  auto_load_save=%s  auth=%s  name=%s",
            path.string().c_str(),
            s.server_host.c_str(), s.server_port,
            s.client_id.c_str(),
            s.ghost_map_peer_id.empty() ? "(none)" : s.ghost_map_peer_id.c_str(),
            s.ghost_map_form_id,
            s.log_level.c_str(),
-           s.auto_load_save.empty() ? "(disabled)" : s.auto_load_save.c_str());
+           s.auto_load_save.empty() ? "(disabled)" : s.auto_load_save.c_str(),
+           s.auth_pubkey.empty() ? "none" : "present",
+           s.player_name.empty() ? "(none)" : s.player_name.c_str());
     return s;
 }
 

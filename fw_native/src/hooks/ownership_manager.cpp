@@ -3,6 +3,8 @@
 
 #include "ownership_manager.h"
 
+#include "npc_ai_suppress.h"  // Build 69r — in_local_death_standdown telemetry
+
 #include <windows.h>          // GetTickCount64
 #include <algorithm>
 #include <array>
@@ -125,19 +127,72 @@ void set_local_peer_id(const std::string& peer_id) {
             peer_id.c_str(), peer_id.size());
 }
 
+// Build 69s — deferred PHASE_2 claim storage (see the quiescence block
+// comment above on_phase2). Declared here so shutdown() can clear it.
+namespace {
+std::mutex g_deferred_mtx;
+std::vector<fw::net::NPCOwnershipHandoffPhase2Payload> g_deferred_claims;
+}  // namespace
+
 void shutdown() {
     auto& s = state();
-    std::unique_lock lk(s.mtx);
-    s.map.clear();
-    s.local_peer_id_set = false;
-    s.local_peer_id     = kZeroPeer;
+    {
+        std::unique_lock lk(s.mtx);
+        s.map.clear();
+        s.local_peer_id_set = false;
+        s.local_peer_id     = kZeroPeer;
+    }
+    // Build 69s — drop any claim still parked for the stand-down drain.
+    {
+        std::lock_guard lk(g_deferred_mtx);
+        g_deferred_claims.clear();
+    }
     FW_LOG("ownership_manager: shutdown");
+}
+
+// Build 69s (2026-08-04) — OWNERSHIP QUIESCENCE DURING THE DEATH WINDOW.
+//
+// The 69r telemetry proved the rank-3 mechanism live: within ~100ms of the
+// local death the surviving peer claims the released NPCs and the server's
+// PHASE_2 inserts re-track them as mirrors ON THE DYING CLIENT — flipping
+// the leaf-bail predicates mid-death (and, at the 17:46 crash, mid-load,
+// 155ms before the fault). Releases must still apply instantly (they END
+// suppression), but claim-INSERTS are deferred into this queue and drained
+// by npc_ai_suppress at stand-down close, when the engine owns a coherent
+// world again. A release arriving for a fid with a queued claim supersedes
+// it (epochs are globally monotonic — the release is newer).
+// (Storage g_deferred_mtx/g_deferred_claims is declared above shutdown().)
+
+void drain_deferred_phase2_claims() noexcept {
+    std::vector<fw::net::NPCOwnershipHandoffPhase2Payload> local;
+    {
+        std::lock_guard lk(g_deferred_mtx);
+        local.swap(g_deferred_claims);
+    }
+    if (local.empty()) return;
+    FW_LOG("ownership: draining %zu deferred PHASE_2 claim(s) at stand-down "
+           "close", local.size());
+    for (const auto& p : local) {
+        on_phase2(p);   // window is closed → applies as a normal insert
+    }
 }
 
 void on_phase2(const fw::net::NPCOwnershipHandoffPhase2Payload& p) {
     auto& s = state();
     const PeerIdBytes new_owner = pack_peer_id(p.new_owner_peer_id);
     const bool is_release = is_zero_peer(new_owner);
+
+    // Build 69s — defer claim-inserts that land inside the death window
+    // (see block comment above). Checked BEFORE taking the map lock.
+    if (!is_release && fw::hooks::in_local_death_standdown()) {
+        std::lock_guard lk(g_deferred_mtx);
+        g_deferred_claims.push_back(p);
+        FW_LOG("ownership: PHASE_2 CLAIM-INSERT during death window "
+               "fid=0x%X epoch=%u — DEFERRED to stand-down close (%zu queued)",
+               p.form_id, p.new_epoch, g_deferred_claims.size());
+        s.phase2_count.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
 
     {
         std::unique_lock lk(s.mtx);
@@ -161,6 +216,21 @@ void on_phase2(const fw::net::NPCOwnershipHandoffPhase2Payload& p) {
             s.map[p.form_id]  = rec;
             FW_DBG("ownership: PHASE_2 fid=0x%X epoch=%u",
                    p.form_id, p.new_epoch);
+        }
+    }
+    // Build 69s — a release supersedes any queued claim for the same fid
+    // (the release's epoch is newer by construction).
+    if (is_release) {
+        std::lock_guard lk(g_deferred_mtx);
+        for (auto it = g_deferred_claims.begin();
+             it != g_deferred_claims.end(); ) {
+            if (it->form_id == p.form_id) {
+                FW_LOG("ownership: dropping deferred claim fid=0x%X (release "
+                       "epoch=%u supersedes)", p.form_id, p.new_epoch);
+                it = g_deferred_claims.erase(it);
+            } else {
+                ++it;
+            }
         }
     }
     s.phase2_count.fetch_add(1, std::memory_order_relaxed);
@@ -415,6 +485,53 @@ void record_owned_state(std::uint32_t form_id,
     if (prev_anim > it->second.anim_state) {
         it->second.anim_state = prev_anim;
     }
+}
+
+std::size_t release_all_owned_on_death() {
+    // Build 69q — see the header comment. Main thread (kill hook); the maps
+    // are lock-protected so the net thread can't race us. We snapshot the
+    // payloads under the lock, clear, then enqueue outside it (enqueue takes
+    // the client queue mutex — keep the two locks unnested).
+    auto& tx = tx_state();
+    std::vector<fw::net::NPCUnloadPayload> out;
+    {
+        std::unique_lock lk(tx.owned_mtx);
+        out.reserve(tx.owned.size());
+        for (const auto& [fid, snap] : tx.owned) {
+            fw::net::NPCUnloadPayload p{};
+            p.form_id         = fid;
+            p.epoch           = snap.epoch;
+            p.last_pos_x      = snap.pos_x;
+            p.last_pos_y      = snap.pos_y;
+            p.last_pos_z      = snap.pos_z;
+            p.last_yaw        = snap.yaw_rad;
+            p.last_anim_state = snap.anim_state;
+            p.last_hp_pct     = snap.hp_pct;
+            out.push_back(p);
+        }
+        tx.owned.clear();   // heartbeats stop this very tick
+    }
+    for (const auto& p : out) {
+        fw::net::client().enqueue_npc_unload(p);
+    }
+    if (!out.empty()) {
+        FW_LOG("ownership: DEATH RELEASE — sent NPC_UNLOAD for %zu owned "
+               "NPCs (sphere despawned; peers can claim on next observe)",
+               out.size());
+    }
+    return out.size();
+}
+
+std::size_t collect_tracked_fids(std::uint32_t* out, std::size_t cap) {
+    if (!out || cap == 0) return 0;
+    auto& s = state();
+    std::shared_lock lk(s.mtx);
+    std::size_t n = 0;
+    for (const auto& kv : s.map) {
+        if (n >= cap) break;
+        out[n++] = kv.first;
+    }
+    return n;
 }
 
 void tick_periodic(std::uint64_t now_ms) {

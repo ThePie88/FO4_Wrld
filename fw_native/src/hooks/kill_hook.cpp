@@ -8,6 +8,7 @@
 #include "../log.h"
 #include "../offsets.h"
 #include "../ref_identity.h"
+#include "npc_ai_suppress.h"   // Build 69c: note_local_player_death()
 #include "../net/client.h"
 #include "../net/protocol.h"
 #include "container_hook.h"        // Build 65.c.47 WEDGE3 — tls_applying_remote (no-echo)
@@ -71,6 +72,15 @@ void __fastcall detour_kill(
             FW_LOG("[kill] victim form=0x%X base=0x%X cell=0x%X  killer form=0x%X base=0x%X cell=0x%X",
                    vi.form_id, vi.base_id, vi.cell_id,
                    ki.form_id, ki.base_id, ki.cell_id);
+
+            // Build 69c — the LOCAL player dying starts a stand-down window in
+            // which we stop refusing StopCombat on mirrored NPCs. The respawn
+            // teleport and the cell swap that follow are exactly where holding
+            // a structure past its teardown would bite (client A took an AV
+            // 160 ms after that teleport on 2026-08-02).
+            if (vi.form_id == offsets::PLAYER_FORMID) {
+                fw::hooks::note_local_player_death();
+            }
 
             // Build 65.c.33 — ROLLED BACK the c.32 proxy-ghost teardown call:
             // the deregister was a no-op (log: removed=0 — the proxy is keyed

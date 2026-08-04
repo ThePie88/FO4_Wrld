@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <atomic>
 #include <cstdint>
+#include <intrin.h>   // Build 69r — _ReturnAddress for death-window telemetry
 
 #include "../hook_manager.h"
 #include "../log.h"
@@ -96,6 +97,23 @@ void __fastcall detour_actor_setpos(void* actor, void* pos) {
                 should_bail = false;
             } else if (fw::ownership::is_non_owner_tracked(fid)) {
                 should_bail = true;
+            }
+
+            // Build 69s (2026-08-04) — DEATH-WINDOW PASSTHROUGH. The 69r
+            // telemetry caught THIS bail eating a SetPosition issued from
+            // inside the engine's own MoveTo worker (ret sub_140C60BE0+0x142,
+            // 19:46:11.082) during the death window — a half-applied MoveTo
+            // on a mirror the load then walked. See ghost_ai_pos_belt.cpp.
+            if (should_bail && fw::hooks::in_local_death_standdown()) {
+                static std::atomic<std::uint64_t> s_dwp{0};
+                const auto k = s_dwp.fetch_add(1, std::memory_order_relaxed);
+                if (k < 20 || (k % 200) == 0) {
+                    FW_LOG("[death-window-pass] vt202 letting engine "
+                           "SetPosition through fid=0x%08X ret=%p (#%llu)",
+                           fid, _ReturnAddress(),
+                           static_cast<unsigned long long>(k));
+                }
+                should_bail = false;
             }
 
             if (should_bail) {

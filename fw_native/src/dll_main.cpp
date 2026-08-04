@@ -18,6 +18,7 @@
 
 #include "config.h"
 #include "log.h"
+#include "audit.h"
 #include "version.h"
 #include "hook_manager.h"
 #include "hooks/install_all.h"
@@ -58,6 +59,7 @@ DWORD WINAPI init_thread(LPVOID) {
     else if (cfg.log_level == "warn")  lvl = fw::log::Level::Warn;
     else if (cfg.log_level == "debug") lvl = fw::log::Level::Debug;
     fw::log::init((dir / L"fw_native.log").wstring(), lvl);
+    fw::audit::init(dir.wstring());   // Build 69m mutation ledger
 
     const DWORD pid = GetCurrentProcessId();
     const HMODULE game = GetModuleHandleW(L"Fallout4.exe");

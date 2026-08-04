@@ -30,6 +30,7 @@
 #include <atomic>
 #include <cstdint>
 
+#include "../audit.h"  // Build 69o — write ring (HP funnel deltas)
 #include "../hook_manager.h"
 #include "../log.h"
 #include "../offsets.h"
@@ -378,6 +379,10 @@ void apply_pool_health_to_actor(void* actor, float pool_cur, float pool_max) noe
                           static_cast<double>(pool_cur), static_cast<double>(pool_max));
         return;
     }
+    // Build 69o — write ring. The engine funnel writes the AV storage
+    // internally; dest here is the ACTOR as a marker so a crash register
+    // holding this actor (or its recycled block) still matches the scan.
+    fw::audit::wnote(fw::audit::WSite::kHpFunnel, actor, &delta, 4, fid);
     safe_call_funnel(actor, hf, delta);
     if (dolog) {
         const float after = safe_avo_current_hp(actor, hf);   // did the write land?

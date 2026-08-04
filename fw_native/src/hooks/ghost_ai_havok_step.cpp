@@ -34,6 +34,7 @@
 #include <windows.h>
 #include <atomic>
 #include <cstdint>
+#include <intrin.h>   // Build 69r — _ReturnAddress for death-window telemetry
 
 #include "../hook_manager.h"
 #include "../log.h"
@@ -154,6 +155,21 @@ void __fastcall detour_havok_step(void* self) {
                 should_bail = false;
             } else if (fw::ownership::is_non_owner_tracked(fid)) {
                 should_bail = true;
+            }
+
+            // Build 69s (2026-08-04) — DEATH-WINDOW PASSTHROUGH. 69r caught
+            // 650+ eaten physics syncs in one death window (19:46 log).
+            // See ghost_ai_pos_belt.cpp for the full rationale.
+            if (should_bail && fw::hooks::in_local_death_standdown()) {
+                static std::atomic<std::uint64_t> s_dwp{0};
+                const auto k = s_dwp.fetch_add(1, std::memory_order_relaxed);
+                if (k < 20 || (k % 200) == 0) {
+                    FW_LOG("[death-window-pass] havok_step letting physics "
+                           "sync through fid=0x%08X ret=%p (#%llu)",
+                           fid, _ReturnAddress(),
+                           static_cast<unsigned long long>(k));
+                }
+                should_bail = false;
             }
 
             if (should_bail) {

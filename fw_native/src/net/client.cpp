@@ -445,6 +445,22 @@ void Client::enqueue_npc_owner_heartbeat(
     }
 }
 
+void Client::enqueue_npc_unload(const NPCUnloadPayload& p) {
+    // Build 69q — voluntary owner release (death sphere despawn). Reliable:
+    // a lost release would leave the raider frozen on the peer until the 8s
+    // heartbeat timeout, exactly the lag this message exists to remove.
+    if (!connected_.load() || stopping_.load()) return;
+    QueuedSend q;
+    q.msg_type = MessageType::NPC_UNLOAD;
+    q.reliable = true;
+    q.payload_bytes.resize(sizeof(p));
+    std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
+    {
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+}
+
 void Client::enqueue_npc_state_from_owner(
     const NPCOwnerStateEntry* entries, std::size_t count)
 {
@@ -1044,7 +1060,11 @@ std::optional<ContainerOpAckPayload> Client::submit_container_op_blocking(
 // ---------------------------------------------------------------- main loop
 
 bool Client::do_handshake() {
-    HelloPayload h{};
+    // v19 PIENUVO: when the launcher minted an auth blob we send the 170-byte
+    // authed HELLO; otherwise the legacy 26-byte form. Both live in one
+    // buffer — `send_len` picks the wire shape.
+    HelloPayloadAuthed ha{};
+    HelloPayload& h = ha.base;
     h.client_id.set(cfg_.client_id);
     h.client_version_major = 1;
     h.client_version_minor = 0;
@@ -1052,13 +1072,33 @@ bool Client::do_handshake() {
     // Goldberg emulator returns the configured ID from steam_settings/).
     // 0 = unavailable (steam_api64.dll not loaded by host process yet).
     h.steam_id = fw::steam::get_local_steam_id();
-    FW_LOG("net: HELLO with client_id='%s' steam_id=%llu (0x%llX)",
+
+    std::size_t send_len = sizeof(HelloPayload);
+    const bool authed =
+        cfg_.auth_pubkey.size() == AUTH_PUBKEY_LEN &&
+        cfg_.auth_challenge.size() == AUTH_CHALLENGE_LEN &&
+        cfg_.auth_signature.size() == AUTH_SIGNATURE_LEN;
+    if (authed) {
+        std::memcpy(ha.auth.pubkey, cfg_.auth_pubkey.data(), AUTH_PUBKEY_LEN);
+        std::memcpy(ha.auth.challenge, cfg_.auth_challenge.data(),
+                    AUTH_CHALLENGE_LEN);
+        std::memcpy(ha.auth.signature, cfg_.auth_signature.data(),
+                    AUTH_SIGNATURE_LEN);
+        std::memset(ha.auth.display_name, 0, sizeof(ha.auth.display_name));
+        std::memcpy(ha.auth.display_name, cfg_.player_name.data(),
+                    (cfg_.player_name.size() < MAX_PLAYER_NAME_LEN)
+                        ? cfg_.player_name.size() : MAX_PLAYER_NAME_LEN);
+        send_len = sizeof(HelloPayloadAuthed);
+    }
+    FW_LOG("net: HELLO with client_id='%s' steam_id=%llu (0x%llX) auth=%s name='%s'",
            cfg_.client_id.c_str(),
            static_cast<unsigned long long>(h.steam_id),
-           static_cast<unsigned long long>(h.steam_id));
+           static_cast<unsigned long long>(h.steam_id),
+           authed ? "yes" : "no",
+           authed ? ha.auth.display_name : "");
 
     auto frame = channel_.send_reliable(
-        MessageType::HELLO, &h, sizeof(h));
+        MessageType::HELLO, &ha, send_len);
     if (!socket_.send(frame.data(), frame.size())) {
         FW_ERR("net: initial HELLO send failed (err=%d)", socket_.last_error());
         return false;
@@ -2658,6 +2698,23 @@ void Client::dispatch(const Delivered& d) {
         break;
     }
 
+    // TODO (ghost lifecycle — PEER_JOIN must REQUEST a ghost, never inject one).
+    //
+    // This handler is where "a player arrived" becomes known, so it is where a
+    // ghost should be requested for that peer — but it must only record the
+    // need in a pending set. Injecting from here (or from this thread at all)
+    // reproduces a known crash: the save-load flow fires several LoadGame
+    // events in a row and destroys the ShadowSceneNode each time, and a peer
+    // can join precisely inside that window. See the long TODO on arm_worker
+    // in scene_inject.cpp for why local_player_in_world() is not a sufficient
+    // guard, and for the event-decides-WHAT / worker-decides-WHEN split.
+    //
+    // Also unfinished here: the newcomer needs the CURRENT state of everyone
+    // already in the world (appearance, equipment, pose, position). The server
+    // bootstraps world/container/quest/ownership at join but NOT peers. The
+    // equipment half of this was solved once — the re-broadcast call below —
+    // and then disabled after the bridge crash; its intended replacement,
+    // hooks/equip_announce.h, is still marked NON TESTATO.
     case static_cast<std::uint16_t>(MessageType::PEER_JOIN): {
         if (d.payload.size() < sizeof(PeerJoinPayload)) break;
         PeerJoinPayload p{};
@@ -2694,6 +2751,23 @@ void Client::dispatch(const Delivered& d) {
         break;
     }
 
+    // TODO (ghost lifecycle — PEER_LEAVE currently does NOTHING but log).
+    //
+    // When a peer disconnects, its ghost body stays in the world forever,
+    // frozen at the last relayed position: it is never hidden, never detached,
+    // and its slot is never freed. To a player it looks like the person who
+    // quit is still standing there.
+    //
+    // What this must do (see the TODO on detach_debug_cube for the ordering it
+    // has to respect): settle that peer's in-flight synthetic-REFR work, drop
+    // its pose/crouch/equip caches, and detach its ghost — all dispatched to
+    // the MAIN THREAD, because every scene-graph mutation is main-thread-only.
+    // Do not call detach from this net-thread handler directly.
+    //
+    // Blocked on the same prerequisite as the join path: g_injected_cube is a
+    // single pointer, so "that peer's ghost" is not yet an addressable thing.
+    // Per-peer teardown only becomes meaningful once ghosts are a map keyed by
+    // peer identity.
     case static_cast<std::uint16_t>(MessageType::PEER_LEAVE): {
         if (d.payload.size() < sizeof(PeerLeavePayload)) break;
         PeerLeavePayload p{};

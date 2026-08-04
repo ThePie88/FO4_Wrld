@@ -8,6 +8,7 @@
 #include <thread>
 
 #include "../config.h"
+#include "../diag/crash_veh.h"  // Build 69r — note_user_shutdown (ALT+F4 marker)
 #include "../engine/engine_calls.h"
 #include "../ghost/actor_hijack.h"
 #include "equip_hook.h"  // M9 w4 v9: FW_MSG_DEFERRED_MESH_TX
@@ -87,6 +88,20 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     // Win32 dispatches this proc on the window-owning thread = the game main
     // thread, so a stale heartbeat == the main thread stopped pumping.
     fw::dispatch::note_main_thread_alive();
+    // Build 69r (2026-08-04) — user-requested ALT+F4 marker. A force-close
+    // tears the process down with threads still running, and our
+    // first-priority VEH faithfully logs the dying process's AVs as if they
+    // were gameplay crashes (documented teardown signature 0x16632B9,
+    // CHANGELOG v0.6.1) — which twice sent a crash hunt down a false trail.
+    // Stamp the log the moment the close is requested and tell the VEH, so
+    // every later AV line carries teardown=1.
+    if (msg == WM_CLOSE ||
+        (msg == WM_SYSCOMMAND && (wp & 0xFFF0) == SC_CLOSE)) {
+        FW_LOG("ALT+F4 DETECTED BY USER — window close requested; any AV "
+               "logged after this line is process-teardown fallout, NOT a "
+               "gameplay crash");
+        fw::diag::note_user_shutdown();
+    }
     // Build 68.4 — bone-cache lifetime sweep. Hosted here because this is the
     // one unconditional main-thread tick we have that keeps running regardless
     // of ownership, cell state or whether any NPC is being mirrored. It

@@ -32,6 +32,7 @@
 #include <utility>
 #include <vector>
 
+#include "../audit.h"  // Build 69o — write ring (niptr_swap pointer stores)
 #include "../log.h"
 #include "../hook_manager.h"
 
@@ -490,6 +491,10 @@ void niptr_swap(void** slot, void* new_val) {
             _InterlockedIncrement(refc);
         }
         *slot = new_val;
+        // Build 69o — write ring: an 8-byte POINTER store into a skin
+        // instance array. If the array's owner was freed+reallocated, this
+        // is a pointer smear into a foreign object.
+        fw::audit::wnote(fw::audit::WSite::kSkinPtr, slot, &new_val, 8);
         // Deliberately NOT decrementing old_val. See block comment.
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         FW_ERR("[skin] niptr_swap SEH slot=%p new=%p",

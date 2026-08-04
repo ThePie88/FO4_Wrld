@@ -159,11 +159,20 @@ constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
 //     on the SAME shared canonical bone index as the rotation pose. Tiny
 //     count (≤8; COM + Pelvis). Does NOT modify PoseBoneEntry, the canonical
 //     filter, or the rotation capture/apply loops.
-constexpr std::uint8_t  PROTOCOL_VERSION  = 18;  // v18: NPC_HP_POOL_BCAST (shared-HP enemy bar)
+// v19: PIENUVO v0 — AUTH_CHALLENGE_REQUEST/RESPONSE (0x0035/0x0036, launcher
+//     side only) + optional 144-byte auth tail on HELLO: Ed25519 pubkey(32) +
+//     server challenge(32) + signature(64) over "FWAUTH1"+challenge +
+//     display_name(16). The DLL does no crypto — the launcher mints the blob,
+//     fw_config.ini carries it, we forward it verbatim.
+constexpr std::uint8_t  PROTOCOL_VERSION  = 19;  // v19: PIENUVO v0 auth
 constexpr std::size_t   HEADER_SIZE       = 12;
 constexpr std::size_t   MAX_PAYLOAD_SIZE  = 1400;
 constexpr std::size_t   MAX_FRAME_SIZE    = HEADER_SIZE + MAX_PAYLOAD_SIZE;
 constexpr std::size_t   MAX_CLIENT_ID_LEN = 15;
+constexpr std::size_t   AUTH_PUBKEY_LEN    = 32;
+constexpr std::size_t   AUTH_CHALLENGE_LEN = 32;
+constexpr std::size_t   AUTH_SIGNATURE_LEN = 64;
+constexpr std::size_t   MAX_PLAYER_NAME_LEN = 15;
 
 constexpr std::uint8_t  FLAG_RELIABLE     = 0x01;
 constexpr std::uint8_t  FLAG_ACK_CARRIER  = 0x02;
@@ -325,6 +334,24 @@ struct HelloPayload {
     std::uint64_t steam_id;   // 0 = unavailable (steam_api64.dll not loaded yet)
 };
 static_assert(sizeof(HelloPayload) == 26, "HelloPayload size (v15)");
+
+// v19 PIENUVO auth tail. Wire rule (mirrors Python): a HELLO is either the
+// legacy 26 bytes (unauthenticated) or 26+144=170 bytes with this full block
+// appended — a partial tail is a decode error on the server, never a silent
+// downgrade. Sent only when fw_config.ini carried a launcher-minted auth_blob.
+struct HelloAuthBlock {
+    std::uint8_t pubkey[AUTH_PUBKEY_LEN];        // Ed25519 public key
+    std::uint8_t challenge[AUTH_CHALLENGE_LEN];  // server nonce being answered
+    std::uint8_t signature[AUTH_SIGNATURE_LEN];  // sig("FWAUTH1" + challenge)
+    char         display_name[MAX_PLAYER_NAME_LEN + 1];  // cosmetic, ASCII
+};
+static_assert(sizeof(HelloAuthBlock) == 144, "HelloAuthBlock size (v19)");
+
+struct HelloPayloadAuthed {
+    HelloPayload   base;
+    HelloAuthBlock auth;
+};
+static_assert(sizeof(HelloPayloadAuthed) == 170, "HelloPayloadAuthed size (v19)");
 
 // WELCOME (server → client). Python: I B B B H = 9 bytes
 struct WelcomePayload {

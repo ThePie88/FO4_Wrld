@@ -7,6 +7,7 @@
 
 #include "../hook_manager.h"
 #include "../log.h"
+#include "../audit.h"
 #include "../offsets.h"
 #include "../main_thread_dispatch.h"
 #include "../engine/engine_calls.h"
@@ -32,6 +33,16 @@ namespace {
 using ActorUpdatePerFrameFn = void (*)(void* actor, float sim_time);
 
 ActorUpdatePerFrameFn g_orig_actor_update_perframe = nullptr;
+
+// Build 69 — RequestStopCombat(manager, actor). Dedicated event-98 emitter;
+// see offsets::REQUEST_STOP_COMBAT_RVA for the full derivation. The Actor is
+// the SECOND argument (RDX).
+using RequestStopCombatFn = char (*)(void* manager, void* actor);
+RequestStopCombatFn g_orig_request_stop_combat = nullptr;
+
+// Counters for the same INFO snapshot the other suppression stats use.
+std::atomic<std::uint64_t> g_stopcombat_blocked{0};
+std::atomic<std::uint64_t> g_stopcombat_passed{0};
 
 // Diagnostics. Relaxed because exact ordering doesn't matter; we only
 // read these for periodic INFO snapshots. fetch_add at this volume
@@ -217,10 +228,16 @@ static void safe_force_in_combat_flag(void* actor) noexcept {
         auto* flags = reinterpret_cast<std::uint32_t*>(
             reinterpret_cast<std::uint8_t*>(actor) + 0x2D0);
         *flags |= 0x4000u;
+        fw::audit::wnote(fw::audit::WSite::kInCombat, flags,
+                         flags, 4);  // Build 69o — bytes = post-RMW value
 
         // Actor+0x380 mirror — what `GetCombatTarget` Papyrus reads.
+        const std::uint32_t pc_fid = 0x14u;
         *reinterpret_cast<std::uint32_t*>(
-            reinterpret_cast<std::uint8_t*>(actor) + 0x380) = 0x14u;
+            reinterpret_cast<std::uint8_t*>(actor) + 0x380) = pc_fid;
+        fw::audit::wnote(fw::audit::WSite::kInCombat,
+                         reinterpret_cast<std::uint8_t*>(actor) + 0x380,
+                         &pc_fid, 4);  // Build 69o
 
         // AIProcess+0x6C — the real combat-target field. AIProcess
         // pointer lives at Actor+0x328 (per sub_140C5CCE0 disasm).
@@ -228,7 +245,10 @@ static void safe_force_in_combat_flag(void* actor) noexcept {
             reinterpret_cast<std::uint8_t*>(actor) + 0x328);
         if (aiproc) {
             *reinterpret_cast<std::uint32_t*>(
-                reinterpret_cast<std::uint8_t*>(aiproc) + 0x6C) = 0x14u;
+                reinterpret_cast<std::uint8_t*>(aiproc) + 0x6C) = pc_fid;
+            fw::audit::wnote(fw::audit::WSite::kInCombat,
+                             reinterpret_cast<std::uint8_t*>(aiproc) + 0x6C,
+                             &pc_fid, 4);  // Build 69o
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         // swallow — better than crashing
@@ -301,6 +321,29 @@ bool actor_knocked_or_dead(void* actor) noexcept {
 // Build 65.c.36b — kill switch for the mirror combat-suppression. Default ON.
 std::atomic<bool> g_c36b_enable{true};
 
+}  // namespace  (re-opened below; the setter must be externally linkable)
+
+void set_mirror_combat_suppression(bool enabled) noexcept {
+    g_c36b_enable.store(enabled, std::memory_order_relaxed);
+    FW_LOG("[npc-ai-suppress] c.36b mirror combat suppression = %s "
+           "(HighProcess+0x189 %s on mirrors)",
+           enabled ? "ON" : "OFF",
+           enabled ? "driven to 1" : "left untouched");
+}
+
+// Build 69r — see npc_ai_suppress.h / config.h for the 69q post-mortem.
+std::atomic<bool> g_death_recohere_sweep_enabled{false};
+
+void set_death_recohere_sweep(bool enabled) noexcept {
+    g_death_recohere_sweep_enabled.store(enabled, std::memory_order_relaxed);
+    FW_LOG("[npc-ai-suppress] 69q death-recohere sweep = %s%s",
+           enabled ? "ON" : "OFF",
+           enabled ? " (A/B lever — decomp says this ARMS the load, "
+                     "see config.h death_recohere_sweep)" : "");
+}
+
+namespace {
+
 // Build 65.c.36b — set/clear the engine's combat "skip-tick" flag on a live
 // HighProcess (Actor+0x328 → +0x189). Setting it to 1 makes the post-pick gate
 // sub_14087A900 return 1 → the combat orchestrator vt[255] sub_140CCFDF0 drops
@@ -323,13 +366,535 @@ void set_combat_skip_tick(void* actor, bool suppress) noexcept {
         void* hp = *reinterpret_cast<void**>(
             reinterpret_cast<std::uint8_t*>(actor) + 0x328);
         if (!hp) return;   // no combat HighProcess → nothing to gate
-        *reinterpret_cast<std::uint8_t*>(
-            reinterpret_cast<std::uint8_t*>(hp) + 0x189) =
-            suppress ? 1u : 0u;
+        const std::uint8_t v = suppress ? 1u : 0u;
+        *(reinterpret_cast<std::uint8_t*>(hp) + 0x189) = v;
+        // Build 69o — write ring. HighProcess is exactly the block the
+        // hp-churn probe watched go 0x5555 (freed) mid-session; this byte
+        // through a stale Actor+0x328 would land in recycled heap.
+        fw::audit::wnote(fw::audit::WSite::kSkipTick,
+                         reinterpret_cast<std::uint8_t*>(hp) + 0x189, &v, 1);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         // actor/HP torn down between read and write — ignore.
     }
 }
+
+// ============ Build 69 — block StopCombat requests on mirrors =============
+//
+// THE DEFECT THIS FIXES, measured rather than argued (2026-08-02 A/B run):
+// with our HighProcess+0x189 write active, ZERO of 196,384 sampled ticks kept
+// a mirrored NPC's HighProcess alive and all 106 allocations died within
+// exactly 1 tick; with the write withheld on client B, the same four raiders
+// (0x246CD2/3/4/5) held theirs for up to 160 ticks (2.7 s). The byte is not a
+// "skip this tick" flag — RE found its only two vanilla writers are the two
+// Actor::StopCombat implementations, and the gate that reads it,
+// sub_14087A900, is ShouldStopCombat(). So we were asking the engine to end
+// combat 60 times a second and it obliged, taking the combat-target handle
+// with it. That is why a non-owner could never observe "this NPC wants me".
+//
+// WHY HERE AND NOT SOMEWHERE ELSE. In sub_140CCFDF0 the single value `v10`
+// controls BOTH the skip of the engage/aim/cover block AND the tail call that
+// dispatches event 98 — they cannot be separated by tuning the byte. So we
+// keep the byte (the suppression stays behaviourally identical: with v10 == 1
+// the whole `if (!v10 && ...)` block is skipped, including BOTH combat-tick
+// helpers sub_140879630 and sub_1408793F0) and drop only the dispatch.
+//
+// Alternatives rejected, with the reason:
+//   * Swap to HighProcess+0x18B. sub_1408793F0's body IS gated by both bytes
+//     (funcs_0240.md:4612 `if (!*(a1+393) && !*(a1+395))`), but the sibling
+//     sub_140879630 — taken when sub_140CA6580(a1) is true — is gated by
+//     NEITHER, so the combat tick keeps running on that branch and the
+//     mirrors-aim-at-you symptom returns.
+//   * Hook sub_140CCFDF0 itself: v10 is shared, so it would mean
+//     reimplementing a per-frame per-combat-group-member function rather than
+//     wrapping it.
+//
+// BLAST RADIUS, stated honestly. This dispatcher has exactly three callers:
+// the orchestrator (ours), Actor::Update_PerFrame's combat-timeout path, and
+// sub_140C60BE0's state/movement path. Blocking it for mirrors blocks all
+// three FOR MIRRORED ACTORS ONLY, which is the architecturally correct
+// answer: a mirrored NPC must not make its own stop-combat decisions, the
+// owner is authoritative. Destruction paths that do NOT route through here —
+// death, cell unload, Papyrus StopCombat — still free the HighProcess, so
+// this cannot strand the allocation.
+// FAIL-SAFE WINDOWS (Build 69c). Client A took an AV 160 ms after the
+// post-death respawn teleport, inside BSExtraDataList::GetByType on a list
+// whose presence-bitfield pointer had been overwritten with recycled heap
+// (0x0200000002000000) — a use-after-free during the cell swap. The Build 69
+// hooks were behaviourally inert on that client (zero blocks; the player's own
+// StopCombat does not even route through here, because PlayerCharacter
+// overrides vtable slot 256 with sub_140D9B150), so nothing proves we caused
+// it. But refusing a teardown request is precisely the class of change that
+// leaves a structure alive past the point the engine assumed it was gone, and
+// death + reload is where that bites. So the block now stands down whenever
+// the engine has a legitimate reason to be tearing something down:
+//
+//   * the actor is knocked out or dead        -> let it stop combat and die
+//   * the actor is in our sticky dying set    -> death-sync is mid-flight
+//   * the local player died in the last few s -> respawn teleport + cell swap
+//
+// The cost is nil in the steady state we care about: mirrors are suppressed
+// while alive and fighting, which is the only window in which keeping the
+// HighProcess buys us anything.
+// Build 69e — the stand-down window is EVENT-DRIVEN, not a fixed timeout.
+//
+// It used to be a flat 15 s from the moment of death. That covered the three
+// runs we measured (the respawn teleport landed 6.85 / 6.90 / 7.00 s after
+// death every time), but a flat timer is a guess about load times: a slower
+// disk or a heavier destination cell pushes the teleport past the deadline and
+// re-exposes the exact instant that produced two AVs. So instead we watch for
+// the thing we actually care about — the respawn teleport itself — and hold
+// the stand-down until it has happened AND the cell streaming behind it has
+// had time to settle.
+//
+//   death            -> window opens, we look for the teleport
+//   teleport seen    -> window stays open kSettleAfterRespawnMs longer
+//   nothing seen     -> window closes at kHardCeilingMs no matter what, so a
+//                       death that never respawns (quit to menu, save load)
+//                       cannot leave us suspended forever
+//
+// The teleport is detected as a jump from the position recorded at death.
+// Measured jumps were ~19,000 units; normal locomotion is a few units per
+// frame, so the threshold has three orders of magnitude of headroom.
+constexpr std::uint64_t kSettleAfterRespawnMs = 5000;
+constexpr std::uint64_t kHardCeilingMs        = 90000;
+constexpr float         kRespawnJumpUnits     = 5000.0f;
+
+std::atomic<std::uint64_t> g_local_player_died_ms{0};
+std::atomic<std::uint64_t> g_respawn_seen_ms{0};
+std::atomic<bool>          g_standdown_active{false};
+float g_death_pos[3] = {0.0f, 0.0f, 0.0f};   // main thread only
+
+// Forward decl: defined further down, next to the other engine readers.
+static bool read_local_player_pos(float* out_x, float* out_y, float* out_z) noexcept;
+
+}  // namespace  (reopened below; other translation units need the predicate)
+
+// Pure atomic read — safe from ANY thread, including the network apply path.
+// The state behind it is only ever advanced by update_death_standdown() on the
+// main thread, so no engine memory is touched here.
+bool in_local_death_standdown() noexcept {
+    return g_standdown_active.load(std::memory_order_relaxed);
+}
+
+// Build 69q — one-shot trigger for the death-time cell re-coherence sweep.
+// Set inside the kill dispatch below, consumed by update_death_standdown on
+// the NEXT per-frame tick, so the engine MoveTo calls run outside the kill
+// event's own dispatch.
+static std::atomic<bool> g_death_recohere_pending{false};
+
+void note_local_player_death() noexcept {
+    g_local_player_died_ms.store(GetTickCount64(), std::memory_order_relaxed);
+    // Build 69k — spend the calm ragdoll window doing the teardown that would
+    // otherwise land during the cell unload. See release_all_npc_bone_pins.
+    fw::native::release_all_npc_bone_pins();
+    // Build 69m — snapshot every actor we have mutated, with its LIVE cell,
+    // coordinates and form flags. Two deaths with opposite outcomes now differ
+    // in a file we can diff.
+    fw::audit::dump("local-player-death");
+    // Build 69q — DESPAWN THE OWNERSHIP SPHERE NOW. The engine is about to
+    // drop the dead player as a combat target (event 98 passes freely on
+    // OWNED raiders — we only block it on mirrors), so our authority over
+    // these NPCs is fiction from this frame on. Explicit NPC_UNLOAD per
+    // owned fid → the server releases immediately → the surviving peer
+    // re-observes and claims on its next frame, instead of waiting out the
+    // 8s heartbeat timeout with frozen mirrors ("raiders turn to B only
+    // when the body despawns").
+    fw::ownership::release_all_owned_on_death();
+    // Build 69q — arm the cell re-coherence sweep (see run_death_cell_
+    // recohere below).
+    // Build 69r (2026-08-04) — DEFAULT OFF. The 10-agent audit's decomp read
+    // (funcs_0175.md:8877-8930, funcs_0301.md:6090-6127) proved the sweep's
+    // premise false: MoveTo(cell=NULL, marker=NULL) performs NO cell
+    // re-file — it queues a "moved" changeform and unconditionally plants
+    // ExtraBadPosition on every swept actor, payloads consumed by exactly
+    // the LoadGame walkers we were trying to protect. At the 17:46:18 crash
+    // the sweep (running BEFORE the release wave, ordering flip) was the
+    // only fw touch the victim raider ever had. Keeping the code as an A/B
+    // lever: config `death_recohere_sweep = true` re-arms it.
+    if (g_death_recohere_sweep_enabled.load(std::memory_order_relaxed)) {
+        g_death_recohere_pending.store(true, std::memory_order_relaxed);
+    } else {
+        FW_LOG("[death-recohere] sweep DISABLED (Build 69r default) — "
+               "death release only, no MoveTo churn before the load");
+    }
+    g_respawn_seen_ms.store(0, std::memory_order_relaxed);
+    g_standdown_active.store(true, std::memory_order_relaxed);
+    // Best-effort: if the read fails we simply never match the jump and fall
+    // back to the hard ceiling, which is the safe direction.
+    if (!read_local_player_pos(&g_death_pos[0], &g_death_pos[1], &g_death_pos[2])) {
+        g_death_pos[0] = g_death_pos[1] = g_death_pos[2] = 0.0f;
+    }
+    FW_LOG("[npc-ai-suppress] local player died — stand-down OPEN, holding "
+           "until the respawn teleport + %llums settle (ceiling %llums)",
+           static_cast<unsigned long long>(kSettleAfterRespawnMs),
+           static_cast<unsigned long long>(kHardCeilingMs));
+}
+
+namespace {
+
+// Build 69q (2026-08-04) — DEATH-TIME CELL RE-COHERENCE.
+//
+// The 69p crash forensics finally named the killer: TESObjectCELL 0xDD5D was
+// freed and recycled (its "vtable" read back as a POINTER TO CELL 0xDD3C)
+// while mirrored raider 0x19174F still referenced it, detonating in
+// TESObjectCELL::DetachReference during the respawn LoadGame. Root-cause
+// trail: we drive mirror positions ~30 Hz via vt[202] SetPosition
+// (ring: 57,632 engsetpos, streaming on THAT raider up to the death
+// instant), which re-hashes the actor in its CURRENT parentCell's spatial
+// grid but NEVER re-resolves which cell the actor should belong to —
+// minutes of coordinates-vs-parentCell divergence that the load teardown
+// then walks, 1-in-3 depending on teardown order.
+//
+// This sweep runs ONCE, on the first per-frame tick after death (outside
+// the kill dispatch, ~7 s before the player can even press Load): for every
+// tracked NPC (owned + mirrors) still loaded, one engine MoveTo at its
+// CURRENT coords with do_process_update=1 — the same process+cell reattach
+// primitive the c.44 handoff uses — so parentCell and coordinates agree
+// BEFORE LoadGame walks the refs. Skips: the player, dying/dead NPCs
+// (MoveTo on a corpse mid-death-anim is asking for trouble), unloaded refs
+// (nothing to re-attach; MoveTo could force-load them).
+bool read_actor_pos_yaw_loaded(void* actor, float* x, float* y, float* z,
+                               float* yaw) noexcept {
+    if (!actor) return false;
+    __try {
+        const auto* b = reinterpret_cast<const std::uint8_t*>(actor);
+        void* lrd = *reinterpret_cast<void* const*>(
+            b + fw::offsets::LOADED_REF_DATA_OFF);
+        if (!lrd) return false;   // not loaded
+        const float* p = reinterpret_cast<const float*>(
+            b + fw::offsets::POS_OFF);
+        *x = p[0]; *y = p[1]; *z = p[2];
+        *yaw = *reinterpret_cast<const float*>(
+            b + fw::offsets::ROT_OFF + 8);   // AngleZ
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+void run_death_cell_recohere() noexcept {
+    std::uint32_t fids[96];
+    const std::size_t n = fw::ownership::collect_tracked_fids(fids, 96);
+    int done = 0, skipped = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::uint32_t fid = fids[i];
+        if (fid == 0x14u || is_dying(fid)) { ++skipped; continue; }
+        void* actor = fw::engine::lookup_by_form_id(fid);
+        if (!actor) { ++skipped; continue; }
+        float x = 0.0f, y = 0.0f, z = 0.0f, yaw = 0.0f;
+        if (!read_actor_pos_yaw_loaded(actor, &x, &y, &z, &yaw)) {
+            ++skipped;
+            continue;
+        }
+        if (fw::engine::actor_teleport_handoff(actor, x, y, z, yaw)) {
+            ++done;
+        }
+    }
+    FW_LOG("[death-recohere] re-attached cell membership for %d/%zu tracked "
+           "actors (%d skipped: player/dying/unloaded) before the load "
+           "walks them", done, n, skipped);
+}
+
+// MAIN THREAD ONLY — called from the per-frame detour. Advances the little
+// state machine above and publishes the result into g_standdown_active.
+void update_death_standdown() noexcept {
+    if (!g_standdown_active.load(std::memory_order_relaxed)) return;
+
+    // Build 69q — one-shot: the first frame after death, before the state
+    // machine below does anything else. The kill dispatch is over, the
+    // death-cam ragdoll is playing, the load is seconds away.
+    if (g_death_recohere_pending.exchange(false, std::memory_order_relaxed)) {
+        run_death_cell_recohere();
+    }
+
+    const std::uint64_t now   = GetTickCount64();
+    const std::uint64_t died  = g_local_player_died_ms.load(std::memory_order_relaxed);
+    const std::uint64_t seen  = g_respawn_seen_ms.load(std::memory_order_relaxed);
+
+    if (seen != 0) {
+        if ((now - seen) >= kSettleAfterRespawnMs) {
+            g_standdown_active.store(false, std::memory_order_relaxed);
+            FW_LOG("[npc-ai-suppress] stand-down CLOSED — %llums after the "
+                   "respawn teleport, resuming NPC sync",
+                   static_cast<unsigned long long>(now - seen));
+            // Build 69s — apply the PHASE_2 claims parked during the window
+            // (ownership quiescence). The world is loaded and settled; the
+            // mirrors re-track NOW, not mid-load.
+            fw::ownership::drain_deferred_phase2_claims();
+        }
+        return;
+    }
+
+    float x, y, z;
+    if (read_local_player_pos(&x, &y, &z)) {
+        const float dx = x - g_death_pos[0];
+        const float dy = y - g_death_pos[1];
+        const float dz = z - g_death_pos[2];
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 > (kRespawnJumpUnits * kRespawnJumpUnits)) {
+            g_respawn_seen_ms.store(now, std::memory_order_relaxed);
+            FW_LOG("[npc-ai-suppress] respawn teleport detected %llums after "
+                   "death (jump %.0f units) — holding stand-down %llums more",
+                   static_cast<unsigned long long>(now - died),
+                   static_cast<double>(std::sqrt(d2)),
+                   static_cast<unsigned long long>(kSettleAfterRespawnMs));
+            return;
+        }
+    }
+
+    if ((now - died) >= kHardCeilingMs) {
+        g_standdown_active.store(false, std::memory_order_relaxed);
+        FW_WRN("[npc-ai-suppress] stand-down hit the %llums ceiling without "
+               "ever seeing a respawn teleport — resuming NPC sync anyway",
+               static_cast<unsigned long long>(kHardCeilingMs));
+        fw::ownership::drain_deferred_phase2_claims();   // Build 69s
+    }
+}
+
+bool in_local_death_window() noexcept {
+    return g_standdown_active.load(std::memory_order_relaxed);
+}
+
+char detour_request_stop_combat(void* manager, void* actor) noexcept {
+    if (actor && g_c36b_enable.load(std::memory_order_relaxed)) {
+        const std::uint32_t fid = safe_read_form_id(actor);
+        if (fid != 0 && fid != 0xFFFFFFFFu &&
+            fw::ownership::is_non_owner_tracked(fid) &&
+            !actor_knocked_or_dead(actor) &&
+            !is_dying(fid) &&
+            !in_local_death_window()) {
+            fw::audit::note(fid, fw::audit::kStopCombatBlocked, actor);
+            const auto n = g_stopcombat_blocked.fetch_add(
+                1, std::memory_order_relaxed);
+            if (n < 20 || (n % 4000) == 0) {
+                FW_LOG("[npc-ai-suppress] StopCombat request BLOCKED on mirror "
+                       "fid=0x%08X (#%llu) — keeping the HighProcess alive",
+                       fid, static_cast<unsigned long long>(n + 1));
+            }
+            // The engine ignores the return of every call site we traced
+            // (all three discard it), so 0 is safe and means "not handled".
+            return 0;
+        }
+    }
+    g_stopcombat_passed.fetch_add(1, std::memory_order_relaxed);
+    return g_orig_request_stop_combat
+        ? g_orig_request_stop_combat(manager, actor)
+        : 0;
+}
+
+// ===================== Build 69 — HighProcess churn probe =================
+// PURPOSE. `set_combat_skip_tick` above writes 1 to HighProcess+0x189 on every
+// mirrored NPC, every frame. RE (2026-08-02) established that the ONLY two
+// vanilla writers of that byte are the two `Actor::StopCombat` implementations
+// (Papyrus native sub_1410FBD50, console sub_1405C2340), and that the reader
+// sub_14087A900 is not a "skip this tick" predicate but ShouldStopCombat() —
+// returning 1 makes the orchestrator sub_140CCFDF0 dispatch event 98, which is
+// Actor::StopCombat (vt slot 256 = sub_140CCFFC0). That function FREES the
+// 400-byte HighProcess, NULLs Actor+0x328, and zeroes the combat-target handle
+// at Actor+0x380.
+//
+// So the open question is whether our own suppression is tearing down the very
+// combat state we then complain is missing. The field logs cannot answer it:
+// the existing OWNER-CAPTURE sampler is decimated `t < 30 || t % 2000`, which
+// is start-of-session biased (everything IDLE), and it yielded only 12 samples
+// in a combat anim state across both clients.
+//
+// WHY NULLNESS IS NOT ENOUGH. A freed 0x190 block is returned to a pooled
+// allocator that keeps the pages committed and can hand the SAME address back
+// immediately. Sampling only `hp == nullptr` would miss a free+realloc that
+// lands on the same pointer. So we sample the PAIR (pointer, our marker byte):
+// if the address is unchanged but our 1 has become 0, the block was recycled
+// underneath us — the case pointer-only instrumentation cannot see.
+//
+//   00 STABLE  hp valid, same address, marker still 1  (our write survived)
+//   01 GONE    hp == nullptr                           (torn down)
+//   10 MOVED   hp valid but at a different address      (reallocated)
+//   11 WIPED   hp valid, same address, marker cleared   (recycled in place)
+//
+// VOLUME. 2 bits/tick packed into a u64 = one log line per 32 ticks (~0.53 s)
+// per tracked NPC, and all-STABLE words are decimated 16:1 on top of that. The
+// Build 68.2 logger stutter (0.525 ms/line with fsync) is the reason this is
+// packed rather than sampled — FW_LOG at Info level no longer fsyncs (68.3),
+// but volume still matters. Anomalies are NEVER decimated: any word containing
+// a non-STABLE tick is emitted whole.
+//
+// Kill switch: g_hp_churn_probe. Mirror-only by construction — it is called
+// from the non-owner branch, which is the side whose combat state is in doubt.
+std::atomic<bool> g_hp_churn_probe{true};
+
+struct HpProbeState {
+    void*         last_hp = nullptr;
+    std::uint64_t word    = 0;
+    unsigned      filled  = 0;
+    std::uint64_t words   = 0;
+    std::uint64_t quiet   = 0;   // consecutive all-STABLE words suppressed
+};
+
+std::mutex                                      g_hp_probe_mtx;
+std::unordered_map<std::uint32_t, HpProbeState> g_hp_probe;
+
+// SEH-caged read of the pair. MUST be a free function: the detour frame owns
+// shared_lock/lock_guard locals and MSVC C2712 forbids __try there (same
+// reason actor_has_native_highproc and safe_or_in_combat_bit are file-scope).
+bool read_hp_and_marker(void* actor, void** hp_out,
+                        std::uint8_t* mark_out) noexcept {
+    __try {
+        void* hp = *reinterpret_cast<void**>(
+            reinterpret_cast<std::uint8_t*>(actor) + 0x328);
+        *hp_out   = hp;
+        *mark_out = hp ? *(reinterpret_cast<std::uint8_t*>(hp) + 0x189) : 0u;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// ============ Build 69g — WHO DOES A MIRRORED NPC WANT TO ATTACK? =========
+//
+// THE ONE FACT WE STILL DO NOT HAVE. RE established everything except the
+// reading itself:
+//   * HighProcess+0x6C is the combat-target ObjectRefHandle, and
+//     sub_14087AB30 (AIProcess::SetCombatTarget) is its ONLY writer binary-wide.
+//   * It carries the same value as Actor+0x380 — one variable stored to both on
+//     adjacent lines (funcs_0240.md:5985-5987) — so resolve_handle_to_formid
+//     works on it unchanged.
+//   * The engine writes it INDEPENDENTLY of our suppression: the target
+//     promoter sub_14087B080 runs BEFORE the gate sub_14087A900 inside the
+//     orchestrator and never reads our +0x189 byte (funcs_0307.md:4706-4707).
+//   * And the HighProcess now survives on mirrors — ~6,170 stable ticks,
+//     ~32 s per raider, same pointer throughout, in the 2026-08-03 18:07 run.
+// What has never been observed is the VALUE: does a mirrored raider's +0x6C
+// actually resolve to the local player (form 0x14)?
+//
+// WHY THIS MATTERS MORE THAN IT LOOKS. The engage signal we feed the server
+// today is worthless: on both clients the owner-capture totals are
+// `any == s0` EXACTLY (A 7552/7552, B 2581/2581), and s0 is merely
+// "Actor+0x328 != NULL". So the owner relays "AIMING" because the NPC HAS a
+// combat process, carrying zero information about WHOM it fights. Both peers
+// then score the same +10 engage and the multiplicative FLIP_MARGIN can never
+// separate them — measured: 80 of 80 threat rows above the proximity ceiling
+// have BOTH sides above it, median gap 0.53 on ~15.4.
+// Counterfactual against the same 734 logged rows: an EXCLUSIVE signal flips
+// 80/80 within one tick; a common-mode one flips 0/734. So the whole value of
+// this work rides on +0x6C naming a specific actor rather than announcing that
+// combat exists.
+//
+// READ-ONLY. No engine memory is written here. Decimated hard: one line per
+// (fid, resolved-target) transition plus a periodic heartbeat, because the
+// interesting event is the CHANGE, not the steady state — and because a
+// per-frame log on the mirror path is what caused the Build 68.2 stutter.
+struct MirrorTargetState {
+    std::uint32_t last_fid_target = 0xFFFFFFFFu;   // sentinel: never sampled
+    std::uint64_t samples         = 0;
+    std::uint64_t hits_local      = 0;             // resolved to form 0x14
+};
+std::mutex                                            g_mtgt_mtx;
+std::unordered_map<std::uint32_t, MirrorTargetState>  g_mtgt;
+
+// SEH-caged: HighProcess may be freed between the null check and the read.
+// Free function for the usual C2712 reason (the detour frame owns lock guards).
+bool read_mirror_target_handle(void* actor, std::uint32_t* out_handle) noexcept {
+    __try {
+        void* hp = *reinterpret_cast<void**>(
+            reinterpret_cast<std::uint8_t*>(actor) + 0x328);
+        if (!hp) return false;
+        *out_handle = *reinterpret_cast<const std::uint32_t*>(
+            reinterpret_cast<const std::uint8_t*>(hp) +
+            fw::offsets::AIPROCESS_COMBAT_TARGET_HANDLE_OFF);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// `owner_side` = true when we are the OWNER of this NPC, i.e. its vanilla AI
+// is running normally. That arm is the CONTROL, and without it the experiment
+// is uninterpretable: the first run returned target=0 on every mirrored raider
+// for the whole session, which is equally consistent with "the mirror has no
+// combat target" and with "we are reading the wrong offset". The owner arm
+// settles it — an owner whose raider is actively shooting the local player
+// MUST show a non-zero handle resolving to form 0x14. If it does not, the
+// read is wrong and the mirror result means nothing.
+void probe_mirror_target(void* actor, std::uint32_t fid,
+                         bool owner_side) noexcept {
+    std::uint32_t raw = 0;
+    if (!read_mirror_target_handle(actor, &raw)) return;   // no HighProcess yet
+
+    // 0 is the engine's "no target" sentinel (dword_1430DA180 == 0).
+    const std::uint32_t tgt =
+        (raw == 0) ? 0u : fw::engine::resolve_handle_to_formid(raw);
+
+    std::lock_guard<std::mutex> lk(g_mtgt_mtx);
+    // Keyed on (fid, side): the same NPC can be sampled on both arms across an
+    // ownership flip, and one arm must never overwrite the other's history.
+    MirrorTargetState& st = g_mtgt[fid ^ (owner_side ? 0x80000000u : 0u)];
+    ++st.samples;
+    if (tgt == fw::offsets::PLAYER_FORMID) ++st.hits_local;
+
+    // Emit on TRANSITION only, plus a heartbeat every ~4000 samples so a
+    // long steady state still leaves a trace.
+    const bool changed   = (tgt != st.last_fid_target);
+    const bool heartbeat = (st.samples % 4000) == 0;
+    if (!changed && !heartbeat) return;
+    st.last_fid_target = tgt;
+
+    FW_LOG("[mirror-target] %s fid=0x%08X -> target=0x%08X %s "
+           "(raw_handle=0x%08X, samples=%llu, local_hits=%llu)",
+           owner_side ? "OWNER  " : "MIRROR", fid, tgt,
+           (tgt == fw::offsets::PLAYER_FORMID) ? "== LOCAL PLAYER"
+                                               : (tgt == 0 ? "(none)" : ""),
+           raw,
+           static_cast<unsigned long long>(st.samples),
+           static_cast<unsigned long long>(st.hits_local));
+}
+// ==========================================================================
+
+// Call PRE-orig and BEFORE set_combat_skip_tick, so we observe the state the
+// engine left after the previous frame rather than reading back our own write.
+void probe_hp_churn(void* actor, std::uint32_t fid) noexcept {
+    if (!g_hp_churn_probe.load(std::memory_order_relaxed) || !actor) return;
+
+    void* hp = nullptr;
+    std::uint8_t mark = 0;
+    if (!read_hp_and_marker(actor, &hp, &mark)) return;
+
+    std::lock_guard<std::mutex> lk(g_hp_probe_mtx);
+    HpProbeState& st = g_hp_probe[fid];
+
+    // The marker is only meaningful in the arm where we actually write it.
+    // With the suppression off nobody sets +0x189, so a surviving HighProcess
+    // would otherwise be misfiled as WIPED and the control run would read as
+    // a catastrophe instead of a success.
+    const bool armed = g_c36b_enable.load(std::memory_order_relaxed);
+
+    unsigned code;
+    if (!hp)                          code = 1;   // GONE
+    else if (hp != st.last_hp)        code = 2;   // MOVED (incl. first sight)
+    else if (armed && mark != 1u)     code = 3;   // WIPED in place
+    else                              code = 0;   // STABLE (survived the frame)
+    st.last_hp = hp;
+
+    st.word |= (static_cast<std::uint64_t>(code) << (2u * st.filled));
+    if (++st.filled < 32u) return;
+
+    const std::uint64_t w = st.word;
+    st.word = 0; st.filled = 0; ++st.words;
+
+    // Anomaly-preserving decimation: an all-STABLE word is 0, and only those
+    // are dropped. Anything else is a datum we cannot reconstruct later.
+    if (w == 0) {
+        if (++st.quiet % 16u != 0u) return;
+    } else {
+        st.quiet = 0;
+    }
+
+    unsigned n[4] = {0, 0, 0, 0};
+    for (unsigned i = 0; i < 32u; ++i) ++n[(w >> (2u * i)) & 3u];
+    FW_LOG("[hp-churn] fid=0x%08X w#%llu %016llX stable=%u gone=%u moved=%u "
+           "wiped=%u hp=%p", fid,
+           static_cast<unsigned long long>(st.words),
+           static_cast<unsigned long long>(w),
+           n[0], n[1], n[2], n[3], hp);
+}
+// ==========================================================================
 
 // Build 65.c.22 — SEH-safe OR del bit 0x4000 a Actor+0x2D0. Helper a
 // scope file perché il detour body ha shared_lock locals che vietano
@@ -392,6 +957,24 @@ static bool safe_read_combat_controller_active(void* actor) noexcept {
 
 // c.39a — cached module base (set at install) for reading the player singleton.
 std::atomic<std::uintptr_t> g_module_base{0};
+
+// Build 69b — the Actor::StopCombat OBSERVER lived here and has been REMOVED.
+//
+// It answered its question completely, on both clients. The callers of
+// Actor::StopCombat are: sub_140C4CE00+0x2323 (the event-98 dispatcher itself,
+// 1236 calls with on_mirror=0, which proves the emitter-side block holds),
+// sub_140515C90+0x23B (dispatcher case 74 — the SECOND destroyer, the only
+// site with on_mirror>0), sub_140C2CAD0+0xEB and sub_140C9A400+0x121.
+// ACTOR_STOP_COMBAT_RVA stays documented in offsets.h in case it is needed.
+//
+// Removed because it was finished work carrying live risk: a MinHook detour
+// that takes a mutex and does synchronous file I/O inside an engine teardown
+// function is a timing perturbation on a path that runs during cell unload and
+// the post-death reload — exactly the window in which client A took an AV. An
+// audit found it deadlock-free, re-entry-safe and free of engine writes, so it
+// is NOT proven to have caused that crash; but "no proven harm" is not a
+// reason to keep an instrument whose measurement is complete.
+
 
 // c.39a — the LOCAL player's current combat-target (read from its own
 // PlayerCharacter at Actor+0x380, written every frame by the engine's combat-
@@ -476,6 +1059,49 @@ static bool read_local_player_pos(float* out_x, float* out_y,
 
 void __fastcall detour_actor_update_perframe(void* actor, float sim_time) {
     const std::uint32_t fid = safe_read_form_id(actor);
+
+    // Build 69d — TOTAL STAND-DOWN while the local player is dead.
+    //
+    // Measured twice, 2026-08-02: client A took an AV ~150 ms after the
+    // post-death respawn teleport, at TWO DIFFERENT addresses (0x2A007D in
+    // BSExtraDataList::GetByType, then 0x4CC644). Two distinct faults in the
+    // same 150 ms window is the signature of touching structures the engine is
+    // concurrently tearing down, not of one specific bug.
+    //
+    // What happens in that window, from the logs: the player dies, respawns
+    // ~19,000 units away, and the server re-elects ownership on proximity —
+    // 13 ownership changes landed in the SAME SECOND as the second crash
+    // (16:15:45), handing this client 7 NPCs at the destination and taking
+    // away 6 at the raider camp it was leaving. Every one of those flips
+    // switches our per-frame handling of that actor between owner-capture and
+    // mirror-apply, and mirror-apply writes engine state: position through
+    // vt[202], Havok keyframing, bone transforms. So we start writing into
+    // actors of the OLD cell exactly while that cell is being unloaded.
+    //
+    // The player is dead and staring at a load screen: there is nothing to
+    // keep in sync and nothing to see. So we do NOTHING to any actor —
+    // straight passthrough to vanilla — until the dust settles. This is
+    // deliberately blunt: a narrower per-actor guard cannot know which actors
+    // the engine is mid-way through unloading, which is the whole problem.
+    // Advance the death-standdown state machine once per frame (it watches for
+    // the respawn teleport and closes the window kSettleAfterRespawnMs after).
+    // Cheap no-op unless the window is open. Runs before the check below so the
+    // very frame that detects the teleport is handled consistently.
+    update_death_standdown();
+
+    if (in_local_death_window()) {
+        static std::atomic<std::uint64_t> s_standdown_ticks{0};
+        const auto n = s_standdown_ticks.fetch_add(1, std::memory_order_relaxed);
+        if (n == 0 || (n % 2000) == 0) {
+            FW_LOG("[npc-ai-suppress] death stand-down active — passing every "
+                   "actor straight to vanilla (tick #%llu)",
+                   static_cast<unsigned long long>(n + 1));
+        }
+        if (g_orig_actor_update_perframe) {
+            g_orig_actor_update_perframe(actor, sim_time);
+        }
+        return;
+    }
 
     // B6.6w5 Build 28k — UNCONDITIONAL bail for our ghost proxy.
     //
@@ -657,12 +1283,38 @@ void __fastcall detour_actor_update_perframe(void* actor, float sim_time) {
         //   - raider we own      → +0x189=0  (un-stick: the engine never clears
         //                                     it, and it's savegame-persisted)
         //   - untracked actor    → leave the engine's flag untouched (vanilla)
-        if (g_c36b_enable.load(std::memory_order_relaxed) &&
-            fid != 0 && fid != 0xFFFFFFFFu) {
-            if (fw::ownership::is_non_owner_tracked(fid)) {
-                set_combat_skip_tick(actor, true);
+        if (fid != 0 && fid != 0xFFFFFFFFu) {
+            const bool mirror = fw::ownership::is_non_owner_tracked(fid);
+
+            // Build 69 — the probe MUST sit OUTSIDE g_c36b_enable. It was
+            // first written inside that guard, which made the whole control
+            // run useless: turning the suppression off to measure its effect
+            // also turned off the measurement, and client B produced zero
+            // [hp-churn] lines. The probe is the instrument, not part of the
+            // treatment — it runs in both arms of the A/B.
+            //
+            // Still placed BEFORE set_combat_skip_tick so it observes the
+            // state the engine left last frame rather than our own write.
+            if (mirror) {
+                probe_hp_churn(actor, fid);
+                // Build 69g — read-only: does this mirrored NPC's combat
+                // target resolve to OUR player? Same placement rationale.
+                probe_mirror_target(actor, fid, /*owner_side=*/false);
             } else if (fw::ownership::is_owner_of(fid)) {
-                set_combat_skip_tick(actor, false);
+                // Build 69h — the CONTROL arm. Same read, same offset, on an
+                // NPC whose vanilla AI is running. If this never shows a
+                // non-zero target either, the offset is wrong and the mirror
+                // result is meaningless.
+                probe_mirror_target(actor, fid, /*owner_side=*/true);
+            }
+
+            if (g_c36b_enable.load(std::memory_order_relaxed)) {
+                if (mirror) {
+                    fw::audit::note(fid, fw::audit::kSkipTickWritten, actor);
+                    set_combat_skip_tick(actor, true);
+                } else if (fw::ownership::is_owner_of(fid)) {
+                    set_combat_skip_tick(actor, false);
+                }
             }
         }
 
@@ -1903,6 +2555,7 @@ void __fastcall detour_actor_update_perframe(void* actor, float sim_time) {
             if (fw::dispatch::get_latest_owner_anim_state(fid, &latest_anim)
                 && latest_anim >= 3 && latest_anim <= 5)
             {
+                fw::audit::note(fid, fw::audit::kInCombatForced, actor);
                 safe_or_in_combat_bit(actor);
                 static std::atomic<std::uint64_t> g_forced_combat_bits{0};
                 const auto n = g_forced_combat_bits.fetch_add(
@@ -2094,6 +2747,31 @@ bool install_npc_ai_suppress(std::uintptr_t module_base) {
         reinterpret_cast<void*>(target_ea),
         reinterpret_cast<void*>(&detour_actor_update_perframe),
         reinterpret_cast<void**>(&g_orig_actor_update_perframe));
+    // Build 69 — second detour: drop event-98 (StopCombat) requests aimed at
+    // mirrored NPCs. Installed independently of the one above: if it fails we
+    // are back to the measured-broken behaviour, not to a crash, so a failure
+    // here must not abort the primary install.
+    {
+        const auto rsc_ea =
+            module_base + fw::offsets::REQUEST_STOP_COMBAT_RVA;
+        const bool rsc_ok = install(
+            reinterpret_cast<void*>(rsc_ea),
+            reinterpret_cast<void*>(&detour_request_stop_combat),
+            reinterpret_cast<void**>(&g_orig_request_stop_combat));
+        if (rsc_ok) {
+            FW_LOG("[npc-ai-suppress] RequestStopCombat hook installed at "
+                   "0x%llX (RVA 0x%lX) — mirrors keep their HighProcess",
+                   static_cast<unsigned long long>(rsc_ea),
+                   static_cast<unsigned long>(
+                       fw::offsets::REQUEST_STOP_COMBAT_RVA));
+        } else {
+            FW_ERR("[npc-ai-suppress] RequestStopCombat hook FAILED at 0x%llX "
+                   "— mirrored NPCs will keep losing their combat state every "
+                   "frame (measured: 106/106 allocations dead within 1 tick)",
+                   static_cast<unsigned long long>(rsc_ea));
+        }
+    }
+
     if (ok) {
         g_installed.store(true, std::memory_order_release);
         FW_LOG("[npc-ai-suppress] Actor::Update_PerFrame hook installed at 0x%llX "

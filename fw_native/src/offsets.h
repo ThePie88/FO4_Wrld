@@ -18,7 +18,38 @@ constexpr std::uintptr_t LOOKUP_BY_FORMID_RVA  = 0x00311850; // sub_140311850
 
 // TESObjectREFR vtable. vt[0x7A] = AddObjectToContainer (converged entry
 // for player-container transfers in both directions).
+// ############################################################################
+// NAME CORRECTED 2026-08-04 03:56 — VALUE DELIBERATELY UNCHANGED.
+//
+// WHAT WE BELIEVED: 0x02564838 is "the TESObjectREFR vtable, primary vtable
+// shared by all REFR-derived classes including PlayerCharacter" (the wording
+// still sits at engine_calls.cpp:699-701).
+//
+// WHAT IS PROVEN (re/STRUCT_cell_refr.md): 0x02564838 is the PLAYERCHARACTER
+// vtable, not TESObjectREFR's. The real TESObjectREFR primary vtable is at
+// RVA 0x0249CBC8 — RTTI-confirmed, its COL at 0x14249CBC0 is 0x14294E8E0
+// {sig 1, offset 0, typeDescriptor 0x142F90670 ".?AVTESObjectREFR@@"} — and it
+// has 198 slots, ending at 0x14249D1F8 where the offset-0x20 secondary begins.
+// Useful slot identities recovered there: slot 140 (+0x460) = Get3D
+// (sub_14050D990), slot 191 (+0x5F8) = SetParentCell (sub_140517020).
+//
+// WHY THE VALUE STAYS. Its one real consumer, init_duplicate_vtable
+// (engine_calls.cpp:803), copies this table to build the ghost duplicate's
+// vtable — and the object it shadows IS a PlayerCharacter, so the number is
+// correct for what the code actually does. Repointing it at the true
+// TESObjectREFR table would be a behavioural change wearing a doc fix's
+// clothes. Only the name was wrong, and the wrong name is what made
+// engine_calls.cpp:699 assert a class relationship that does not exist.
+// ############################################################################
+constexpr std::uintptr_t PLAYERCHARACTER_VTABLE_RVA = 0x02564838;
+// Legacy spelling — MISNOMER, still referenced at engine_calls.cpp:803.
+// Same value on purpose; prefer PLAYERCHARACTER_VTABLE_RVA in new code.
 constexpr std::uintptr_t TESOBJECTREFR_VTABLE_RVA = 0x02564838;
+// The genuine TESObjectREFR primary vtable, for whoever needs REFR slots.
+// Not used yet — defined so the next reader does not repeat the confusion.
+constexpr std::uintptr_t TESOBJECTREFR_REAL_VTABLE_RVA = 0x0249CBC8;
+constexpr std::size_t    TESOBJECTREFR_VT_GET3D_OFF          = 0x460;  // slot 140
+constexpr std::size_t    TESOBJECTREFR_VT_SETPARENTCELL_OFF  = 0x5F8;  // slot 191
 constexpr std::size_t    VT_ADD_TO_CONTAINER_SLOT = 0x7A;
 
 // Player singleton (points to the active PlayerCharacter Actor*).
@@ -1344,6 +1375,58 @@ constexpr std::uintptr_t ENTER_COMBAT_RVA = 0x00CCF810;
 // ============================================================================
 
 // ===========================================================================
+// Build 69 — REQUEST-STOP-COMBAT dispatcher.
+//
+//   char __fastcall sub_140C46770(__int64 manager /*RCX*/, __int64 actor /*RDX*/)
+//
+// Dedicated event-98 emitter, NOT a generic dispatcher: the body memsets a
+// 0x80 stack struct and hardcodes `v10[0] = 98`. The adjacent sub_140C46840
+// is the same shape with `= 99`, i.e. the engine keeps one helper per event
+// code. Event 98 resolves through sub_140C4CE00 to Actor vtable slot 256
+// (+0x800) = sub_140CCFFC0 = Actor::StopCombat, which frees the 400-byte
+// HighProcess at Actor+0x328, NULLs that pointer, and zeroes the combat
+// target handle at Actor+0x380. Dispatch is INLINE on the game thread
+// (`qword_1430DBF78[274671] == GetCurrentThreadId()`), so the free happens
+// inside the calling frame.
+//
+// Exactly THREE callers binary-wide:
+//   sub_140CCFDF0  combat orchestrator, LABEL_23 — taken when the gate
+//                  sub_14087A900 returns 1, which our HighProcess+0x189
+//                  write forces. THIS is the one we are here for.
+//   sub_140C636A0  Actor::Update_PerFrame — vanilla combat-timeout path
+//                  (fires once the AIProcess countdown sub_140CF0CE0 <= 0).
+//   sub_140C60BE0  vanilla state/movement path, inside `if (a7)`.
+//
+// Measured cost of NOT intercepting it (2026-08-02 A/B, hp-churn probe):
+// with our byte written, 0 of 196,384 sampled ticks kept a HighProcess alive
+// and all 106 allocations died within exactly 1 tick; with the byte withheld,
+// the same four raiders held theirs for up to 160 ticks (2.7 s).
+//
+// Cite: funcs_0299.md [74838/204831] 0x140C46770, size 0xC2.
+constexpr std::uintptr_t REQUEST_STOP_COMBAT_RVA = 0x00C46770;
+
+// Build 69b — Actor::StopCombat itself, Actor vtable slot 256 (+0x800).
+//
+//   __int64 __fastcall sub_140CCFFC0(Actor* a1 /*RCX*/)
+//
+// This is where the HighProcess actually dies: the body runs
+// sub_140878CF0(a1[101]) then sub_1422B6BC8(v15, 400) to free the 400-byte
+// block, NULLs Actor+0x328, and zeroes the combat-target handle at
+// Actor+0x380. Blocking event 98 (above) removed most of the destruction —
+// measured 106 allocations/1-tick lifetimes down to 2-4 allocations and
+// 3.1 s lifetimes — but NOT all of it, so a second path reaches this
+// function. It has ZERO direct callers in the decomp: every call arrives
+// through the vtable, so the caller cannot be identified statically and has
+// to be captured at runtime via _ReturnAddress().
+//
+// Prologue is hook-safe: bytes +0..+4 are `push rbx / push rbp / push rsi /
+// push rdi`, four complete instructions with no RIP-relative operand.
+//
+// Cite: funcs_0307.md [76837/204831] 0x140CCFFC0, size 0x37F.
+constexpr std::uintptr_t ACTOR_STOP_COMBAT_RVA = 0x00CCFFC0;
+// ============================================================================
+
+// ===========================================================================
 // Strada B.2 (2026-05-22) — Manual HighProcess + AimController synthesis.
 // See re/strada_B2_synthesize_highprocess/SUPERVISOR_SYNTHESIS.md.
 //
@@ -2263,6 +2346,27 @@ constexpr std::size_t    NIREFOBJECT_REFCOUNT_OFF          = 0x08;
 // of 24-byte entries with handles at +0); these are SCALAR fields on
 // the AIProcess struct itself. Apply the same handle-table resolve +
 // vtable sanity check; zero the DWORD if invalid.
+// Build 69g — THE NAMES BELOW WERE WRONG and are corrected here. The old
+// labels ("TARGET_HANDLE_1 / _2") implied a primary/secondary target pair.
+// The HighProcess constructor sub_140878640 settles it (funcs_0240.md:4055,
+// disasm 0x1408787B2 `mov [rsi+68h], ecx` right after `call sub_14022C8B0`
+// with rdx = the owning Actor):
+//
+//     *(_DWORD *)(a1 + 0x68) = CreateRefHandle(owning actor);   // SELF
+//
+// so +0x68 is a handle to the actor that OWNS this process, stamped once at
+// construction and never reassigned; +0x178 is its tick-scoped cached ptr.
+// The real combat target is +0x6C, and sub_14087AB30 (AIProcess::SetCombatTarget)
+// is the ONLY writer of it in the whole binary.
+//
+// +0x6C carries the SAME 32-bit ObjectRefHandle value as Actor+0x380: they are
+// written from one variable on adjacent lines (funcs_0240.md:5985-5987, the
+// second store being `v5[224]` = 224*4 = 0x380), and sub_140C5CCE0 re-copies
+// +0x6C into Actor+0x380 every frame (funcs_0301.md:2893). So
+// fw::engine::resolve_handle_to_formid is correct for both without change.
+constexpr std::size_t    AIPROCESS_SELF_HANDLE_OFF         = 0x68;
+constexpr std::size_t    AIPROCESS_COMBAT_TARGET_HANDLE_OFF = 0x6C;
+// Old spellings kept so nothing silently breaks; prefer the names above.
 constexpr std::size_t    AIPROCESS_TARGET_HANDLE_1_OFF     = 0x68;
 constexpr std::size_t    AIPROCESS_TARGET_HANDLE_2_OFF     = 0x6C;
 

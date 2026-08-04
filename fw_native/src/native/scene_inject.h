@@ -173,6 +173,14 @@ void apply_npc_pose_to_actor(void* actor, std::uint32_t form_id);
 // unconditional main-thread heartbeat; it self-throttles to ~250 ms.
 void sweep_npc_bone_caches();
 
+// Build 69k — drop every pinned bone reference immediately. Called from the
+// kill detour the instant the LOCAL player dies, i.e. during the ragdoll
+// death-cam while the old cell is still loaded and the engine still holds its
+// own references. Releasing there is a plain decrement; releasing during the
+// cell unload makes us the last holder and we end up executing the engine's
+// destructors mid-teardown, which is the post-death AV. Main thread only.
+void release_all_npc_bone_pins();
+
 // Drop every reference held for one fid and forget it. Safe to call for a fid
 // that has no cache entry. MAIN THREAD ONLY.
 void release_npc_bone_cache(std::uint32_t form_id);

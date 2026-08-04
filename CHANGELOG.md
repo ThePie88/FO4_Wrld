@@ -5,6 +5,150 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## PIENUVO auth v0 + the player-death crash closed (2026-08-04) — v0.6.4
+
+Tag `v0.6.4`. Two independent tracks land together: the identity layer the
+external launcher needs, and the resolution of the crash that fired on the
+respawn load after a player death. Wire proto v18 to v19. 405 server tests
+pass (was 350).
+
+### PIENUVO v0: Ed25519 identity (wire v19)
+
+Every client now proves an identity instead of claiming a name. The launcher
+mints an Ed25519 keypair and keeps the seed in a ChaCha20Poly1305 vault whose
+key derives from a local alphabet file, wrapped in Windows DPAPI. The client
+id shown to the server is `fw` plus 13 hex chars of the public-key hash, so
+Steam, Epic, Xbox and DRM-free installs all get stable identities with zero
+platform dependencies.
+
+Handshake: the server issues a random challenge; the launcher signs
+`"FWAUTH1" || u16le(len(addr)) || addr || challenge` (address binding stops
+replay against a different server) and passes the triple to the game via
+`FoM.exe --auth`. HELLO grew an optional 144 byte auth tail (26 byte legacy
+HELLO still accepted, so unauthenticated LAN testing keeps working). Server
+side: a per-source challenge registry (8 live challenges per source, 4096
+global) and a display-name sanitizer. Verification runs on a vendored
+pure-Python ed25519 (`net/vendor/`), no native wheel needed.
+
+New `net/master/`: a minimal master server for public server discovery
+(register, heartbeat, list). New opcodes 0x0035/0x0036.
+
+`FoM.exe --connect` is the machine interface for the external Tauri
+server-browser launcher: pure JSON on stdout, banners on stderr, no
+keypress pause, and pass-through of `--auth`, `--name`, `--client-id`,
+`--no-mirror-suppress`. Contract documented for the launcher repo.
+
+### The player-death crash: root cause
+
+The signature, captured four times with increasing instrumentation: an AV
+inside the respawn `BGSSaveLoadGame::LoadGame`, in the
+`TESObjectCELL::DetachReference` family (`sub_1404CC240+0x404`, the vcall
+`call [rax+0x148]` on a cell read from `refr+0xB8`), with the cell's heap
+block already freed and recycled. Three captured vtable states: garbage
+pointer, NULL, and a pointer to another cell object. One sibling capture hit
+`ExtraDataList::GetByType` reading two adjacent `-0.0f` floats where a
+pointer belongs. Always within ~8 s of a player death, only with a peer
+connected, roughly one death in three.
+
+Three contributing channels, each one confirmed by a capture rather than a
+theory:
+
+1. **Mirror position driving never re-files the cell.** Non-owner mirrors
+   are pinned via `vt[202]` SetPosition at ~30 Hz. That path re-hashes the
+   actor inside its CURRENT parentCell's spatial grid and never updates
+   `refr+0xB8`. The write ring recorded the victim raider receiving these
+   writes up to the exact death instant, after minutes of coordinate drift
+   across cell territory.
+2. **The suppression hooks ate the engine's own repair writes.** The four
+   non-owner bail detours (SetPosition belt, `vt[202]`, Havok step, package
+   movement) kept bailing through the death window and the load. Telemetry
+   counted 650+ suppressed engine writes in a single window, one of them
+   issued from inside the engine's own MoveTo worker
+   (`sub_140C60BE0+0x142`): a MoveTo whose bookkeeping ran while its
+   position write was swallowed. The load then walked refr/cell state the
+   engine had been forbidden to fix.
+3. **The threat election kept churning a dead client.** The dying client
+   keeps streaming its frozen corpse position, which the server kept
+   scoring: one capture shows 7 ownership handoffs delivered TO the loading
+   client 155 ms before its fault, and claim inserts re-tracking mirrors
+   (and re-arming the bail predicates) in the middle of the load.
+
+One attempted fix made things worse and is documented as a rollback: a
+death-time "cell re-coherence" sweep that called MoveTo on every tracked
+actor. The decomp proved the premise false: `MoveTo(cell=NULL)` performs no
+cell re-file at all (`sub_140514C50(a1,0,0)` early-outs), and instead queues
+a `moved` changeform and plants an `ExtraBadPosition` extra on every swept
+actor, payloads consumed by exactly the load-time walkers the sweep was
+meant to protect. It survives only as a config lever
+(`death_recohere_sweep`, default off).
+
+### The fix (Builds 69q to 69s)
+
+- **Death release (69q).** At local death the client sends one reliable
+  `NPC_UNLOAD` per owned NPC. The server releases immediately and the
+  surviving peer claims on its next observe. Raiders turn on the survivor
+  within a frame instead of after the 8 s heartbeat timeout.
+- **Death-window passthrough (69s).** From death to stand-down close the
+  four bail detours let every engine write through. The owner stream is
+  gated in that window anyway, so the engine is the single position
+  authority exactly while the load needs it to be.
+- **Ownership quiescence (69s).** Client: PHASE_2 claim inserts that arrive
+  during the window are queued and applied at stand-down close; a release
+  arriving meanwhile supersedes the queued claim (epochs are monotonic).
+  Server: an `NPC_UNLOAD` marks the session combat-dead and excludes it
+  from threat election until its respawn jump (over 8000 units) or a 25 s
+  backstop; the corpse position can no longer win proximity.
+
+Validation: 4 two-client sessions, 8 player deaths, 0 gameplay crashes,
+including one session with a mole-rat pack joining the raider fight. The
+logs show the mechanisms working, not just the symptom absent: 87 engine
+writes passed through per client in the death windows (previously eaten),
+claims deferred and drained on every death, server exclusion and respawn
+detection 8 of 8. Honest caveat: at the historical rate of one crash per 2
+or 3 deaths, 8 clean deaths is strong evidence, not proof. The mechanism
+closure is the stronger claim.
+
+### Crash forensics that stay in the tree
+
+Built for this hunt, kept because they answer the next one faster:
+
+- **Write ring** (`audit.cpp`, Build 69o): every DLL store into engine
+  memory is recorded (destination, first 16 bytes, size, site tag, form id)
+  in a lock-free 524,288 record ring. On the first AV the VEH dumps the ring
+  to `fw_writes.bin` and prints every record overlapping a crash register.
+  Offline reader: `tools/decode_writes.py`. This is what exonerated the
+  DLL's own writes (zero stores in the fatal window, zero near the victim)
+  and later caught the engsetpos stream on the victim.
+- **Refr-o-scope** (Build 69p): on an AV every register and the top stack
+  qwords are probed as TESForm (vtable RVA, form id, form type, flags,
+  parentCell with its own vtable and id). Crashes now name their victim
+  instead of printing anonymous pointers.
+- **Mutation ledger** (`fw_audit.log`, Build 69m): per-actor record of what
+  the DLL did to it, dumped with live cell/flags at every death.
+- **Death-window telemetry** (69r): suppressed-write logging with the
+  caller's return address, and claim-insert logging inside the window.
+- **ALT+F4 marker**: window close prints `ALT+F4 DETECTED BY USER` and the
+  VEH stamps every later AV with `teardown=1`. A force-close teardown AV at
+  RVA `0x16632B9` was twice mistaken for a gameplay crash during this hunt;
+  that ambiguity is now impossible.
+- **StopCombat request block** (Build 69, config `suppress_mirror_combat`):
+  the engine's event 98 emitter (`sub_140C46770`) freed a mirror's
+  HighProcess within one tick of every suppression write, so the suppress
+  byte never survived a frame. Blocking the request on mirrors keeps the
+  HighProcess alive (measured ~32 s) and the suppression effective.
+- **Ghost child-array allocation** (69n): the ghost NIF clone used to build
+  NiNode child arrays with a bare `malloc` and no count header; the engine
+  destructor reads the count at `base[-8]` and frees `base-8`. Arrays now
+  come from the engine's own allocator (`sub_1416BFA70`). Real defect,
+  fixed, and proven unrelated to this crash.
+
+### Repo hygiene
+
+`.gitignore` tightened for release: no batch scripts, no RE dossiers, no
+internal docs, no forensic dumps. Only code ships.
+
+---
+
 ## N hardening — stability, position, locomotion, aggro (2026-07-29) — v0.6.3
 
 Tag `v0.6.3`. This does **not** close branch N — it hardens it. Every fix below
