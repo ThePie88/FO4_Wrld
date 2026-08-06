@@ -115,6 +115,7 @@
 #include "ghost_global_walker_guards.h"   // Build 57 — comprehensive walker guards (7 hooks) — kills 0xE98860 AV class + Agent A/B/C/D/E/F predicted crash surfaces
 #include "ghost_ai_hit_applier.h"         // B6.6w0 (hit applier BAIL): sub_140CD2780 — anti-crash on damage to frozen NPC
 #include "npc_hp_probe.h"                 // N3 step 1 — READ-ONLY HP-funnel probe (sub_140CC9650), diagnostic only
+#include "first_person_graph.h"           // Ghost 1P — tick graphs[0] (3P) while the camera parks it
 #include "hp_bar_hook.h"                  // v18 — shared-pool HP override on the enemy bar (HUDEnemyHealthMeter sub_1409C28A0)
 #include "ghost_ai_combat_orchestrator.h" // B6.6w0 NUKE (top-level combat orchestrator BAIL): sub_140CCFDF0 = Actor::vt[255]
 #include "cross_cell_gate.h"              // Build 38: sub_140CF6100 detour — transient ghost+0xB8 swap to defeat PC.cell==target.cell gate
@@ -244,6 +245,11 @@ InstallSummary install_all(std::uintptr_t module_base,
     // Build 69r — 69q death sweep default OFF (decomp post-mortem in
     // config.h `death_recohere_sweep`).
     set_death_recohere_sweep(cfg.death_recohere_sweep);
+    // Ghost 1P fix (2026-08-05) — keep the third-person graph ticking while
+    // the camera parks it, so the peer's ghost animates in first person.
+    s.first_person_graph_ok = install_first_person_graph(module_base);
+    set_first_person_graph_drive(cfg.first_person_graph_drive);
+    set_stream_pose_in_first_person(cfg.stream_pose_in_first_person);
     s.ghost_ai_movement_ok     = false;  // BUILD64_DISABLED — install_ghost_ai_movement
     // Build 65.c.17 — re-enabled for owner-driven completeness. Predicate
     // flip from 65.c.3 already gates these: owner forces should_bail=false

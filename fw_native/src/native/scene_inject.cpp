@@ -26,6 +26,7 @@
 #include "../ghost/actor_hijack.h"  // B6.6w5 Build 5: piggyback engine-native ghost spawn on the body inject event
 #include "../hooks/ownership_manager.h"  // Build 68.4: is_non_owner_tracked (bone-cache sweep)
 #include "../hooks/npc_ai_suppress.h"    // Build 68.4: is_dying (bone-cache sweep)
+#include "../hooks/first_person_graph.h" // 2026-08-05: fp_graph_is_driving (pose-tx 1P gate)
 
 #include <windows.h>
 #include <atomic>
@@ -5525,9 +5526,32 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
     // refcount internally for the slot. nif_load_by_path also bumped
     // (caller-owned ref); the +1 from attach is the engine's slot ref.
     // On detach we drop ours, engine drops its slot ref, total 0 → free.
-    if (!seh_attach_child_armor(g_r.attach_child_direct, ghost, armor_node)) {
-        FW_ERR("[armor-attach] SEH in attach_child_direct(ghost=%p, "
-               "armor=%p, path='%s')", ghost, armor_node, path);
+    //
+    // Ghost Pip-Boy fix (2026-08-05): the Pip-Boy ARMO is not a skinned
+    // armor piece; vanilla parents its mesh under the left-forearm
+    // PipboyBone. Attached to the ghost ROOT it rendered at the skeleton
+    // origin, half sunk in the ground between the ghost's feet (user
+    // sighting + [skel] dump shows the ghost's PipboyBone with count=0).
+    // The ghost skeleton carries PipboyBone and the pose stream already
+    // drives it, so parent the Pip-Boy there: it rides the peer's forearm
+    // and animates for free. Fallback to the root if the bone is missing.
+    void* attach_parent = ghost;
+    if (path && seh_path_contains_ci(path, std::strlen(path), "pipboy")) {
+        void* pipboy_bone =
+            fw::native::skin_rebind::get_bone_by_name("PipboyBone");
+        if (pipboy_bone) {
+            attach_parent = pipboy_bone;
+            FW_LOG("[armor-attach] pipboy NIF detected — parenting under "
+                   "PipboyBone (%p) instead of ghost root", pipboy_bone);
+        } else {
+            FW_WRN("[armor-attach] pipboy NIF but PipboyBone not found in "
+                   "the ghost skeleton — falling back to ghost root");
+        }
+    }
+    if (!seh_attach_child_armor(g_r.attach_child_direct, attach_parent,
+                                armor_node)) {
+        FW_ERR("[armor-attach] SEH in attach_child_direct(parent=%p, "
+               "armor=%p, path='%s')", attach_parent, armor_node, path);
         return false;
     }
 
@@ -5703,10 +5727,21 @@ bool ghost_detach_armor(const char* peer_id, std::uint32_t item_form_id) {
     // `removed` (which is just armor_node — sanity check); we're holding
     // the +1 ref from nif_load_by_path so the object stays alive until
     // we drop it below.
+    //
+    // Ghost Pip-Boy fix (2026-08-05): detach from the node's REAL parent
+    // (+0x28) instead of assuming the ghost root — the Pip-Boy now lives
+    // under PipboyBone. Safe by the engine invariant proven at
+    // scene_inject.cpp:10982: both destruction paths null a surviving
+    // child's parent pointer, and we hold a +1 on the armor, so +0x28 is
+    // valid-or-null, never dangling. For every root-attached armor
+    // read_parent_pub returns the ghost and behavior is unchanged.
     void* removed = nullptr;
-    if (!seh_detach_child_armor(g_r.detach_child, ghost, armor_node, &removed)) {
-        FW_ERR("[armor-detach] SEH in detach_child(ghost=%p, armor=%p)",
-               ghost, armor_node);
+    void* detach_parent = fw::native::weapon_witness::read_parent_pub(armor_node);
+    if (!detach_parent) detach_parent = ghost;
+    if (!seh_detach_child_armor(g_r.detach_child, detach_parent, armor_node,
+                                &removed)) {
+        FW_ERR("[armor-detach] SEH in detach_child(parent=%p, armor=%p)",
+               detach_parent, armor_node);
         return false;
     }
 
@@ -11366,6 +11401,22 @@ void on_bone_tick_message() {
     // === M8P3.15 broadcast LOCAL PC bones to peers =======================
     if (!broadcast_now) return;  // skip 3 of every 4 ticks → ~5Hz
 
+    // Ghost 1P fix (2026-08-04) — POSE STREAM HOLD. In FirstPersonState the
+    // engine drives the 3P body tree to a V/T stub (M8P3.22: bones DO
+    // rotate, toward bind poses — which is why the old pose-content
+    // heuristics could not discriminate). Streaming that stub is what
+    // contorted the remote ghost the moment the sender entered 1P or
+    // opened the Pip-Boy. The camera state machine is authoritative and
+    // decomp-proven (PlayerCamera+0x28 vs FirstPersonState vtable), so ask
+    // it instead: while in 1P, send NOTHING (this gate covers the crouch
+    // channel below too). The receiver keeps the last written pose, so the
+    // ghost holds the last good 3P frame instead of snapping to T-pose.
+    // Position keeps streaming on its own channel. Edge-logged both ways.
+    // 2026-08-05 — first-person handling is decided AFTER the tree walk
+    // below, so the diagnostic can compare what the two candidate trees
+    // actually contain in each camera state. See the [pose-1p] block.
+    const bool in_first_person = fw::engine::local_player_in_first_person();
+
     // Snapshot canonical bone list (populated at body inject).
     std::vector<std::string> canonical;
     {
@@ -11418,6 +11469,72 @@ void on_bone_tick_message() {
                (&player_map == &player_map_a) ? "A" : "B");
     }
 
+    // === 2026-08-05 — WHICH TREE, AND IS IT MOVING? =======================
+    // Two failed fixes in a row were built on guesses about what the sender
+    // captures in first person, so measure it instead. On every camera
+    // transition (and every ~5 s while in first person) dump: both candidate
+    // roots, their node counts, and the live local rotation of two witness
+    // bones. Then the question answers itself:
+    //   * roots differ between 3P and 1P  -> we capture the WRONG TREE and
+    //     the fix is to ask the engine for Get3D(false) explicitly;
+    //   * same root, values frozen        -> the tree is right but the graph
+    //     pose never reaches it (the cull gate), and the fix belongs in the
+    //     engine-side pipeline, not here;
+    //   * same root, values changing      -> capture is fine and the defect
+    //     is downstream, on the receiver.
+    {
+        static bool s_prev_1p = false;
+        static std::uint64_t s_next_dump_ms = 0;
+        const std::uint64_t now_dbg = GetTickCount64();
+        const bool transition = (in_first_person != s_prev_1p);
+        if (transition || (in_first_person && now_dbg >= s_next_dump_ms)) {
+            s_prev_1p = in_first_person;
+            s_next_dump_ms = now_dbg + 5000;
+            auto witness = [&](const char* name) -> std::string {
+                auto wit = player_map.find(name);
+                if (wit == player_map.end()) return std::string(name) + "=<absent>";
+                float m[9] = {0};
+                if (!read_local_3x3(wit->second, m)) {
+                    return std::string(name) + "=<unreadable>";
+                }
+                char buf[192];
+                std::snprintf(buf, sizeof(buf),
+                              "%s@%p=[%.3f %.3f %.3f | %.3f %.3f %.3f | "
+                              "%.3f %.3f %.3f]", name, wit->second,
+                              m[0], m[1], m[2], m[3], m[4], m[5],
+                              m[6], m[7], m[8]);
+                return buf;
+            };
+            FW_LOG("[pose-1p] camera=%s rootA=%p(%zu) rootB=%p(%zu) using=%s "
+                   "| %s | %s",
+                   in_first_person ? "FIRST" : "THIRD",
+                   path_a, player_map_a.size(), path_b, player_map_b.size(),
+                   (&player_map == &player_map_a) ? "A" : "B",
+                   witness("LArm_UpperArm").c_str(),
+                   witness("Head").c_str());
+        }
+    }
+
+    // Send decision in first person, self-selecting:
+    //   * the third-person graph drive is genuinely running -> STREAM, the
+    //     tree carries real animation. fp_graph_is_driving() is a strong
+    //     signal now: its counter only advances when the parked graph was
+    //     successfully revived (hkb m_isActive raised) AND the full
+    //     generate+apply pair ran. Before the revive was implemented every
+    //     one of those calls early-outed, the counter still climbed, and
+    //     the ghost got the graph's default pose — hence the extra
+    //     conditions inside the drive.
+    //   * otherwise -> HOLD: ship nothing, the ghost keeps its last good
+    //     third-person pose. The only first-person state that has ever
+    //     looked right.
+    // `stream_pose_in_first_person` in the ini forces the stream on even
+    // without a working drive (diagnostic runs only).
+    if (in_first_person
+        && !fw::hooks::fp_graph_is_driving()
+        && !fw::hooks::stream_pose_in_first_person()) {
+        return;
+    }
+
     // M8P3.22 KNOWN LIMITATION: in 1st-person view the alt-tree's
     // bones are animated by the engine to V-pose (idle) or T-pose
     // (moving) stub anims because the body is invisible. Both
@@ -11448,6 +11565,8 @@ void on_bone_tick_message() {
 
     fw::net::PoseBoneEntry quats[fw::net::MAX_POSE_BONES] = {};
     int hits = 0, missing = 0;
+    int collapsed = 0;                  // 2026-08-05 — degenerate (scale-0) bones
+    std::string collapsed_sample;
     static bool s_diag_dumped = false;
     std::string miss_sample;
     for (std::size_t i = 0; i < n; ++i) {
@@ -11470,11 +11589,59 @@ void on_bone_tick_message() {
             quats[i].qw = kSentinelQw;
             continue;
         }
+
+        // 2026-08-05 — STRIP SCALE BEFORE THE QUATERNION.
+        // NiAVObject's +0x30 matrix is rotation*scale, but this channel
+        // carries ROTATION ONLY (the receiver writes the 3x3 straight into
+        // the ghost's local rotation). Any scale therefore leaked into the
+        // ghost, and mat3_to_quat on a scaled matrix returns a non-unit
+        // quaternion. That is what deformed the ghost's head into a cone
+        // the moment the sender entered first person: the engine's 1P trick
+        // collapses the 3P head bone so the camera cannot see it, and we
+        // faithfully replicated the collapse. Normalising each row removes
+        // every scale, uniform or not; a row that is degenerate carries no
+        // recoverable rotation at all, so it takes the existing sentinel
+        // path and the receiver keeps that bone's last good value.
+        const float r0 = std::sqrt(m3[0]*m3[0] + m3[1]*m3[1] + m3[2]*m3[2]);
+        const float r1 = std::sqrt(m3[3]*m3[3] + m3[4]*m3[4] + m3[5]*m3[5]);
+        const float r2 = std::sqrt(m3[6]*m3[6] + m3[7]*m3[7] + m3[8]*m3[8]);
+        if (!(r0 > 1e-3f) || !(r1 > 1e-3f) || !(r2 > 1e-3f)) {
+            quats[i].qx = 0; quats[i].qy = 0; quats[i].qz = 0;
+            quats[i].qw = kSentinelQw;
+            ++collapsed;
+            if (collapsed_sample.size() < 200) {
+                if (!collapsed_sample.empty()) collapsed_sample += ", ";
+                collapsed_sample += canonical[i];
+            }
+            continue;
+        }
+        m3[0] /= r0; m3[1] /= r0; m3[2] /= r0;
+        m3[3] /= r1; m3[4] /= r1; m3[5] /= r1;
+        m3[6] /= r2; m3[7] /= r2; m3[8] /= r2;
+
         float q[4];
         mat3_to_quat(m3, q);
         quats[i].qx = q[0]; quats[i].qy = q[1];
         quats[i].qz = q[2]; quats[i].qw = q[3];
         ++hits;
+    }
+    // 2026-08-05 — report the collapsed set on transition, not per tick: it
+    // is expected to be non-empty exactly while the sender is in first
+    // person (the head), and empty in third person.
+    {
+        static int s_last_collapsed = -1;
+        if (collapsed != s_last_collapsed) {
+            s_last_collapsed = collapsed;
+            if (collapsed > 0) {
+                FW_LOG("[pose-tx] %d bone(s) collapsed by the engine (scale "
+                       "~0, rotation unrecoverable) — sentinel sent, ghost "
+                       "keeps its last value: %s",
+                       collapsed, collapsed_sample.c_str());
+            } else {
+                FW_LOG("[pose-tx] no collapsed bones — full skeleton "
+                       "streaming");
+            }
+        }
     }
     if (!s_diag_dumped && missing > 0) {
         s_diag_dumped = true;

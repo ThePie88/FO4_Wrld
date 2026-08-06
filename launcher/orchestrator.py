@@ -190,6 +190,7 @@ def run(
     player_name: str = "",
     client_id: str = "",
     suppress_mirror_combat: bool = True,
+    stream_pose_in_first_person: bool = False,
 ) -> int:
     """Full launcher flow. Blocks until Ctrl+C or child crashes.
 
@@ -254,6 +255,7 @@ def run(
             player_name=player_name,
             client_id=client_id or None,
             suppress_mirror_combat=suppress_mirror_combat,
+            stream_pose_in_first_person=stream_pose_in_first_person,
         )
         if side.auto_load_save:
             log(side.log_prefix,

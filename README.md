@@ -6,6 +6,35 @@ This project uses unconventional approaches in several critical areas (scene gra
 Fallout 4 1.11.191 next-gen — multiplayer mod (FoM-lite framework).
 Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 
+> **Status (2026-08-06):** **First-person ghost animation (v0.6.5).** A peer
+> playing in first person appeared on the other screen as a V/T-pose mannequin
+> with contorted arms — a limitation carried for months, and the reason a
+> Pip-Boy or an aim pose looked impossible on the remote ghost. The capture
+> was never at fault. `PlayerCharacter` overrides the post-update hook of the
+> animation graph manager, and in first person that override copies the
+> first-person skeleton over the third-person one every frame for the bones in
+> an index map. It runs one call after the graph update, so whatever the
+> third-person graph produced was erased before the pose capture could read
+> it: first-person arms grafted onto a body whose legs never moved. Underneath
+> that, the engine also parks the third-person graph on a camera switch —
+> `BSAnimationGraphManager+0xD8` selects which of the player's two graphs is
+> ticked — and deactivates its Havok behavior, so it stops producing poses at
+> all. The fix drives that graph directly: revive it, refresh its active-node
+> list, run the engine's own flush/generate/apply sequence with a forced update
+> context (the LOD throttle resolves a hidden body to "generate nothing"),
+> mirror animation events onto it so its state machine keeps transitioning,
+> raise the behavior's base-state trigger at wake-up so a session starting in
+> first person is not stuck in T-pose, keep it alive across camera switches
+> instead of letting it be reborn, and suppress the skeleton copy while
+> driving. Outward traffic stays muted through the engine's own null-event-sink
+> idiom, so no duplicate footsteps or fire events reach gameplay, and the local
+> player's arms are never touched. Also fixed: the Pip-Boy now attaches to
+> `PipboyBone` instead of the ghost root (it used to render half-sunk between
+> the feet), and the pose channel strips scale before converting to a
+> quaternion, since it carries rotation only. Known residue: the walk clip
+> plays at a rate that does not match the distance covered until a camera
+> round-trip. See [CHANGELOG.md](CHANGELOG.md).
+>
 > **Status (2026-08-04):** **PIENUVO auth v0 + the player-death crash closed
 > (v0.6.4).** Identity first: every client now proves an Ed25519 keypair
 > instead of claiming a name. The launcher keeps the seed in a DPAPI-wrapped
@@ -68,18 +97,7 @@ Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 > "this client has no aggro" tell); a RED color is TODO. N1 (raider pos/pose) is
 > REOPENED partial for small anim+position hardening at first-contact +
 > post-mortem. Wire proto v18. See [CHANGELOG.md](CHANGELOG.md).
->
-> **Status (2026-06-05):** **N3 — shared authoritative HP (partial).** Both
-> clients now deplete ONE server-held HP pool per raider: each reports its
-> FINAL post-resist damage — captured at the engine's single HP-write funnel
-> `sub_140CC9650` — and a raider dies when the COMBINED pool hits 0, not when
-> one client solo-deals its HP. A DLL clamp floors each client's local Health
-> at 1 so the engine never kills the raider on its own; the server then fires
-> the kill, reusing the N1 / N2 death-sync, so the corpse lands on both clients
-> together. This is the core mechanic the ~20k-HP boss needs. Validated on the
-> Concord raiders; PARTIAL — wants broader testing and other creatures. Wire
-> proto v17. See [CHANGELOG.md](CHANGELOG.md).
->
+
 ---
 
 ## Demo
@@ -148,6 +166,7 @@ in real time).
 | **M8P1** RE NiAVObject::Load3D | ✅ done — `sub_1417B3E90` public API |
 | **M8P2** RE BSGeometry skin instance offsets | ✅ done — `+0x140` confirmed |
 | **M8P3** Skin pipeline RE + per-bone pose replication | ✅ M8P3.23 — body+head+hands animated, see [CHANGELOG.md](CHANGELOG.md) |
+| **M8P4** First-person ghost animation | ✅ done (v0.6.5, 2026-08-06) — a sender in first person no longer freezes the remote ghost into a V/T-pose with grafted arms. The engine parks and deactivates the third-person animation graph on a camera switch, then copies the first-person skeleton over the third-person one every frame in a post-update hook; the DLL now drives the parked graph (revive, active-node refresh, forced flush/generate/apply), mirrors animation events onto it, raises the behavior's base-state trigger at wake-up, keeps it alive across camera switches, and suppresses the skeleton copy while driving. Pip-Boy re-parented to `PipboyBone`; pose channel made scale-immune. Residue: walk clip rate |
 | **B5** D3D11 custom render | 🗿 not needed — Strada B native injection replaced |
 | **B6** World-state sync expansion *(composite epic; NPC pos/pose + combat split out to the N branch)* | 🟡 4/12 wedges done (doors, cell-transitions, locks, terminals) |
 | ↳ **B6.0** Door open/close sync | ✅ done — `sub_140514180` Activate worker hook + dual-agent RE convergence, [30s demo](https://youtu.be/T8wLZmCqjxw), see [CHANGELOG.md](CHANGELOG.md) |
@@ -199,6 +218,46 @@ in real time).
 
 Latest 3 patches summarized below. **Full version history in
 [CHANGELOG.md](CHANGELOG.md).**
+
+### v0.6.5 (2026-08-06) — first-person ghost animation
+
+Tag v0.6.5. No protocol change.
+
+- **The defect** — with the sender in first person, the remote ghost showed a
+  V/T-pose body with first-person arms grafted on. Two independent causes, both
+  in the engine's first-person path:
+  1. `PlayerCharacter` overrides the animation-graph post-update hook and, in
+     first person, copies the first-person skeleton onto the third-person one
+     every frame through an index map. That call lands immediately after the
+     graph update, so anything the third-person graph wrote was overwritten
+     before the pose capture ran.
+  2. A camera switch parks the third-person graph — the manager ticks only
+     `graphs[activeGraph]` — and `SetActiveGraph` deactivates its Havok
+     behavior, so every per-graph call early-outs and no pose is produced.
+- **The fix** — drive the parked graph the way the engine's own out-of-band
+  path does: reactivate it, refresh its active-node list, then flush bound
+  channels, generate, and apply, using a forced update context (the distance
+  LOD throttle resolves a hidden body to a zero bone count). Animation events
+  are mirrored onto it so its state machine keeps transitioning; the
+  behavior's base-state trigger plus a settle event are raised at wake-up so a
+  session that starts in first person is not stuck in T-pose; the graph is kept
+  alive across camera switches rather than being reactivated into its initial
+  state; and the skeleton copy is suppressed while driving. All outward traffic
+  is muted with the engine's own null-event-sink idiom, so no duplicate
+  footsteps, fire events or root motion reach gameplay, and the graph feeding
+  the local player's arms is never touched.
+- **Also fixed** — the Pip-Boy attaches to `PipboyBone` instead of the ghost
+  root, where it rendered half-sunk between the feet; the pose channel
+  normalises each matrix row before converting to a quaternion, since it
+  carries rotation only and any scale leaked straight onto the ghost.
+- **Known residue** — the walk clip plays at a rate unrelated to the distance
+  covered until a camera round-trip. Deriving the rate from frame-to-frame
+  displacement was tried and reverted: this drive does not run every frame, so
+  the displacement spans gaps the delta time does not account for (one client
+  measured 5953 where 100-200 was expected, the other a constant 0). The
+  engine's own movement speed is the correct source.
+
+Full detail in [CHANGELOG.md](CHANGELOG.md).
 
 ### v0.6.4 (2026-08-04) — PIENUVO auth v0 + player-death crash closed
 
@@ -259,48 +318,6 @@ combined = max, no double-count, no SEH). PARTIAL — wants broader testing +
 other creatures. De-risked first by 3 decomp-verified RE agents + a read-only
 probe build. Full detail in [CHANGELOG.md](CHANGELOG.md).
 
-### N1 / N2 (2026-06-01) — owner-driven NPC co-op combat — WIP
-
-My first iteration on the game's AI. Hostile raiders (the Concord
-Museum cluster) now fight both players together and stay consistent
-across clients — position, full-body animation, aggro, and death. This
-started as the B6.5 / B6.6 wedges but grew large enough to become its
-own milestone branch (N), and it replaces that earlier suppression
-stack, where raiders were frozen and immortal on both peers.
-
-**Ownership model.** Every tracked raider is owned by exactly one
-client. The owner runs the raider's vanilla engine AI untouched and
-streams its authoritative state; the non-owner suppresses its own AI for
-that raider and mirrors the owner — position pinned to the relayed
-coords, the Havok body keyframed, and the full per-bone pose replayed at
-~30 Hz so the raider animates correctly instead of sliding as a frozen
-prop. The Python server is the single ownership authority; the DLL only
-mirrors what the server elects (`is_owner_of` / `is_non_owner_tracked`
-predicates drive every AI/motion hook).
-
-**Aggro (engine-native).** The server keeps a per-raider threat table
-and elects the owner from whoever the raiders actually aggro — the same
-noise / line-of-sight perception the vanilla engine already runs — so
-both players are real threats and ownership follows the fight. A
-hysteresis band (minimum hold + flip margin + commitment window) stops
-the owner from thrashing when both players trade fire.
-
-**Death sync.** A kill on either client propagates to the other, which
-corpses its mirror at the synced position (ragdoll + body stays down) —
-no more "dead on one client, alive on the other" or vanishing corpses.
-
-**Teleport fix.** The long-standing bug where a raider snapped to a
-stale position the instant ownership changed is closed: at hand-off I
-commit the synced pose into the new owner's engine ground-truth via
-`Actor::MoveTo` (doProcessUpdate = 1), so the engine state and the
-visible position no longer diverge.
-
-Scope today is hostile raiders only; other creatures and a shared-HP
-boss come later. Not done yet: shared authoritative HP (both clients
-deplete one server-held pool — required for a high-HP boss) and the ~1 s
-idle on aggro hand-off. Full per-hook / per-opcode detail in
-[CHANGELOG.md](CHANGELOG.md).
-
 ## Why this exists
 
 I've been waiting ~10 years for someone to ship Fallout 4 multiplayer.
@@ -327,39 +344,30 @@ that should be most reusable for anyone else attempting the same thing.
 
 ## Known limitations
 
-- **Fingers don't articulate** — finger joints exist only in the
-  underlying havok skeleton (`.hkx`), not in the rendered scene-graph
-  tree the receiver walks. Sentinel quat for them, falling back to
-  bind pose (slightly curled fingers, not extended T-pose).
-- **1st-person sender → ghost adopts V/T-pose stub** — when the sender
-  is in 1P view, the engine animates the alt-tree body to a simplified
-  stub pose since the body is invisible to the local camera. Two
-  detection heuristics were tried (Pelvis canary, rotation hash); both
-  failed because the alt-tree retains all named bones and rotations
-  jitter every tick. Proper fix needs `PlayerCamera` singleton RE.
-  Workaround: keep the observed peer in 3rd-person.
-- **Ghost body has no shadow** — separate render flag investigation,
-  deferred.
-- **PipBoy animation is broken on the ghost** — when a peer opens their
-  PipBoy, the engine plays a 1st-person camera-relative arm-raise anim
-  on the local player. The ghost on observers' screens has no equivalent
-  3rd-person animation set up (vanilla FO4 doesn't really animate a
-  remote player's PipBoy because there are no remote players in
-  vanilla), so the ghost's arms freeze / contort during the peer's
-  PipBoy session. Cosmetic, doesn't crash. Workaround / future wedge:
-  detect peer-PipBoy state and either despawn ghost or play a static
-  "looking at PipBoy" placeholder pose.
+- **1st-person walk cycle plays at the wrong rate** — with the sender in
+  first person the ghost now animates correctly (v0.6.5), but the walk
+  clip runs at a rate unrelated to the ground covered until the sender
+  switches view and back. The locomotion scalars the behavior scales its
+  clips from are not written into a parked graph; deriving them from
+  frame-to-frame displacement was tried and reverted (this drive does not
+  run every frame, so the displacement spans gaps the delta time does not
+  account for). The engine's own movement speed is the correct source.
+  Workaround: one camera round-trip.
+- **Ghost body casts no shadow** — the body is attached to the
+  `ShadowSceneNode` and gets depth, lighting and occlusion from it, but it
+  still does not appear in the shadow pass. Separate render-flag
+  investigation, deferred.
+- **No dedicated Pip-Boy pose on the ghost** — the Pip-Boy mesh itself is
+  correct since v0.6.5 (parented to `PipboyBone`, riding the forearm and
+  animating with it), and the ghost no longer contorts while a peer has it
+  open. What is missing is the gesture: vanilla has no third-person
+  arm-raise for a remote player consulting a Pip-Boy, so the ghost shows
+  its normal standing pose instead of the animation the peer sees.
 - **Tested with 2 peers** — multi-peer ghost cache (peer-id keyed
   registry) not yet implemented; 10-peer scaling is theoretical.
 - **Network rate-limited to 20Hz** — works smoothly on LAN, untested
   over real-world internet routes; receiver-side interpolation between
   POSE_BROADCAST frames is open work.
-- **Sender sees a ~50 ms weapon flicker on equip** — visible side
-  effect of the v0.5.0 auto re-equip cycle: 50 ms after the user's
-  EquipObject the sender fires UnequipObject + EquipObject for the
-  same form to make the receiver render correctly. The user's own
-  weapon briefly disappears and reappears in their hand. Cosmetic; no
-  gameplay impact (animation graph and damage state aren't affected).
 - **Container UI doesn't refresh on the observer when peers picklock
   the same container** — engine quirk in the ContainerMenu redraw
   path; closing and reopening the container forces the refresh.
@@ -377,28 +385,20 @@ that should be most reusable for anyone else attempting the same thing.
   visible). A non-engine-call apparel bootstrap broadcast is
   scaffolded in `fw_native/src/hooks/equip_announce.{h,cpp}` for
   future implementation when the BipedAnim layout is RE'd.
-- **NPC co-op (N1 / N2) is scoped to hostile raiders** — only the Concord
-  Museum raider cluster is synced today. Other creatures and the rest of
-  the actor roster aren't wired in yet; this is my first AI iteration, not
-  a finished system.
+- **Non-humanoid pose replication is unsafe** — ownership and sync are no
+  longer limited to hostile raiders: the proximity sphere picks up any
+  actor within its radius, so settlers, animals and creatures all enter
+  the same pipeline. Pose replication, though, still assumes the human
+  skeleton, and the match gate accepts a single coincidental bone-name hit
+  — enough for a creature to be fed a human pose. A mole rat was seen with
+  part of its body stretched toward a fixed map coordinate. Raising the
+  threshold is not the fix (humanoid raiders themselves match only 4-7
+  joints); this needs a skeleton-schema gate, tracked in
+  `scene_inject.cpp` at `kNpcPoseMinMatch`.
 - **A raider occasionally doesn't join the fight on the non-owner** —
   non-deterministic and rare. Aggro on noise / line of sight works as
   designed, but every so often one raider stays idle on the client that
   doesn't own it. Tolerated for now.
-- **Pure-melee enemies aren't observed yet** — ownership election only
-  picks a raider up once the engine flags it in combat or it fires a
-  shot. A hostile that only ever melees and never trips the
-  combat-controller flag is never observed, so it's never owned or synced.
-  Fine for ranged raiders; needs a hostile-baseform-bounded perception
-  gate before a melee boss.
-- **~1 s idle on aggro hand-off** — when ownership switches to the player
-  a raider just turned on, it can stand idle for about a second before
-  facing the new target. The instant-switch fix exists but is disabled
-  pending a safer guard.
-- **No shared HP yet** — each client tracks a tracked NPC's HP locally
-  (its own hits only), so a high-HP enemy has to be brought down by one
-  client's own damage; the two clients don't yet pool damage into a single
-  server-held pool. Main blocker for a co-op boss and the next wedge (N3).
 - **Raider appearance and loot diverge per client** — the Concord raiders
   are placed leveled refs, so the form_id matches across clients (pos /
   aggro / death sync all work), but each client's engine rolls a different

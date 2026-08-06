@@ -714,6 +714,14 @@ bool apply_npc_combat_target(void* actor, std::uint32_t target_form_id) noexcept
 // Returns true on write, false if no duplicate registered or SEH-fault.
 bool apply_ghost_pos(float x, float y, float z) noexcept;
 
+// Ghost 1P fix (2026-08-04) — true iff the LOCAL player's camera is in
+// FirstPersonState right now. In 1P the engine drives the 3P body tree to a
+// V/T stub pose (M8P3.22 measurement), so the pose capture must HOLD instead
+// of streaming garbage. Vtable compare against FirstPersonState (RTTI), SEH
+// caged, fail-open: any unreadable step returns false so the stream behaves
+// exactly as before this fix.
+bool local_player_in_first_person() noexcept;
+
 // B1.e: walk the runtime BGSInventoryList on a container REFR and produce
 // (item_base_id, count) pairs.
 //

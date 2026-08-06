@@ -190,6 +190,30 @@ Settings load(const std::filesystem::path& path) {
             } else {
                 FW_WRN("config: bad 'suppress_mirror_combat' value: %s", v.c_str());
             }
+        } else if (key == "stream_pose_in_first_person") {
+            const auto& v = value;
+            if (v == "1" || v == "true" || v == "yes" || v == "on" ||
+                v == "TRUE" || v == "YES" || v == "ON") {
+                s.stream_pose_in_first_person = true;
+            } else if (v == "0" || v == "false" || v == "no" || v == "off" ||
+                       v == "FALSE" || v == "NO" || v == "OFF") {
+                s.stream_pose_in_first_person = false;
+            } else {
+                FW_WRN("config: bad 'stream_pose_in_first_person' value: %s",
+                       v.c_str());
+            }
+        } else if (key == "first_person_graph_drive") {
+            const auto& v = value;
+            if (v == "1" || v == "true" || v == "yes" || v == "on" ||
+                v == "TRUE" || v == "YES" || v == "ON") {
+                s.first_person_graph_drive = true;
+            } else if (v == "0" || v == "false" || v == "no" || v == "off" ||
+                       v == "FALSE" || v == "NO" || v == "OFF") {
+                s.first_person_graph_drive = false;
+            } else {
+                FW_WRN("config: bad 'first_person_graph_drive' value: %s",
+                       v.c_str());
+            }
         } else if (key == "death_recohere_sweep") {
             // Build 69r — A/B lever for the (default-off) 69q death sweep.
             const auto& v = value;

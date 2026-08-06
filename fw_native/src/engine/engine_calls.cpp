@@ -2236,6 +2236,29 @@ bool apply_npc_combat_target(void* actor, std::uint32_t target_form_id) noexcept
 //     reading combat_target.pos for aim — a simple field read
 //
 // SEH-caged. Returns true on write, false on missing duplicate / SEH.
+bool local_player_in_first_person() noexcept {
+    // Ghost 1P fix (2026-08-04). Layout proven by decomp sub_14102B090
+    // (QCameraEquals): PlayerCamera+0x28 = current TESCameraState*. The
+    // vtable of that state names its concrete class; FirstPersonState's
+    // vtable RVA comes from the RTTI catalog. Fail-open on every step.
+    static const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(
+        GetModuleHandleW(L"Fallout4.exe"));
+    if (!base) return false;
+    __try {
+        void* cam = *reinterpret_cast<void**>(
+            base + offsets::PLAYER_CAMERA_SINGLETON_RVA);
+        if (!cam) return false;
+        void* state = *reinterpret_cast<void**>(
+            reinterpret_cast<std::uint8_t*>(cam) +
+            offsets::PLAYER_CAMERA_CURRENT_STATE_OFF);
+        if (!state) return false;
+        const auto vt = *reinterpret_cast<std::uintptr_t*>(state);
+        return vt == base + offsets::FIRSTPERSON_STATE_VTABLE_RVA;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 bool apply_ghost_pos(float x, float y, float z) noexcept {
     void* dup = g_ghost_duplicate_ptr.load(std::memory_order_acquire);
     if (!dup) return false;

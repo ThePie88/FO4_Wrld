@@ -47,6 +47,20 @@ player_name = {player_name}
 # Set to false to run the control experiment (expect mirrors to aim at you and
 # the combat-crouch sliding to come back while it is off).
 suppress_mirror_combat = {suppress_mirror_combat}
+
+# 2026-08-05 — first-person ghost animation. BOTH DEFAULT OFF.
+# In first person the engine deactivates the third-person animation graph, so
+# the 3P skeleton stops producing poses and the peer's ghost freezes.
+# first_person_graph_drive revives that graph and runs the engine's own
+# per-frame sequence on it. Tried live: the graph revives and every call runs
+# clean, but the bones still do not move — and the attempt regressed
+# third-person WASD movement. Off until the remaining gate is found.
+# stream_pose_in_first_person decides what the SENDER does meanwhile:
+#   false = HOLD (ship nothing; the ghost keeps its last good 3P pose — the
+#           only first-person state that has ever looked correct)
+#   true  = keep streaming; only useful for diagnostics.
+first_person_graph_drive = {first_person_graph_drive}
+stream_pose_in_first_person = {stream_pose_in_first_person}
 """
 
 
@@ -60,6 +74,8 @@ def write_for_side(
     player_name: str = "",
     client_id: str | None = None,
     suppress_mirror_combat: bool = True,
+    first_person_graph_drive: bool = True,
+    stream_pose_in_first_person: bool = False,
 ) -> Path:
     """Write fw_config.ini into the game directory that holds `side.launcher_exe`.
 
@@ -93,6 +109,10 @@ def write_for_side(
         auth_blob=auth_blob,
         player_name=player_name,
         suppress_mirror_combat=("true" if suppress_mirror_combat else "false"),
+        first_person_graph_drive=(
+            "true" if first_person_graph_drive else "false"),
+        stream_pose_in_first_person=(
+            "true" if stream_pose_in_first_person else "false"),
     )
     path.write_text(content, encoding="utf-8")
     return path

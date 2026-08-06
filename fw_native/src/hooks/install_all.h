@@ -30,6 +30,7 @@ struct InstallSummary {
     bool equip_ok       = false;    // M9 w1: ActorEquipManager Equip+Unequip detours
     bool lock_ok        = false;    // B6.3 v0.5.3: ForceUnlock + ForceLock detours
     bool npc_ai_suppress_ok = false; // B6.5w4: Actor::Update_PerFrame detour (per-NPC AI skip)
+    bool first_person_graph_ok = false; // Ghost 1P: extra tick for graphs[0] (3P) in first person
     bool ghost_ai_package_ok = false; // B6.5w12 hook #1: TESPackage::EvaluateConditions
     bool ghost_ai_combat_target_ok = false; // B6.5w12 hook #2: SyncCombatTargetFromAIProcess
     bool ghost_ai_aim_ok = false; // B6.5w12 hook #3: CombatAimController::SetAimTarget
@@ -51,6 +52,7 @@ struct InstallSummary {
              + (equip_ok ? 1u : 0u)
              + (lock_ok ? 1u : 0u)
              + (npc_ai_suppress_ok ? 1u : 0u)
+             + (first_person_graph_ok ? 1u : 0u)
              + (ghost_ai_package_ok ? 1u : 0u)
              + (ghost_ai_combat_target_ok ? 1u : 0u)
              + (ghost_ai_aim_ok ? 1u : 0u)

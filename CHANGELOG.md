@@ -5,6 +5,112 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## First-person ghost animation (2026-08-06) — v0.6.5
+
+Tag `v0.6.5`. No protocol change. A peer playing in first person no longer
+appears to the other client as a V/T-pose mannequin with contorted arms — the
+oldest visible defect in the ghost pipeline, carried since M8P3.
+
+### What was actually wrong
+
+The pose capture was never at fault, and neither were the two heuristics that
+had been tried and abandoned years of builds ago. Two separate engine
+behaviours combined:
+
+1. **The overwriter.** `PlayerCharacter` overrides slot 23 of
+   `IAnimationGraphManagerHolder` — the post-update hook that runs immediately
+   after `BSAnimationGraphManager::Update`. Its body, while the camera is in
+   first person, copies rotation, translation and scale from the FIRST-person
+   skeleton onto the THIRD-person one for every bone in an index map. It lands
+   one call after the graph update, so whatever the third-person graph
+   produced was erased before the capture could read it. Since the
+   first-person skeleton is arms-only, the result was first-person arms
+   grafted onto a body whose lower half never moved: the V-pose, the
+   impossible aim pose, the sunken Pip-Boy, all one mechanism.
+2. **The parked graph.** The player owns two behaviour graphs (third-person
+   base, and a separate `_1stPerson/FirstPersonBase.hkx`). A single index at
+   `BSAnimationGraphManager+0xD8` selects which one is ticked, and
+   `SetActiveGraph` also calls `hkbBehaviorGraph::deactivate` on the outgoing
+   one. Every per-graph entry point early-outs on that `m_isActive` byte, so
+   the third-person graph stops producing poses entirely.
+
+### The fix
+
+The DLL now drives the parked third-person graph the way the engine's own
+out-of-band path does, in `hooks/first_person_graph.cpp`:
+
+- **Revive** it (`sub_141320430`) and refresh its Havok active-node list;
+  without the refresh the timestep is fanned out over a stale list and the
+  clip clock never advances.
+- **Run the engine's own three-step frame** — bound-channel flush, generate,
+  and the pose-apply call that is the actual `NiAVObject` writer — under the
+  manager's own recursive spinlock. The update context is the FORCED variant
+  the engine uses at graph-bind time: reusing the engine's own context means
+  reusing the first-person camera position, and the distance-LOD throttle
+  resolves a hidden third-person body to "generate nothing".
+- **Mirror animation events** onto it by hooking
+  `BSAnimationGraphManager::NotifyAnimationGraph`, which delivers only to the
+  active graph. Passing a null event-sink array is the engine's own idiom and
+  keeps every outward effect — footsteps, fire events, script events, root
+  motion — out of gameplay.
+- **Raise the behaviour's own base-state trigger plus a settle event at
+  wake-up.** A freshly activated behaviour sits in its initial state, which
+  renders as T-pose, and leaves it only when an event arrives; a session that
+  starts in first person with the player standing still never generates one.
+  The event names were identified by logging the active-node count around
+  every mirrored event and reading which names actually move it.
+- **Keep it alive across camera switches.** Reactivation rebuilds the
+  active-node list from the root, i.e. resets the state machine — measured
+  live as a drop from 59 active nodes to 19. The deactivate on the way into
+  first person is suppressed so a walking body stays walking; the trip back to
+  third person still hands the graph over deactivated, so the engine's own
+  activation runs in full including the ragdoll bind.
+- **Suppress the skeleton copy while driving.** Free of charge on the local
+  screen: the third-person body is `APP_CULLED` in first person.
+
+Camera state is read from the state machine rather than guessed from pose
+content: `PlayerCamera+0x28` holds the current `TESCameraState`, and its
+vtable is compared against `FirstPersonState`. Every earlier attempt had tried
+to infer the view from bone values, which cannot work — the bones do rotate in
+first person, just toward a stub.
+
+### Also fixed
+
+- **Pip-Boy on the ghost** — the ARMO is not skinned; vanilla parents it under
+  the left-forearm `PipboyBone`. Attached to the ghost root it rendered at the
+  skeleton origin, half sunk between the feet. It now attaches to that bone
+  (already present in the ghost skeleton and already driven by the pose
+  stream) and animates for free. Detach now uses the node's real parent
+  instead of assuming the root.
+- **Scale no longer leaks through the pose channel** — the channel carries
+  rotation only, but `NiAVObject`'s matrix is rotation × scale, and feeding a
+  scaled matrix to the quaternion conversion returns a non-unit quaternion.
+  Each row is normalised first; a row with no recoverable rotation takes the
+  existing sentinel path and the receiver keeps that bone's last good value.
+
+### Known residue
+
+The walk clip plays at a rate unrelated to the ground covered until the sender
+switches view and back. The behaviour scales its locomotion clips from
+variables that nothing writes into a parked graph. Deriving them from
+frame-to-frame displacement was implemented and reverted: this drive only runs
+while the camera is in first person, so the displacement spans gaps the delta
+time does not account for — one client measured 5953 where 100-200 was
+expected, the other a constant 0. The engine's own movement speed is the
+correct source.
+
+### Notes
+
+Two regressions were introduced and fixed during this work, both from the same
+byte. `BShkbAnimationGraph+0x3C3` looked like a safe "suppress this graph's
+outward channels" flag. Left set, it leaked into third person and stopped WASD
+movement. Set at all, it makes the event-queue drain wipe the character event
+queue without ever running `handleEvents`, so the graph's own clip triggers and
+transition events are discarded and its state machine freezes. The engine never
+sets it on this path; it is gone.
+
+---
+
 ## PIENUVO auth v0 + the player-death crash closed (2026-08-04) — v0.6.4
 
 Tag `v0.6.4`. Two independent tracks land together: the identity layer the

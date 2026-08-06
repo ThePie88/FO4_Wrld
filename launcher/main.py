@@ -57,6 +57,13 @@ def main() -> int:
                          "HighProcess+0x189 on mirrored NPCs. Control run for "
                          "the hp-churn probe. Expect mirrors to aim at you and "
                          "the combat-crouch sliding to return")
+    ap.add_argument("--stream-pose-1p", action="store_true",
+                    help="EXPERIMENT: write stream_pose_in_first_person=true "
+                         "into fw_config.ini, so this client keeps streaming "
+                         "its pose while in first person instead of holding "
+                         "the last third-person pose on the peer's ghost. "
+                         "Only correct once the first-person graph drive is "
+                         "confirmed to move the bones")
     ap.add_argument("--no-auto-load", action="store_true",
                     help="disable B3.b auto-load — main menu shows normally "
                          "(useful for Frida tracing of fresh PC::Load3D)")
@@ -87,14 +94,16 @@ def main() -> int:
                                 auth_blob=args.auth,
                                 player_name=args.name,
                                 client_id=args.client_id,
-                                suppress_mirror_combat=not args.no_mirror_suppress)
+                                suppress_mirror_combat=not args.no_mirror_suppress,
+                                stream_pose_in_first_person=args.stream_pose_1p)
 
     return orchestrator.run(side, start_server=args.with_server,
                             python_exe=args.python,
                             auth_blob=args.auth,
                             player_name=args.name,
                             client_id=args.client_id,
-                            suppress_mirror_combat=not args.no_mirror_suppress)
+                            suppress_mirror_combat=not args.no_mirror_suppress,
+                            stream_pose_in_first_person=args.stream_pose_1p)
 
 
 if __name__ == "__main__":

@@ -501,6 +501,19 @@ constexpr std::uintptr_t SCENE_RENDER_RVA            = 0x00C38F80;
 // --- B5 camera capture (Agent 1 RE, 2026-04-22) ---
 constexpr std::uintptr_t PLAYER_CAMERA_SINGLETON_RVA = 0x030DBD58;
 constexpr std::uintptr_t NI_CAMERA_VTABLE_RVA        = 0x0267DD50;
+
+// --- Ghost 1P fix (2026-08-04) — PlayerCamera state layout -------------------
+// Decomp-proven by sub_14102B090 (QCameraEquals, size 0x1B):
+//   v2 = *(camera + 40);  return v2 && v2 == *(camera + 8*idx + 224);
+// so +0x28 is the CURRENT TESCameraState* and +0xE0 the cameraStates[] array.
+// The 1P detector compares the current state's VTABLE against
+// FirstPersonState (RTTI catalog: FirstPersonState vtbl RVA 0x25A2A08,
+// ThirdPersonState 0x251AA18) instead of guessing enum indices — immune to
+// the CameraState numbering and to state-object reallocation.
+constexpr std::size_t    PLAYER_CAMERA_CURRENT_STATE_OFF = 0x28;
+constexpr std::size_t    PLAYER_CAMERA_STATES_ARRAY_OFF  = 0xE0;
+constexpr std::uintptr_t FIRSTPERSON_STATE_VTABLE_RVA    = 0x025A2A08;
+constexpr std::uintptr_t THIRDPERSON_STATE_VTABLE_RVA    = 0x0251AA18;
 // NiCamera layout confirmed via CommonLibF4 (alandtse/master) 2026-04-22:
 //   +0x120  worldToCam[4][4]   (VIEW matrix, row-major, world→camera)
 //   +0x160  viewFrustum = { left, right, top, bottom, near, far, ortho }

@@ -87,6 +87,62 @@ struct Settings {
     // The sweep armed the load instead of protecting it.
     bool          death_recohere_sweep = false;
 
+    // Ghost 1P full-body animation (2026-08-05). When the local camera is in
+    // first person the engine parks the third-person animation graph
+    // (BSAnimationGraphManager+0xD8 activeGraph flips to 1) and the remote
+    // ghost of this player freezes into the graph's default V/T pose. With
+    // this on, the DLL gives graphs[0] the same per-frame flush+update the
+    // engine gives the active graph, so the 3P skeleton keeps producing real
+    // animation and the pose stream carries it. Costs one extra graph
+    // evaluation per frame for the local player only. Set false to fall back
+    // to the pose-stream HOLD (ghost keeps its last good 3P pose).
+    // 2026-08-05 — DEFAULT OFF after the live verdict below.
+    //
+    // The reverse engineering was right and the recipe was executed exactly:
+    // the parked third-person graph WAS revived (hkbBehaviorGraph m_isActive
+    // raised, confirmed in-game), and the engine's own per-frame sequence ran
+    // on it — bound-channel flush, pose generate, and the pose-apply call
+    // that is the actual NiAVObject writer. Zero faults, thousands of clean
+    // iterations. The third-person skeleton's bone matrices still did not
+    // move: identical to three decimals across 17 seconds of walking.
+    // Something further along the chain still refuses a graph the engine
+    // considers parked, and it is not any of the three gates that were
+    // proven and cleared.
+    // Meanwhile the attempt cost a real regression (a muted output channel
+    // leaking into third person and stopping WASD movement — now fixed by
+    // save/restore, but the lesson stands). Left in the tree as a documented,
+    // reproducible experiment; set true only to resume that investigation.
+    // 2026-08-05 late — back ON for the forced-context attempt. The probe
+    // proved the earlier failure was a measurement error on my side: the
+    // parked graph is write-ready (95 bones, valid arrays, physics gate
+    // false, and its root IS the tree the pose capture reads), and the drive
+    // was handing it the engine's first-person update context, whose LOD
+    // throttle resolves a hidden third-person body to "generate nothing".
+    // Now it builds the forced context the engine's own bind path uses.
+    // The regression that made this dangerous (a muted output channel
+    // leaking into third person) is fixed by save/restore.
+    // 2026-08-05 round 6 — OFF again, and this is where the investigation
+    // stands. Everything the drive needs is now proven present: the graph is
+    // revived, events are mirrored to it, variables already reach it, the
+    // physics gate is false, the forced context defeats the LOD throttle, and
+    // it genuinely generates and writes 95 bones every frame. It still
+    // renders one frozen frame, because the delta time never reaches Havok:
+    // Update builds the hkb context from the character and the physics world
+    // only, so the clip clock does not advance. Whatever steps hkb time for
+    // the active graph has not been located yet. Off until it is, so the pose
+    // capture falls back to HOLD and the ghost keeps its last good
+    // third-person pose instead of a stub.
+    bool          first_person_graph_drive = true;
+
+    // 2026-08-05 — experiment switch. false (default) = the pose stream is
+    // HELD while the sender is in first person, so the peer's ghost keeps
+    // its last good third-person pose. true = keep streaming, which is only
+    // useful while the first-person capture is under investigation (two
+    // attempts have shipped a V-pose ghost with a deformed head; the
+    // [pose-1p] diagnostic runs either way and says which tree the sender
+    // is reading and whether it is moving).
+    bool          stream_pose_in_first_person = false;
+
     // PIENUVO v0 (v19) — auth material minted by the external launcher.
     // `auth_blob` in the ini is "pubkeyhex:challengehex:sighex"
     // (64+64+128 hex chars). The DLL does NO crypto: it just forwards the
