@@ -112,6 +112,9 @@ class PeerSession:
     # so combat_target_form_id substitution targets the right local fid
     # per viewer. 0 = unregistered (ghost not spawned yet, or spawn failed).
     ghost_form_id: int = 0
+    # One-shot: says once, not sixty times a second, that this peer's
+    # position is being withheld from the others pending character creation.
+    chargen_hidden_logged: bool = False
 
     def touch(self, now_ms: float) -> None:
         self.last_seen_ms = now_ms
@@ -211,6 +214,16 @@ class ServerState:
     # Dedicated-server capacity. accept_peer refuses past this with a reason
     # the browser can show. 0 = unlimited (used by tests).
     max_players: int = 0
+    # v21 — the entry ritual. When True, an identity the server has never seen
+    # is told to create a character before it becomes visible to anyone.
+    #
+    # Default False, and deliberately so while the editor does not exist: a
+    # server that demands a ritual no client can perform would leave every new
+    # player invisible with no way out. Turn it on with the editor, not before.
+    #
+    # When False a new player simply spawns as the documented default — nude,
+    # bald, no eyes — which is the settled skip behaviour, not a placeholder.
+    require_chargen: bool = False
 
     # TESNPC base formIDs used as ghost avatars in the rendering layer.
     # Kill/disable events targeting these bases are rejected at the validator
@@ -242,6 +255,9 @@ class ServerState:
     _quests: dict[int, QuestStageState] = field(default_factory=dict)
     # B4: global variables, keyed by global_form_id.
     _globals: dict[int, GlobalVarState] = field(default_factory=dict)
+    # v20 — peer_id -> appearance recipe line. See record_appearance for why
+    # the server stores it verbatim and does not parse it.
+    _appearances: dict[str, str] = field(default_factory=dict)
     # B6.3 v0.5.3: lock states keyed by (base_id, cell_id).
     lock_state: dict[tuple[int, int], LockWorldState] = field(default_factory=dict)
 
@@ -333,6 +349,29 @@ class ServerState:
 
     def other_sessions(self, exclude_addr: tuple[str, int]) -> list[PeerSession]:
         return [s for s in self._sessions_by_addr.values() if s.addr != exclude_addr]
+
+    def ghost_visible(self, peer_id: str) -> bool:
+        """Whether this peer's body may be shown to the other clients yet.
+
+        A peer who has not finished character creation has no business appearing
+        in anyone else's world: their character does not exist yet, and the body
+        that would be drawn is the documented default -- nude, bald, no eyes.
+        Worse, they are parked ten thousand units up in the sky while they work,
+        so the alternative to hiding them is a naked mannequin hanging over the
+        map.
+
+        Having submitted an appearance IS having finished: the client suppresses
+        publishing for as long as the editor is open and publishes on the tick the
+        flag goes down, so the recipe's arrival is the confirmation. No new message
+        type and no extra state to keep in step.
+
+        Only meaningful when the server asked for the ritual in the first place.
+        With require_chargen off, nobody is expected to have a recipe and everyone
+        is visible as before.
+        """
+        if not self.require_chargen:
+            return True
+        return self.appearance(peer_id) is not None
 
     def expire_stale(self, now_ms: float) -> list[PeerSession]:
         """Remove peers not heard from in peer_timeout_ms. Returns removed sessions."""
@@ -550,6 +589,40 @@ class ServerState:
     def all_globals(self) -> list[GlobalVarState]:
         return list(self._globals.values())
 
+    # ------------------------------------------------ appearance (v20)
+    #
+    # Keyed by PEER ID, which is the client's stable identity — the same key
+    # PIENUVO authenticates. That matters: an appearance belongs to a player,
+    # not to a connection, so it has to survive a reconnect and be handed to
+    # peers who join later.
+    #
+    # The value is the recipe LINE verbatim. The server deliberately does NOT
+    # parse it: it is authoritative over WHO owns an appearance, not over what
+    # a valid appearance is. Form ids only mean something to an engine, and
+    # putting a parser here would mean teaching the server the head-part
+    # catalogue and keeping the two in step forever. A client that sends
+    # nonsense gets its own character wrong; it cannot corrupt anyone else's.
+
+    def record_appearance(self, peer_id: str, recipe: str) -> bool:
+        """Store a peer's appearance recipe. Last-write-wins.
+
+        Returns True if this changed anything — the caller uses that to avoid
+        re-broadcasting an unchanged appearance every time a client re-sends
+        it (they re-send on every join, which is correct of them).
+        """
+        if not peer_id or not recipe:
+            return False
+        if self._appearances.get(peer_id) == recipe:
+            return False
+        self._appearances[peer_id] = recipe
+        return True
+
+    def appearance(self, peer_id: str) -> Optional[str]:
+        return self._appearances.get(peer_id)
+
+    def all_appearances(self) -> list[tuple[str, str]]:
+        return list(self._appearances.items())
+
     # ---------------------------------------------------------- locks (B6.3)
 
     def all_locks(self) -> list[LockWorldState]:
@@ -558,12 +631,19 @@ class ServerState:
     # ---------------------------------------------------------- convenience
 
     def welcome_for(self, session: PeerSession) -> WelcomePayload:
+        # The ritual is required only when the server both wants it AND has
+        # nothing stored for this identity. Asking a returning player to create
+        # a character again would be a bug, not a ritual.
+        needs_chargen = (
+            self.require_chargen and self.appearance(session.peer_id) is None
+        )
         return WelcomePayload(
             session_id=session.session_id,
             accepted=True,
             server_version_major=self.server_version[0],
             server_version_minor=self.server_version[1],
             tick_rate_hz=self.tick_rate_hz,
+            chargen_required=needs_chargen,
         )
 
     def peer_join_for(self, session: PeerSession) -> PeerJoinPayload:

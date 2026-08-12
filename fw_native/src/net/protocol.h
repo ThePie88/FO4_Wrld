@@ -164,7 +164,7 @@ constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
 //     server challenge(32) + signature(64) over "FWAUTH1"+challenge +
 //     display_name(16). The DLL does no crypto — the launcher mints the blob,
 //     fw_config.ini carries it, we forward it verbatim.
-constexpr std::uint8_t  PROTOCOL_VERSION  = 19;  // v19: PIENUVO v0 auth
+constexpr std::uint8_t  PROTOCOL_VERSION  = 21;  // v21: recipe v2 carries face tints
 constexpr std::size_t   HEADER_SIZE       = 12;
 constexpr std::size_t   MAX_PAYLOAD_SIZE  = 1400;
 constexpr std::size_t   MAX_FRAME_SIZE    = HEADER_SIZE + MAX_PAYLOAD_SIZE;
@@ -252,6 +252,13 @@ enum class MessageType : std::uint16_t {
     GLOBAL_VAR_SET        = 0x0411,
     GLOBAL_VAR_BCAST      = 0x0412,
     GLOBAL_VAR_STATE_BOOT = 0x0023,
+
+    // v20 — character appearance. A recipe is engine form ids only (race,
+    // sex, head parts, hair colour), ~150 bytes of ASCII, so it needs no
+    // chunking: one datagram carries a whole character. See CHARGEN_PLAN §17
+    // for the format and §12 for why ids travel instead of geometry.
+    APPEARANCE_SET        = 0x0421,   // C->S: this is what I look like
+    APPEARANCE_BCAST      = 0x0422,   // S->C: this is what peer X looks like
 };
 
 enum class ActorEventKind : std::uint32_t {
@@ -360,8 +367,23 @@ struct WelcomePayload {
     std::uint8_t  server_version_major;
     std::uint8_t  server_version_minor;
     std::uint16_t tick_rate_hz;
+    // v21 — THE ENTRY RITUAL. 1 = this identity has no stored appearance and
+    // the server wants one before the player is visible to anyone.
+    //
+    // The server answers this, not the client, because the server is the only
+    // party that knows whether it has seen this identity before. The client
+    // cannot infer it: its local save always has an appearance, and "the
+    // bootstrap contained nothing for me" is indistinguishable from a slow
+    // network. A positive byte in the message that already gates the session is
+    // the cheapest honest signal.
+    //
+    // 0 means "nothing to do" and covers both reasons: the server already holds
+    // an appearance for this identity, or the server does not require creation
+    // at all (its `require_chargen` is off, and the player spawns with the
+    // documented default — nude, bald, no eyes).
+    std::uint8_t  chargen_required;
 };
-static_assert(sizeof(WelcomePayload) == 9, "WelcomePayload size");
+static_assert(sizeof(WelcomePayload) == 10, "WelcomePayload size");
 
 // PEER_JOIN (server → client). Python: FixedString(15) + I = 20 bytes
 struct PeerJoinPayload {
@@ -961,6 +983,46 @@ static_assert(sizeof(NpcPerceptionTriggerPayload) == 8,
 // All-zero = "unowned" sentinel (only valid for PHASE_2 release frames).
 
 constexpr std::size_t  PEER_ID_BYTES = 16;
+
+// ---------------------------------------------------------------- v20
+// Appearance. The payload is a recipe LINE (ASCII, no NUL) — deliberately the
+// same human-readable text the log prints, so an appearance bug is
+// diagnosable from a capture without a decoder. `recipe_len` bounds it; a
+// receiver must reject anything longer than MAX_RECIPE_BYTES rather than
+// trust the wire.
+//
+// Why not a packed binary form: at ~150 bytes per character the saving is
+// irrelevant, and every byte saved would be paid back in debugging.
+//
+// v21 raised this from 1024 to 1280. A v2 line adds a `tints=` field of
+// ID:PCT:RGB triples at 15 bytes each; the tint array is a sparse diff against
+// the race defaults, so a dozen changed tints is typical (~180 bytes) and a
+// heavily painted character could add several hundred more.
+//
+// 1280 and not larger: the transport caps a payload at MAX_PAYLOAD_SIZE = 1400
+// to stay under a 1500-byte MTU, and APPEARANCE_BCAST spends a FixedClientId
+// plus four bytes on its header before the recipe starts. A cap above what a
+// datagram can carry would turn the sender's clean refusal into an oversized
+// packet, which is a worse failure and a harder one to see.
+constexpr std::size_t MAX_RECIPE_BYTES = 1280;
+
+struct AppearanceSetHeader {
+    std::uint16_t recipe_len;
+    std::uint16_t reserved;      // = 0
+};
+static_assert(sizeof(AppearanceSetHeader) == 4, "AppearanceSetHeader (v20)");
+
+struct AppearanceBroadcastHeader {
+    // FixedClientId, not a raw byte array: it is the house type for a
+    // peer-attributed message, it matches what Python's
+    // _encode_fixed_string(peer_id, MAX_CLIENT_ID_LEN) writes, and it brings
+    // .get() so the receiver does not hand-roll a bounded string read.
+    FixedClientId peer_id;
+    std::uint16_t recipe_len;
+    std::uint16_t reserved;      // = 0
+};
+static_assert(sizeof(AppearanceBroadcastHeader) == MAX_CLIENT_ID_LEN + 1 + 4,
+              "AppearanceBroadcastHeader (v20) must match the Python layout");
 
 // 0x0286 — NPC_OBSERVED. C→S, reliable. Wire 28 B.
 struct NPCObservedPayload {

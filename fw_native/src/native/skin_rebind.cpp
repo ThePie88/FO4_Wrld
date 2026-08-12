@@ -104,10 +104,22 @@ std::uintptr_t read_vt_rva(void* obj) {
     }
 }
 
+// 2026-08-08 — BSFaceGenNiNode added. It was missing, and that single
+// omission made the face clone render as nothing: the whole player face is
+// ONE node of this class with 12 geometry children, so a walk that does not
+// recognise it as a container never descends, never rebinds a single skin,
+// and swap_skin_bones_to_skeleton returned 0 while the same call on the
+// loaded BaseMaleHead returned 20. A skinned mesh still bound to bones that
+// are not in the ghost's tree collapses, hence a headless ghost.
+// RVA from re/engine_rtti_catalog.md: BSFaceGenNiNode, 68 methods —
+// NiNode-derived, so the standard +0x128/+0x132 children layout applies.
+constexpr std::uintptr_t kBSFaceGenNiNodeVtRva = 0x024FF280;
+
 bool is_node_with_children(std::uintptr_t vt_rva) {
     return vt_rva == kNiNodeVtRva
         || vt_rva == kBSFadeNodeVtRva
         || vt_rva == kBSLeafAnimNodeVtRva
+        || vt_rva == kBSFaceGenNiNodeVtRva
         || vt_rva == kShadowSceneNodeVtRva;
 }
 

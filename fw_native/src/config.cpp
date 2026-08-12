@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>   // strtoull — chargen_selftest takes a hex form id
 #include <fstream>
 #include <string>
 
@@ -189,6 +190,137 @@ Settings load(const std::filesystem::path& path) {
                 s.suppress_mirror_combat = false;
             } else {
                 FW_WRN("config: bad 'suppress_mirror_combat' value: %s", v.c_str());
+            }
+        } else if (key == "chargen_dump") {
+            const auto& v = value;
+            if (v == "1" || v == "true" || v == "yes" || v == "on" ||
+                v == "TRUE" || v == "YES" || v == "ON") {
+                s.chargen_dump = true;
+            } else if (v == "0" || v == "false" || v == "no" || v == "off" ||
+                       v == "FALSE" || v == "NO" || v == "OFF") {
+                s.chargen_dump = false;
+            } else {
+                FW_WRN("config: bad 'chargen_dump' value: %s", v.c_str());
+            }
+        } else if (key == "anatomy_probe") {
+            const auto& v = value;
+            if (v == "1" || v == "true" || v == "yes" || v == "on" ||
+                v == "TRUE" || v == "YES" || v == "ON") {
+                s.anatomy_probe = true;
+            } else if (v == "0" || v == "false" || v == "no" || v == "off" ||
+                       v == "FALSE" || v == "NO" || v == "OFF") {
+                s.anatomy_probe = false;
+            } else {
+                FW_WRN("config: bad 'anatomy_probe' value: %s", v.c_str());
+            }
+        } else if (key == "chargen_selftest") {
+            // Accepts 0x-prefixed hex (what the catalogue prints) or decimal.
+            const auto& v = value;
+            char* end = nullptr;
+            const unsigned long long parsed =
+                std::strtoull(v.c_str(), &end, 0);
+            if (end && end != v.c_str() && parsed <= 0xFFFFFFFFull) {
+                s.chargen_selftest = static_cast<std::uint32_t>(parsed);
+            } else {
+                FW_WRN("config: bad 'chargen_selftest' value: %s", v.c_str());
+            }
+        } else if (key == "chargen_stage_z") {
+            const auto& v = value;
+            char* end = nullptr;
+            const unsigned long long parsed =
+                std::strtoull(v.c_str(), &end, 0);
+            if (end && end != v.c_str() && parsed <= 100000ull) {
+                s.chargen_stage_z = static_cast<std::uint32_t>(parsed);
+            } else {
+                FW_WRN("config: bad 'chargen_stage_z' value: %s (want game "
+                       "units, 0..100000)", v.c_str());
+            }
+        } else if (key == "editor_key") {
+            // A virtual-key code. Hex (0x71 = F2) or decimal.
+            const auto& v = value;
+            char* end = nullptr;
+            const unsigned long long parsed =
+                std::strtoull(v.c_str(), &end, 0);
+            if (end && end != v.c_str() && parsed <= 0xFFull) {
+                s.editor_key = static_cast<std::uint32_t>(parsed);
+            } else {
+                FW_WRN("config: bad 'editor_key' value: %s (want a virtual-key "
+                       "code 1..255, e.g. 0x71 for F2)", v.c_str());
+            }
+        } else if (key == "face_borrow_test_hair") {
+            const auto& v = value;
+            char* end = nullptr;
+            const unsigned long long parsed = std::strtoull(v.c_str(), &end, 0);
+            if (end && end != v.c_str() && parsed <= 0xFFFFFFFFull) {
+                s.face_borrow_test_hair = static_cast<std::uint32_t>(parsed);
+            } else {
+                FW_WRN("config: bad 'face_borrow_test_hair' value: %s",
+                       v.c_str());
+            }
+        } else if (key == "body_cull") {
+            const auto& v = value;
+            if (v == "1" || v == "true" || v == "yes" || v == "on" ||
+                v == "TRUE" || v == "YES" || v == "ON") {
+                s.body_cull = true;
+            } else if (v == "0" || v == "false" || v == "no" || v == "off" ||
+                       v == "FALSE" || v == "NO" || v == "OFF") {
+                s.body_cull = false;
+            } else {
+                FW_WRN("config: bad 'body_cull' value: %s", v.c_str());
+            }
+        } else if (key == "ghost_face_clone") {
+            const auto& v = value;
+            if (v == "1" || v == "true" || v == "yes" || v == "on" ||
+                v == "TRUE" || v == "YES" || v == "ON") {
+                s.ghost_face_clone = true;
+            } else if (v == "0" || v == "false" || v == "no" || v == "off" ||
+                       v == "FALSE" || v == "NO" || v == "OFF") {
+                s.ghost_face_clone = false;
+            } else {
+                FW_WRN("config: bad 'ghost_face_clone' value: %s", v.c_str());
+            }
+        } else if (key == "editor_overlay") {
+            const auto& v = value;
+            if (v == "1" || v == "true" || v == "yes" || v == "on" ||
+                v == "TRUE" || v == "YES" || v == "ON") {
+                s.editor_overlay = true;
+            } else if (v == "0" || v == "false" || v == "no" || v == "off" ||
+                       v == "FALSE" || v == "NO" || v == "OFF") {
+                s.editor_overlay = false;
+            } else {
+                FW_WRN("config: bad 'editor_overlay' value: %s", v.c_str());
+            }
+        } else if (key == "chargen_donor") {
+            const auto& v = value;
+            char* end = nullptr;
+            const unsigned long long parsed =
+                std::strtoull(v.c_str(), &end, 0);
+            if (end && end != v.c_str() && parsed <= 0xFFFFFFFFull) {
+                s.chargen_donor = static_cast<std::uint32_t>(parsed);
+            } else {
+                FW_WRN("config: bad 'chargen_donor' value: %s", v.c_str());
+            }
+        } else if (key == "chargen_selftest_delay") {
+            const auto& v = value;
+            char* end = nullptr;
+            const unsigned long long parsed =
+                std::strtoull(v.c_str(), &end, 0);
+            if (end && end != v.c_str() && parsed <= 3600ull) {
+                s.chargen_selftest_delay = static_cast<std::uint32_t>(parsed);
+            } else {
+                FW_WRN("config: bad 'chargen_selftest_delay' value: %s",
+                       v.c_str());
+            }
+        } else if (key == "anatomy_mirror") {
+            const auto& v = value;
+            if (v == "1" || v == "true" || v == "yes" || v == "on" ||
+                v == "TRUE" || v == "YES" || v == "ON") {
+                s.anatomy_mirror = true;
+            } else if (v == "0" || v == "false" || v == "no" || v == "off" ||
+                       v == "FALSE" || v == "NO" || v == "OFF") {
+                s.anatomy_mirror = false;
+            } else {
+                FW_WRN("config: bad 'anatomy_mirror' value: %s", v.c_str());
             }
         } else if (key == "stream_pose_in_first_person") {
             const auto& v = value;

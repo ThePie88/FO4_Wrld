@@ -168,6 +168,13 @@ public:
     // other peers; sender applies optimistically via the engine hook itself.
     void enqueue_global_var_set(std::uint32_t global_form_id, double value);
 
+    // v20 — APPEARANCE_SET. `recipe` is the appearance recipe LINE
+    // (appearance_recipe::to_line): ASCII, ~150 bytes, engine form ids only.
+    // Sent reliably; the server stores it against this peer's identity and
+    // relays it, and re-sending an unchanged recipe is a server-side no-op,
+    // so a caller may send on every join without spamming the session.
+    void enqueue_appearance_set(const std::string& recipe);
+
     // B6.1: reliable DOOR_OP — fire-and-forget. Server broadcasts to other
     // peers as DOOR_BCAST. Toggle semantics — the receiver re-invokes its
     // local Activate worker on the matching REFR; both sides converge as

@@ -19,6 +19,13 @@
 #include "../log.h"
 #include "../main_thread_dispatch.h"
 #include "../native/scene_inject.h"
+#include "../native/chargen_dump.h"    // character-creation catalogue capture
+#include "../native/anatomy_probe.h"   // read-only local player 3D walk
+#include "../native/chargen_selftest.h" // one-shot appearance apply from our code
+#include "../native/appearance_recipe.h" // v20: publish my appearance on change
+#include "../render/editor_overlay.h"  // the panel, and its input capture
+#include "../native/chargen_stage.h"     // 2026-08-08: stage the player for creation
+#include "../native/face_borrow.h"       // v20: build peers' faces locally
 #include "../offsets.h"
 #include "equip_cycle.h"  // B8: WndProc dispatches FW_MSG_FORCE_EQUIP_CYCLE_*
 
@@ -50,6 +57,11 @@ std::atomic<bool> g_load_dispatched{false};
 // Settings snapshot captured at install time.
 std::string g_save_name;
 std::uint32_t g_delay_ms = 4000;   // v4 default: 4s after registrar hit
+// 2026-08-08 — virtual-key code that toggles the character editor, cached from
+// the ini at install. Read on the main thread from the subclass below; there is
+// no global config accessor in this project, every module is handed what it
+// needs at init. 0 = the key is not configured.
+std::uint32_t g_editor_key = 0;
 
 // ----------------------------------------------------------------- WndProc subclass
 //
@@ -84,6 +96,62 @@ HWND find_fo4_hwnd() {
 }
 
 LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    // THE TOGGLE KEY COMES FIRST. Before the editor is offered the message,
+    // because the editor swallows WM_KEYDOWN while it is open — so handling the
+    // toggle after it meant the key that CLOSES the panel could never arrive.
+    // That is a trap-the-user bug and it existed for exactly one build.
+    if (msg == WM_KEYDOWN && (lp & 0x40000000) == 0) {
+        const std::uint32_t want = g_editor_key;
+        if (want != 0 && static_cast<std::uint32_t>(wp) == want) {
+            const bool now_open = !fw::native::appearance::editing();
+            fw::native::appearance::set_editing(now_open);
+            FW_LOG("[editor] key 0x%02X -> editor %s",
+                   want, now_open ? "OPEN" : "CLOSED");
+            // The key only moves the flag here too. editor::on_frame takes and
+            // releases the input capture from the flag itself, so a ritual the
+            // server asked for gets the same capture a keypress would.
+            // The key only moves the FLAG. chargen_stage::sync does the teleport
+            // on the next tick, and that is the point: the staging used to hang
+            // off this key handler, so a ritual the SERVER asked for opened the
+            // panel and left the player on the ground. One driver now, whoever
+            // asks.
+            return 0;   // swallow it; nothing downstream wants this key
+        }
+        // CAMERA CALIBRATION KEY (F3), and it is deliberately hard-wired rather
+        // than configurable: it is a temporary aid that disappears the moment the
+        // camera's yaw offset is known. It sits here beside the toggle for the
+        // same reason the toggle is first — the editor swallows WM_KEYDOWN while
+        // it is open, so a key handled after it would never arrive.
+        if ((static_cast<std::uint32_t>(wp) == VK_F3 ||
+             static_cast<std::uint32_t>(wp) == VK_F4) &&
+            fw::native::appearance::editing()) {
+            fw::native::chargen_stage::nudge_camera_yaw(
+                static_cast<std::uint32_t>(wp) == VK_F4);
+            return 0;
+        }
+        if ((static_cast<std::uint32_t>(wp) == VK_F5 ||
+             static_cast<std::uint32_t>(wp) == VK_F6) &&
+            fw::native::appearance::editing()) {
+            // F6 out, F5 in. A larger setting value is further away.
+            fw::native::chargen_stage::nudge_camera_zoom(
+                /*further=*/static_cast<std::uint32_t>(wp) == VK_F6);
+            return 0;
+        }
+    }
+
+    // THE EDITOR EATS INPUT NEXT, when it is open.
+    //
+    // Before anything else looks at the message, because while the panel is up
+    // the mouse and keyboard belong to it. Returns true only for messages it
+    // consumed; everything else falls through untouched, and when the editor is
+    // closed this costs one atomic read.
+    //
+    // WM_ACTIVATE is never handed over: it is the only path that restores the
+    // engine's input gate and resumes audio, so swallowing it would strand both.
+    if (msg != WM_ACTIVATE &&
+        fw::render::editor::wndproc(hwnd, msg, wp, lp)) {
+        return (msg == WM_SETCURSOR) ? TRUE : 0;
+    }
     // Build 67 — main-thread liveness heartbeat (stall watchdog forensics).
     // Win32 dispatches this proc on the window-owning thread = the game main
     // thread, so a stale heartbeat == the main thread stopped pumping.
@@ -107,6 +175,60 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     // of ownership, cell state or whether any NPC is being mirrored. It
     // self-throttles to ~250 ms internally.
     fw::native::sweep_npc_bone_caches();
+    // 2026-08-06 — character-creation catalogue. Self-disarming: it walks
+    // TESDataHandler's form arrays once, as soon as they hold anything, and
+    // never runs again. A no-op unless the dump was armed from the ini.
+    // 2026-08-08 — the editor toggle key. Handled BEFORE the appearance tick
+    // below so that opening the editor and face_borrow standing aside happen on
+    // the same frame, with no window in which a borrow could start.
+    //
+    // WM_KEYDOWN is safe to read here and cannot double-fire a game action: the
+    // game's own window procedure has no WM_KEYDOWN case, it reads keyboard
+    // exclusively through WM_INPUT, and it registers raw input with flags 0 (no
+    // RIDEV_NOLEGACY) so the legacy messages are still generated for us.
+    //
+    // The repeat-count guard matters — holding the key down otherwise flips the
+    // flag every auto-repeat.
+    {
+        static const std::uintptr_t s_base = reinterpret_cast<std::uintptr_t>(
+            GetModuleHandleW(L"Fallout4.exe"));
+        fw::native::chargen_dump::maybe_dump_catalogue(s_base);
+        // 2026-08-07 — the anatomy probe MUST run here and nowhere else:
+        // it reads the live scene graph, which is main-thread-only. The
+        // chargen catalogue moved off this tick because the WndProc is not
+        // installed when auto_load_save is empty; the probe does not have
+        // that problem, since looking at the player presupposes a loaded
+        // game and a loaded game presupposes this subclass.
+        fw::native::anatomy_probe::maybe_dump(s_base);
+        // 2026-08-08 — same reason as the probe above: it touches
+        // engine appearance state and must be on the main thread.
+        fw::native::chargen_selftest::maybe_run(s_base);
+        // v20 — publish my appearance to the server when it changes.
+        // Main thread: it reads the live TESNPC. Self-throttled.
+        fw::native::appearance::publish_if_changed(s_base);
+        // v20 — build any peer face we have a recipe for but no master.
+        // One at a time; cheap when there is nothing to do.
+        fw::native::face_borrow::tick(s_base);
+        // Bring the staged world into line with the editor's flag: teleport up
+        // when it goes on, back down when it goes off, retrying while the save
+        // is still loading. Here rather than in Present because it teleports,
+        // and the teleport has always run on this tick.
+        fw::native::chargen_stage::sync(s_base);
+        // And the input capture, for the same reason and in the same place. It is
+        // also reconciled from editor::on_frame, but that runs on Present's main
+        // thread, which starts late: the log showed the capture landing ten
+        // seconds after the server asked for the ritual, and the game reads the
+        // mouse for every one of those seconds. This tick runs first. Both call
+        // sites are idempotent -- they act only when the state disagrees.
+        {
+            const bool want = fw::native::appearance::editing();
+            if (fw::render::editor::input_captured() != want) {
+                fw::render::editor::set_input_captured(s_base, want);
+            }
+        }
+        // Keeps collision off while staged; Reset3D undoes it.
+        fw::native::chargen_stage::tick(s_base);
+    }
     if (msg == FW_MSG_LOAD_GAME) {
         // We're on the main (UI) thread — MinHook-level guarantees don't
         // apply here (no MinHook involved), but Win32 semantics do:
@@ -458,6 +580,10 @@ bool install_main_menu_hook(std::uintptr_t module_base,
                             const fw::config::Settings& cfg)
 {
     g_save_name = cfg.auto_load_save;
+    g_editor_key = cfg.editor_key;
+    if (g_editor_key) {
+        FW_LOG("[editor] toggle key armed: virtual-key 0x%02X", g_editor_key);
+    }
     // Reuse `auto_continue_delay_ms` as the worker delay. Clamp so a
     // misconfigured 0 doesn't race the menu.
     g_delay_ms = cfg.auto_continue_delay_ms;

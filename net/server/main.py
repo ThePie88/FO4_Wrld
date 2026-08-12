@@ -38,6 +38,7 @@ from protocol import (  # noqa: E402
     QuestStageSetPayload, QuestStageBroadcastPayload,
     QuestStateBootPayload, QuestStageStateEntry,
     GlobalVarSetPayload, GlobalVarBroadcastPayload,
+    AppearanceSetPayload, AppearanceBroadcastPayload,
     GlobalVarStateBootPayload, GlobalVarStateEntry,
     DoorOpPayload, DoorBroadcastPayload,
     LockOpPayload, LockBroadcastPayload,
@@ -140,9 +141,11 @@ class Config:
         master: Optional[str] = None,
         require_auth: bool = False,
         public_addr: Optional[str] = None,
+        require_chargen: bool = False,
     ) -> None:
         self.host = host
         self.port = port
+        self.require_chargen = require_chargen
         self.tick_rate_hz = tick_rate_hz
         self.snapshot_path = snapshot_path
         self.snapshot_interval_s = snapshot_interval_s
@@ -356,6 +359,9 @@ class ServerProtocol(asyncio.DatagramProtocol):
         if mtype == MessageType.GLOBAL_VAR_SET:
             self._handle_global_var_set(session, payload, now_ms)
             return
+        if mtype == MessageType.APPEARANCE_SET:
+            self._handle_appearance_set(session, payload, now_ms)
+            return
         if mtype == MessageType.DOOR_OP:
             self._handle_door_op(session, payload, now_ms)
             return
@@ -548,6 +554,9 @@ class ServerProtocol(asyncio.DatagramProtocol):
         self._send_quest_state_bootstrap(session, now_ms)
         # Bootstrap: global variables (B4, chunked)
         self._send_global_var_state_bootstrap(session, now_ms)
+        # Bootstrap: appearances (v20) — every character the server knows,
+        # so a late joiner does not see everyone as the default model.
+        self._send_appearance_bootstrap(session, now_ms)
         # Bootstrap: lock states (B6.3 v0.5.3) — replay last-known state
         # for every (base, cell) the server has seen, as individual
         # LOCK_BCAST frames. Client treats them as fresh remote ops.
@@ -680,6 +689,18 @@ class ServerProtocol(asyncio.DatagramProtocol):
         session.last_pos_at_ms = now_ms
         session.total_pos_updates += 1
 
+        # Recorded above, relayed below -- and the order matters. The server's own
+        # logic (ownership election, npc_brain distances) wants this peer's
+        # position whether or not the other clients may see them yet, so the
+        # position is always stored and only the fan-out is withheld.
+        if not self.state.ghost_visible(session.peer_id):
+            if not session.chargen_hidden_logged:
+                session.chargen_hidden_logged = True
+                log.info("peer %s is still in character creation - position "
+                         "recorded but NOT relayed; other clients will see them "
+                         "once they confirm", session.peer_id)
+            return
+
         # Broadcast to other peers (unreliable)
         broadcast = PosBroadcastPayload(
             peer_id=session.peer_id,
@@ -697,6 +718,10 @@ class ServerProtocol(asyncio.DatagramProtocol):
         No validation (trusted clients in this stage); pure fan-out."""
         if not isinstance(payload, PoseStatePayload):
             return
+        # Same gate as the position: this animates a body the other
+        # clients are not being shown yet.
+        if not self.state.ghost_visible(session.peer_id):
+            return
         broadcast = PoseBroadcastPayload(
             peer_id=session.peer_id,
             timestamp_ms=payload.timestamp_ms,
@@ -711,6 +736,10 @@ class ServerProtocol(asyncio.DatagramProtocol):
         Mirrors _handle_pose_state exactly: no validation (trusted clients in
         this stage); pure fan-out as POSE_CROUCH_BROADCAST."""
         if not isinstance(payload, PoseCrouchStatePayload):
+            return
+        # Same gate as the position: this animates a body the other
+        # clients are not being shown yet.
+        if not self.state.ghost_visible(session.peer_id):
             return
         broadcast = PoseCrouchBroadcastPayload(
             peer_id=session.peer_id,
@@ -1005,6 +1034,83 @@ class ServerProtocol(asyncio.DatagramProtocol):
             raw = other.channel.send_reliable(
                 MessageType.GLOBAL_VAR_BCAST, broadcast, now_ms)
             self._send(other.addr, raw)
+
+    def _handle_appearance_set(
+        self, session: PeerSession, payload, now_ms: float
+    ) -> None:
+        """v20 — a peer tells us what its character looks like.
+
+        The server is authoritative over WHO owns an appearance, not over what
+        a valid appearance is: the recipe is stored and relayed verbatim. It
+        holds engine form ids, which only mean something inside a client, so
+        validating here would mean teaching the server the head-part catalogue
+        and keeping the two in step forever. A client that sends nonsense gets
+        its own character wrong and cannot touch anyone else's.
+
+        Clients re-send on every join, which is correct of them — so an
+        unchanged recipe is stored and NOT re-broadcast, or every reconnect
+        would spray the whole session with a change that did not happen.
+        """
+        if not isinstance(payload, AppearanceSetPayload):
+            return
+        if not payload.recipe:
+            self._counters["rejections"] += 1
+            log.debug("reject APPEARANCE_SET from %s: empty recipe",
+                      session.peer_id)
+            return
+
+        changed = self.state.record_appearance(session.peer_id, payload.recipe)
+        session.total_events += 1
+        if not changed:
+            log.debug("appearance unchanged for %s (%d bytes) — not relayed",
+                      session.peer_id, len(payload.recipe))
+            return
+
+        log.info("appearance set for %s (%d bytes)",
+                 session.peer_id, len(payload.recipe))
+
+        broadcast = AppearanceBroadcastPayload(
+            peer_id=session.peer_id, recipe=payload.recipe)
+        for other in self.state.other_sessions(session.addr):
+            raw = other.channel.send_reliable(
+                MessageType.APPEARANCE_BCAST, broadcast, now_ms)
+            self._send(other.addr, raw)
+
+    def _send_appearance_bootstrap(
+        self, session: PeerSession, now_ms: float
+    ) -> None:
+        """Hand a joining peer every appearance the server already knows.
+
+        Without this a late joiner sees everyone as the default model until
+        each of them happens to change appearance — which for a finished
+        character is never.
+
+        Reliable, one frame each: a recipe is ~150 bytes and a session has
+        tens of peers, not thousands.
+
+        The joining peer's OWN recipe is included, and that is a reversal worth
+        explaining. It used to be skipped with the argument that "a client does
+        not need to be told what it just sent, and it builds its own from the
+        live player anyway" -- which was true only while the character lived in
+        the save file. It does not: the server is authoritative, the save is a
+        vessel, and the custom look exists only here. A client that joins and
+        reads its freshly-loaded save sees the DEFAULT character, and before
+        this change it then published that default, silently overwriting the
+        stored custom recipe -- both test characters were lost to exactly that,
+        and every ghost faithfully replicated a default. The client now adopts
+        the recipe sent here onto its local player and holds its first publish
+        until it has had the chance to arrive.
+        """
+        sent = 0
+        for peer_id, recipe in self.state.all_appearances():
+            payload = AppearanceBroadcastPayload(peer_id=peer_id, recipe=recipe)
+            raw = session.channel.send_reliable(
+                MessageType.APPEARANCE_BCAST, payload, now_ms)
+            self._send(session.addr, raw)
+            sent += 1
+        if sent:
+            log.info("appearance bootstrap: %d recipe(s) -> %s",
+                     sent, session.peer_id)
 
     # ----- B4: bootstrap snapshot senders -----
 
@@ -2832,6 +2938,7 @@ async def run_server(cfg: Config) -> None:
         "master": cfg.master,
     }
     state.max_players = cfg.max_players
+    state.require_chargen = cfg.require_chargen
     protocol.require_auth = cfg.require_auth
     # Bind login proofs to the addresses this server answers to. The bind
     # address covers local play (127.0.0.1:PORT); --public-addr is what a
@@ -2925,6 +3032,12 @@ def parse_args() -> Config:
                          "203.0.113.7:31337). Login proofs are signed over it; "
                          "required whenever the bind address is not what "
                          "clients connect to (NAT, 0.0.0.0)")
+    ap.add_argument("--require-chargen", action="store_true",
+                    help="tell a never-before-seen identity to create a "
+                         "character before it becomes visible to anyone. "
+                         "Default off: without an in-game editor a client "
+                         "cannot perform the ritual, and a server that demands "
+                         "one would leave every new player invisible")
     ap.add_argument("--require-auth", action="store_true",
                     help="reject HELLOs without a verified PIENUVO identity "
                          "(launcher-signed challenge). Default: allow "
@@ -2942,6 +3055,7 @@ def parse_args() -> Config:
         max_players=args.max_players,
         public=args.public, master=args.master,
         require_auth=args.require_auth,
+        require_chargen=args.require_chargen,
         public_addr=args.public_addr,
     )
 

@@ -61,6 +61,77 @@ suppress_mirror_combat = {suppress_mirror_combat}
 #   true  = keep streaming; only useful for diagnostics.
 first_person_graph_drive = {first_person_graph_drive}
 stream_pose_in_first_person = {stream_pose_in_first_person}
+
+# v20 — the peer ghost wears the peer's REAL face.
+#
+# The appearance travels as a RECIPE (engine form ids, ~150 bytes). On arrival
+# this client builds it by briefly lending its own TESNPC to the engine — the
+# only thing on the machine that can build a head — clones the result, and
+# keeps that clone as the peer's face. See CHARGEN_PLAN §12/§17/§19.
+#
+# Written by the launcher because the launcher OVERWRITES this file on every
+# run: a hand-edited key here does not survive a single launch, which is how
+# an earlier session lost its settings mid-test.
+ghost_face_clone = {ghost_face_clone}
+
+# Sets the LOCAL player's hair to this colour form once at boot, then forces a
+# rebuild so it shows. Used to make the two sides visually distinguishable in a
+# live test (0x000A042F = Golden Blond). 0 = leave the character alone.
+chargen_selftest = {chargen_selftest}
+chargen_selftest_delay = {chargen_selftest_delay}
+
+# Character-creation DIAGNOSTICS. All default off; each is a capture tool, not a
+# feature. They live here because the launcher overwrites this file on every run,
+# so a hand-edited key does not survive a single launch — which is how an earlier
+# session lost its settings mid-test.
+#
+# chargen_dump arms the eight observation detours on the engine's own appearance
+# functions and writes fw_chargen_dump.log. Nothing installs while it is off:
+# chargen_dump::install() returns on its first line when unarmed, and a session
+# with it off logs not one line from the module.
+chargen_dump = {chargen_dump}
+# Read-only walk of the local player's 3D into fw_anatomy.log.
+anatomy_probe = {anatomy_probe}
+# Superseded by ghost_face_clone above, which takes precedence over it. Kept
+# reachable because it is the fallback when the clone path is off.
+anatomy_mirror = {anatomy_mirror}
+# NPC_ form id that receives the local player's recipe (the donor demonstration).
+chargen_donor = {chargen_donor}
+
+# Synthesises a fake peer whose recipe is the local player's own with the hair
+# colour swapped to this form, so a borrow can be exercised with one client, no
+# network and no ghost. 0 = off. Diagnostic only.
+face_borrow_test_hair = {face_borrow_test_hair}
+
+# Installs the Present hook the character editor draws through. ON by default.
+#
+# It used to default off "while the overlay is being built", and that cost a
+# whole test cycle: the overlay was working, the key was posted, the editor
+# logged itself open and staged the player in the sky — and nothing drew,
+# because this file is REGENERATED on every launch and quietly replaced the
+# hand-edited `true` with `false`. The give-away was the absence of the
+# [render] Present # lines, not the presence of an error, since a missing hook
+# has nothing to report.
+#
+# The cost when the editor is never opened is one installed detour that counts
+# frames; editor::on_frame returns on its first line unless the editor is
+# actually open. Set it to false only to take the Present hook out of a session
+# entirely, e.g. when bisecting a render crash.
+editor_overlay = {editor_overlay}
+
+# How far UP the player goes while the character is being created, in game units
+# (the player is roughly 120 units tall). 0 = off.
+#
+# Same X/Y, only Z: going far in X/Y leaves the streamed cell grid and the engine
+# unloads the world around you. 10000 is deliberately generous — there is no pause
+# in this project, so a slow residual sink exists whenever the game is not the
+# focused window, and altitude is cheaper than fighting it.
+chargen_stage_z = {chargen_stage_z}
+
+# Virtual-key code that opens and closes the character editor (0x71 = F2).
+# 0 = off. Today it only holds off face borrows and appearance publishing; the
+# editor it will open does not exist yet.
+editor_key = {editor_key}
 """
 
 
@@ -76,6 +147,17 @@ def write_for_side(
     suppress_mirror_combat: bool = True,
     first_person_graph_drive: bool = True,
     stream_pose_in_first_person: bool = False,
+    ghost_face_clone: bool = True,
+    chargen_selftest: int = 0,
+    chargen_selftest_delay: int = 20,
+    editor_key: int = 0x71,
+    editor_overlay: bool = True,
+    chargen_stage_z: int = 10000,
+    face_borrow_test_hair: int = 0,
+    chargen_dump: bool = False,
+    anatomy_probe: bool = False,
+    anatomy_mirror: bool = False,
+    chargen_donor: int = 0,
 ) -> Path:
     """Write fw_config.ini into the game directory that holds `side.launcher_exe`.
 
@@ -111,6 +193,19 @@ def write_for_side(
         suppress_mirror_combat=("true" if suppress_mirror_combat else "false"),
         first_person_graph_drive=(
             "true" if first_person_graph_drive else "false"),
+        ghost_face_clone=("true" if ghost_face_clone else "false"),
+        chargen_selftest=f"0x{chargen_selftest:08X}" if chargen_selftest else "0",
+        chargen_selftest_delay=str(chargen_selftest_delay),
+        editor_key=(f"0x{editor_key:02X}" if editor_key else "0"),
+        editor_overlay=("true" if editor_overlay else "false"),
+        chargen_stage_z=str(chargen_stage_z),
+        face_borrow_test_hair=(
+            f"0x{face_borrow_test_hair:08X}"
+            if face_borrow_test_hair else "0"),
+        chargen_dump=("true" if chargen_dump else "false"),
+        anatomy_probe=("true" if anatomy_probe else "false"),
+        anatomy_mirror=("true" if anatomy_mirror else "false"),
+        chargen_donor=(f"0x{chargen_donor:08X}" if chargen_donor else "0"),
         stream_pose_in_first_person=(
             "true" if stream_pose_in_first_person else "false"),
     )

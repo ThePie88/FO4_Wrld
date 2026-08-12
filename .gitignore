@@ -71,6 +71,13 @@ steamcmd/
 fw_native/deps/MinHook/build/
 fw_native/deps/MinHook/.git/
 
+# Dear ImGui, vendored for the character-creation overlay (v1.92.8, MIT:
+# core + dx11/win32 backends + LICENSE.txt). Same policy as MinHook above:
+# dependencies are fetched/vendored locally, never committed — the repo is
+# our code only. A fresh clone needs imgui dropped in here exactly as it
+# already needs MinHook.
+fw_native/deps/imgui/
+
 # -- Python (cache + venv + dist) --------------------------------------------
 __pycache__/
 *.pyc
@@ -257,7 +264,17 @@ CLAUDE.md
 # -- Internal / marketing docs at root (not code) -----------------------------
 /LAUNCHER_API.md
 /QA_DISCORD.md
+/CHARGEN_PLAN.md
+/chargen_dump/
 
 # -- Crash-forensics binary dumps (write ring, regenerable per session) -------
 fw_writes.bin
 fw_audit.log
+
+# -- Chargen test-harness artifacts (server rotations + stage-server capture) -
+# Same category as net/state_snapshot.json*: regenerable per-session state the
+# test scripts rotate on disk. The .err/.out pair is the stage server's stdio
+# capture from the ritual test runs.
+net/ritual_test_snapshot.json*
+net/*.err
+net/*.out

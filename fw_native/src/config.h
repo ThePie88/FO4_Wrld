@@ -143,6 +143,93 @@ struct Settings {
     // is reading and whether it is moving).
     bool          stream_pose_in_first_person = false;
 
+    // 2026-08-06 — character-creation asset capture. Arms an exhaustive dump
+    // of everything the engine loads (meshes, morph sets, textures,
+    // materials) into fw_chargen_dump.log, for one clean vanilla session with
+    // the creation menu open. Produces the catalogue the customisation work is
+    // built on. Off in normal play; the capture points cost one atomic read.
+    bool          chargen_dump = false;
+
+    // 2026-08-07 — local player anatomy probe. READ ONLY: walks the player's
+    // own 3D once and writes the tree to fw_anatomy.log. It is the look-before
+    // -you-touch step for copying the player's head onto a peer's ghost.
+    bool          anatomy_probe = false;
+
+    // 2026-08-07 — anatomy mirror. At ghost inject, read the local player's
+    // face composition (hair, beard, eyes, ...) off the live scene graph and
+    // attach the same head parts to the ghost. Parts, not morphs. The safe
+    // first step of "the ghost is a photocopy of the local player".
+    bool          anatomy_mirror = false;
+    // 2026-08-08 — clone the player's BUILT face subtree onto the ghost.
+    // Supersedes anatomy_mirror; carries morphs, texture and colour.
+    bool          ghost_face_clone = false;
+
+    // 2026-08-08 — ghost body cull. true (default) = shipping behaviour: the
+    // ghost's body geometry is hidden when the peer wears body armour. false
+    // = log only. That is the A/B for the "player's own body vanishes on
+    // unequip" bug: dry-run does strictly less work and cannot crash, but the
+    // ghost body then shows through armour. Note the A/B already ran once
+    // before the deep-clone work and the symptom persisted, so it is
+    // informative, not conclusive.
+    bool          body_cull = true;
+
+    // 2026-08-08 — face-borrow isolation test. A BGSColorForm form id; when
+    // set, a synthetic peer is registered whose recipe is ours with that hair
+    // colour, so the borrow can be exercised with no network and no ghost.
+    // 0 = off.
+    std::uint32_t face_borrow_test_hair = 0;
+
+    // 2026-08-08 — chargen self-test. A form id (hex, e.g. 0x0019EE62) that
+    // gets applied ONCE to the player's own TESNPC from our code, through the
+    // engine's own apply function. Proves the donor pipeline's engine half.
+    // 0 = off.
+    std::uint32_t chargen_selftest = 0;
+    // Seconds to wait after the player exists before applying.
+    std::uint32_t chargen_selftest_delay = 0;
+    // NPC_ form id that receives the local player's recipe (donor demo).
+    std::uint32_t chargen_donor = 0;
+
+    // 2026-08-08 — the key that opens and closes the character editor.
+    // A Win32 virtual-key code (hex or decimal), e.g. 0x71 = F2. 0 = off.
+    //
+    // The game reads keyboard through raw input (`WM_INPUT`) and its own window
+    // procedure has no `WM_KEYDOWN` case at all, so legacy key messages reach
+    // our subclass untouched and pressing this key cannot also trigger a game
+    // action. RegisterRawInputDevices is called once with flags 0 — no
+    // RIDEV_NOLEGACY — so the legacy messages really are still generated.
+    //
+    // Today this only toggles `appearance::set_editing()`, which holds off
+    // face borrows and appearance publishing. The editor it will open does not
+    // exist yet; this is the door frame, not the door.
+    std::uint32_t editor_key = 0;
+
+    // 2026-08-08 — install the Present hook that the character editor will draw
+    // through. Default OFF while the overlay is being built.
+    //
+    // This is the same hook that carried Strada A in April (dll_main records
+    // that path's results as "verified live"), reduced to a frame callback: it
+    // counts frames, resolves the game's own D3D11 device/context/swapchain/RTV
+    // from fixed globals, and chains. The archived Strada A draw calls stay
+    // behind their own gate, off, because draw_triangle() self-initialises and
+    // would otherwise put a triangle back on screen.
+    bool editor_overlay = false;
+
+    // 2026-08-08 — how far UP to put the player while the character is being
+    // created, in game units (the player is roughly 120 units tall). 0 = off.
+    //
+    // Same X/Y, only Z: moving far in X/Y leaves the streamed cell grid and the
+    // engine unloads the world around you, which risks the void instead of the
+    // sky and makes the return much more fragile.
+    //
+    // This project has no pause — it was removed, because pausing is meaningless
+    // in a shared world — so the isolation is physical: at altitude nothing
+    // reaches you, and collision is turned off so gravity does not either.
+    //
+    // 10000 rather than something modest, on the user's call: a slow residual
+    // sink exists whenever the game is not the focused window (~3 units/second,
+    // measured), and buying an hour of headroom is cheaper than chasing it.
+    std::uint32_t chargen_stage_z = 0;
+
     // PIENUVO v0 (v19) — auth material minted by the external launcher.
     // `auth_blob` in the ini is "pubkeyhex:challengehex:sighex"
     // (64+64+128 hex chars). The DLL does NO crypto: it just forwards the

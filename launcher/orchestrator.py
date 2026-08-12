@@ -256,6 +256,14 @@ def run(
             client_id=client_id or None,
             suppress_mirror_combat=suppress_mirror_combat,
             stream_pose_in_first_person=stream_pose_in_first_person,
+            # v20 — appearance replication on for both sides.
+            ghost_face_clone=True,
+            # Live-test aid: side B's character is forced to Golden Blond so
+            # the two sides are visually distinguishable. Without this both
+            # players look alike and a MIRRORED ghost is indistinguishable
+            # from a REPLICATED one by eye — the whole point of the test.
+            # Side A is left as it is (black hair).
+            chargen_selftest=(0x000A042F if side.name == "B" else 0),
         )
         if side.auto_load_save:
             log(side.log_prefix,

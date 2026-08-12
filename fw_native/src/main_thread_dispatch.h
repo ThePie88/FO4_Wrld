@@ -317,6 +317,15 @@ void drain_npc_owner_state_apply_queue();
 // per session. A captured stack ends any future where-did-it-hang debate.
 void note_main_thread_alive() noexcept;
 
+// The main thread's id, as recorded by the first note_main_thread_alive()
+// call. 0 until the WndProc subclass has seen its first message.
+//
+// Needed by anything that runs on a thread it does not choose. The Present
+// detour is the case that forced this getter to exist: Present is reached from
+// four call sites and one of them, the JobListManager serving thread, is not
+// the main thread — so a per-frame callback has to be able to ask.
+std::uint32_t main_thread_id() noexcept;
+
 // Build 65.c.22 — InCombat-flag propagation cache for non-owner side.
 //
 // Diagnosi (Agent 2 forensics): pos+yaw apply 100% riuscito, MA bit 0x4000

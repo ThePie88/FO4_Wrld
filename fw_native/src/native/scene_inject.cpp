@@ -18,8 +18,11 @@
 // than taking the whole process down.
 
 #include "scene_inject.h"
+#include "chargen_stage.h"
+#include "anatomy_mirror.h"   // 2026-08-07: ghost wears the local player's face parts
 #include "ni_offsets.h"
 #include "scene_walker.h"
+#include "face_cache.h"   // 2026-08-08: a peer's built face, kept warm
 #include "skin_rebind.h"
 #include "weapon_witness.h"  // read_parent_pub for detach-via-parent helper
 #include "synthetic_refr.h"  // M9 closure (2026-05-07): synthetic REFR weapon assembly
@@ -191,6 +194,10 @@ static void populate_canonical_from_skel_native(void* skel_root) {
 // called both from try_inject_body_nif and ghost_attach_armor without
 // scope-shadow ambiguity.
 void* clone_nif_subtree(void* source);
+// Defined much further down, next to the clone machinery it uses; declared
+// here because the injector above calls it. Same reason clone_nif_subtree
+// carries a forward declaration.
+static bool ghost_dress_face(void* face_source, void* head, const char* why);
 
 // 2026-05-06 LATE evening (M9 closure, PLAN B — NiStream serialization) —
 // engine-native serialize/deserialize of any NiObject subtree to/from a
@@ -2382,6 +2389,137 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
                                             /*reuseFirstEmpty=*/0);
                 }
 
+                // 2026-08-07 — ANATOMY MIRROR. The ghost head so far is the
+                // two hardcoded NIFs above (base head + rear). When the
+                // mirror is armed, the rest of the LOCAL PLAYER's face — the
+                // parts the probe found as children of BSFaceGenNiNodeSkinned,
+                // whose node names are head-part editor ids — is resolved
+                // through the loaded forms and loaded here with the exact
+                // same helper. Face (pnam 1) and HeadRear (pnam 9) are
+                // skipped: those are the two already attached above. This
+                // runs BEFORE the skin swap below so one swap covers every
+                // part, the same way it already covers head+rear.
+                //
+                // Parts only, not shape: the catalogue NIF is the neutral
+                // mesh, so the peer sees the right hair/beard/eyes on a
+                // neutral face. Morph fidelity is a later, separate step.
+                // ===========================================================
+                // 2026-08-08 — FACE CLONE. The ghost wears the player's REAL
+                // built face, not a re-load of the same NIFs.
+                //
+                // Why this and not the mirror: re-loading the head-part NIFs
+                // by path gives neutral geometry with stock textures — right
+                // parts, wrong everything else. Hair colour in particular can
+                // never be recovered that way, because FO4 does not store an
+                // RGB: the colour is a remap index the shader samples from a
+                // gradient, applied while the engine BUILDS the head. Copying
+                // material fields to chase it cost a whole night and could not
+                // work. Cloning the built subtree sidesteps the entire problem:
+                // morphs are already baked into the dynamic vertex buffers, the
+                // composited face texture comes along, and the colour is
+                // whatever the engine decided.
+                //
+                // Forward-looking: this is the LAST step of the pipeline, and
+                // it is identical whether the appearance came from the local
+                // player (today, one client) or from a recipe posted by the
+                // server (CLIENT X -> SERVER -> GHOST X on CLIENT Y). Only the
+                // source of the appearance changes; the clone does not.
+                // Dress the ghost's face. SOURCE SELECTION, and the log
+                // says which was used — the difference between REPLICATING a
+                // peer's face and MIRRORING our own is invisible on screen
+                // when both players look alike, so it must never be ambiguous
+                // in the log.
+                //
+                //   1. a peer's built master, when the borrow produced one:
+                //      this is the real path;
+                //   2. otherwise the LOCAL player's face: useful with a single
+                //      client, but it is a mirror, not replication.
+                //
+                // Either way this can lose a race — measured: a borrow
+                // finished 57 ms AFTER the ghost dressed itself — so
+                // redress_ghost_face() exists to fix it up when a master
+                // arrives late.
+                bool face_cloned = false;
+                if (fw::native::anatomy_mirror::clone_enabled()) {
+                    char peer[24] = {};
+                    void* face = fw::native::face_cache::any_master(
+                        peer, sizeof(peer));
+                    const char* why = "SOURCE=peer master (REPLICATED)";
+                    if (!face) {
+                        void* p3d = nullptr;
+                        void* pb  = nullptr;
+                        seh_read_player_3d_paths(g_r.base, p3d, pb);
+                        face = p3d
+                            ? fw::native::anatomy_mirror::find_facegen_node(
+                                  g_r.base, p3d)
+                            : nullptr;
+                        why = "SOURCE=LOCAL player (MIRRORED, no peer master)";
+                    }
+                    if (!face) {
+                        FW_WRN("[face-clone] no face source at all — ghost "
+                               "keeps its loaded head");
+                    } else {
+                        face_cloned = ghost_dress_face(face, head, why);
+                    }
+                }
+
+                if (!face_cloned && fw::native::anatomy_mirror::enabled()) {
+                    const std::size_t got =
+                        fw::native::anatomy_mirror::collect(g_r.base);
+                    std::size_t attached = 0;
+                    for (auto& part :
+                         fw::native::anatomy_mirror::parts_mut()) {
+                        // The base head and rear were loaded above, before
+                        // the mirror ran — hand their ghost nodes to the
+                        // colour pass, which needs source AND destination.
+                        if (part.pnam == 1) { part.dst_node = head; }
+                        if (part.pnam == 9) { part.dst_node = head_rear; }
+                        if (part.pnam == 1 || part.pnam == 9) continue;
+                        // pnam 7 = Meatcaps: dismemberment gore. Present in
+                        // every face's part list but only shown when a limb
+                        // is gone; the engine hides it by a mechanism other
+                        // than APP_CULLED (measured 2026-08-07, flags clear
+                        // on the player's own node). First live test wore it
+                        // as a collar of gore. Excluded by type.
+                        if (part.pnam == 7) {
+                            FW_LOG("[anatomy-mirror] '%s' is a meatcap "
+                                   "(pnam 7) — not mirrored",
+                                   part.edid.c_str());
+                            continue;
+                        }
+                        void* pnode = load_nif_and_apply(
+                            part.path.c_str(), "mirror_part");
+                        if (!pnode) {
+                            FW_WRN("[anatomy-mirror] part '%s' failed to "
+                                   "load ('%s') — skipped",
+                                   part.edid.c_str(), part.path.c_str());
+                            continue;
+                        }
+                        char* pb = reinterpret_cast<char*>(pnode);
+                        std::uint64_t pname = 0;
+                        char label[160];
+                        std::snprintf(label, sizeof(label),
+                                      "fw_mirror_%s", part.edid.c_str());
+                        g_r.fs_create(&pname, label);
+                        if (pname) {
+                            g_r.set_name(pnode,
+                                         reinterpret_cast<void*>(pname));
+                            g_r.fs_release(&pname);
+                        }
+                        _InterlockedIncrement(reinterpret_cast<long*>(
+                            pb + NIAV_REFCOUNT_OFF));
+                        g_r.attach_child_direct(head, pnode,
+                                                /*reuseFirstEmpty=*/0);
+                        part.dst_node = pnode;   // for the colour pass
+                        ++attached;
+                        FW_LOG("[anatomy-mirror] attached '%s' (%s) to "
+                               "ghost head", part.edid.c_str(),
+                               part.path.c_str());
+                    }
+                    FW_LOG("[anatomy-mirror] %zu/%zu player part(s) attached "
+                           "to the ghost head", attached, got);
+                }
+
                 // M8P3.23 — apply skin swap on the head NIF too.
                 // Without this the head's BSGeometry skin instance still
                 // binds to the head NIF's internal _skin stubs (frozen
@@ -2404,6 +2542,11 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
                                head_swapped);
                     }
                 }
+
+                // (The colour pass used to run here. It moved BELOW the
+                // hands section: the hands load AFTER the head, so running
+                // it here left them in the stock dark skin — measured live,
+                // 2026-08-07 second test.)
 
                 // v18 REVERT: head attached to BODY (which now IS skel_root
                 // alias). v14 architecture.
@@ -2543,6 +2686,38 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
         } else {
             FW_WRN("[native] inject_hands: all hand NIF paths missed — "
                    "body will render handless (wrist stumps)");
+        }
+
+        // 2026-08-07 — colour pass, LAST of the assembly steps so every
+        // loaded piece is covered (the hands load after the head; running
+        // this earlier left them stock-dark). Copies the engine's own
+        // computed appearance off the player's live materials onto the
+        // ghost's: skin tone (SkinTint colour), hair colour (HairTint,
+        // with a fill pass because the player's main hair is a Glowmap
+        // material), and the FaceGen composited face textures (resolved
+        // NiTexture pointers shared with refcount).
+        if (fw::native::anatomy_mirror::enabled()) {
+            void* head_now = g_injected_head.load(std::memory_order_acquire);
+            fw::native::anatomy_mirror::copy_tints(g_r.base, body, head_now);
+        } else if (fw::native::anatomy_mirror::clone_enabled()) {
+            // With the face cloned, only the BODY still needs telling: it is a
+            // separate NIF, not part of the face subtree, so it keeps the stock
+            // skin tone. Everything else copy_tints used to do is now carried
+            // by the clone itself.
+            //
+            // Build/corpulence is deliberately NOT done here. That is the
+            // three body weights on the TESNPC (thin / muscular / large), and
+            // they are not located yet — §16 found five unidentified floats in
+            // the head-related sub-object and stopped rather than guess. The
+            // ghost therefore has the right skin on a default build, which is
+            // an honest stub and not a silent approximation.
+            fw::native::anatomy_mirror::copy_skin_tone(g_r.base, body);
+            // And if a borrow already computed the PEER's skin before this
+            // body existed, apply it now, over the local copy above. The
+            // borrow and the inject complete in whichever order the session
+            // produces; each side hands over to the other.
+            fw::native::anatomy_mirror::paint_stashed_ghost_skin(g_r.base,
+                                                                 body);
         }
 
         // v16: skel_root is now the published root (its tree contains
@@ -3440,8 +3615,47 @@ void nistream_free(void* buf) {
     }
 }
 
+// 2026-08-08 — the module base, resolved INDEPENDENTLY of g_r.
+//
+// g_r.base is populated by resolve_once(), which is reached only from the two
+// ghost-injection entry points. Every caller of clone_nif_subtree that ran
+// BEFORE the first ghost was injected therefore hit the `g_r.base == 0` guard
+// on the first line and got the SOURCE handed back — with no log line, because
+// that early return predates the two logged failure paths below it.
+//
+// That is what killed client B on its first live two-client test: face_borrow
+// asked for a clone eight seconds after the load finished, no peer ghost had
+// spawned yet, the clone "succeeded" as a share, so no master was ever parked,
+// so the borrow re-selected the same peer forever — two full head teardown and
+// rebuild pairs every 1.5 s until the engine died inside its own head builder.
+//
+// resolve_once() is deliberately NOT called here: it also latches the effect
+// texture handle by VALUE, and its own comment says that value is not
+// initialised at DLL load. Calling it early would cache a null there for the
+// rest of the session. The deep-clone front-end needs nothing but the base, so
+// the base is all this resolves.
+std::uintptr_t clone_module_base() {
+    static std::atomic<std::uintptr_t> s_base{0};
+    std::uintptr_t b = s_base.load(std::memory_order_acquire);
+    if (b) return b;
+    if (g_r.base) {
+        s_base.store(g_r.base, std::memory_order_release);
+        return g_r.base;
+    }
+    b = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(L"Fallout4.exe"));
+    if (b) s_base.store(b, std::memory_order_release);
+    return b;
+}
+
 void* clone_nif_subtree(void* source) {
-    if (!source || g_r.base == 0) return source;
+    if (!source) return source;
+    const std::uintptr_t clone_base = clone_module_base();
+    if (clone_base == 0) {
+        FW_ERR("[clone-vt26] cannot clone source=%p — Fallout4.exe is not "
+               "resolvable. Returning the SOURCE, which is a SHARE and not a "
+               "copy; every caller must treat that as a failure.", source);
+        return source;
+    }
     // 2026-05-06 evening — THIRD attempt. Triple-agent cross-confirmation
     // (re/vt26_crash_AGENT_A.md + re/niCloneProcess_AGENT_C.md +
     // re/unequip_cleanup_AGENT_B.md). Prior fixes failed because:
@@ -3493,7 +3707,8 @@ void* clone_nif_subtree(void* source) {
     using DeepCloneFn = void* (__fastcall*)(void* self);
     constexpr std::uintptr_t SUB_DEEPCLONE_RVA = 0x016BA800ULL;
 
-    DeepCloneFn fn = reinterpret_cast<DeepCloneFn>(g_r.base + SUB_DEEPCLONE_RVA);
+    DeepCloneFn fn =
+        reinterpret_cast<DeepCloneFn>(clone_base + SUB_DEEPCLONE_RVA);
     void* clone = nullptr;
     __try {
         clone = fn(source);
@@ -3508,9 +3723,17 @@ void* clone_nif_subtree(void* source) {
         return source;
     }
     if (clone == source) {
-        // Defensive: shouldn't happen but if vt[26] returned the same
-        // pointer (some "shared template" override?), don't pretend
-        // we got an independent instance.
+        // Defensive, and now known to be genuinely unreachable for the classes
+        // that matter: every CreateClone override allocates first and returns
+        // either the new object or null. BSFaceGenNiNode's (vt[26] =
+        // sub_1406E78A0, read out of the vtable at RVA 0x24FF280 + 0xD0)
+        // allocates 0x190 bytes and returns 0 if that allocation fails — it
+        // has no path that returns `this`. So if this ever fires, the vtable
+        // is not what we think it is, and that is worth a line in the log
+        // rather than a share that looks like a success.
+        FW_ERR("[clone-vt26] vt[26] returned the SOURCE for %p — no override "
+               "is supposed to be able to do that. Treating it as a failure.",
+               source);
         return source;
     }
     FW_DBG("[clone-vt26] source=%p -> clone=%p (engine deep-clone)",
@@ -3669,20 +3892,31 @@ void* clone_nif_subtree_recursive(void* source, int depth, int max_depth) {
         case BSSUBINDEXTRISHAPE_VTABLE_RVA:
             alloc_size = BSSUBINDEXTRISHAPE_SIZEOF;
             is_geom = true; break;
-        // BSDynamicTriShape intentionally NOT in switch. Cloning it via
-        // raw memcpy duplicates pointer to dynamic vertex CPU/GPU buffer
-        // — engine writes per-frame skinned vertices to that buffer, so
-        // sharing it would mean the ghost armor renders local-actor's
-        // skinning data instead of its own. The hybrid path in
-        // ghost_attach_armor detects BSDynamicTriShape via
-        // tree_has_bsdynamictrishape() and routes to shared+snapshot
-        // (M9.w2 path) instead of clone. If walker reaches a stray
-        // BSDynamicTriShape during recursion (shouldn't happen if the
-        // detector worked at root, but defensive), it'll fall through
-        // to "share" below — the parent NiNode is cloned and points
-        // at the source's BSDynamicTriShape, which is acceptable
-        // because the M9.w2 snapshot/restore on the parent armor root
-        // protects it.
+        // 2026-08-08 — BSDynamicTriShape IS now cloned, for the FACE only.
+        //
+        // The old reasoning (kept because it still holds for ARMOUR): a raw
+        // memcpy duplicates the pointer at +0x17C to the dynamic vertex
+        // buffer, and for armour the engine writes per-frame skinned
+        // vertices there, so a shared buffer means the ghost renders the
+        // local actor's skinning. Armour therefore still routes to
+        // shared+snapshot via tree_has_bsdynamictrishape().
+        //
+        // A FaceGen head is a different animal. Its dynamic buffer holds the
+        // MORPHED vertex positions FaceGen wrote once at build time, not a
+        // per-frame skinning result — and the skin instance, which IS the
+        // per-actor mutable state, gets cloned independently below. That is
+        // the whole reason the ghost can wear the player's real face:
+        // morphs come baked in the buffer and the bone bindings are its own.
+        //
+        // Sharing the buffer is therefore expected to be correct here, but it
+        // is not proven, so it is stated rather than assumed: if a ghost head
+        // ever deforms in step with the LOCAL player's expression instead of
+        // its own, this share is the cause and the buffer must be duplicated
+        // (count at +0x178, stride from the BSVertexDesc at +0x150).
+        case BSDYNAMICTRISHAPE_VTABLE_RVA:
+        case BSDYNAMICTRISHAPE_VTABLE_ALT_RVA:
+            alloc_size = BSDYNAMICTRISHAPE_SIZEOF;
+            is_geom = true; break;
         default:
             // Unknown vtable — share. Logs at DBG to avoid spam.
             FW_DBG("[clone] depth=%d unknown vt_rva=0x%llX node=%p — share",
@@ -3851,6 +4085,113 @@ void* clone_nif_subtree_recursive(void* source, int depth, int max_depth) {
     }
 
     return clone;
+}
+
+// ---------------------------------------------------------------------------
+// Dress the ghost's head with a face: clone `face_source`, bind it to the
+// ghost skeleton, attach it under `head`, and cull every OTHER child of head
+// so only this face draws.
+//
+// Extracted rather than copied. The first version of this lived inline in the
+// injector, and then a race made a SECOND call site necessary: the borrow that
+// builds a peer's face finished 57 ms AFTER the ghost had already dressed
+// itself from the local player, so the ghost has to be re-dressed when a
+// master shows up late. Two copies of scene-graph surgery with this many
+// ordering traps in it would be two places to get the culling wrong.
+//
+// Idempotent by construction: it culls all of head's children except the one
+// it just attached, so calling it again simply replaces the previous face.
+//
+// Returns false and leaves whatever was there alone if any step fails — a
+// ghost with a wrong face is better than a ghost with none.
+//
+// MAIN THREAD ONLY.
+static bool ghost_dress_face(void* face_source, void* head, const char* why) {
+    if (!face_source || !head || !g_r.base) return false;
+
+    void* fc = clone_nif_subtree(face_source);
+    if (!fc || fc == face_source) {
+        FW_ERR("[face-clone] %s: clone returned %s — refusing to attach the "
+               "SOURCE node itself, that would rip it out of its own tree "
+               "(a NiNode has exactly one parent)",
+               why, fc ? "the source" : "null");
+        return false;
+    }
+
+    void* skel = fw::native::skin_rebind::get_cached_skeleton();
+    int sw = -2;
+    if (skel) {
+        sw = fw::native::skin_rebind::swap_skin_bones_to_skeleton(fc, skel);
+    }
+    if (sw <= 0) {
+        // Without a rebind the face is bound to bones absent from the ghost's
+        // tree and collapses invisibly. Measured: skin swap returned 0 before
+        // BSFaceGenNiNode was added to skin_rebind's container list, and the
+        // ghost rendered headless.
+        FW_WRN("[face-clone] %s: skin swap bound %d node(s) — the face would "
+               "collapse. Leaving the previous head in place.", why, sw);
+        return false;
+    }
+
+    __try {
+        auto* fb = reinterpret_cast<char*>(fc);
+        _InterlockedIncrement(
+            reinterpret_cast<long*>(fb + NIAV_REFCOUNT_OFF));
+        g_r.attach_child_direct(head, fc, 0);
+
+        // Cull every OTHER child of head. This is what hides the loaded
+        // BaseMaleHead, its rear skull, and any face attached by a previous
+        // call. NOTE: cull the CHILDREN, never `head` itself — culling a node
+        // culls its whole subtree, and an earlier version set the flag on
+        // head and hid the very face it had just attached.
+        auto* hb = reinterpret_cast<char*>(head);
+        int culled = 0;
+        const std::uint16_t hc = *reinterpret_cast<std::uint16_t*>(
+            hb + NINODE_CHILDREN_CNT_OFF);
+        void** hk = *reinterpret_cast<void***>(hb + NINODE_CHILDREN_PTR_OFF);
+        if (hk && hc > 0 && hc <= 256) {
+            for (std::uint16_t i = 0; i < hc; ++i) {
+                void* kid = hk[i];
+                if (!kid || kid == fc) continue;
+                auto* kf = reinterpret_cast<std::uint64_t*>(
+                    reinterpret_cast<char*>(kid) + NIAV_FLAGS_OFF);
+                *kf |= NIAV_FLAG_APP_CULLED;
+                ++culled;
+            }
+        }
+
+        // Drop the neck meatcap the source carries. It is dismemberment
+        // geometry a live actor does not show, and the ghost body already
+        // provides its neck. (It is NOT the cause of the clavicle seam — that
+        // was measured separately and remains open.)
+        int gore = 0;
+        const std::uint16_t fcn = *reinterpret_cast<std::uint16_t*>(
+            fb + NINODE_CHILDREN_CNT_OFF);
+        void** fk = *reinterpret_cast<void***>(
+            fb + NINODE_CHILDREN_PTR_OFF);
+        if (fk && fcn > 0 && fcn <= 64) {
+            for (std::uint16_t i = 0; i < fcn; ++i) {
+                void* kid = fk[i];
+                if (!kid) continue;
+                const char* nm = try_read_ni_name(kid);
+                if (!nm || !*nm) continue;
+                if (!std::strstr(nm, "NeckGore") &&
+                    !std::strstr(nm, "neckgore")) continue;
+                auto* kf = reinterpret_cast<std::uint64_t*>(
+                    reinterpret_cast<char*>(kid) + NIAV_FLAGS_OFF);
+                *kf |= NIAV_FLAG_APP_CULLED;
+                ++gore;
+            }
+        }
+
+        FW_LOG("[face-clone] %s: %p -> %p, skin swap=%d, attached under head "
+               "%p, %d sibling(s) culled, %d meatcap(s) dropped",
+               why, face_source, fc, sw, head, culled, gore);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_ERR("[face-clone] %s: SEH during attach/cull", why);
+        return false;
+    }
 }
 
 // --- M2.2 API --------------------------------------------------------------
@@ -5047,7 +5388,25 @@ static bool seh_niav_set_flag(void* node, std::uint64_t mask, bool set) {
 // VALID and writes go to OUR body, not random pool memory. Re-enabling
 // the actual flag flip so the ghost body is hidden under armor (otherwise
 // we get the user-reported "body compenetra con vault suit").
-constexpr bool BODY_CULL_DRY_RUN = false;
+// 2026-08-08 — turned into a RUNTIME switch (`body_cull` in fw_config.ini,
+// default true = flag actually flipped, i.e. today's shipping behaviour).
+//
+// Why runtime: the A/B above is the only way to separate "our cull hides the
+// player's body" from "something else does", and as a constexpr it cost a
+// full rebuild per attempt. It is now one line in the ini.
+//
+// READ THIS BEFORE BLAMING IT FOR A CRASH: dry-run does strictly LESS work —
+// it logs instead of writing a flag. It cannot introduce a crash. What it
+// DOES cost is visual: with the cull off, a peer's ghost body shows through
+// body armour ("body compenetra con vault suit"), which is exactly the
+// symptom re-enabling the flip was meant to fix. So the honest trade is
+// "player's body may vanish" against "ghost's body pokes through armour".
+//
+// And the A/B is weaker than it looks: it was already run once (see above)
+// and the symptom PERSISTED, which is evidence against this cull being the
+// cause. That run predates the deep-clone work, so repeating it is still
+// worth something — but do not expect it to close the bug on its own.
+std::atomic<bool> g_body_cull_enabled{true};
 
 static int apply_body_cull(bool culled) {
     void* primary = nullptr;
@@ -5056,14 +5415,16 @@ static int apply_body_cull(bool culled) {
         if (!g_ghost_body_geoms.empty()) primary = g_ghost_body_geoms[0];
     }
     if (!primary) return 0;
-    if constexpr (BODY_CULL_DRY_RUN) {
+    if (!g_body_cull_enabled.load(std::memory_order_relaxed)) {
         FW_LOG("[body-cull-dryrun] WOULD %s NIAV_FLAG_APP_CULLED on body=%p "
-               "(NIF-cache-sharing diagnosis — flag NOT actually flipped)",
+               "(body_cull=false — flag NOT flipped. If the player's own body "
+               "stops vanishing on unequip, this cull was the cause; if it "
+               "still vanishes, it is not, and the ghost body now shows "
+               "through armour for nothing)",
                culled ? "set" : "clear", primary);
         return 1;  // pretend success so call-site logs ACQUIRED/RELEASED
-    } else {
-        return seh_niav_set_flag(primary, NIAV_FLAG_APP_CULLED, culled) ? 1 : 0;
     }
+    return seh_niav_set_flag(primary, NIAV_FLAG_APP_CULLED, culled) ? 1 : 0;
 }
 
 // Register a slot-3 BODY armor as a body-cull contributor for `peer_id`.
@@ -13108,11 +13469,43 @@ void on_inject_message() {
             body_x = player_pos[0];
             body_y = player_pos[1];
             body_z = player_pos[2] + kBodyZOffset;
-            FW_LOG("[native] body spawn pos from LOCAL player (no remote snap yet): "
-                   "local_pos=(%.1f,%.1f,%.1f) body_pos=(%.1f,%.1f,%.1f) — "
-                   "ghost body will overlap local player (test mode)",
-                   player_pos[0], player_pos[1], player_pos[2],
-                   body_x, body_y, body_z);
+            // WHILE THE CHARACTER IS BEING CREATED, use the staged ORIGIN
+            // instead of where the player actually is.
+            //
+            // This branch is the single-client test fallback: with no peer to
+            // mirror it puts the ghost body on top of the local player, which is
+            // exactly what its own log line says. That is harmless in an ordinary
+            // session and fatal during the creation ritual, because the ritual
+            // teleports the player into the sky and parks a camera half a metre
+            // from their face — so the ghost spawns squarely between the two, and
+            // what fills the screen is a bare ghost back rather than the face
+            // being edited. It looked like the camera had rotated somewhere
+            // strange; it had not moved at all.
+            //
+            // The origin is not an arbitrary alternative, it is the CONSISTENT
+            // one: report_pos already tells peers the origin rather than the
+            // staged altitude, precisely so their ghosts of us stay on the ground
+            // during creation. This makes the locally-mirrored ghost agree with
+            // what every remote client is being told.
+            float origin[3] = {};
+            if (fw::native::chargen_stage::report_pos(origin)) {
+                body_x = origin[0];
+                body_y = origin[1];
+                body_z = origin[2] + kBodyZOffset;
+                FW_LOG("[native] body spawn pos from the STAGED ORIGIN (no remote "
+                       "snap, and the character editor is open): "
+                       "origin=(%.1f,%.1f,%.1f) body_pos=(%.1f,%.1f,%.1f) - the "
+                       "player is up at z=%.1f being created, so the ghost stays "
+                       "on the ground and out of the camera",
+                       origin[0], origin[1], origin[2],
+                       body_x, body_y, body_z, player_pos[2]);
+            } else {
+                FW_LOG("[native] body spawn pos from LOCAL player (no remote snap "
+                       "yet): local_pos=(%.1f,%.1f,%.1f) body_pos=(%.1f,%.1f,%.1f) "
+                       "- ghost body will overlap local player (test mode)",
+                       player_pos[0], player_pos[1], player_pos[2],
+                       body_x, body_y, body_z);
+            }
         } else {
             FW_WRN("[native] player singleton null and no remote snap — "
                    "spawning body at origin as last-resort fallback");
@@ -13172,5 +13565,33 @@ void shutdown() {
     detach_debug_cube();   // M2.2 — detach cube first (no dependencies)
     detach_debug_node();   // M1   — detach canary NiNode
 }
+
+bool redress_ghost_face() {
+    if (!fw::native::anatomy_mirror::clone_enabled()) return false;
+    void* head = g_injected_head.load(std::memory_order_acquire);
+    if (!head) {
+        // The ghost has not been assembled yet. Not a failure: when it is, the
+        // injector picks the master up itself.
+        return false;
+    }
+    char peer[24] = {};
+    void* face = fw::native::face_cache::any_master(peer, sizeof(peer));
+    if (!face) return false;
+
+    FW_LOG("[face-clone] re-dressing the ghost from peer '%s' master %p "
+           "(it had dressed itself before this existed)", peer, face);
+    return ghost_dress_face(face, head, "REDRESS from peer master");
+}
+
+void set_body_cull_enabled(bool on) {
+    g_body_cull_enabled.store(on, std::memory_order_relaxed);
+    if (!on) {
+        FW_WRN("[body-cull] DISABLED by config (body_cull=false). The ghost's "
+               "body will show through armour. This is the A/B for the "
+               "player's-body-vanishes-on-unequip bug — see the note at "
+               "apply_body_cull.");
+    }
+}
+
 
 } // namespace fw::native

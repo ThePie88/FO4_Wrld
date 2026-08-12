@@ -9,6 +9,8 @@
 #include <thread>
 
 #include "../log.h"
+#include "../native/chargen_dump.h"
+#include "../native/chargen_stage.h"   // report the origin while staged
 #include "../offsets.h"
 #include "../net/client.h"
 #include "../net/protocol.h"
@@ -50,6 +52,31 @@ void poll_loop(std::uintptr_t module_base) {
 
     while (!g_stop.load(std::memory_order_relaxed)) {
         Sleep(POLL_INTERVAL_MS);
+
+        // 2026-08-06 — character-creation catalogue driver. It sits ABOVE
+        // the player-validity gates below on purpose: the catalogue has to
+        // be written at the main menu, where there is no player at all.
+        //
+        // Two earlier drivers were wrong, both silently. The WndProc
+        // subclass is installed only by the auto-load worker, so a session
+        // with `auto_load_save` empty — which is exactly what a capture
+        // session needs, since the main menu must appear — never ran it.
+        // Present was worse: it is never hooked, Strada A having been
+        // dormant since 2026-04-23. This thread is started unconditionally
+        // at boot and ticks every 50 ms for the life of the process.
+        //
+        // Costs one relaxed atomic load per tick when the dump is off.
+        if (fw::native::chargen_dump::enabled()) {
+            static DWORD s_armed_ms = GetTickCount();
+            static DWORD s_last_try = 0;
+            const DWORD  now        = GetTickCount();
+            // Stay out of the master-file load, then retry at 1 Hz until the
+            // form arrays hold something. Disarms itself after one success.
+            if (now - s_armed_ms > 15000 && now - s_last_try >= 1000) {
+                s_last_try = now;
+                fw::native::chargen_dump::maybe_dump_catalogue(module_base);
+            }
+        }
 
         __try {
             void* player = safe_read<void*>(singleton_slot, nullptr);
@@ -103,7 +130,18 @@ void poll_loop(std::uintptr_t module_base) {
             {
                 using namespace std::chrono;
                 fw::net::PosStatePayload p{};
-                p.x = pos.x; p.y = pos.y; p.z = pos.z;
+                // While the player is staged for character creation they are
+                // parked far off the ground, and sending that would make every
+                // peer's ghost of us fly up too. Report the ORIGIN instead —
+                // where we will actually be when the ritual ends. Not silence:
+                // the server refreshes liveness on any frame so silence would be
+                // safe, but the origin is truthful rather than merely quiet.
+                float staged_xyz[3] = {};
+                const bool staged =
+                    fw::native::chargen_stage::report_pos(staged_xyz);
+                p.x = staged ? staged_xyz[0] : pos.x;
+                p.y = staged ? staged_xyz[1] : pos.y;
+                p.z = staged ? staged_xyz[2] : pos.z;
                 p.rx = rot.x; p.ry = rot.y; p.rz = rot.z;
                 p.timestamp_ms = duration_cast<milliseconds>(
                     system_clock::now().time_since_epoch()).count();
@@ -125,9 +163,21 @@ void poll_loop(std::uintptr_t module_base) {
                 (now - last_log_ms) >= LOG_THROTTLE_MS;
 
             if (moved && throttled_ok) {
-                FW_LOG("[pos] pos=(%.1f, %.1f, %.1f) d=%.1f  reads=%llu",
+                // While staged the value we SEND is the origin, not this. Show both,
+                // or the log silently reads as if peers were told the sky.
+                if (fw::native::chargen_stage::staged()) {
+                    float rep[3] = {};
+                    (void)fw::native::chargen_stage::report_pos(rep);
+                    FW_LOG("[pos] pos=(%.1f, %.1f, %.1f) d=%.1f  reads=%llu"
+                           "  STAGED, reported=(%.1f, %.1f, %.1f)",
+                       pos.x, pos.y, pos.z, dist,
+                       static_cast<unsigned long long>(reads_valid),
+                           rep[0], rep[1], rep[2]);
+                } else {
+                    FW_LOG("[pos] pos=(%.1f, %.1f, %.1f) d=%.1f  reads=%llu",
                        pos.x, pos.y, pos.z, dist,
                        static_cast<unsigned long long>(reads_valid));
+                }
                 last = pos;
                 has_last = true;
                 last_log_ms = now;

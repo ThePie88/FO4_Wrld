@@ -35,6 +35,7 @@
 
 #include "../hook_manager.h"
 #include "../log.h"
+#include "chargen_dump.h"   // 2026-08-06: catalogue capture (off in normal play)
 #include "ni_offsets.h"
 #include "weapon_capture.h"  // M9.w4 PROPER (v0.4.2+, Path NIF-CAPTURE)
 
@@ -153,6 +154,16 @@ void* __fastcall detour_nif_load(
     // an equip window is currently armed. Filters internally to weapon
     // paths; cheap fast-out otherwise.
     fw::native::weapon_capture::record_loaded_path(buf);
+
+    // 2026-08-06 — character-creation catalogue capture. Off in normal play
+    // (one relaxed atomic read); when armed, every mesh the engine pulls is
+    // recorded with the node it produced, so a later walk can tie a rendered
+    // part back to the asset that made it.
+    if (fw::native::chargen_dump::enabled()) {
+        char det[1024];
+        std::snprintf(det, sizeof(det), "path=%s\tnode=%p", buf, node);
+        fw::native::chargen_dump::note("nif", det);
+    }
 
     // Insert under exclusive lock. Cap-and-clear on overflow.
     {

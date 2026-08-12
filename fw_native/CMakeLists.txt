@@ -11,9 +11,33 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # build as part of our DLL; no redistribution concern.
 add_subdirectory(deps/MinHook EXCLUDE_FROM_ALL)
 
+# Dear ImGui 1.92.8 — vendored in deps/imgui/, the widget layer for the
+# character editor. MIT (LICENSE.txt is kept alongside the sources, which
+# permissive licensing requires and which this project's AGPLv3 does not
+# conflict with). It has no CMakeLists of its own, so the sources compile
+# straight into our DLL like any other translation unit.
+#
+# The DEMO is deliberately not vendored: imgui_demo.cpp is 592 KB of sample
+# code with no production role. Neither are examples/, docs/ or misc/.
+#
+# Only the two backends this project can use are present — the D3D11 renderer
+# and the Win32 platform layer. Both fit what CHARGEN_PLAN §28 established:
+# the game's own device, context and live backbuffer RTV come from fixed
+# globals, and the window procedure is already subclassed.
+set(FW_IMGUI_DIR deps/imgui)
+set(FW_IMGUI_SOURCES
+    ${FW_IMGUI_DIR}/imgui.cpp
+    ${FW_IMGUI_DIR}/imgui_draw.cpp
+    ${FW_IMGUI_DIR}/imgui_tables.cpp
+    ${FW_IMGUI_DIR}/imgui_widgets.cpp
+    ${FW_IMGUI_DIR}/backends/imgui_impl_dx11.cpp
+    ${FW_IMGUI_DIR}/backends/imgui_impl_win32.cpp
+)
+
 # Proxy DLL. The Windows loader picks up `dxgi.dll` in the game root
 # BEFORE hitting C:\Windows\System32, so our file name must match exactly.
 add_library(fw_native SHARED
+    ${FW_IMGUI_SOURCES}
     src/dll_main.cpp
     src/proxy_exports.cpp
     src/log.cpp
@@ -67,7 +91,10 @@ add_library(fw_native SHARED
     src/net/client.cpp
     src/config.cpp
     src/engine/engine_calls.cpp
+    src/native/chargen_catalog.cpp
+    src/native/chargen_stage.cpp
     src/render/present_hook.cpp
+    src/render/editor_overlay.cpp
     src/render/triangle_render.cpp
     src/render/body_render.cpp      # Path A archived, compiled but not invoked
     src/render/dsv_capture.cpp      # Path A archived, compiled but not invoked
@@ -80,6 +107,13 @@ add_library(fw_native SHARED
     src/native/scene_walker.cpp     # Strada B M2.1: diagnostic scene graph walker
     src/native/skin_rebind.cpp      # M8P3 step 1: BSSkin::Instance diagnostic walker
     src/native/nif_path_cache.cpp   # M9 w4 witness pattern step 1: NiAVObject*→path cache
+    src/native/chargen_dump.cpp     # character-creation catalogue capture (opt-in)
+    src/native/anatomy_probe.cpp    # read-only walk of the local player's 3D (opt-in)
+    src/native/anatomy_mirror.cpp   # ghost wears the local player's face parts (opt-in)
+    src/native/chargen_selftest.cpp # one-shot: drive the engine's apply from our code
+    src/native/appearance_recipe.cpp # the recipe: read/serialise a character's identity
+    src/native/face_cache.cpp       # one built head per peer, kept warm
+    src/native/face_borrow.cpp      # build a peer's face by borrowing the local TESNPC
     src/native/weapon_witness.cpp   # M9 w4 witness pattern step 2: walker for player BipedAnim weapon subtree
     src/native/bsgeo_input_cache.cpp # M9 w4 Path B-alt-1: factory input cache (BSTriShape* → vertex/index)
     src/native/ni_alloc_tracker.cpp  # M9 w4 Path B-alt-2: pool allocator caller RIP capture
@@ -96,6 +130,9 @@ add_library(fw_native SHARED
 )
 
 target_link_libraries(fw_native PRIVATE minhook)
+target_include_directories(fw_native PRIVATE
+    ${FW_IMGUI_DIR}
+    ${FW_IMGUI_DIR}/backends)
 
 set_target_properties(fw_native PROPERTIES
     OUTPUT_NAME "dxgi"

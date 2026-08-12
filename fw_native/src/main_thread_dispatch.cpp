@@ -1799,6 +1799,10 @@ void note_main_thread_alive() noexcept {
     }
 }
 
+std::uint32_t main_thread_id() noexcept {
+    return g_mt_tid.load(std::memory_order_relaxed);
+}
+
 void drain_npc_owner_state_apply_queue() {
     std::deque<PendingNPCOwnerState> local;
     {

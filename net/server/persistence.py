@@ -103,6 +103,13 @@ def snapshot(state: ServerState, path: Path, *, pretty: bool = True) -> None:
             }
             for lk in state.all_locks()
         ],
+        # v20 — appearances, keyed by peer id. These MUST persist: a character
+        # is made once and then never again, so losing this map on a server
+        # restart would silently demote every player to the default model with
+        # no way for them to notice or fix it short of re-running the creator.
+        # Stored as the recipe line verbatim, which is also what the wire
+        # carries — a snapshot is therefore directly comparable with a capture.
+        "appearances": dict(state.all_appearances()),
     }
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -280,6 +287,20 @@ def load_into(state: ServerState, path: Path) -> int:
             locked=bool(lk.get("locked", True)),
             timestamp_ms=int(lk.get("timestamp_ms", 0)),
         )
+    # Restore appearances (v20+). Absent in older snapshots, which simply
+    # means nobody had a character yet. Skipped rather than repaired if the
+    # shape is wrong: a malformed recipe would render as a silently wrong
+    # character, which is worse than the default model.
+    appearance_skipped = 0
+    for peer_id, recipe in (data.get("appearances") or {}).items():
+        if not isinstance(peer_id, str) or not isinstance(recipe, str)                 or not peer_id or not recipe:
+            appearance_skipped += 1
+            continue
+        state.record_appearance(peer_id, recipe)
+    if appearance_skipped:
+        log.warning("snapshot %s: skipped %d malformed appearance entries",
+                    path, appearance_skipped)
+
     if lock_skipped:
         log.warning(
             "snapshot %s: skipped %d lock entries with missing/zero identity",

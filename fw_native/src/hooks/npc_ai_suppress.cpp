@@ -464,8 +464,14 @@ std::atomic<std::uint64_t> g_respawn_seen_ms{0};
 std::atomic<bool>          g_standdown_active{false};
 float g_death_pos[3] = {0.0f, 0.0f, 0.0f};   // main thread only
 
+// The player's health-modifier sum at the instant of death, for the SECOND
+// respawn detector. Sentinel -1e9 = unreadable; the detector then stays dark
+// and the ceiling is the only fallback, which is the safe direction.
+std::atomic<float> g_death_hp_sum{-1.0e9f};
+
 // Forward decl: defined further down, next to the other engine readers.
 static bool read_local_player_pos(float* out_x, float* out_y, float* out_z) noexcept;
+static bool read_local_player_hp_sum(float* out_sum) noexcept;
 
 }  // namespace  (reopened below; other translation units need the predicate)
 
@@ -523,6 +529,11 @@ void note_local_player_death() noexcept {
     // back to the hard ceiling, which is the safe direction.
     if (!read_local_player_pos(&g_death_pos[0], &g_death_pos[1], &g_death_pos[2])) {
         g_death_pos[0] = g_death_pos[1] = g_death_pos[2] = 0.0f;
+    }
+    {
+        float hp = -1.0e9f;
+        if (!read_local_player_hp_sum(&hp)) hp = -1.0e9f;
+        g_death_hp_sum.store(hp, std::memory_order_relaxed);
     }
     FW_LOG("[npc-ai-suppress] local player died — stand-down OPEN, holding "
            "until the respawn teleport + %llums settle (ceiling %llums)",
@@ -635,6 +646,47 @@ void update_death_standdown() noexcept {
                    "death (jump %.0f units) — holding stand-down %llums more",
                    static_cast<unsigned long long>(now - died),
                    static_cast<double>(std::sqrt(d2)),
+                   static_cast<unsigned long long>(kSettleAfterRespawnMs));
+            return;
+        }
+    }
+
+    // SECOND RESPAWN DETECTOR — health restoration. Added 2026-08-11, after a
+    // two-client session finally died NEXT TO the spawn instead of 21k units
+    // away at the raider camp: the respawn jump came in under kRespawnJumpUnits,
+    // the detector above stayed dark, and the stand-down ran to its 90 s
+    // ceiling — during which every peer ghost this client renders is frozen
+    // (the scene_inject gates suppress all ghost writes). The freeze the user
+    // reported as "the second player to die stays frozen" was exactly this:
+    // the FIRST dier's unreleased window, watched from inside it.
+    //
+    // Distance was always a proxy. The event that actually defines a respawn
+    // is the reload restoring the player's health, and the health-modifier
+    // cell (Actor+0x444, three floats, sum == 0 at full) has the property that
+    // makes it a clean signal: a corpse only ever gets MORE negative. At death
+    // the sum is at its floor (recorded above); any later rise of
+    // kRespawnHpRecovery or more cannot be healing — nothing heals the dead —
+    // so it is the reload. Same-cell respawns produce no position jump, but
+    // they restore health like any other.
+    //
+    // The 2.5 s arming delay keeps the detector from reading the pre-death
+    // value in the same frame cluster as the kill dispatch. The jump detector
+    // above stays: whichever fires first wins, and the ceiling remains the
+    // backstop for the day both go dark.
+    {
+        constexpr std::uint64_t kHpDetectorArmMs   = 2500;
+        constexpr float         kRespawnHpRecovery = 25.0f;
+        const float at_death = g_death_hp_sum.load(std::memory_order_relaxed);
+        float hp_now = 0.0f;
+        if (at_death > -1.0e8f && (now - died) >= kHpDetectorArmMs &&
+            read_local_player_hp_sum(&hp_now) &&
+            hp_now > at_death + kRespawnHpRecovery) {
+            g_respawn_seen_ms.store(now, std::memory_order_relaxed);
+            FW_LOG("[npc-ai-suppress] respawn detected by HEALTH RESTORE "
+                   "%llums after death (hp-sum %.1f -> %.1f, no position jump "
+                   "needed - same-cell respawn) - holding stand-down %llums "
+                   "more", static_cast<unsigned long long>(now - died),
+                   at_death, hp_now,
                    static_cast<unsigned long long>(kSettleAfterRespawnMs));
             return;
         }
@@ -1051,6 +1103,29 @@ static bool read_local_player_pos(float* out_x, float* out_y,
         *out_x = p[0];
         *out_y = p[1];
         *out_z = p[2];
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// The health-modifier sum at Actor+0x444 — the same three floats
+// npc_hp_probe's safe_health_sum reads, re-implemented here because that one
+// is file-local. Zero at full health, monotonically more negative as damage
+// lands, floored at death.
+static bool read_local_player_hp_sum(float* out_sum) noexcept {
+    const std::uintptr_t base = g_module_base.load(std::memory_order_relaxed);
+    if (!base || !out_sum) return false;
+    __try {
+        void* player = *reinterpret_cast<void* const*>(
+            base + fw::offsets::PLAYER_SINGLETON_RVA);
+        if (!player) return false;
+        const float* c = reinterpret_cast<const float*>(
+            reinterpret_cast<const std::uint8_t*>(player)
+            + fw::offsets::ACTOR_HEALTH_CELL_OFF);
+        const float sum = c[0] + c[1] + c[2];
+        if (!(sum > -1.0e7f && sum < 1.0e7f)) return false;   // NaN/garbage
+        *out_sum = sum;
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;

@@ -5,6 +5,183 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## Character creation v1 (2026-08-12) — v0.7.0
+
+Tag `v0.7.0`, wire proto v21. First iteration of the character-creation
+system, deliberately unfinished: face and hair are in, morph sculpting, body
+build and the sex switch are not. Fully custom and still engine-native: no
+ESP, no Creation Kit, no external UI process. Also in this release: the
+appearance became a server-held identity that survives restarts, the ghost
+replication chain was fixed end to end (four separate sharing defects), and a
+latent post-death freeze that predates this work was diagnosed and closed.
+
+### The editor
+
+An in-game panel drawn with ImGui 1.92.8 (vendored under `fw_native/deps/`,
+not committed, same policy as MinHook) on the game's OWN D3D11 device,
+context and backbuffer RTV, resolved from the renderer globals and hooked at
+`IDXGISwapChain::Present`. The overlay draws only on the main thread; one of
+Present's callers is the JobListManager loading-screen thread, and drawing
+there is a race. Five tabs: Face (eyes, brows, teeth), Hair (style, colour,
+facial hair), Skin (tone, blemishes), Marks (war paint, tattoos, damage,
+grime), Preset (labelled WIP). The panel is docked to the right because the
+staging camera leaves that side of the screen free. ImGui itself is a
+placeholder for the final UI, kept because it costs nothing to replace.
+
+Input while the panel is open is captured at three levels, each one learned
+from a live failure: `WM_INPUT` is swallowed in the WndProc subclass before
+the game's raw-input reader sees it (the engine's own input-dispatch byte is
+a lost race, its modal pumps set it back every frame); the MenuCursor
+refcount keeps the engine from re-hiding the cursor; and `ShowCursor` calls
+are counted and unwound exactly, because it is a counter and not a flag.
+Alt+F4, window activation and every message that lets the user leave are
+deliberately never touched.
+
+### The ritual
+
+Character creation is a forced first-entry rite. When the server holds no
+appearance for the joining identity, WELCOME carries `chargen_required` (the
+payload grew to 10 bytes, part of the v21 bump) and the client raises two
+flags, not one: `editing` (the panel is open) and `chargen_pending` (no
+character exists yet). The distinction is load-bearing. An earlier build had
+only the first flag, and closing the panel by any route published whatever
+half-finished face the player wore at that moment; cycling the toggle key to
+fix a camera quietly completed the whole ritual. Only CONFIRM clears the
+pending flag, and nothing is published while it stands.
+
+The staging itself: the player teleports 10,000 units up with collision held
+off every frame (the same flag the `tcl` console command flips; something in
+the engine re-enables it continuously and the winner is whoever writes
+last), a drift corrector puts the player back when the slow sink exceeds 60
+units, and the camera is the engine's own AutoVanityState with its orbit
+angle pinned every frame. The free camera was the first attempt and it was
+the wrong camera by construction: `tfc` detaches the camera and renders no
+player at all, which took four quarter-turns of empty sky to believe. Auto
+vanity orbits the character and renders the body; the orbit angle, zoom and
+the third-person settle window (the body only streams in while third person
+is actually current) were all calibrated live with temporary keys. While the
+ritual is pending the server records the peer's position but does not relay
+it, so nobody watches a nude default mannequin hanging in the sky.
+
+Every piece of the staging is driven by the flag, not by the key that
+happens to toggle it. Two bugs came from breaking that rule (staging and
+input capture both lived in the F2 handler, so a server-forced ritual opened
+the panel with the player still on the ground and the mouse still aiming),
+and one rule closed both.
+
+### Catalogs from live data, not from an asset
+
+Everything the panel offers is walked out of `TESDataHandler` and the race's
+own `CharGenData` at runtime, so it cannot go stale against the game:
+
+- Head parts: 420 HDPT records filtered with the vanilla menu's own four
+  tests (exclusive type, playable, sex bit, extra-part exclusion). Comes out
+  at 48 male hairstyles, 20 eyes, 43 beards, 3 teeth.
+- Hair colours: the 166 CLFM records contain only 32 real hair colours; the
+  flags word at `+0x40` separates them (`Playable|RemappingIndex`) from the
+  134 tint palette swatches. Unfiltered, the list showed three different
+  entries all named "Dark Brown" that did three different things.
+- Tints: race + 0x698 chain (slot, then container, two dereferences), 9
+  groups, 143 templates, 546 palette colours for the male character. Group
+  order differs per sex, so groups are looked up by name, never by index.
+  Brows are single-select; the exclusivity lives in the vanilla menu, not in
+  the data.
+
+### Editing through the engine's own calls
+
+A click swaps a head part through the remove/add pair with extras expanded,
+or applies a tint. Tints taught three lessons, each one a live defect first:
+the player has TWO tint arrays (the TESNPC record and the actor-side array
+the compositor actually reads for the player; the menu's own mirror call
+`sub_140D759E0` updates the second), palette entries at intensity 0 are the
+engine's OFF state and the "None" swatch means remove, and a tint apply is
+only reproductive if everything the recipe does not carry is cleared by
+applying each template's own defaults, because the delete rule compares
+value and colour against those defaults with exact float equality. Clearing
+with zero left invisible husk entries that broke recipe comparison and
+poisoned the restore verification.
+
+### The appearance is a server-held identity
+
+The recipe (race, sex, hair colour, head parts, tints; line format v2;
+`MAX_RECIPE_BYTES` 1280) is stored per identity on the server and survives
+restarts through the snapshot. The save file is just a vessel: at join the
+bootstrap now includes the client's OWN recipe, the client adopts it onto
+the local player before publishing anything, and a ten-second first-publish
+grace covers the window. Before this, a client that joined read its freshly
+loaded save (the default look) and published it, silently overwriting the
+stored character for everyone; both test characters were lost to exactly
+that in one join. The old side-B test aid that recoloured hair to Golden
+Blond at startup was retired for the same reason: it now would corrupt the
+authoritative record it was invented before.
+
+### Making the ghost wear it
+
+The borrow pipeline (apply the peer's recipe to the local player, let the
+engine build the head, clone it, restore) worked on paper and produced
+ghosts wearing the local player's face in practice. Four distinct defects,
+peeled in order:
+
+1. Additive tint applies broke the restore step and wedged the borrow after
+   one attempt (fixed by the reproductive clear above).
+2. The husk entries broke the restore verification even when the restore
+   was visually correct.
+3. The composited face textures (diffuse, normals, smoothspec) live in a
+   GLOBAL render-target pool, slots 16/17/18, and every head rebuild
+   repaints them in place; a cloned face referencing them tracks the local
+   player forever. The clone now duplicates all three into private textures
+   using the engine's own CopyResource-based duplicator, so each ghost owns
+   its face. Confirmed by an 8-agent decompilation workflow that mapped the
+   face material layout (`BSLightingShaderMaterialFace`, the composite at
+   `+0xC0`), the compositor state machine, and the clone's sharing
+   semantics.
+4. The body is a separate NIF and its skin colour was copied from the local
+   player's live body materials, which the borrow never rebuilds. The engine
+   pair `sub_1406555D0` / `sub_1406EED30` now computes the colour from the
+   NPC record being worn and paints the ghost body subtree with it, with a
+   stash handshake because the borrow and the body inject complete in either
+   order (measured 11 and 16 seconds apart, borrow first).
+
+Verified live with two clients: both characters correct on both screens,
+face and body, extras and skin tone, after create, after rejoin (adoption),
+and after death and respawn.
+
+### The post-death ghost freeze
+
+Found during these tests and initially mistaken for a chargen regression:
+after two players died in sequence, the second one's ghost stayed frozen at
+its death spot on the survivor's screen. The death stand-down (which
+suppresses all ghost writes while the local player is dead, an AV guard
+around the respawn reload) released only on a 5,000-unit position jump from
+the death position. Every earlier death test died at the Concord raider camp,
+21,000 units from the spawn; these tests died next to it, the jump never
+fired, and the first dier's client held its stand-down to the 90-second
+ceiling, freezing every ghost it rendered. The release is now driven by a
+second detector: the health-modifier sum at `Actor+0x444` recorded at death
+can only fall on a corpse, so any rise of 25 or more is the respawn reload
+restoring health, position jump or not. The jump detector and the ceiling
+remain as fallbacks. Known residual, deliberately left: the server's
+combat-dead flag still releases on an 8,000-unit jump or its own 25-second
+cap, so same-cell respawns can still cause up to 25 seconds of NPC-election
+churn. Ownership only; ghost relay is unaffected.
+
+### Protocol
+
+Wire v21: `WelcomePayload` 8 → 10 bytes (`chargen_required` + pad),
+`MAX_RECIPE_BYTES` 1280 (bounded by the 1400-byte datagram budget), recipe
+line format v2 with `tints=ID:PCT:RGB` triplets, v1 lines still parse since
+the server persists them across restarts.
+
+### Open
+
+Morph sculpting (the keyed-float map at `TESNPC+0x2F8` is undecoded), body
+build (stubbed by decision, the body is always dressed), the sex switch
+(catalog, skeleton and recipe all change together), the Markings group
+placement, the per-peer ghost cache for more than two clients, and the final
+UI to replace the ImGui placeholder.
+
+---
+
 ## First-person ghost animation (2026-08-06) — v0.6.5
 
 Tag `v0.6.5`. No protocol change. A peer playing in first person no longer

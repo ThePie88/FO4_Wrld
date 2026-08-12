@@ -20,6 +20,9 @@
 #include "../hooks/hp_bar_hook.h"      // v18: shared-pool HP → enemy bar
 #include "../main_thread_dispatch.h"
 #include "../native/scene_inject.h"
+#include "../native/face_cache.h"   // v20: land peer recipes off the wire
+#include "../native/appearance_recipe.h"  // v21: the entry ritual raises the
+                                          // editing flag from WELCOME
 
 namespace fw::net {
 
@@ -290,6 +293,37 @@ void Client::enqueue_global_var_set(std::uint32_t global_form_id, double value) 
         std::lock_guard lk(queue_mutex_);
         queue_.push_back(std::move(q));
     }
+}
+
+void Client::enqueue_appearance_set(const std::string& recipe) {
+    if (!connected_.load() || stopping_.load()) return;
+    if (recipe.empty()) return;
+    // Refuse rather than truncate. A truncated recipe would parse into a
+    // DIFFERENT character on the receiving side and render as a silently
+    // wrong face — much harder to notice than a dropped message.
+    if (recipe.size() > MAX_RECIPE_BYTES) {
+        FW_WRN("[appearance] not sending: recipe is %zu bytes, limit is %zu",
+               recipe.size(), MAX_RECIPE_BYTES);
+        return;
+    }
+
+    AppearanceSetHeader h{};
+    h.recipe_len = static_cast<std::uint16_t>(recipe.size());
+    h.reserved   = 0;
+
+    QueuedSend q;
+    q.msg_type = MessageType::APPEARANCE_SET;
+    q.reliable = true;
+    q.payload_bytes.resize(sizeof(h) + recipe.size());
+    std::memcpy(q.payload_bytes.data(), &h, sizeof(h));
+    std::memcpy(q.payload_bytes.data() + sizeof(h), recipe.data(),
+                recipe.size());
+    {
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+    FW_LOG("[appearance] queued APPEARANCE_SET, %zu bytes of recipe: %s",
+           recipe.size(), recipe.c_str());
 }
 
 void Client::enqueue_door_op(std::uint32_t door_form_id,
@@ -1157,9 +1191,37 @@ bool Client::do_handshake() {
             // payloads can be compared byte-for-byte against the
             // 16 B FixedClientId encoding the server uses on the wire.
             fw::ownership::set_local_peer_id(cfg_.client_id);
-            FW_LOG("net: WELCOME session_id=%u server=%u.%u tick=%uHz",
+            FW_LOG("net: WELCOME session_id=%u server=%u.%u tick=%uHz "
+                   "chargen_required=%u",
                    w.session_id, w.server_version_major, w.server_version_minor,
-                   w.tick_rate_hz);
+                   w.tick_rate_hz, w.chargen_required);
+            // v21 — THE ENTRY RITUAL.
+            //
+            // The server says this identity has no stored appearance and it
+            // wants one. Hold the appearance machinery: nothing is published
+            // and no face is borrowed until the character has been created, so
+            // an uncreated player is never broadcast to anyone.
+            //
+            // Raised from the NETWORK thread, which is safe because the flag is
+            // an atomic and both readers consult it from the main-thread tick.
+            //
+            // Lowering it is the editor's job. Until the editor exists that is
+            // the configured `editor_key`, which makes the ritual testable and
+            // — more to the point — escapable.
+            if (w.chargen_required) {
+                // BOTH flags, and they are not redundant. set_editing raises the
+                // panel and is lowered by whatever closes it, including the
+                // toggle key; set_chargen_pending records that there is no
+                // character yet and is lowered only by CONFIRM. Raising only the
+                // first is what let a stray toggle publish an unfinished
+                // character and end the ritual by accident.
+                fw::native::appearance::set_chargen_pending(true);
+                fw::native::appearance::set_editing(true);
+                FW_LOG("[editor] the server has no character for this identity "
+                       "and requires one: appearance publishing and face "
+                       "borrows are held until it is CONFIRMED - closing the "
+                       "panel any other way leaves the ritual outstanding");
+            }
             return true;
         }
         // Other messages during handshake are unusual but OK; just dispatch.
@@ -1542,6 +1604,50 @@ void Client::dispatch(const Delivered& d) {
         // Direct memory write — safe from any thread with SEH cage.
         fw::engine::apply_global_var(
             b.global_form_id, static_cast<float>(b.value));
+        break;
+    }
+
+    case static_cast<std::uint16_t>(MessageType::APPEARANCE_BCAST): {
+        // v20 — peer X's appearance recipe. Stored, not applied: the ghost
+        // that needs it may not exist yet (appearances bootstrap at join,
+        // ghosts appear when a peer comes into range), and building a face
+        // requires the main thread. This runs on the network thread, so its
+        // only job is to land the data somewhere the injector can find it.
+        if (d.payload.size() < sizeof(AppearanceBroadcastHeader)) {
+            FW_WRN("[appearance-rx] APPEARANCE_BCAST too short (%zu bytes)",
+                   d.payload.size());
+            break;
+        }
+        AppearanceBroadcastHeader h{};
+        std::memcpy(&h, d.payload.data(), sizeof(h));
+        const std::size_t want = sizeof(h) + h.recipe_len;
+        if (h.recipe_len == 0 || h.recipe_len > MAX_RECIPE_BYTES ||
+            d.payload.size() < want) {
+            // Refuse rather than take what arrived: a truncated recipe parses
+            // into a DIFFERENT character and would render as a silently wrong
+            // face, which is far harder to notice than a dropped message.
+            FW_WRN("[appearance-rx] APPEARANCE_BCAST from %s malformed — "
+                   "recipe_len=%u, payload=%zu (need %zu). Dropped.",
+                   h.peer_id.get().c_str(), h.recipe_len, d.payload.size(),
+                   want);
+            break;
+        }
+        const std::string peer = h.peer_id.get();
+        const std::string recipe(
+            reinterpret_cast<const char*>(d.payload.data()) + sizeof(h),
+            h.recipe_len);
+        // OUR OWN recipe coming back is not an echo, it is the AUTHORITATIVE
+        // character: the server stores appearances per identity and the save
+        // file is just a vessel that loads the default look. This goes to the
+        // local player, not to the peer cache -- a self entry in the cache
+        // would only feed the borrow's identical-recipe short circuit.
+        if (peer == cfg_.client_id) {
+            fw::native::appearance::adopt_authoritative(recipe);
+            break;
+        }
+        if (fw::native::face_cache::set_recipe(peer, recipe)) {
+            FW_LOG("[appearance-rx] '%s' -> %s", peer.c_str(), recipe.c_str());
+        }
         break;
     }
 

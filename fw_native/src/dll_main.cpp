@@ -19,12 +19,18 @@
 #include "config.h"
 #include "log.h"
 #include "audit.h"
+#include "native/chargen_dump.h"   // 2026-08-06: character-creation capture
+#include "native/anatomy_probe.h"  // 2026-08-07: read-only player 3D walk
+#include "native/anatomy_mirror.h" // 2026-08-07: ghost wears the player's face parts
+#include "native/chargen_selftest.h" // 2026-08-08: drive the engine's apply ourselves
+#include "native/face_borrow.h"      // 2026-08-08: build peer faces locally
 #include "version.h"
 #include "hook_manager.h"
 #include "hooks/install_all.h"
 #include "net/client.h"
 #include "engine/engine_calls.h"
 #include "render/present_hook.h"
+#include "native/chargen_stage.h"
 #include "render/body_render.h"
 #include "assets/fwn_loader.h"
 #include "ghost/actor_hijack.h"
@@ -60,6 +66,19 @@ DWORD WINAPI init_thread(LPVOID) {
     else if (cfg.log_level == "debug") lvl = fw::log::Level::Debug;
     fw::log::init((dir / L"fw_native.log").wstring(), lvl);
     fw::audit::init(dir.wstring());   // Build 69m mutation ledger
+    // 2026-08-06 — character-creation catalogue capture. Armed from the ini
+    // for one clean vanilla session; a no-op otherwise.
+    fw::native::chargen_dump::init(dir.wstring(), cfg.chargen_dump);
+    fw::native::anatomy_probe::init(dir.wstring(), cfg.anatomy_probe);
+    fw::native::anatomy_mirror::init(cfg.anatomy_mirror,
+                                    cfg.ghost_face_clone);
+    fw::native::set_body_cull_enabled(cfg.body_cull);
+    fw::native::face_borrow::arm_test_peer(cfg.face_borrow_test_hair);
+    fw::native::chargen_selftest::init(cfg.chargen_selftest,
+                                      cfg.chargen_selftest_delay);
+    fw::native::chargen_selftest::init_donor(cfg.chargen_donor);
+    fw::native::chargen_stage::init(
+        static_cast<float>(cfg.chargen_stage_z));
 
     const DWORD pid = GetCurrentProcessId();
     const HMODULE game = GetModuleHandleW(L"Fallout4.exe");
@@ -113,6 +132,20 @@ DWORD WINAPI init_thread(LPVOID) {
     // --- Install hooks ---
     const auto summary = fw::hooks::install_all(base, cfg);
     FW_LOG("hooks: %zu/5 installed", summary.success_count());
+
+    // --- Character editor overlay: the per-frame callback ---
+    //
+    // The same Present hook that carried Strada A, revived and narrowed to a
+    // frame callback. Its archived draw calls stay off (see present_hook.h);
+    // all this does today is count frames and resolve the game's own D3D11
+    // objects from fixed globals so the overlay can later draw into the game's
+    // live render target instead of owning one.
+    if (cfg.editor_overlay) {
+        if (!fw::render::init_present_hook(base)) {
+            FW_WRN("[render] editor overlay: Present hook init failed — the "
+                   "editor will have no surface to draw on");
+        }
+    }
 
     // --- STRADA A (custom D3D11) — DORMANT dal 2026-04-23 ---
     //

@@ -6,6 +6,34 @@ This project uses unconventional approaches in several critical areas (scene gra
 Fallout 4 1.11.191 next-gen — multiplayer mod (FoM-lite framework).
 Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 
+> **Status (2026-08-12):** **Character creation v1 (v0.7.0).** First
+> iteration of a fully custom in-game character creator, still engine-native:
+> no ESP, no Creation Kit, no external UI process. The panel is drawn on the
+> game's own D3D11 device from a Present hook and opens as a forced
+> first-entry ritual whenever the server holds no character for the joining
+> identity: the player is staged 10,000 units up under a pinned auto-vanity
+> camera (the free camera renders no player at all, learned the hard way),
+> input is captured at the WM_INPUT level, and CONFIRM is the only exit that
+> publishes. Everything the panel offers is walked out of live form data at
+> runtime: head parts filtered exactly like the vanilla menu, the 32 real
+> hair colours (the other 134 CLFM records are tint swatches), and the
+> race's own tint groups (brows, skin tones, face paint, tattoos, damage,
+> grime). Edits go through the engine's own apply pair per tint, both tint
+> arrays, plus a head rebuild. The appearance itself is now a server-held
+> identity: the recipe (parts + tints, wire v21) persists per player, is
+> adopted back onto the local player at every join (the save file is just a
+> vessel), and replicates onto the remote ghost with its composited face
+> textures snapshotted into private copies, since the engine repaints those
+> in place inside a global render-target pool shared by reference. Four
+> separate sharing defects had every ghost wearing the local player's face;
+> all four are closed. Also closed, found by dying next to the spawn: the
+> death stand-down never released on same-cell respawns and froze every peer
+> ghost for up to 90 s, because the respawn was detected as a position jump.
+> Release is now driven by the health restore instead. Not finished by
+> design: morph sculpting, body build and the sex switch are out for now,
+> and the ImGui panel is a placeholder for the final UI. See
+> [CHANGELOG.md](CHANGELOG.md).
+>
 > **Status (2026-08-06):** **First-person ghost animation (v0.6.5).** A peer
 > playing in first person appeared on the other screen as a V/T-pose mannequin
 > with contorted arms — a limitation carried for months, and the reason a
@@ -85,18 +113,6 @@ Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 > line, fsync per line), and the crouch channel had been silently dead on a
 > `WM_APP` id collision. Wire proto v18. See [CHANGELOG.md](CHANGELOG.md).
 >
-> **Status (2026-06-06):** **N3 shared HP — DONE; N4 player death — DONE.** The
-> shared-HP enemy bar is now LIVE on both clients — the non-owner's local Health
-> is driven to the combined server pool, so the vanilla enemy-health bar reads it
-> and repaints as EITHER client deals damage (not only when the watching client
-> shoots), and the aggro/first shot is counted instead of lost. A client's death
-> ragdolls + respawns at Sanctuary with the raiders re-aggroing the survivor. Two
-> removals made the bar land: `max = GetCurrent − cell` (the AVO GetMax leaf
-> mis-reads) and dropping the client InCombat capture gate (raiders read
-> InCombat=0 on the mirror). The bar is GREEN (non-hostile color — doubles as a
-> "this client has no aggro" tell); a RED color is TODO. N1 (raider pos/pose) is
-> REOPENED partial for small anim+position hardening at first-contact +
-> post-mortem. Wire proto v18. See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -122,7 +138,7 @@ in real time).
 │  authoritative state · identity-keyed (base, cell) · validator         │
 │  reliable channel (SACK + retransmit) · JSON snapshot persistence      │
 └─────────────────────────┬──────────────────────────────────────────────┘
-                          │ binary protocol v5 (44B POS_BCAST · 36B DOOR_BCAST)
+                          │ binary protocol v21 (44B POS_BCAST · reliable channel · appearance recipes)
             ┌─────────────┼─────────────┐
             │             │             │
        ┌────▼─────┐  ┌────▼─────┐  ┌────▼─────┐
@@ -134,6 +150,7 @@ in real time).
        Each client:
        - 1 LOCAL player (vanilla FO4 controls, full anim)
        - N GHOST bodies (1 per remote peer, native scene graph)
+       - in-game character creator (ImGui on the game's own device)
 ```
 
 ## Repository layout
@@ -144,6 +161,8 @@ in real time).
 | `fw_native/src/native/` | Strada B native injection (NIF loader, scene graph, ghost body) |
 | `fw_native/src/hooks/` | MinHook detours (kill, container, pos poll, main_menu, worldstate) |
 | `fw_native/src/net/` | C++ port of Python protocol (byte-identical via static_assert) |
+| `fw_native/src/render/` | Present hook on the game's own swapchain + ImGui character-creation overlay |
+| `fw_native/deps/` | Vendored third-party deps (MinHook, Dear ImGui). Fetched locally, never committed |
 | `fw_native/docs/` | Internal docs + tools list |
 | `launcher/` | Python orchestrator (FO4 INI mgmt, side A/B startup, fw_config.ini) |
 | `fw_launcher/` | C++ launcher wrapper (`FoM.exe`) |
@@ -192,6 +211,7 @@ in real time).
 | ↳ **N2** NPC combat target + aggro + death sync (owner-driven threat table) | ✅ done (v0.6.0, 2026-06-01) — the Python server holds a threat table and elects the owner from whoever the raiders natively aggro (engine-native: noise / line of sight), with hysteresis anti-thrash; live aggro hand-off; bidirectional death-sync (corpse + ragdoll at the synced pos, either client's kill propagates). Scope: hostile raiders. **v0.6.3 fixed three defects that made ownership effectively immovable**: the engage signal was stamped once per NPC and decayed to zero forever (across 1,711 evaluations the challenger threat never exceeded 1.0, so only damage could move aggro — combat observes now refresh at 1.5 s); `Actor+0x380` is an ObjectRefHandle and not a form id, so the "I am fighting this NPC" signal was a permanent false negative (now resolved through the handle table); and the proximity tie-break was mathematically inert (weight 1.0 vs a required delta of 3.0 — raised to 6.0 so it can break the engage tie two fighting clients produce). Deaths are also remembered server-side and replayed to peers that were out of range when they fired. |
 | ↳ **N3** Shared authoritative HP / damage | ✅ done (v0.6.2, 2026-06-06) — both clients deplete ONE server-held HP pool (damage captured at the engine HP-write funnel `sub_140CC9650`, FINAL post-resist; DLL floor-1 clamp stops either client soloing the kill; server fires the kill at pool=0). v0.6.2 closed it: the enemy-health HUD now shows the LIVE combined pool on both clients (the non-owner's local Health is driven to the pool fraction so the vanilla bar reads it — `max = GetCurrent − cell`, since the AVO GetMax leaf mis-reads), the aggro/first shot is no longer lost (claimed pre-tracking, server-buffered until the NPC registers), and multi-feeder + server-driven death are confirmed. The HUD bar is GREEN (non-hostile color — handy as a "this client has no aggro" tell); a RED color is TODO. Wire proto v18. |
 | ↳ **N4** Player death + respawn sync | ✅ done (v0.6.2, 2026-06-06) — a client's death is vanilla: it ragdolls + respawns at Sanctuary, and the raiders re-aggro the surviving client (the threat table re-elects on the death). **v0.6.4 closed the death transition properly**: the respawn-load crash is fixed (see N row), and the aggro flip is now a message, not a timeout: one reliable NPC_UNLOAD per owned NPC at death, so the raiders turn on the survivor within a frame instead of after 8 s. |
+| **CG1** Character creation + appearance identity *(new epic, my first custom in-game UI)* | 🟡 v1 shipped (v0.7.0, 2026-08-12), deliberately unfinished. Forced first-entry ritual (server flag), sky staging + pinned auto-vanity camera, runtime catalogs (filtered head parts, 32 hair colours, 9 tint groups from race CharGenData), live editing of hair / eyes / beard / teeth / brows / skin tone / marks through the engine's own apply calls, recipe v2 (parts + tints, wire v21) stored per identity on the server, adopted at join and replicated onto the ghost with private composite textures and engine-computed body skin. Open: morph sculpting, body build, sex switch, Markings tab placement, per-peer ghost cache; the ImGui panel is a placeholder for the final UI |
 | **B7** Rust server port | ⏳ |
 
 ## Major RE achievements
@@ -218,6 +238,42 @@ in real time).
 
 Latest 3 patches summarized below. **Full version history in
 [CHANGELOG.md](CHANGELOG.md).**
+
+### v0.7.0 (2026-08-12) — character creation v1
+
+Tag v0.7.0, wire proto v21.
+
+- **The editor** — a fully custom in-game character creator, engine-native
+  (no ESP, no Creation Kit): ImGui drawn on the game's own D3D11 device from
+  an `IDXGISwapChain::Present` hook, five tabs (Face / Hair / Skin / Marks /
+  Preset), every option list walked out of live form data at runtime. Scope
+  is face and hair by design; the body stays under clothes.
+- **The ritual** — when the server holds no character for the joining
+  identity, WELCOME carries `chargen_required` and the client stages the
+  player 10,000 units up with collision off, pins the auto-vanity camera in
+  front of the face (the free camera renders no player at all), captures
+  input at the WM_INPUT level, and withholds the peer from every other
+  client's world until CONFIRM publishes the finished recipe.
+- **Server-held identity** — the recipe (head parts + tints, wire v21)
+  persists per identity, comes back in the join bootstrap, and is adopted
+  onto the local player before anything is published, so the save file's
+  default look never overwrites the stored character again.
+- **Ghost replication** — four sharing defects had every ghost wearing the
+  local player's face: the player's two tint arrays (record + actor side),
+  non-reproductive tint applies, the composited face textures living in a
+  global render-target pool repainted in place, and the body-skin copy taken
+  from the local player's stale body materials. All four closed; the clone
+  now owns private snapshots of its three composite textures and the body
+  skin is computed by the engine from the recipe being worn.
+- **Post-death freeze** — dying next to the spawn exposed a latent bug:
+  the death stand-down detected the respawn as a 5,000-unit position jump,
+  so a same-cell respawn never released it and every peer ghost stayed
+  frozen for up to 90 s. A second detector now releases on the health
+  restore, which every respawn performs regardless of distance.
+- **Not finished** — morph sculpting, body build and the sex switch are
+  out for now; the ImGui panel is a placeholder for the final UI.
+
+Full detail in [CHANGELOG.md](CHANGELOG.md).
 
 ### v0.6.5 (2026-08-06) — first-person ghost animation
 
@@ -292,31 +348,6 @@ Tag v0.6.4, wire proto v19, 405 server tests.
   for a gameplay crash.
 
 Full detail in [CHANGELOG.md](CHANGELOG.md).
-
-### N3 (2026-06-05) — shared authoritative HP — PARTIAL
-
-Working tree, tag v0.6.1. The boss-enabling piece: both clients deplete ONE
-server-held HP pool per raider, so a raider dies from the COMBINED damage,
-not from whichever client solo-deals its HP.
-
-- **Capture** — a detour on the engine's single HP-write funnel
-  `sub_140CC9650` (the chokepoint every Health delta passes through, incl.
-  fire/DoT/radiation) reads the FINAL post-resist damage and reports it,
-  firer-gated (each client only its own hits). Max HP = `absolute − modifier`
-  via the AVO getter, shipped on the claim (wire proto v17, claim 8→12 B).
-- **Pool** — `OwnershipRegistry` holds `hp_cur / hp_max` per form_id (survives
-  handoffs); the first claim bootstraps max, both clients deplete the same pool.
-- **Clamp** — a DLL clamp floors each client's absolute Health at 1 inside the
-  funnel, so the engine's death cascade (keyed on `Health ≤ 0`) never starts.
-  Gating `Actor::Kill` was REJECTED by the RE pass (it re-fires forever + leaves
-  a ragdolled live actor); clamping the one HP store is the clean gate.
-- **Death** — at pool 0 the server fires `NPC_DEATH_FROM_OWNER` to ALL clients
-  (neither killed it locally), reusing the N1 / N2 death-sync, corpse synced.
-
-Validated on the Concord raiders (clamp floors to 1 exactly, the pool kills at
-combined = max, no double-count, no SEH). PARTIAL — wants broader testing +
-other creatures. De-risked first by 3 decomp-verified RE agents + a read-only
-probe build. Full detail in [CHANGELOG.md](CHANGELOG.md).
 
 ## Why this exists
 

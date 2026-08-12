@@ -864,4 +864,41 @@ unsigned int get_attach_count();
 // the body has not yet been injected (arm_worker grace pre-T+30s).
 void* get_injected_body_ghost() noexcept;
 
+
+// 2026-08-08 — runtime switch for the ghost body cull (config `body_cull`).
+// true (default) = today's behaviour: the ghost's body geometry is hidden
+// when the peer wears body armour. false = log only, which is the A/B for the
+// "player's own body vanishes on unequip" bug. Dry-run does strictly less
+// work and cannot cause a crash; its cost is the ghost body showing through
+// armour. See the long note at apply_body_cull for the history — this A/B was
+// already run once pre-deep-clone and the symptom persisted.
+void set_body_cull_enabled(bool on);
+
+// Deep-clone a NiAVObject subtree via the ENGINE's own clone
+// (sub_1416BA800 -> vt[26] NiObject::CreateClone, with the post-clone
+// fix-up pass and the map teardown it needs). Returns a node the caller owns
+// one reference to, or the SOURCE unchanged if cloning was refused.
+//
+// Callers MUST compare the result against the source: getting the source back
+// means "not cloned", and attaching it somewhere would rip the original out of
+// its own tree — a NiNode has exactly one parent.
+//
+// Exposed for face_borrow, which clones a freshly built head off the local
+// player before handing the player its own face back.
+void* clone_nif_subtree(void* source);
+
+// Re-dress the ghost's face from the best source now available.
+//
+// Exists because of a measured race: the borrow that builds a peer's face
+// finished 57 ms AFTER the ghost had already dressed itself from the local
+// player, so the ghost was MIRRORING when a proper replication source existed
+// moments later. face_borrow calls this once it parks a master.
+//
+// Safe to call any time and repeatedly: it is a no-op when the ghost head does
+// not exist yet, and dressing culls every other child of the head, so a second
+// call replaces the previous face rather than stacking on it.
+//
+// Returns true if the ghost's face was (re)built. MAIN THREAD ONLY.
+bool redress_ghost_face();
+
 } // namespace fw::native

@@ -32,7 +32,7 @@ from typing import ClassVar, Union
 # ------------------------------------------------------------------ constants
 
 PROTOCOL_MAGIC: int = 0xFA
-PROTOCOL_VERSION: int = 19  # v19: PIENUVO v0 — AUTH_CHALLENGE pair + HELLO auth tail
+PROTOCOL_VERSION: int = 21  # v21: recipe v2 carries face tints (eyebrows, skin tone)
 # v16 (2026-05-31): ghost crouch — adds POSE_CROUCH_STATE (0x028E, C->S) and
 # POSE_CROUCH_BROADCAST (0x028F, S->peers). A SEPARATE, additive channel
 # alongside the working POSE_STATE/POSE_BROADCAST rotation pose: it replicates
@@ -291,6 +291,12 @@ class MessageType(IntEnum):
     GLOBAL_VAR_SET    = 0x0411   # v4: client -> server: I set GlobalVar X to value V
     GLOBAL_VAR_BCAST  = 0x0412   # v4: server -> other peers: peer X set GlobalVar Y to V
 
+    # v20 — character appearance as a RECIPE: engine form ids only (race, sex,
+    # head parts, hair colour), ~150 bytes of ASCII. One datagram per
+    # character, no chunking. See CHARGEN_PLAN §17 for the format.
+    APPEARANCE_SET    = 0x0421   # client -> server: this is what I look like
+    APPEARANCE_BCAST  = 0x0422   # server -> clients: this is what peer X looks like
+
 
 class ProtocolError(Exception):
     """Raised for any wire-format violation."""
@@ -459,8 +465,15 @@ class WelcomePayload:
     server_version_major: int
     server_version_minor: int
     tick_rate_hz: int        # u16, how often server broadcasts state
+    # v21 — the entry ritual. 1 = this identity has no stored appearance and the
+    # server wants one before the player is visible. Only the server can answer
+    # it: the client's local save always has an appearance, and "the bootstrap
+    # contained nothing for me" is indistinguishable from a slow network.
+    # 0 covers both no-op reasons — an appearance is already stored, or the
+    # server does not require creation at all.
+    chargen_required: bool = False   # u8 (0/1)
 
-    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IBBBH")
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IBBBHB")
 
     def encode(self) -> bytes:
         return self._STRUCT.pack(
@@ -469,14 +482,15 @@ class WelcomePayload:
             self.server_version_major,
             self.server_version_minor,
             self.tick_rate_hz,
+            1 if self.chargen_required else 0,
         )
 
     @classmethod
     def decode(cls, data: bytes) -> "WelcomePayload":
         if len(data) < cls._STRUCT.size:
             raise ProtocolError("WELCOME truncated")
-        sid, acc, vma, vmi, tick = cls._STRUCT.unpack_from(data, 0)
-        return cls(sid, bool(acc), vma, vmi, tick)
+        sid, acc, vma, vmi, tick, chargen = cls._STRUCT.unpack_from(data, 0)
+        return cls(sid, bool(acc), vma, vmi, tick, bool(chargen))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1597,6 +1611,75 @@ class GlobalVarSetPayload:
             raise ProtocolError("GLOBAL_VAR_SET truncated")
         fid, val, ts = cls._STRUCT.unpack_from(data, 0)
         return cls(global_form_id=fid, value=val, timestamp_ms=ts)
+
+
+# --------------------------------------------------------------------- v20
+# The payload is the recipe LINE itself — the same human-readable text the
+# client logs. Deliberate: at ~150 bytes a packed binary form saves nothing
+# worth having, and every byte saved would be repaid in debugging. MAX_RECIPE
+# bounds what a receiver will accept instead of trusting the wire.
+MAX_RECIPE: int = 1280  # v21: must match MAX_RECIPE_BYTES in protocol.h;
+#                        bounded by MAX_PAYLOAD_SIZE minus the BCAST header
+
+
+@dataclass(frozen=True, slots=True)
+class AppearanceSetPayload:
+    """Client -> server: my character's appearance recipe."""
+    recipe: str
+
+    _HDR: ClassVar[struct.Struct] = struct.Struct("<HH")
+
+    def encode(self) -> bytes:
+        raw = self.recipe.encode("ascii", errors="strict")
+        if len(raw) > MAX_RECIPE:
+            raise ProtocolError(f"recipe too long: {len(raw)} > {MAX_RECIPE}")
+        return self._HDR.pack(len(raw), 0) + raw
+
+    @classmethod
+    def decode(cls, data: bytes) -> "AppearanceSetPayload":
+        if len(data) < cls._HDR.size:
+            raise ProtocolError("APPEARANCE_SET truncated")
+        n, _ = cls._HDR.unpack_from(data, 0)
+        if n > MAX_RECIPE:
+            raise ProtocolError(f"APPEARANCE_SET recipe_len {n} > {MAX_RECIPE}")
+        off = cls._HDR.size
+        if len(data) < off + n:
+            raise ProtocolError("APPEARANCE_SET recipe truncated")
+        return cls(recipe=data[off:off + n].decode("ascii", errors="replace"))
+
+
+@dataclass(frozen=True, slots=True)
+class AppearanceBroadcastPayload:
+    """Server -> clients: peer X's appearance recipe."""
+    peer_id: str
+    recipe: str
+
+    _HDR: ClassVar[struct.Struct] = struct.Struct("<HH")
+
+    def encode(self) -> bytes:
+        raw = self.recipe.encode("ascii", errors="strict")
+        if len(raw) > MAX_RECIPE:
+            raise ProtocolError(f"recipe too long: {len(raw)} > {MAX_RECIPE}")
+        return (
+            _encode_fixed_string(self.peer_id, MAX_CLIENT_ID_LEN)
+            + self._HDR.pack(len(raw), 0)
+            + raw
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "AppearanceBroadcastPayload":
+        base = MAX_CLIENT_ID_LEN + 1
+        if len(data) < base + cls._HDR.size:
+            raise ProtocolError("APPEARANCE_BCAST truncated")
+        pid = _decode_fixed_string(data, MAX_CLIENT_ID_LEN)
+        n, _ = cls._HDR.unpack_from(data, base)
+        if n > MAX_RECIPE:
+            raise ProtocolError(f"APPEARANCE_BCAST recipe_len {n} > {MAX_RECIPE}")
+        off = base + cls._HDR.size
+        if len(data) < off + n:
+            raise ProtocolError("APPEARANCE_BCAST recipe truncated")
+        return cls(peer_id=pid,
+                   recipe=data[off:off + n].decode("ascii", errors="replace"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -3872,6 +3955,10 @@ _TYPE_TO_PAYLOAD_CLS: dict[int, type] = {
     MessageType.GLOBAL_VAR_SET:        GlobalVarSetPayload,
     MessageType.GLOBAL_VAR_BCAST:      GlobalVarBroadcastPayload,
     MessageType.GLOBAL_VAR_STATE_BOOT: GlobalVarStateBootPayload,
+    # v20 — without these two entries the opcode decodes to nothing and the
+    # handler is never reached, which is a silent no-op rather than an error.
+    MessageType.APPEARANCE_SET:        AppearanceSetPayload,
+    MessageType.APPEARANCE_BCAST:      AppearanceBroadcastPayload,
     MessageType.DOOR_OP:               DoorOpPayload,
     MessageType.DOOR_BCAST:            DoorBroadcastPayload,
     MessageType.EQUIP_OP:              EquipOpPayload,
