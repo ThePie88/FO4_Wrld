@@ -95,6 +95,9 @@
 #include "worldstate_hook.h"
 #include "door_hook.h"
 #include "lock_hook.h"
+#include "world_spawn_hook.h"
+#include "lifecycle_tripwire.h" // Build 70 Piano B Fase 0: WHO destroys our refs? (observe-only)
+#include "pa_pipeline_trace.h"  // Build 70m: log the engine's PA enter/exit pipeline step by step (observe-only)
 #include "npc_ai_suppress.h" // B6.5w4: Actor::Update_PerFrame detour
 #include "ghost_ai_package.h" // B6.5w12 hook #1: TESPackage::EvaluateConditions
 #include "ghost_ai_combat_target.h" // B6.5w12 hook #2: SyncCombatTargetFromAIProcess
@@ -172,6 +175,20 @@ InstallSummary install_all(std::uintptr_t module_base,
     s.door_ok        = install_door_hook(module_base);
     // B6.3 v0.5.3: ForceUnlock + ForceLock detours (lock state sync).
     s.lock_ok        = install_lock_hook(module_base);
+    // B6.14 - world-object spawn sender. Not counted in the summary: the
+    // wedge is config-gated and its absence is a choice, not a failure.
+    if (cfg.world_spawn_sync) {
+        (void)install_world_spawn_hook(module_base);
+    }
+    // Build 70 (Piano B Fase 0) — lifecycle tripwires, observe-only, cold
+    // paths (destroy + unpersist). Unconditional like the other pure
+    // diagnostics (npc_hp_probe): they answer "who is destroying our
+    // objects" with a caller RVA in the log, and write nothing.
+    (void)install_lifecycle_tripwire(module_base);
+    // Build 70m — PA pipeline tracer: [pa-trace] logs every engine step of
+    // enter/exit/replay + both model reloads, with the extra-0xBB triple
+    // (state, frame handle, race) before/after. Observe-only.
+    (void)install_pa_pipeline_trace(module_base);
     // ========================================================================
     // B6.6w4 PHASE A (2026-05-12 night, post-swarm-RE) — minimal re-enable.
     //

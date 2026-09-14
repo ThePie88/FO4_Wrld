@@ -14,6 +14,7 @@
 #include "../log.h"
 #include "../offsets.h"
 #include "../ref_identity.h"
+#include "../native/world_spawn.h"
 #include "../net/client.h"
 #include "../net/protocol.h"
 
@@ -121,6 +122,10 @@ struct ObserveResult {
     std::uint32_t base_id;
     std::uint32_t cell_id;
     char     op_tag[8];
+    // v23 — set when the container is a PA frame (loot-exempt): after
+    // g_orig runs, the caller rescans and ships the frame's full state.
+    void*         pa_frame_ref;
+    std::uint32_t pa_frame_fid;
 };
 
 // Pure SEH-guarded observation. Runs with no C++ objects that have
@@ -133,6 +138,7 @@ static void observe(
     out->passthrough   = true;   // safe default
     out->item_id = 0; out->base_id = 0; out->cell_id = 0;
     out->op_tag[0] = '\0';
+    out->pa_frame_ref = nullptr; out->pa_frame_fid = 0;
 
     __try {
         if (!(count > 0 && bound_obj)) {
@@ -179,6 +185,40 @@ static void observe(
                    "(form=0x%X base=0x%X cell=0x%X) — skipping",
                    op_tag, cid.form_id, cid.base_id, cid.cell_id);
             return;  // passthrough=true
+        }
+
+        // ====================================================================
+        // 2026-08-16 — THE POWER-ARMOR FRAME IS NOT LOOT. Measured cost of
+        // treating it as one: the engine's own enter transfer drains the
+        // frame's pieces through this vt[0x7A] path, so each piece became a
+        // TAKE op keyed (0x2079E, cell). Cycle 1 seeded the key and took all
+        // six -> server state for that key = EMPTY. Re-entering in the SAME
+        // cell later made the server reject every take (status=5) and the
+        // block left the native transfer half-done: pieces out of the frame,
+        // never on the actor — DESTROYED. Six X-01 pieces lost live at
+        // 14:31:25, and the previous session's loss was the same mechanism
+        // (the core survived because enter never takes it). The exit's
+        // deposit does NOT route through this hook, so the server key could
+        // never refill — every re-enter in a seeded cell was a death
+        // sentence.
+        //
+        // The frame's inventory has its own semantics (native enter/exit
+        // transfers, and the wid-keyed pieces replication being built in
+        // this milestone) — the loot layer must never mediate or seed it.
+        // Base-id test: every frame in our world is the vanilla FURN
+        // 0x2079E (the same constant the world-spawn PA flow keys on); a
+        // modded frame base would need the FurnitureTypePowerArmor keyword
+        // check instead.
+        // ====================================================================
+        if (cid.base_id == 0x0002079Eu) {
+            FW_DBG("[container] %s on a power-armor frame — passthrough, "
+                   "frames are not loot", op_tag);
+            // v23 — but a manual mutation IS state: after the engine runs,
+            // the caller rescans and ships the frame's piece list (the
+            // report helper itself ignores enter-drain mutations).
+            out->pa_frame_ref = container;
+            out->pa_frame_fid = cid.form_id;
+            return;  // passthrough=true, and no seed either
         }
 
         // Populate output for the submit phase.
@@ -339,6 +379,13 @@ void __fastcall detour_add_object(
            dest_this, bound_obj, count, source_old, reason);
     g_orig_add(dest_this, bound_obj, extra_data_sp, count, source_old, reason);
     FW_DBG("[container] g_orig_add returned");
+
+    // v23 — a mutation went through on a PA frame: ship its full state
+    // (no-op inside PA transitions or for frames without a wid).
+    if (r.pa_frame_ref) {
+        fw::native::world_spawn::report_frame_pieces(r.pa_frame_ref,
+                                                     r.pa_frame_fid);
+    }
 }
 
 } // namespace

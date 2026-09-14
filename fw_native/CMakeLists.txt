@@ -56,6 +56,9 @@ add_library(fw_native SHARED
     src/hooks/worldstate_hook.cpp
     src/hooks/door_hook.cpp         # B6.0: Activate worker for door open/close
     src/hooks/lock_hook.cpp         # B6.3: ForceUnlock + ForceLock detours
+    src/hooks/world_spawn_hook.cpp  # B6.14: PlaceAtMe detour (spawn sender)
+    src/hooks/lifecycle_tripwire.cpp # Build 70: destroy+unpersist observers (Piano B Fase 0)
+    src/hooks/pa_pipeline_trace.cpp  # Build 70m: PA enter/exit engine pipeline tracer
     src/hooks/npc_ai_suppress.cpp   # B6.5w4: Actor::Update_PerFrame suppression for tracked NPCs
     src/hooks/ownership_manager.cpp # Build 65: DLL-side mirror of server NPC ownership registry (Solver 2)
     src/hooks/puppet_update_perframe.cpp # B6.6w0: KEEP-ALWAYS replacement body invoked by npc_ai_suppress bail path
@@ -93,6 +96,7 @@ add_library(fw_native SHARED
     src/engine/engine_calls.cpp
     src/native/chargen_catalog.cpp
     src/native/chargen_stage.cpp
+    src/native/world_spawn.cpp    # B6.14: wid registry + receive-side placement
     src/render/present_hook.cpp
     src/render/editor_overlay.cpp
     src/render/triangle_render.cpp

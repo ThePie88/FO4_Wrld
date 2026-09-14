@@ -24,7 +24,13 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from channel import ChannelError  # noqa: E402
-from protocol import (  # noqa: E402
+from protocol import (
+    WorldPaPiecesBroadcastPayload,
+    WorldPaPiecesOpPayload,
+    WorldSpawnOpPayload,
+    WorldSpawnBroadcastPayload,
+    WorldDespawnOpPayload,
+    WorldDespawnBroadcastPayload,  # noqa: E402
     MessageType, ProtocolError,
     HelloPayload, WelcomePayload, PeerJoinPayload, PeerLeavePayload,
     HeartbeatPayload, DisconnectPayload, PosStatePayload, PosBroadcastPayload,
@@ -368,6 +374,15 @@ class ServerProtocol(asyncio.DatagramProtocol):
         if mtype == MessageType.LOCK_OP:
             self._handle_lock_op(session, payload, now_ms)
             return
+        if mtype == MessageType.WORLD_SPAWN_OP:
+            self._handle_world_spawn_op(session, payload, now_ms)
+            return
+        if mtype == MessageType.WORLD_DESPAWN_OP:
+            self._handle_world_despawn_op(session, payload, now_ms)
+            return
+        if mtype == MessageType.WORLD_PA_PIECES_OP:
+            self._handle_world_pa_pieces_op(session, payload, now_ms)
+            return
         if mtype == MessageType.EQUIP_OP:
             self._handle_equip_op(session, payload, now_ms)
             return
@@ -561,6 +576,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
         # for every (base, cell) the server has seen, as individual
         # LOCK_BCAST frames. Client treats them as fresh remote ops.
         self._send_lock_state_bootstrap(session, now_ms)
+        self._send_world_spawn_bootstrap(session, now_ms)
         # Bootstrap: NPC ownership table (Build 65 owner-driven sync).
         # Hands the new peer the current (fid, epoch, owner) map so it
         # can attach the correct local-vs-remote AI gate to every NPC
@@ -1158,6 +1174,160 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 entries=chunk, chunk_index=i, total_chunks=total_chunks)
             raw = session.channel.send_reliable(
                 MessageType.GLOBAL_VAR_STATE_BOOT, payload, now_ms)
+            self._send(session.addr, raw)
+
+    def _handle_world_spawn_op(self, session: PeerSession, payload,
+                               now_ms: float) -> None:
+        """B6.14 v22 — a client created a REFR; give it a wid, tell everyone.
+
+        The broadcast goes to ALL sessions INCLUDING the sender: the sender's
+        copy of the message is how it learns the wid for the object it
+        already owns. Transient spawns (flags bit0) are relayed but never
+        stored — the slot reserved for explosions and other effects.
+        """
+        if not isinstance(payload, WorldSpawnOpPayload):
+            return
+        if payload.base_form_id == 0 or payload.local_form_id == 0:
+            log.debug("world_spawn_op from %s: zero identity — drop",
+                      session.peer_id)
+            return
+        transient = bool(payload.flags & 1)
+        if not transient and len(self.state.world_spawns) >= 1024:
+            log.warning("world_spawn_op from %s REFUSED: 1024 persistent "
+                        "objects already stored", session.peer_id)
+            return
+
+        st = self.state.record_world_spawn(
+            spawner_peer=session.peer_id,
+            base_form_id=payload.base_form_id,
+            spawner_local_fid=payload.local_form_id,
+            px=payload.px, py=payload.py, pz=payload.pz,
+            rx=payload.rx, ry=payload.ry, rz=payload.rz,
+            cell_id=payload.cell_id,
+            flags=payload.flags,
+            timestamp_ms=payload.timestamp_ms,
+            pieces=payload.pieces,
+        )
+        bcast = WorldSpawnBroadcastPayload(
+            peer_id=session.peer_id,
+            wid=st.wid,
+            base_form_id=st.base_form_id,
+            spawner_local_fid=st.spawner_local_fid,
+            px=st.px, py=st.py, pz=st.pz,
+            rx=st.rx, ry=st.ry, rz=st.rz,
+            cell_id=st.cell_id, flags=st.flags,
+            timestamp_ms=st.timestamp_ms,
+            pieces=st.pieces,
+        )
+        sent = 0
+        for other in self.state.all_sessions():
+            raw = other.channel.send_reliable(
+                MessageType.WORLD_SPAWN_BCAST, bcast, now_ms)
+            self._send(other.addr, raw)
+            sent += 1
+        log.info("world spawn wid=%d base=0x%X by %s at (%.0f, %.0f, %.0f)%s "
+                 "-> %d peer(s)", st.wid, st.base_form_id, session.peer_id,
+                 st.px, st.py, st.pz, " [transient]" if transient else "",
+                 sent)
+
+    def _handle_world_despawn_op(self, session: PeerSession, payload,
+                                 now_ms: float) -> None:
+        """B6.14 v22 — a spawned object died on some client; drop it everywhere.
+
+        Whoever sees the death first wins; an unknown wid means somebody else
+        already reported it (or it was transient) and the op is a no-op — that
+        is the dedup, no extra state needed. Removal persists by omission: the
+        next snapshot simply no longer contains the wid, and the join
+        bootstrap never replays it again.
+        """
+        if not isinstance(payload, WorldDespawnOpPayload):
+            return
+        st = self.state.world_spawns.pop(payload.wid, None)
+        if st is None:
+            log.debug("world_despawn_op wid=%d from %s: unknown wid — "
+                      "already removed or transient", payload.wid,
+                      session.peer_id)
+            return
+        bcast = WorldDespawnBroadcastPayload(
+            peer_id=session.peer_id,
+            wid=payload.wid,
+            reason=payload.reason,
+            timestamp_ms=payload.timestamp_ms,
+        )
+        sent = 0
+        for other in self.state.all_sessions():
+            raw = other.channel.send_reliable(
+                MessageType.WORLD_DESPAWN_BCAST, bcast, now_ms)
+            self._send(other.addr, raw)
+            sent += 1
+        log.info("world despawn wid=%d (base=0x%X) reported by %s reason=%d "
+                 "-> %d peer(s)", payload.wid, st.base_form_id,
+                 session.peer_id, payload.reason, sent)
+
+    def _handle_world_pa_pieces_op(self, session: PeerSession, payload,
+                                   now_ms: float) -> None:
+        """v23 — a client changed a PA frame's content by hand.
+
+        Full-state replace of the ledger for the wid, then broadcast to the
+        OTHER clients only: the reporter's local frame already holds the new
+        truth, and echoing it back would destroy-and-replace its own frame
+        under the player's cursor for nothing.
+        """
+        if not isinstance(payload, WorldPaPiecesOpPayload):
+            return
+        st = self.state.world_spawns.get(payload.wid)
+        if st is None:
+            log.debug("pa_pieces_op wid=%d from %s: unknown wid — dropped",
+                      payload.wid, session.peer_id)
+            return
+        st.pieces = tuple(payload.pieces)
+        bcast = WorldPaPiecesBroadcastPayload(
+            peer_id=session.peer_id,
+            wid=payload.wid,
+            timestamp_ms=payload.timestamp_ms,
+            pieces=st.pieces,
+        )
+        sent = 0
+        for other in self.state.all_sessions():
+            if other.peer_id == session.peer_id:
+                continue
+            raw = other.channel.send_reliable(
+                MessageType.WORLD_PA_PIECES_BCAST, bcast, now_ms)
+            self._send(other.addr, raw)
+            sent += 1
+        log.info("pa pieces wid=%d by %s: %d entr%s -> %d peer(s)",
+                 payload.wid, session.peer_id, len(st.pieces),
+                 "y" if len(st.pieces) == 1 else "ies", sent)
+
+    def _send_world_spawn_bootstrap(
+        self, session: PeerSession, now_ms: float
+    ) -> None:
+        """B6.14 — replay every persistent spawned object to a joining peer.
+
+        peer_id is synthesized as 'server' (the lock-bootstrap idiom) so even
+        the ORIGINAL spawner re-places: its local original was a TEMPORARY
+        ref that died with its previous session, which is the design — the
+        server owns spawned-object lifetime, saves never do.
+        """
+        spawns = self.state.all_world_spawns()
+        if not spawns:
+            return
+        log.info("world-spawn bootstrap %s: %d object(s)",
+                 session.peer_id, len(spawns))
+        for w in spawns:
+            payload = WorldSpawnBroadcastPayload(
+                peer_id="server",
+                wid=w.wid,
+                base_form_id=w.base_form_id,
+                spawner_local_fid=0,
+                px=w.px, py=w.py, pz=w.pz,
+                rx=w.rx, ry=w.ry, rz=w.rz,
+                cell_id=w.cell_id, flags=w.flags,
+                timestamp_ms=w.timestamp_ms,
+                pieces=w.pieces,
+            )
+            raw = session.channel.send_reliable(
+                MessageType.WORLD_SPAWN_BCAST, payload, now_ms)
             self._send(session.addr, raw)
 
     def _send_lock_state_bootstrap(

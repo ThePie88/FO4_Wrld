@@ -74,6 +74,13 @@ stream_pose_in_first_person = {stream_pose_in_first_person}
 # an earlier session lost its settings mid-test.
 ghost_face_clone = {ghost_face_clone}
 
+# B6.14 - world-object spawn sync. A REFR created in one client's world
+# (console spawn today; power-armor frames, settlement builds later) is
+# reported to the server, which assigns it a logical id, persists it and has
+# every client place a local copy. false = the PlaceAtMe detour is not even
+# installed.
+world_spawn_sync = {world_spawn_sync}
+
 # Sets the LOCAL player's hair to this colour form once at boot, then forces a
 # rebuild so it shows. Used to make the two sides visually distinguishable in a
 # live test (0x000A042F = Golden Blond). 0 = leave the character alone.
@@ -148,6 +155,7 @@ def write_for_side(
     first_person_graph_drive: bool = True,
     stream_pose_in_first_person: bool = False,
     ghost_face_clone: bool = True,
+    world_spawn_sync: bool = True,
     chargen_selftest: int = 0,
     chargen_selftest_delay: int = 20,
     editor_key: int = 0x71,
@@ -194,6 +202,7 @@ def write_for_side(
         first_person_graph_drive=(
             "true" if first_person_graph_drive else "false"),
         ghost_face_clone=("true" if ghost_face_clone else "false"),
+        world_spawn_sync=("true" if world_spawn_sync else "false"),
         chargen_selftest=f"0x{chargen_selftest:08X}" if chargen_selftest else "0",
         chargen_selftest_delay=str(chargen_selftest_delay),
         editor_key=(f"0x{editor_key:02X}" if editor_key else "0"),

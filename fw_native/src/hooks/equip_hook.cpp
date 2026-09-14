@@ -1297,4 +1297,24 @@ bool install_equip_hook(std::uintptr_t module_base) {
     return ok_equip && ok_unequip;
 }
 
+// v24 — public wrapper over the w4 extractor (header-documented). The
+// extractor walks any REFR's +0xF8 inventory, so a PA frame works exactly
+// like an actor.
+std::uint8_t read_item_mod_forms(void* refr, std::uint32_t item_form_id,
+                                 std::uint32_t* out_mods, std::uint8_t cap) {
+    if (!refr || item_form_id == 0 || !out_mods || cap == 0) return 0;
+    if (g_module_base == 0) return 0;
+    std::vector<ExtractedMod> mods;
+    if (!extract_equipped_mods(refr, item_form_id, g_module_base, mods)) {
+        return 0;
+    }
+    std::uint8_t n = 0;
+    for (const ExtractedMod& m : mods) {
+        if (n >= cap) break;
+        if (m.mod_form_id == 0) continue;
+        out_mods[n++] = m.mod_form_id;
+    }
+    return n;
+}
+
 } // namespace fw::hooks

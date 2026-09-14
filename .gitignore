@@ -146,6 +146,7 @@ net/state_snapshot.json*
 
 # -- Personal design memos / scratch docs (live across sessions, not public) -
 NPCs.md
+B6.md
 
 # -- Tools binaries (we don't ship these in repo) ---------------------------
 tools/*.exe
@@ -278,3 +279,9 @@ fw_audit.log
 net/ritual_test_snapshot.json*
 net/*.err
 net/*.out
+
+# desktop shortcuts to local builds
+*.lnk
+
+# local Steam version-pin script (machine-specific paths)
+tools/steam_pin_fo4.py

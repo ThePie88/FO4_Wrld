@@ -164,7 +164,7 @@ constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
 //     server challenge(32) + signature(64) over "FWAUTH1"+challenge +
 //     display_name(16). The DLL does no crypto — the launcher mints the blob,
 //     fw_config.ini carries it, we forward it verbatim.
-constexpr std::uint8_t  PROTOCOL_VERSION  = 21;  // v21: recipe v2 carries face tints
+constexpr std::uint8_t  PROTOCOL_VERSION  = 25;  // v25: PA pieces carry condition / core charge
 constexpr std::size_t   HEADER_SIZE       = 12;
 constexpr std::size_t   MAX_PAYLOAD_SIZE  = 1400;
 constexpr std::size_t   MAX_FRAME_SIZE    = HEADER_SIZE + MAX_PAYLOAD_SIZE;
@@ -212,6 +212,12 @@ enum class MessageType : std::uint16_t {
     MESH_BLOB_BCAST = 0x0251,   // M9 w4 v9: server -> peers: chunked mesh blob (peer-attributed)
     LOCK_OP         = 0x0260,   // B6.3 v0.5.3: client -> server lock state changed
     LOCK_BCAST      = 0x0261,   // B6.3 v0.5.3: server -> other peers lock state changed
+    WORLD_SPAWN_OP    = 0x02A0, // B6.14 v22: client -> server: I created a REFR in my world
+    WORLD_SPAWN_BCAST = 0x02A1, // B6.14 v22: server -> ALL clients (sender included): place/bind wid
+    WORLD_DESPAWN_OP    = 0x02A2, // B6.14 v22: client -> server: spawned object wid died locally
+    WORLD_DESPAWN_BCAST = 0x02A3, // B6.14 v22: server -> ALL clients: remove your copy of wid
+    WORLD_PA_PIECES_OP    = 0x02A4, // v23: client -> server: full piece list for wid (manual take/put)
+    WORLD_PA_PIECES_BCAST = 0x02A5, // v23: server -> OTHER clients: replace replica content for wid
     NPC_STATE_BCAST = 0x0270,   // B6.5w2 v13: server -> peers batched NPC pos/anim state (unreliable, ~10 Hz)
     NPC_FIRE        = 0x0271,   // B6.6w1 v15: server -> peers "this raider fires its equipped weapon NOW" (unreliable, event-driven)
     NPC_DISCOVER    = 0x0272,   // B6.6w2 v16: client -> server "I auto-tracked this hostile NPC; register it" (reliable, event-driven)
@@ -705,6 +711,132 @@ struct LockBroadcastPayload {
     std::uint64_t timestamp_ms;
 };
 static_assert(sizeof(LockBroadcastPayload) == 37, "LockBroadcastPayload size");
+
+// B6.14 v22 — WORLD_SPAWN_OP / WORLD_SPAWN_BCAST. The foundation for "an
+// object exists in one client's world and must exist in everyone's": console
+// spawns today; power-armor frames, settlement builds, dropped items and
+// transient effects ride the same rails later.
+//
+// IDENTITY. PlaceAtMe mints a DIFFERENT form id per client, so the sender's
+// form id means nothing remotely. The server assigns a logical id (wid) and
+// broadcasts to EVERYONE, sender included: the sender uses its own echo to
+// bind wid -> the REFR it already made, receivers place a local copy and bind
+// theirs. All future operations on a spawned object travel by wid.
+//
+// flags bit0 = transient: broadcast but never persisted server-side — the
+// slot reserved for explosions and other effects that must be seen, not kept.
+// v23 — PA PIECES ON THE SPAWN RAILS. E1 (2026-08-16) proved the whole
+// model live: an ARMO in a frame's inventory IS a mounted piece (E0: no
+// flag involved), a replica stocked by the engine's own AddItem renders
+// them and hands them over on enter. E1's hardcoded set also produced the
+// predicted failure — piece removals on one client never travelled, and a
+// later exit re-announced the stale set: duplication. So the piece list is
+// STATE, carried with the object itself: every spawn/rebirth announce
+// includes what the frame holds, the server ledger is authoritative and
+// persisted, and manual take/put updates travel on the dedicated
+// WORLD_PA_PIECES pair below. count is per stack (the fusion core has
+// meaningful counts; pieces are 1 each).
+constexpr std::size_t kMaxPaPieces = 12;
+// v24 — each piece carries its OMOD list. The Mk level of a PA piece is
+// not a form: it is a mod on the piece (measured: every X-01 piece holds
+// 4-5 OMODs). A replica stocked by bare AddItem gets the engine's fresh
+// leveled roll — "same category, different level" every time. With the
+// mod forms on the wire the receiver re-attaches them after AddItem
+// (PAPYRUS_ATTACH_MOD_RVA) and the piece is byte-identical.
+constexpr std::size_t kMaxPieceMods = 8;
+// v25 — health: the stack's Health extra (0x25) as the engine stores it
+// (0..1; a core's charge, a piece's condition), -1.0 = no extra on the
+// original, so the replica creates none either — an exact mirror.
+struct PaPieceEntry {
+    std::uint32_t form_id;
+    std::int32_t  count;
+    std::uint8_t  mod_n;
+    std::uint32_t mods[kMaxPieceMods];
+    float         health;
+};
+static_assert(sizeof(PaPieceEntry) == 45, "PaPieceEntry size");
+
+struct WorldSpawnOpPayload {
+    std::uint32_t base_form_id;    // what was placed (base form)
+    std::uint32_t local_form_id;   // the sender's new REFR (bind target on echo)
+    float         pos[3];
+    float         rot[3];          // radians, engine order
+    std::uint32_t cell_id;         // where it happened (identity/diagnostics)
+    std::uint8_t  flags;           // bit0 = transient
+    std::uint64_t timestamp_ms;    // sender wall clock
+    std::uint8_t  piece_n;         // v23: valid entries in pieces[]
+    PaPieceEntry  pieces[kMaxPaPieces];  // v23: frame inventory at announce
+};
+static_assert(sizeof(WorldSpawnOpPayload) == 586, "WorldSpawnOpPayload size");
+
+struct WorldSpawnBroadcastPayload {
+    FixedClientId peer_id;           // spawner ("server" on join bootstrap)
+    std::uint32_t wid;               // server-assigned logical id
+    std::uint32_t base_form_id;
+    std::uint32_t spawner_local_fid; // meaningful only to the spawner's echo
+    float         pos[3];
+    float         rot[3];
+    std::uint32_t cell_id;
+    std::uint8_t  flags;
+    std::uint64_t timestamp_ms;
+    std::uint8_t  piece_n;               // v23
+    PaPieceEntry  pieces[kMaxPaPieces];  // v23: server-ledger content
+};
+static_assert(sizeof(WorldSpawnBroadcastPayload) == 606,
+              "WorldSpawnBroadcastPayload size");
+
+// v23 — WORLD_PA_PIECES_OP / BCAST. Full-state, not delta: any manual
+// mutation of a frame's inventory (take or put outside a PA transition)
+// makes the owner rescan and ship the WHOLE list for the wid. The server
+// replaces its ledger and broadcasts to the OTHER clients, which apply by
+// destroy-and-replace (the streaming-requeue idiom — no remove-item
+// primitive needed). Full-state kills delta-ordering bugs by construction.
+struct WorldPaPiecesOpPayload {
+    std::uint32_t wid;
+    std::uint8_t  piece_n;
+    PaPieceEntry  pieces[kMaxPaPieces];
+    std::uint64_t timestamp_ms;
+};
+static_assert(sizeof(WorldPaPiecesOpPayload) == 553,
+              "WorldPaPiecesOpPayload size");
+
+struct WorldPaPiecesBroadcastPayload {
+    FixedClientId peer_id;   // who reported the change
+    std::uint32_t wid;
+    std::uint8_t  piece_n;
+    PaPieceEntry  pieces[kMaxPaPieces];
+    std::uint64_t timestamp_ms;
+};
+static_assert(sizeof(WorldPaPiecesBroadcastPayload) == 569,
+              "WorldPaPiecesBroadcastPayload size");
+
+// B6.14 v22 — WORLD_DESPAWN_OP / WORLD_DESPAWN_BCAST. The other half of the
+// spawn foundation, and it exists because of a live measurement: entering a
+// power-armor frame CONSUMES the REFR on the client that entered it, while
+// every other client's copy kept standing and the server kept replaying it at
+// join — the whole "phantom / duplicate" class in one mechanism. Any client
+// that sees a spawned object die locally reports it BY WID; the server
+// removes it from the store and tells everyone to drop their copies.
+//
+// reason: 1 = deleted flag, 2 = disabled flag, 3 = vanished from the form
+// table while its cell was the player's current cell. Diagnostic only — the
+// server treats them identically — but the codes make the first live logs
+// tell us exactly HOW a power-armor entry kills the frame.
+struct WorldDespawnOpPayload {
+    std::uint32_t wid;
+    std::uint8_t  reason;
+    std::uint64_t timestamp_ms;
+};
+static_assert(sizeof(WorldDespawnOpPayload) == 13, "WorldDespawnOpPayload size");
+
+struct WorldDespawnBroadcastPayload {
+    FixedClientId peer_id;   // who reported it ("server" never used here)
+    std::uint32_t wid;
+    std::uint8_t  reason;
+    std::uint64_t timestamp_ms;
+};
+static_assert(sizeof(WorldDespawnBroadcastPayload) == 29,
+              "WorldDespawnBroadcastPayload size");
 
 // M9 w1 — EQUIP_OP / EQUIP_BCAST. Carries the result of an
 // ActorEquipManager::EquipObject or ::UnequipObject fire that we observed

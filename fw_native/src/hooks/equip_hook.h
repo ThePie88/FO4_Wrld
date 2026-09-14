@@ -26,6 +26,14 @@
 
 namespace fw::hooks {
 
+// v24 — read the OMOD form ids attached to the SINGULAR stack of
+// `item_form_id` inside any REFR's inventory (PA frames included — the
+// walk is the generic +0xF8 layout). Returns the number written to
+// out_mods (at most cap). Reuses the w4 extractor that has snapshotted
+// equip mods since M9.w4. Main thread.
+std::uint8_t read_item_mod_forms(void* refr, std::uint32_t item_form_id,
+                                 std::uint32_t* out_mods, std::uint8_t cap);
+
 // Install both detours. Returns true iff BOTH hooks succeed. Partial
 // success returns false but does not roll back the successful one
 // (matches install_pipboy_hook pattern from the rolled-back B7 attempt).

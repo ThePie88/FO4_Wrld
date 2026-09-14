@@ -20,7 +20,8 @@
 #include "../hooks/hp_bar_hook.h"      // v18: shared-pool HP → enemy bar
 #include "../main_thread_dispatch.h"
 #include "../native/scene_inject.h"
-#include "../native/face_cache.h"   // v20: land peer recipes off the wire
+#include "../native/face_cache.h"
+#include "../native/world_spawn.h"   // v20: land peer recipes off the wire
 #include "../native/appearance_recipe.h"  // v21: the entry ritual raises the
                                           // editing flag from WELCOME
 
@@ -369,6 +370,92 @@ void Client::enqueue_lock_op(std::uint32_t lock_form_id,
 
     QueuedSend q;
     q.msg_type = MessageType::LOCK_OP;
+    q.reliable = true;
+    q.payload_bytes.resize(sizeof(p));
+    std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
+    {
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+}
+
+void Client::enqueue_world_spawn_op(std::uint32_t base_form_id,
+                                    std::uint32_t local_form_id,
+                                    const float pos[3], const float rot[3],
+                                    std::uint32_t cell_id, std::uint8_t flags,
+                                    std::uint64_t timestamp_ms,
+                                    const PaPieceEntry* pieces,
+                                    std::uint8_t piece_n)
+{
+    if (!connected_.load() || stopping_.load()) return;
+    if (base_form_id == 0 || local_form_id == 0) return;
+
+    WorldSpawnOpPayload p{};
+    p.base_form_id  = base_form_id;
+    p.local_form_id = local_form_id;
+    p.pos[0] = pos[0]; p.pos[1] = pos[1]; p.pos[2] = pos[2];
+    p.rot[0] = rot[0]; p.rot[1] = rot[1]; p.rot[2] = rot[2];
+    p.cell_id       = cell_id;
+    p.flags         = flags;
+    p.timestamp_ms  = timestamp_ms;
+    if (pieces && piece_n > 0) {
+        p.piece_n = (piece_n > kMaxPaPieces)
+            ? static_cast<std::uint8_t>(kMaxPaPieces) : piece_n;
+        for (std::uint8_t i = 0; i < p.piece_n; ++i) p.pieces[i] = pieces[i];
+    }
+
+    QueuedSend q;
+    q.msg_type = MessageType::WORLD_SPAWN_OP;
+    q.reliable = true;
+    q.payload_bytes.resize(sizeof(p));
+    std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
+    {
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+}
+
+void Client::enqueue_world_pa_pieces_op(std::uint32_t wid,
+                                        const PaPieceEntry* pieces,
+                                        std::uint8_t piece_n,
+                                        std::uint64_t timestamp_ms)
+{
+    if (!connected_.load() || stopping_.load()) return;
+    if (wid == 0) return;
+
+    WorldPaPiecesOpPayload p{};
+    p.wid          = wid;
+    p.timestamp_ms = timestamp_ms;
+    if (pieces && piece_n > 0) {
+        p.piece_n = (piece_n > kMaxPaPieces)
+            ? static_cast<std::uint8_t>(kMaxPaPieces) : piece_n;
+        for (std::uint8_t i = 0; i < p.piece_n; ++i) p.pieces[i] = pieces[i];
+    }
+
+    QueuedSend q;
+    q.msg_type = MessageType::WORLD_PA_PIECES_OP;
+    q.reliable = true;
+    q.payload_bytes.resize(sizeof(p));
+    std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
+    {
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+}
+
+void Client::enqueue_world_despawn_op(std::uint32_t wid, std::uint8_t reason,
+                                      std::uint64_t timestamp_ms)
+{
+    if (!connected_.load() || stopping_.load()) return;
+    if (wid == 0) return;
+
+    WorldDespawnOpPayload p{};
+    p.wid          = wid;
+    p.reason       = reason;
+    p.timestamp_ms = timestamp_ms;
+
+    QueuedSend q;
+    q.msg_type = MessageType::WORLD_DESPAWN_OP;
     q.reliable = true;
     q.payload_bytes.resize(sizeof(p));
     std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
@@ -1648,6 +1735,60 @@ void Client::dispatch(const Delivered& d) {
         if (fw::native::face_cache::set_recipe(peer, recipe)) {
             FW_LOG("[appearance-rx] '%s' -> %s", peer.c_str(), recipe.c_str());
         }
+        break;
+    }
+
+    case static_cast<std::uint16_t>(MessageType::WORLD_SPAWN_BCAST): {
+        // B6.14 v22 - a spawned world object (live or join bootstrap). Only
+        // queued here: the placement is engine work and belongs to the main
+        // tick. The sender recognises its own echo by peer id and binds the
+        // wid to the REFR it already made instead of placing a copy.
+        if (d.payload.size() < sizeof(WorldSpawnBroadcastPayload)) {
+            FW_WRN("[world-spawn-rx] WORLD_SPAWN_BCAST too short (%zu bytes)",
+                   d.payload.size());
+            break;
+        }
+        WorldSpawnBroadcastPayload b{};
+        std::memcpy(&b, d.payload.data(), sizeof(b));
+        fw::native::world_spawn::SpawnEntry e;
+        e.wid          = b.wid;
+        e.base_form_id = b.base_form_id;
+        e.spawner_fid  = b.spawner_local_fid;
+        e.pos[0] = b.pos[0]; e.pos[1] = b.pos[1]; e.pos[2] = b.pos[2];
+        e.rot[0] = b.rot[0]; e.rot[1] = b.rot[1]; e.rot[2] = b.rot[2];
+        e.cell_id = b.cell_id;
+        e.flags   = b.flags;
+        // v23: the server-ledger piece list rides with the spawn.
+        e.piece_n = (b.piece_n > kMaxPaPieces)
+            ? static_cast<std::uint8_t>(kMaxPaPieces) : b.piece_n;
+        for (std::uint8_t i = 0; i < e.piece_n; ++i) {
+            e.pieces[i] = b.pieces[i];
+        }
+        const bool is_self = (b.peer_id.get() == cfg_.client_id);
+        fw::native::world_spawn::on_bcast(e, is_self);
+        break;
+    }
+
+    case static_cast<std::uint16_t>(MessageType::WORLD_PA_PIECES_BCAST): {
+        // v23 - a peer changed a frame's content by hand; replace our
+        // replica's content. Queued: destroy-and-replace is main-tick work.
+        if (d.payload.size() < sizeof(WorldPaPiecesBroadcastPayload)) break;
+        WorldPaPiecesBroadcastPayload b{};
+        std::memcpy(&b, d.payload.data(), sizeof(b));
+        const std::uint8_t n = (b.piece_n > kMaxPaPieces)
+            ? static_cast<std::uint8_t>(kMaxPaPieces) : b.piece_n;
+        fw::native::world_spawn::on_pieces_update(b.wid, b.pieces, n);
+        break;
+    }
+
+    case static_cast<std::uint16_t>(MessageType::WORLD_DESPAWN_BCAST): {
+        // B6.14 v22 - a spawned object is gone; queue the removal for the
+        // main tick. The reporter's own copy is already dead, so for it this
+        // is just an unbind.
+        if (d.payload.size() < sizeof(WorldDespawnBroadcastPayload)) break;
+        WorldDespawnBroadcastPayload b{};
+        std::memcpy(&b, d.payload.data(), sizeof(b));
+        fw::native::world_spawn::on_despawn(b.wid);
         break;
     }
 

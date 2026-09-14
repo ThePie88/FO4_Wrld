@@ -32,7 +32,7 @@ from typing import ClassVar, Union
 # ------------------------------------------------------------------ constants
 
 PROTOCOL_MAGIC: int = 0xFA
-PROTOCOL_VERSION: int = 21  # v21: recipe v2 carries face tints (eyebrows, skin tone)
+PROTOCOL_VERSION: int = 25  # v25: PA pieces carry condition / core charge (Health extra)
 # v16 (2026-05-31): ghost crouch — adds POSE_CROUCH_STATE (0x028E, C->S) and
 # POSE_CROUCH_BROADCAST (0x028F, S->peers). A SEPARATE, additive channel
 # alongside the working POSE_STATE/POSE_BROADCAST rotation pose: it replicates
@@ -248,6 +248,12 @@ class MessageType(IntEnum):
     MESH_BLOB_BCAST  = 0x0251   # M9 w4 v9: server -> peers: chunked mesh blob (peer-attributed)
     LOCK_OP          = 0x0260   # B6.3 v0.5.3: client -> server: lock state changed (locked/unlocked)
     LOCK_BCAST       = 0x0261   # B6.3 v0.5.3: server -> peers: lock state changed
+    WORLD_SPAWN_OP    = 0x02A0  # B6.14 v22: client -> server: I created a REFR in my world
+    WORLD_SPAWN_BCAST = 0x02A1  # B6.14 v22: server -> ALL clients: place / bind wid
+    WORLD_DESPAWN_OP    = 0x02A2  # B6.14 v22: client -> server: spawned object wid died locally
+    WORLD_DESPAWN_BCAST = 0x02A3  # B6.14 v22: server -> ALL clients: remove your copy of wid
+    WORLD_PA_PIECES_OP    = 0x02A4  # v23: client -> server: full piece list for wid
+    WORLD_PA_PIECES_BCAST = 0x02A5  # v23: server -> OTHER clients: replace replica content
     NPC_STATE_BCAST  = 0x0270   # B6.5w2 v13: server -> peers: batched NPC pos/anim state (unreliable, ~10 Hz)
     NPC_FIRE         = 0x0271   # B6.6w1 v15: server -> peers: "this raider fires its equipped weapon NOW" (event-driven)
     NPC_DISCOVER     = 0x0272   # B6.6w2 v16: client -> server: "I auto-tracked hostile NPC X (form+base+cell+pos)" (reliable, event-driven)
@@ -1904,6 +1910,262 @@ class LockBroadcastPayload:
         fid, bid, cid, locked, ts = cls._STRUCT.unpack(data[MAX_CLIENT_ID_LEN + 1:])
         return cls(peer_id=peer, lock_form_id=fid, lock_base_id=bid,
                    lock_cell_id=cid, locked=locked, timestamp_ms=ts)
+
+
+def _flatten_pieces(pieces) -> list:
+    """v25 wire shape per piece: form u32, count i32, mod_n u8, mods 8*u32,
+    health f32 (the stack's Health extra, 0..1; -1.0 = none).
+
+    A piece tuple is (form_id, count, mods_tuple, health); shorter legacy
+    shapes are accepted: missing mods = (), missing health = -1.0."""
+    flat: list = []
+    for entry in list(pieces)[:12]:
+        fid, cnt = entry[0], entry[1]
+        mods = tuple(entry[2]) if len(entry) > 2 else ()
+        mods = mods[:8]
+        health = float(entry[3]) if len(entry) > 3 else -1.0
+        flat.extend((fid, cnt, len(mods)))
+        flat.extend(mods)
+        flat.extend((0,) * (8 - len(mods)))
+        flat.append(health)
+    while len(flat) < 12 * 12:
+        flat.extend((0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1.0))
+    return flat
+
+
+def _unflatten_pieces(flat, n) -> tuple:
+    out = []
+    for i in range(min(n, 12)):
+        base = i * 12
+        fid, cnt, mod_n = flat[base], flat[base + 1], flat[base + 2]
+        mods = tuple(flat[base + 3:base + 3 + min(mod_n, 8)])
+        health = flat[base + 11]
+        out.append((fid, cnt, mods, health))
+    return tuple(out)
+
+
+@dataclass(frozen=True, slots=True)
+class WorldSpawnOpPayload:
+    """B6.14 v22 — client -> server: 'I just created a REFR in my world'.
+
+    Sender is the PlaceAtMe detour (player-anchored creations only for now:
+    console spawns, script spawns on the player). The sender's REFR is
+    flagged TEMPORARY the moment this ships: from here on the SERVER owns the
+    object's lifetime, and the join bootstrap re-creates it everywhere.
+    flags bit0 = transient (broadcast, never persisted).
+    """
+    base_form_id: int    # u32 — base form that was placed
+    local_form_id: int   # u32 — sender's new REFR (bind target on echo)
+    px: float
+    py: float
+    pz: float
+    rx: float
+    ry: float
+    rz: float
+    cell_id: int         # u32
+    flags: int           # u8 — bit0 transient
+    timestamp_ms: int    # u64
+    # v23 — PA frame content at announce: up to 12 (form_id, count) pairs.
+    pieces: tuple = ()
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct(
+        "<II6fIBQB" + "IiB8If" * 12)  # 586B (v25: mods + health per piece)
+
+    def encode(self) -> bytes:
+        flat = _flatten_pieces(self.pieces)
+        return self._STRUCT.pack(
+            self.base_form_id, self.local_form_id,
+            self.px, self.py, self.pz, self.rx, self.ry, self.rz,
+            self.cell_id, self.flags & 0xFF, self.timestamp_ms,
+            min(len(self.pieces), 12), *flat,
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "WorldSpawnOpPayload":
+        if len(data) != cls._STRUCT.size:
+            raise ValueError(
+                f"WorldSpawnOpPayload: expected {cls._STRUCT.size} bytes, "
+                f"got {len(data)}")
+        vals = cls._STRUCT.unpack(data)
+        (base, local, px, py, pz, rx, ry, rz, cell, flags, ts, n) = vals[:12]
+        pieces = _unflatten_pieces(vals[12:], n)
+        return cls(base, local, px, py, pz, rx, ry, rz, cell, flags, ts,
+                   pieces)
+
+
+@dataclass(frozen=True, slots=True)
+class WorldSpawnBroadcastPayload:
+    """B6.14 v22 — server -> ALL clients (sender included).
+
+    The sender recognises itself by peer_id and binds wid -> its existing
+    REFR instead of placing a second copy. On the join bootstrap peer_id is
+    synthesized as 'server' (the lock-bootstrap idiom), so even the original
+    spawner re-places: its TEMPORARY original did not survive the restart,
+    which is exactly the design — the server owns spawned-object lifetime.
+    """
+    peer_id: str
+    wid: int
+    base_form_id: int
+    spawner_local_fid: int
+    px: float
+    py: float
+    pz: float
+    rx: float
+    ry: float
+    rz: float
+    cell_id: int
+    flags: int
+    timestamp_ms: int
+    # v23 — the server-ledger piece list rides with every spawn broadcast.
+    pieces: tuple = ()
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct(
+        "<16sIII6fIBQB" + "IiB8If" * 12)  # 606B (v25)
+
+    def encode(self) -> bytes:
+        pid = self.peer_id.encode("utf-8")[:16].ljust(16, b"\x00")
+        flat = _flatten_pieces(self.pieces)
+        return self._STRUCT.pack(
+            pid, self.wid, self.base_form_id, self.spawner_local_fid,
+            self.px, self.py, self.pz, self.rx, self.ry, self.rz,
+            self.cell_id, self.flags & 0xFF, self.timestamp_ms,
+            min(len(self.pieces), 12), *flat,
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "WorldSpawnBroadcastPayload":
+        if len(data) != cls._STRUCT.size:
+            raise ValueError(
+                f"WorldSpawnBroadcastPayload: expected {cls._STRUCT.size} "
+                f"bytes, got {len(data)}")
+        vals = cls._STRUCT.unpack(data)
+        (pid, wid, base, sfid, px, py, pz, rx, ry, rz,
+         cell, flags, ts, n) = vals[:14]
+        pieces = _unflatten_pieces(vals[14:], n)
+        peer = pid.split(b"\x00", 1)[0].decode("utf-8", "replace")
+        return cls(peer, wid, base, sfid, px, py, pz, rx, ry, rz,
+                   cell, flags, ts, pieces)
+
+
+
+@dataclass(frozen=True, slots=True)
+class WorldDespawnOpPayload:
+    """B6.14 v22 — client -> server: 'spawned object wid just died in my world'.
+
+    Sent by the lifecycle sweep that polls every bound wid: the deleted flag,
+    the disabled flag, or vanishing from the form table while its cell is the
+    player's current cell all count as death. Reason codes are diagnostic.
+    """
+    wid: int             # u32
+    reason: int          # u8 — 1 deleted, 2 disabled, 3 vanished same-cell
+    timestamp_ms: int    # u64
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IBQ")  # 13B
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(self.wid, self.reason & 0xFF,
+                                 self.timestamp_ms)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "WorldDespawnOpPayload":
+        if len(data) != cls._STRUCT.size:
+            raise ValueError(
+                f"WorldDespawnOpPayload: expected {cls._STRUCT.size} bytes, "
+                f"got {len(data)}")
+        wid, reason, ts = cls._STRUCT.unpack(data)
+        return cls(wid, reason, ts)
+
+
+@dataclass(frozen=True, slots=True)
+class WorldDespawnBroadcastPayload:
+    """B6.14 v22 — server -> ALL clients: drop your copy of wid.
+
+    The reporter included: it already lost its local object, so its handler
+    just unbinds the registry entry. Everyone else disables their copy.
+    """
+    peer_id: str
+    wid: int
+    reason: int
+    timestamp_ms: int
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<16sIBQ")  # 29B
+
+    def encode(self) -> bytes:
+        pid = self.peer_id.encode("utf-8")[:16].ljust(16, bytes(1))
+        return self._STRUCT.pack(pid, self.wid, self.reason & 0xFF,
+                                 self.timestamp_ms)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "WorldDespawnBroadcastPayload":
+        if len(data) != cls._STRUCT.size:
+            raise ValueError(
+                f"WorldDespawnBroadcastPayload: expected {cls._STRUCT.size} "
+                f"bytes, got {len(data)}")
+        pid, wid, reason, ts = cls._STRUCT.unpack(data)
+        peer = pid.split(bytes(1), 1)[0].decode("utf-8", "replace")
+        return cls(peer, wid, reason, ts)
+
+
+@dataclass(frozen=True, slots=True)
+class WorldPaPiecesOpPayload:
+    """v23 — client -> server: full piece list for wid after a manual
+    take/put on a PA frame. Full-state on purpose: the server ledger is
+    REPLACED, never patched, so delta-ordering bugs cannot exist."""
+    wid: int             # u32
+    timestamp_ms: int    # u64
+    pieces: tuple = ()   # up to 12 (form_id, count) pairs
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct(
+        "<IB" + "IiB8If" * 12 + "Q")  # 553B (v25)
+
+    def encode(self) -> bytes:
+        flat = _flatten_pieces(self.pieces)
+        return self._STRUCT.pack(self.wid, min(len(self.pieces), 12),
+                                 *flat, self.timestamp_ms)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "WorldPaPiecesOpPayload":
+        if len(data) != cls._STRUCT.size:
+            raise ValueError(
+                f"WorldPaPiecesOpPayload: expected {cls._STRUCT.size} "
+                f"bytes, got {len(data)}")
+        vals = cls._STRUCT.unpack(data)
+        wid, n = vals[0], vals[1]
+        pieces = _unflatten_pieces(vals[2:-1], n)
+        ts = vals[-1]
+        return cls(wid, ts, pieces)
+
+
+@dataclass(frozen=True, slots=True)
+class WorldPaPiecesBroadcastPayload:
+    """v23 — server -> OTHER clients (reporter excluded): replace your
+    replica's content for wid. Applied by destroy-and-replace client-side."""
+    peer_id: str
+    wid: int
+    timestamp_ms: int
+    pieces: tuple = ()
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct(
+        "<16sIB" + "IiB8If" * 12 + "Q")  # 569B (v25)
+
+    def encode(self) -> bytes:
+        pid = self.peer_id.encode("utf-8")[:16].ljust(16, bytes(1))
+        flat = _flatten_pieces(self.pieces)
+        return self._STRUCT.pack(pid, self.wid, min(len(self.pieces), 12),
+                                 *flat, self.timestamp_ms)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "WorldPaPiecesBroadcastPayload":
+        if len(data) != cls._STRUCT.size:
+            raise ValueError(
+                f"WorldPaPiecesBroadcastPayload: expected {cls._STRUCT.size} "
+                f"bytes, got {len(data)}")
+        vals = cls._STRUCT.unpack(data)
+        pid, wid, n = vals[0], vals[1], vals[2]
+        pieces = _unflatten_pieces(vals[3:-1], n)
+        ts = vals[-1]
+        peer = pid.split(bytes(1), 1)[0].decode("utf-8", "replace")
+        return cls(peer, wid, ts, pieces)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3967,6 +4229,12 @@ _TYPE_TO_PAYLOAD_CLS: dict[int, type] = {
     MessageType.MESH_BLOB_BCAST:       MeshBlobChunkBroadcastPayload,
     MessageType.LOCK_OP:               LockOpPayload,
     MessageType.LOCK_BCAST:            LockBroadcastPayload,
+    MessageType.WORLD_SPAWN_OP:        WorldSpawnOpPayload,
+    MessageType.WORLD_SPAWN_BCAST:     WorldSpawnBroadcastPayload,
+    MessageType.WORLD_DESPAWN_OP:      WorldDespawnOpPayload,
+    MessageType.WORLD_DESPAWN_BCAST:   WorldDespawnBroadcastPayload,
+    MessageType.WORLD_PA_PIECES_OP:    WorldPaPiecesOpPayload,
+    MessageType.WORLD_PA_PIECES_BCAST: WorldPaPiecesBroadcastPayload,
     MessageType.NPC_STATE_BCAST:       NPCStateBroadcastPayload,
     MessageType.NPC_FIRE:              NPCFirePayload,
     MessageType.NPC_DISCOVER:          NPCDiscoverPayload,

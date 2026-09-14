@@ -141,9 +141,16 @@ void* resolve_inventory_entry_form(void* entry_ptr);
 //       TESObjectREFR** out,       // output slot (written to)
 //       BGSObjectRefHandle* handle); // input handle pointer
 //
-// `out` receives the REFR* or null (if handle is stale). The helper also
-// increments a refcount internally, but since we only READ the handle's
-// target identity (not store the REFR long-term), that's fine.
+// `out` receives the REFR* or null (if handle is stale).
+//
+// Build 70 (Piano A Fase 0) — the old note here said the resolver's internal
+// refcount increment was "fine" because we only read. It was not fine: the
+// +1 was never released, one pinned ref per successful call, and the count
+// field is 10 bits — see the release block in the .cpp. The wrapper now
+// drops the ref before returning (the engine's own release idiom), so the
+// pointer is a BORROW: valid for immediate main-thread use because the
+// handle table itself still holds a strong ref, but never cache it across
+// frames — take the formID and re-resolve instead.
 //
 // Returns the REFR* on success, nullptr on any failure (null handle,
 // stale handle, SEH raise).
@@ -373,6 +380,53 @@ bool actor_atomic_teleport(void* actor,
 bool actor_teleport_handoff(void* actor,
                             float pos_x, float pos_y, float pos_z,
                             float yaw_rad);
+
+// B6.14 - world-object spawn sync.
+//
+// True while a PlaceAtMe issued by THIS DLL is on the stack (ghost donor,
+// world-spawn receive apply). The sender detour checks it so our own
+// placements never re-broadcast.
+bool in_internal_place() noexcept;
+
+// PlaceAtMe any base form at the player anchor, flag the REFR TEMPORARY
+// (the server owns spawned-object lifetime), return it with its minted form
+// id. Null when the world is not ready - the caller retries. MAIN THREAD.
+void* place_world_object(std::uint32_t base_form_id,
+                         std::uint32_t* out_form_id) noexcept;
+
+// Move ANY loaded REFR (furniture included) to a position + yaw through the
+// REFR::SetPosition leaf. The actor teleport refuses non-actors; this does
+// not. Same-cell moves only for now - the leaf does not re-file the parent
+// cell. MAIN THREAD.
+bool move_world_refr(void* refr, float x, float y, float z,
+                     float yaw_rad) noexcept;
+
+// Build 70f - CORRECT final placement of a freshly placed world REFR: forced
+// upright (pitch/roll zero, wire yaw), Z snapped to the ground under the
+// target (engine raycast, filter 0x3002A, terrain-height fallback; the snap
+// is refused when the found ground is more than 96 units from the wire Z so
+// bridges and multi-floor targets keep the wire truth), then the CELL
+// RE-FILE the engine performs on every move and the mod never did — guarded
+// by IsCellAttached, because the re-file DESTROYS a non-persistent ref whose
+// derived cell is not attached. MAIN THREAD ONLY.
+struct PlacementResult {
+    bool  moved   = false;   // position leaf ran
+    bool  snapped = false;   // Z corrected onto found ground
+    float dz      = 0.0f;    // applied Z correction (0 when not snapped)
+    bool  refiled = false;   // re-filed into the target cell (or already there)
+};
+PlacementResult finalize_world_placement(void* refr, float x, float y, float z,
+                                         float yaw_rad) noexcept;
+
+// Build 70 - ACTUAL removal of a world REFR (the duplicate-PA fix).
+// disable_ref(fade=true) is proven broken for our TEMPORARY refs: the fade
+// entry never leaves the engine's queue and the object stays visible while
+// the log reports success. This is the engine's own removal idiom instead
+// (Unpersist kill branch / workshop scrap core): vt[+0x580] disable
+// primitive -> RemoveReference from the parent cell -> GetHandle ->
+// DestroyByHandle. Returns true when the destruction was queued.
+// MAIN THREAD ONLY. Never call on the player or on another actor.
+bool destroy_world_refr(void* refr) noexcept;
 
 // One-shot per tracked NPC: set the actor's Havok motion type to
 // Keyframed (=2). After this, Havok stops driving the body — our atomic

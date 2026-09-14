@@ -152,6 +152,16 @@ inline void* ghost_ptr() noexcept {
 // Resolve a packed handle to the actor pointer in the global handle
 // table (unk_1430DA390, 16-byte stride, image-base-relative).
 //
+// !! DEAD CODE, kept only as a warning (Build 70, Piano A Fase 0) !!
+// No caller since Build 43b pivoted aiproc_targets_ghost to raw handle
+// comparison. It is ALSO doubly broken: (a) 0x1430DA390 holds a POINTER to
+// the entry array and this walks the slot address itself (the same missing
+// dereference fixed in engine_calls::resolve_handle_inline — see
+// offsets.h HANDLE_TABLE_BASE_RVA), and (b) the base is derived from
+// g_orig_hostility, which is null now that ghost_hostility_guard owns that
+// hook. Do NOT resurrect this: call
+// fw::engine::resolve_handle_to_formid / resolve_handle_inline instead.
+//
 // Inline copy of the engine's resolver (sub_14022CC20 funcs_0120.md)
 // minus refcount mutation — read-only.
 //

@@ -203,6 +203,52 @@ void store_npc_crouch(std::uint32_t form_id,
 // sleeping), then calls detach_debug_node(). Idempotent.
 void shutdown();
 
+// Build 70t — the PA-poison BISECT, and its measuring instrument.
+//
+// Everything else has been ruled out BY MEASUREMENT: the body cull, the
+// clone method, shared-vs-clone routing, the load flags, the model-DB cache
+// entry (cache hits provably return a plain NiNode), and — as of Build 70s,
+// "0/3 shared" on every load — the shared BSSkin::Instance.
+//
+// What is left is what the mod DOES with the clone. Rather than guess a
+// fourth time, each power-armor attach now runs in a rotating mode and says
+// so in the log; the probe below counts the geometry leaves under the LOCAL
+// player's 3D right after its own PA build. Correlating the two answers the
+// question in one session, with no reliance on eyesight:
+//
+//   mode 0 FULL          materials + attach + skin swap   (baseline)
+//   mode 1 NO-MATERIALS  skip apply_materials on the clone
+//   mode 2 NO-SKINSWAP   skip the bone rebind on the clone
+//   mode 3 LOAD+CLONE    build the clone and throw it away (nothing attached)
+//
+// Whichever mode stops the poisoning names the culprit. If mode 3 poisons
+// too, the load/clone pair itself is guilty and everything downstream is
+// innocent.
+int  pa_bisect_mode();            // current mode, for the log
+const char* pa_bisect_mode_name();
+
+// Geometry leaves (BSSubIndexTriShape + BSTriShape) under the local
+// player's 3D. A healthy power-armour body carries the frame's own
+// geometries; a poisoned build is missing them. Any thread, SEH-caged.
+int count_local_player_geometries();
+
+// Build 71 — name every geometry leaf under the local player's 3D, so the
+// ghost's power-armour subtree can be diffed against the real thing
+// instead of guessed at. The skin-swap log already names the clone's
+// geometries (PAFrame01:0, basesuit_reduced:0); this supplies the other
+// half of the comparison. Main thread, SEH-caged, log-budgeted.
+void log_local_player_geometry_names(const char* label);
+
+// Build 70i — PA body-loss diagnostic, OBSERVE-ONLY. Walks the LOCAL
+// player's 3D subtree (both candidate roots, depth <= 3) and logs one line
+// per node: vt RVA, NIAV flags with the APP_CULLED bit called out, name.
+// Purpose: the "floating head in power armor" bug (both clients, ghosts
+// fine) needs evidence about WHICH nodes exist and which are culled at the
+// moment of the enter, instead of another round of theories. Called from
+// world_spawn's PA enter/exit detection (main thread). Log-budgeted:
+// first 48 nodes + total count.
+void dump_local_player_tree(const char* label);
+
 // === M9 wedge 2 — armor visual sync on the ghost body =====================
 //
 // Approach: when the receiver gets EQUIP_BCAST(form_id) for a peer, we
@@ -250,8 +296,22 @@ void shutdown();
 // (back-compat for non-ARMO or pre-v10 callers). Receiver feeds into
 // resolve_armor_nif_path's PrioritySelect filter.
 bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
-                        std::uint16_t effective_priority = 0);
+                        std::uint16_t effective_priority = 0,
+                        const char* nif_path_override = nullptr);
 bool ghost_detach_armor(const char* peer_id, std::uint32_t item_form_id);
+
+// v24 E4 — POWER-ARMOUR PIECE MODELS ON THE GHOST. A PA piece's ARMA is a
+// placeholder shared by every PA model (ESM: AA_Power_Torso serves T-45,
+// T-51, T-60 and X-01 alike, biped model Armor\PowerArmor\ArmorPABody.nif);
+// the visible geometry is the MODL of the piece's model OMOD (PA_X01_Torso
+// -> Actors\PowerArmor\CharacterAssets\Mods\PA_X1_Body.nif, a skinned
+// mesh). After the piece itself is attached, this resolves each received
+// OMOD's model path and attaches it as its own skinned armour entry keyed
+// by the OMOD form; ghost_detach_armor of the piece drops them again.
+// Returns the number of model mods attached. Main thread.
+int ghost_attach_pa_piece_mods(const char* peer_id, std::uint32_t piece_form_id,
+                               const std::uint32_t* omod_form_ids,
+                               std::size_t omod_count);
 
 // M9 wedge 2 — flush deferred armor ops accumulated while the ghost
 // wasn't yet spawned. Pending queue addresses the boot-time race where

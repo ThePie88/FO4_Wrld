@@ -5,6 +5,208 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## Power armor, three quarters of it, and the start of world-object sync (2026-09-14) — v0.7.5
+
+Tag `v0.7.5`, wire proto v25 (four bumps in this release: v22 world-object
+spawns, v23 power-armor pieces, v24 piece mods, v25 piece condition and core
+charge). This is not the whole power-armor system. Paint jobs and material
+mods are not replicated yet, and a frame is lost for everyone if its wearer
+quits the game while inside it. What is in: a frame left anywhere, with any
+pieces mounted at any upgrade level and condition, is the same frame on every
+client and can be entered by anyone; the wearer's ghost shows the frame with
+its pieces on. Underneath it there is a first version of world-object sync,
+which is the part I expect to reuse for everything else that gets placed in
+the world. Also here: the bug that cost me two days, four engine facts I paid
+for, and a Steam version-pin tool.
+
+### World-object spawn sync (B6.14, first version)
+
+A REFR placed in one client's world is reported to the server, which mints a
+logical id (`wid`), stores it, and broadcasts it to everyone including the
+sender. The sender uses its own echo to bind the wid to the REFR it already
+has; every other client places a local copy from the base form. From then on
+every operation on the object travels by wid, because a form id minted by
+`PlaceAtMe` means nothing on another machine. Objects created this way are
+flagged TEMPORARY on purpose: the server owns their lifetime, saves do not.
+
+- **Two spawn paths, one reporter.** The console does not use the Papyrus
+  `PlaceAtMe` native. I found that out on the first live test, when
+  `player.placeatme` went through its own worker (`sub_1405E05D0`, handle
+  out-parameter) and my detour never fired. Both paths are detoured now and
+  feed one reporter. Only player-anchored creations broadcast; everything
+  else is observed and logged, so the next widening of the filter can be
+  chosen from data instead of guesses.
+- **Placement the engine accepts.** Upright rotation, ground raycast snap
+  through `bhkPickData`, then the cell re-file that is step 4 of the
+  engine's own move (`0x514C50`), gated on the target cell being attached.
+  Placement waits behind a range gate of about one exterior cell: the first
+  build placed a far object straight from the join bootstrap, the engine
+  deleted the inconsistent temp ref within a second, my sweep honestly
+  reported the death, and the server killed everyone's copy. A false kill
+  that looked exactly like broken persistence.
+- **Lifecycle by polling.** A once-per-second sweep reports death by wid
+  when the deleted flag appears, the disabled flag appears, or the form
+  vanishes while its cell is loaded. A replica the engine destroys through
+  cell streaming (the power-armor janitor at `+0x109DAA7` eats any frame
+  whose parent cell unloads) is re-queued for placement on approach instead
+  of reported: a local streaming death is not a world event. I chose a poll
+  over teardown hooks because every hook on a destruction path in this
+  project's history has bitten.
+- **Removal is removal.** The old disable-with-fade parked the ref in a fade
+  queue forever, still visible, and the next resurrection placed a second
+  frame next to it. The real idiom is disable, `RemoveReference`,
+  `GetHandle`, `DestroyByHandle`, after clearing the no-save flag `0x4000`
+  first: otherwise the save system's `ClearForm` walked a dangling entry,
+  which was the post-death crash of the first test night.
+- **Resurrection watch.** Entering a power-armor frame disables the ref;
+  exiting re-enables the same one. A self-reported death goes on a watch
+  list, and the moment the ref is alive again it is re-announced as a new
+  spawn at its live position. The server mints a fresh wid and everyone
+  places again.
+- **No placement into an unstable world.** Two gates born from one freeze:
+  the tick pauses during the local death stand-down and after any position
+  jump larger than 5,000 units, because placing two frames into a loading
+  screen froze the client.
+
+### Power armor (B6.13, three quarters)
+
+- **The frame rides the spawn rails.** Enter consumes the frame (a despawn),
+  exit brings it back (a rebirth with a new wid). The duplicate frames of
+  the first tests died with the real removal idiom above.
+- **Pieces are inventory, and mounting is membership.** The RE model said it
+  and the live dumps confirmed it: a PA piece is an ordinary ARMO in the
+  frame's inventory (`REFR+0xF8`), and every mounted piece carries stack
+  flags `0x00`. There is no mounted-versus-stored state to replicate. The
+  piece list travels with every spawn and rebirth announce, the server
+  keeps an authoritative per-wid ledger and persists it, and a replica is
+  stocked through the engine's own Papyrus `AddItem` worker
+  (`sub_1411735A0`, which I traced from the console command table down to
+  the native). The standing frame then renders its pieces by itself and the
+  native enter hands them over.
+- **Manual changes travel as full state.** A take or a put on a frame makes
+  the owner rescan and ship the whole list; the server replaces the ledger
+  and broadcasts to the other clients, which destroy and replace their
+  replica. The rescan is deferred by 300 ms, because the hook sits on the
+  player-side add and at that moment the frame-side removal has not landed
+  yet: an immediate rescan counted six pieces after I had removed one,
+  shipped the stale six, and the removed piece came back on the peer.
+- **A frame is not loot.** The shared-loot layer saw the native enter
+  transfer as six TAKE ops keyed by (base, cell). The first cycle seeded the
+  key and emptied it, exits never refill it, so re-entering in a cell that
+  was already seeded had every take rejected, and a blocked transfer leaves
+  the piece nowhere. Six X-01 pieces destroyed live, and the reason the loss
+  looked random: it depended on which cell you stepped out into. Frames are
+  now exempt from the loot layer in both hooks.
+- **Upgrade levels are mods.** "Same category, different Mk on the other
+  client" was the engine rolling fresh leveled mods on a bare `AddItem`.
+  Every piece now carries its OMOD list (read with the w4 extractor that has
+  snapshotted equip mods since M9) and the replica re-attaches them through
+  the `AttachModToInventoryItem` worker (`sub_1411808F0`; I read the
+  registration in the Papyrus native table).
+- **Condition and core charge** are one datum: the Health extra (type
+  `0x25`) on the stack, 0..1. There is no Papyrus setter in this binary, so
+  the replica creates the extra exactly as the engine does it, pool
+  allocation, `ExtraHealth` constructor, write-lock, `AddExtra`, unlock,
+  the idiom read from the engine's own get-or-create for the power-armor
+  extra. A core at 30% is a core at 30% for whoever takes it.
+- **The dressed ghost.** A PA piece's ARMA is a placeholder shared by every
+  model (`AA_Power_Torso` serves T-45, T-51, T-60 and X-01 alike and points
+  at `Armor\PowerArmor\ArmorPABody.nif`); the visible mesh is the MODL of
+  the piece's model OMOD
+  (`Actors\PowerArmor\CharacterAssets\Mods\PA_X1_Body.nif`), a skinned
+  mesh, exactly like weapon attachments. Each one is attached to the ghost
+  as its own skinned armor keyed by the OMOD form and leaves with the piece.
+  Helmet lamps come through the same path.
+- **A PA skeleton for the ghost.** The frame mesh is skinned to 53 bones and
+  the human skeleton lacks some of them; the piece meshes need more. Every
+  PA-only node (20, from an offline diff of the two skeleton assets, grafted
+  node by node under its human parent) now exists in the ghost skeleton,
+  and while the frame is worn the ghost's bind pose is retargeted to PA
+  proportions: the hand sits 27 units from the forearm in the PA skeleton
+  against 6 in the human one, the foot 53 against 32. Two bones hang from a
+  different parent in the two skeletons (the hands and the Pip-Boy bone),
+  so I solved their locals in model space instead of copying them. The
+  retarget is undone the moment the frame leaves, and only then: an earlier
+  build undid it whenever any piece was unequipped, which put the hands
+  back inside the forearms while the frame was still on.
+
+### The bug that took two days
+
+Whoever entered power armor second lost the body of their own PA build, a
+floating head, deterministically, unless both entered at once. I measured
+and cleared everything downstream: the ghost body cull, the clone method,
+shared-versus-clone routing, the postprocess flag, a shared skin instance,
+the whole attach path (even "load and clone, attach nothing" poisoned the
+next build). The instrument that ended it was an experiment that failed:
+pinning the loaded frame template for the whole session made one client
+permanently broken and the other permanently fine, and the vtable of the
+pinned root told them apart. When the model-DB entry for `Frame.nif` was
+created by my load, its root was a `BSFadeNode`, because the load carried
+the fade-wrap flag; the engine's biped build wants a plain `NiNode` and
+silently produces no body geometry. The engine purged and recreated the
+entry soon after, which is why only the first build after my load broke and
+the next one was fine: the entire "second enterer" law. Every earlier
+attempt had kept the flag (0x18, and 0x10 alone), so the variable that
+mattered had never actually changed. The load now uses the engine's own
+biped flags (`0x2C`): if I create the entry, I create it as the engine
+would.
+
+### Engine facts learned
+
+- `NiNode::AttachChild` grows a full children array through `SetSize`,
+  which frees the old buffer with the pool deallocator. Bones loaded from a
+  skeleton NIF keep their arrays in the loader's arena, so that free faults:
+  four exceptions inside `AttachChild` on one graft, then a per-frame child
+  walk reading a poisoned `-1` slot until the process died. I now pre-grow
+  the array with the same allocation `SetSize` makes and leave the old block
+  alone. The Pip-Boy bone had a capacity of zero all along; every earlier
+  Pip-Boy attach wrote past an empty array.
+- The engine loads the frame NIF only through its own race switch, never
+  through the loader I call, so an entry I create in the model DB is the
+  only one the engine will ever find for that path.
+- The native piece transfer at enter, and every manual take, goes through
+  the same `AddObject` virtual the loot hook detours; exit deposits do not.
+- `sub_14051F050`, the engine's inventory walker, gives the stack layout:
+  next at `+0x10`, extra list at `+0x18`, count at `+0x20`, flags at
+  `+0x24`.
+
+### Steam version pin
+
+Every Bethesda patch makes Steam flag app 377160 as "update required", and
+the Steam launch path would apply it, replacing the binary every offset in
+this project is measured on. Steam compares the manifest's `buildid` and the
+installed depot manifest ids; the buildid alone was not enough this time.
+A local script (kept out of the repo, it carries machine paths) asks
+steamcmd for the current build and depot ids, patches the manifest with
+Steam closed, locks it read-only and reads the verdict from Steam's own log.
+Never press Update or Verify on this app.
+
+### Diagnostics that stay
+
+- `lifecycle_tripwire`: who destroys and unpersists refs, with the caller
+  RVA. The janitor at `+0x109DAA7` was named by it.
+- `pa_pipeline_trace`: every step of the engine's enter, exit and reload
+  pipeline, the frame's inventory before and after the native transfer, and
+  the `[pa-body]` geometry verdict (a healthy PA body build on this save has
+  23 geometry leaves; a poisoned one 20, the frame's three).
+
+### Not finished
+
+- A client that quits or crashes while wearing power armor loses the frame
+  for everyone: the server forgets the wid at enter and only the exit
+  re-announces it. The fix I have in mind (a `worn_by` state instead of a
+  removal, and a re-announce on disconnect) belongs to the session-lifecycle
+  work.
+- Paint jobs and material mods are not replicated on the ghost (material
+  OMODs carry no model).
+- Fingers and toes do not articulate on ghosts: 53 of the 80 canonical
+  joints never leave the sender's render tree (the M8P3 limit).
+- The ghost skeleton is a session singleton; two peers.
+- A reload wave on the local player, about 60 per second and starting
+  seconds after load, is measured (17,516 in five minutes) and unexplained.
+
+---
+
 ## Character creation v1 (2026-08-12) — v0.7.0
 
 Tag `v0.7.0`, wire proto v21. First iteration of the character-creation

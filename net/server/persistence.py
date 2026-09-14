@@ -26,6 +26,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from server.state import (  # noqa: E402
+    WorldSpawnState,
     ServerState, SessionState, ActorWorldState, ContainerWorldState,
     LockWorldState,
 )
@@ -102,6 +103,31 @@ def snapshot(state: ServerState, path: Path, *, pretty: bool = True) -> None:
                 "timestamp_ms": lk.timestamp_ms,
             }
             for lk in state.all_locks()
+        ],
+        # B6.14 — spawned world objects. These MUST persist: the local copies
+        # on every client are TEMPORARY refs that die with the session, so the
+        # join bootstrap is the only thing that brings a spawned object back.
+        "world_spawns": [
+            {
+                "wid": w.wid,
+                "spawner_peer": w.spawner_peer,
+                "base_form_id": w.base_form_id,
+                "spawner_local_fid": w.spawner_local_fid,
+                "px": w.px, "py": w.py, "pz": w.pz,
+                "rx": w.rx, "ry": w.ry, "rz": w.rz,
+                "cell_id": w.cell_id,
+                "flags": w.flags,
+                "timestamp_ms": w.timestamp_ms,
+                # v23 — the frame's content survives a server restart with
+                # the object itself.
+                "pieces": [
+                    [int(e[0]), int(e[1]),
+                     [int(m) for m in (e[2] if len(e) > 2 else ())],
+                     float(e[3]) if len(e) > 3 else -1.0]
+                    for e in w.pieces
+                ],
+            }
+            for w in state.all_world_spawns()
         ],
         # v20 — appearances, keyed by peer id. These MUST persist: a character
         # is made once and then never again, so losing this map on a server
@@ -300,6 +326,33 @@ def load_into(state: ServerState, path: Path) -> int:
     if appearance_skipped:
         log.warning("snapshot %s: skipped %d malformed appearance entries",
                     path, appearance_skipped)
+
+    # B6.14 — restore spawned world objects and keep the wid counter ahead of
+    # everything ever issued, so a restart can never mint a duplicate wid.
+    for w in data.get("world_spawns", []):
+        try:
+            st = WorldSpawnState(
+                wid=int(w["wid"]),
+                spawner_peer=str(w.get("spawner_peer", "server")),
+                base_form_id=int(w["base_form_id"]),
+                spawner_local_fid=int(w.get("spawner_local_fid", 0)),
+                px=float(w["px"]), py=float(w["py"]), pz=float(w["pz"]),
+                rx=float(w.get("rx", 0.0)), ry=float(w.get("ry", 0.0)),
+                rz=float(w.get("rz", 0.0)),
+                cell_id=int(w.get("cell_id", 0)),
+                flags=int(w.get("flags", 0)),
+                timestamp_ms=int(w.get("timestamp_ms", 0)),
+                pieces=tuple(
+                    (int(e[0]), int(e[1]),
+                     tuple(int(m) for m in (e[2] if len(e) > 2 else ())),
+                     float(e[3]) if len(e) > 3 else -1.0)
+                    for e in w.get("pieces", []) if len(e) >= 2),
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+        state.world_spawns[st.wid] = st
+        if st.wid >= state.next_world_spawn_wid:
+            state.next_world_spawn_wid = st.wid + 1
 
     if lock_skipped:
         log.warning(

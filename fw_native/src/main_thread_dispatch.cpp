@@ -6,6 +6,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <string>
+#include <thread>     // Build 70q — deferred PA-attach repost worker
 #include <unordered_map>
 #include <unordered_set>
 #include <windows.h>  // GetTickCount64 — Build 65.c.22 staleness check
@@ -15,6 +16,7 @@
 #include "hooks/ownership_manager.h" // Build 65.c.10 — owner-driven apply gate
 #include "hooks/npc_ai_suppress.h"  // Build 65.c.47 WEDGE3 — mark_dying (corpse guard)
 #include "hooks/npc_hp_probe.h"     // HP bar — apply_pool_health_to_actor (vita-dal-pool)
+#include "hooks/pa_pipeline_trace.h" // Build 70q — last_local_pa_transition_ms (PA attach defer)
 #include "log.h"
 #include "native/scene_inject.h"    // M9 wedge 2: ghost armor attach/detach
 #include "offsets.h"                // Build 53: POS_OFF for ghost.+0xD0 read
@@ -1195,6 +1197,13 @@ void drain_equip_apply_queue() {
         // EquipOpKind: 1=EQUIP, 2=UNEQUIP. See net/protocol.h.
         const bool is_equip = (op.kind == 1);
 
+        // Build 70q's PA defer is GONE (70r). It guarded "local transition
+        // then attach"; the measured failure is the OPPOSITE order —
+        // "attach then local build" — so it protected nothing and only
+        // delayed the poisoning. The PA attach is now refused outright in
+        // ghost_attach_armor; see the law written out in the block comment
+        // there.
+
         // Pass 1 — try as ARMOR.
         // M9.w2 PROPER (v10): pass effective_priority from the wire so
         // resolve_armor_nif_path's PrioritySelect filter picks the right
@@ -1203,6 +1212,15 @@ void drain_equip_apply_queue() {
             ? fw::native::ghost_attach_armor(op.peer_id, op.item_form_id,
                                               op.effective_priority)
             : fw::native::ghost_detach_armor(op.peer_id, op.item_form_id);
+
+        // v24 E4 — a power-armour piece is a placeholder ARMA plus the
+        // skinned mesh of its model OMOD; the wire carries the OMOD list,
+        // the receiver attaches the mesh (no-op for every other armour).
+        if (ok && is_equip) {
+            (void)fw::native::ghost_attach_pa_piece_mods(
+                op.peer_id, op.item_form_id, op.omod_form_ids,
+                op.omod_count);
+        }
 
         // Pass 2 — if armor returned false, try as WEAPON. The armor
         // path returning false means either:

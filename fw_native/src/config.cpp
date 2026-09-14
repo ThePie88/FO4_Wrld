@@ -273,7 +273,13 @@ Settings load(const std::filesystem::path& path) {
             if (v == "1" || v == "true" || v == "yes" || v == "on" ||
                 v == "TRUE" || v == "YES" || v == "ON") {
                 s.ghost_face_clone = true;
-            } else if (v == "0" || v == "false" || v == "no" || v == "off" ||
+            } else if (key == "world_spawn_sync") {
+            if (value == "true" || value == "1") {
+                s.world_spawn_sync = true;
+            } else if (value == "false" || value == "0") {
+                s.world_spawn_sync = false;
+            }
+        } else if (v == "0" || v == "false" || v == "no" || v == "off" ||
                        v == "FALSE" || v == "NO" || v == "OFF") {
                 s.ghost_face_clone = false;
             } else {

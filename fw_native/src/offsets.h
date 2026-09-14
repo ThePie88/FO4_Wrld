@@ -604,11 +604,210 @@ constexpr std::size_t NI_CAMERA_VIEWPROJ_OFF    = 288;
 // THREAD-UNSAFE: reads NtCurrentTeb TLS + takes REFR cell-attach lock.
 // Must be called from the engine's main thread (WndProc dispatch path).
 constexpr std::uintptr_t PLACE_AT_ME_RVA = 0x01159C10;
+// B6.14 — the CONSOLE's placement worker: sub_1405E05D0(u32* out_handle,
+// TESObjectREFR* target, TESForm* base, int count, int, int, float scale,
+// char persist) -> writes the new REFR's HANDLE into *out_handle, delegates
+// to sub_1405E0800 for the creation. Found by walking the console command
+// table (PlaceAtMe = opcode 0x1025, handler sub_1405C4DE0). Two reasons it
+// matters: the console does NOT route through the Papyrus native above, and
+// the Papyrus native REFUSES some bases the worker places happily — measured
+// live with the power-armor frame 0x0002079E, which the Papyrus path
+// returned null on 240/240 attempts while the console placed it first try.
+constexpr std::uintptr_t CONSOLE_PLACE_WORKER_RVA = 0x005E05D0;
 
 // TEMPORARY flag bit in the Actor/REFR flags field at offset +0x10.
 // PlaceAtMe hardcodes NEW_REFR_DATA flags to 0x1000000 only. To avoid
 // save bloat we OR in 0x4000 post-return.
+//
+// Build 70 WARNING (cellsweep): 0x4000 is NOT a passive "skip me at save
+// time" bit. Census: 114 test sites in 94 functions (re/_flag_4000_census.md).
+// Proven consequences: Papyrus Disable/Enable ERROR out on it, console
+// disable skips it SILENTLY, AddChange is a no-op, and GetSaveParentCell
+// (slot 190) resolves the cell from ExtraData instead of +0xB8 for exterior
+// refs. Destruction (DestroyByHandle) still works — the two 0x4000 tests in
+// sub_140C23EC0 only skip notifications (read in full, funcs_0296.md).
 constexpr std::uint32_t REFR_FLAG_TEMPORARY = 0x00004000;
+
+// ============================================================================
+// Build 70 (Piano B Fase 0) — lifecycle tripwire targets. Both READ END TO
+// END this session, not agent hearsay.
+//
+// DestroyByHandle sub_140C23EC0 (funcs_0296.md, 0x124 bytes): THE runtime
+// destruction funnel. Resolves the handle (+1 ref), unregisters, releases
+// the public handle (sub_1402F1F30), re-mints a private one, calls
+// vt[0x208](refr, 0, 1), queues the object for the deferred free
+// (predicate sub_140C2A110: frees at refcount <= 2), then drops its own
+// ref. Every engine removal path funnels here: the disable-queue drain's
+// L_DESTROY phase, cell detach purge, scrap, Unpersist's kill branch.
+//
+// Unpersist sub_1403380C0 (funcs_0143.md:11236, 0x230 bytes): signature
+// (mgr @ 0x1430DD820, TESObjectREFR*, tag, char a4). Strips forced
+// persistence (extra 0x8C must match `tag`, then SetPersistent(false)) and
+// — the reason we watch it — DESTROYS the ref when `!parentCell ||
+// cell+0x44 == 0` (also when wants-delete is set and the 3D is gone).
+// The power-armor EXIT path calls this on the frame: an exit mirrored
+// while the frame's cell is unloaded deletes the frame. TLS memory-context
+// byte saved/restored inside => MAIN THREAD ONLY.
+// ============================================================================
+constexpr std::uintptr_t DESTROY_BY_HANDLE_RVA       = 0x00C23EC0;
+constexpr std::uintptr_t UNPERSIST_PROMOTED_REF_RVA  = 0x003380C0;
+
+// ============================================================================
+// Build 70 — REAL REMOVAL primitives (the duplicate-PA fix). The old receiver
+// despawn called disable_ref(fade=true) = enqueue 0x1405B3EE0 with fade — a
+// branch that NEVER arms the fade counter (node+0x11C=9 is written only by
+// console Disable), so the entry sat in L_FADEOUT forever: object visible,
+// log says success. On PA exit the resurrection announce placed a SECOND
+// copy next to the never-removed first = the duplicate the user saw.
+//
+// The replacement is the engine's own removal idiom, assembled from paths it
+// runs live daily (Unpersist kill branch funcs_0143.md:11236; workshop scrap
+// removal core):
+//   1. vt[+0x580] disable primitive sub_140515C90 — immediate scene-graph
+//      removal, bypasses the deferred queue and every 0x4000-refusing
+//      wrapper. Slot BYTE-VERIFIED in 08_data_section.hex: qword at
+//      0x14249CBC8+0x580 = 90 5C 51 40 01 = 0x140515C90.
+//   2. TESObjectCELL::RemoveReference sub_1404CC240(cell, refr) — un-file
+//      from the cell array + detach notifications + SetParentCell(null).
+//      NULL CELL IS NOT GUARDED (DEEP_1404CC240) — caller must check.
+//      Main thread only; cell ref-lock is recursive on the same thread.
+//   3. GetHandle sub_140519190(refr, u32* out) — writes the null-handle
+//      constant when refcount bits are 0 (body read in full: guard `!a1 ||
+//      (refr+0x28 & 0x3FF)`), else mints/returns the real handle.
+//   4. DestroyByHandle sub_140C23EC0(u32*) — release + deferred free.
+// ============================================================================
+constexpr std::uintptr_t CELL_REMOVE_REFERENCE_RVA   = 0x004CC240;
+constexpr std::uintptr_t REFR_GET_HANDLE_RVA         = 0x00519190;
+constexpr std::size_t    TESOBJECTREFR_VT_DISABLE_OFF = 0x580;
+
+// ============================================================================
+// Build 70f — CORRECT PLACEMENT: ground snap + cell re-file (the 2x1).
+// All contracts from re/physics_control_model.md and re/cell_object_model.md.
+//
+// GROUND SNAP. The engine's own raycast wrappers (no hand-built havok
+// structs): bhkPickData init sub_1402DC250(q, filterInfo, from[3], to[3])
+// takes GAME units and converts internally; the cast runner sub_1404CA830
+// (cell, q) resolves cell->bhkWorld and takes the world read lock itself
+// (main thread); hit validity sub_141878670 reads q+0xBC; the hit POSITION
+// at q+0x60 is an hkVector4 in HAVOK units — multiply by 69.991249.
+// bhkPickData is >= 0xE0 bytes, 16-byte aligned. Filter 0x3002A is the one
+// placeatme's own anti-clip cast uses — known to hit world geometry (roads
+// and floors included, not just terrain). Fallback for exteriors:
+// sub_1404CA8F0(cell, pos, &outZ) — bilinear terrain height off the 17x17
+// land grid, no locks, false on interiors.
+//
+// CELL RE-FILE. sub_140514C50(refr, interiorCell|null, worldspace|null) —
+// the step every engine move performs and the mod never did (T4c in the
+// model). Exterior form (refr, null, ws) derives the cell from refr+0xD0
+// with >>12. DANGER, verified: it DESTROYS a non-actor non-persistent ref
+// whose derived cell is NOT attached — the pre-check below is mandatory.
+// IsCellAttached sub_1402CFA00(TES @ deref(0x1432D2048), cell, mode0):
+// state byte cell+0x44 in [3,8] (critic pass read the 0x24-byte body).
+// Exterior cell lookup sub_1402F2320(ws, i16 gx, i16 gy) is pure and may
+// legitimately return null for a cell not brought in.
+// ============================================================================
+constexpr std::uintptr_t BHK_PICK_INIT_FROMTO_RVA    = 0x002DC250;
+constexpr std::uintptr_t BHK_PICK_CAST_CELL_RVA      = 0x004CA830;
+constexpr std::uintptr_t BHK_PICK_HAS_HIT_RVA        = 0x01878670;
+constexpr std::size_t    BHK_PICK_HIT_POS_OFF        = 0x60;
+constexpr std::uint32_t  BHK_PICK_FILTER_WORLD       = 0x3002A;
+constexpr float          HAVOK_TO_GAME_UNITS         = 69.991249f;
+constexpr std::uintptr_t TERRAIN_HEIGHT_RVA          = 0x004CA8F0;
+constexpr std::uintptr_t REFILE_BY_POSITION_RVA      = 0x00514C50;
+constexpr std::uintptr_t IS_CELL_ATTACHED_RVA        = 0x002CFA00;
+constexpr std::uintptr_t TES_SINGLETON_RVA           = 0x032D2048;
+constexpr std::uintptr_t EXT_CELL_BY_GRID_RVA        = 0x002F2320;
+constexpr std::size_t    CELL_FLAGS40_OFF            = 0x40;  // bit0 = interior
+constexpr std::size_t    CELL_WORLDSPACE_OFF         = 0xC8;
+
+// ============================================================================
+// Build 70m — THE POWER ARMOR PIPELINE (re/pa_system_model.md; enter and
+// replay read END TO END in re/sweep_pa_settlements/DEEP_140989A40.md and
+// the critic pass). State byte = ExtraPowerArmor(0xBB)+0x28: 7/absent = not
+// in PA, 1 = entering, 2 = FULLY IN (the only state the save loader
+// replays), 3..6 = exit ladder.
+//
+//   PA_ENTER_RVA         sub_140989A40(Actor*, REFR* frame, char mode) —
+//                        the WHOLE enter: extra 0xBB create, frame-handle
+//                        link (+0x18), RACE SWITCH (+0x20, race from
+//                        PA_RACE_GETTER — Actor::GetRace returns this from
+//                        then on), equipment strip, armo equip, model
+//                        reload, MakePersistent on the frame, DISABLED via
+//                        deferred task 74, SetState(2). NO preconditions
+//                        inside — guards live in the callers.
+//   PA_EXIT_REQUEST_RVA  sub_14098BAF0(actor, x) — runs only from state 2;
+//                        the real placement happens later in the unwind
+//                        (sub_14098D570, re-file via 0x140514C50).
+//   PA_REPLAY_RVA        sub_14098C9D0(actor) — the save loader's "put this
+//                        actor back into its armor" (fires when the saved
+//                        state byte is 2). The shortest path for late-join
+//                        mirroring once the ghost is an Actor.
+//   PA_MODEL_RELOAD_A/B  sub_140D35EA0(proc, 1312) + sub_140D020E0(proc,
+//                        actor, 1) — enter step 10, the skeleton rebuild.
+//   PA_RACE_GETTER_RVA   sub_140374740() — the cached PowerArmorRace
+//                        global, formType-17-checked (body read this
+//                        session).
+//   EXTRA_GET_BY_TYPE_RVA sub_1402A0030(ExtraDataList*, u32 type) — the
+//                        LOCKED GetByType (the exact call the PA helpers
+//                        make; body of sub_140290560 read this session).
+// ============================================================================
+constexpr std::uintptr_t PA_ENTER_RVA          = 0x00989A40;
+constexpr std::uintptr_t PA_EXIT_REQUEST_RVA   = 0x0098BAF0;
+constexpr std::uintptr_t PA_REPLAY_RVA         = 0x0098C9D0;
+constexpr std::uintptr_t PA_MODEL_RELOAD_A_RVA = 0x00D35EA0;
+constexpr std::uintptr_t PA_MODEL_RELOAD_B_RVA = 0x00D020E0;
+constexpr std::uintptr_t PA_RACE_GETTER_RVA    = 0x00374740;
+constexpr std::uintptr_t EXTRA_GET_BY_TYPE_RVA = 0x002A0030;
+
+// E0 RE (2026-08-16) — sub_1411735A0(refr, form, count, silent, a5, a6):
+// the GameScript (Papyrus) AddItem worker, traced from the console AddItem
+// table entry at 0x142EDF2A0 through its handler sub_1405BD430 to the
+// shared implementation. Runs the "can be inventoried" virtual (vt+0x170),
+// builds the 0x58-byte request and calls the native sub_140503CA0. Designed
+// to run on the MAIN THREAD (delay-functor worker). a5/a6 feed only the
+// script error report — pass 0. This is the primitive that stocks a
+// replica PA frame with its pieces.
+constexpr std::uintptr_t PAPYRUS_ADDITEM_RVA   = 0x011735A0;
+
+// v24 RE (2026-08-16) — sub_1411808F0(vm, stackId, refr, item_form,
+// omod_form, attach): the shared worker behind the Papyrus
+// AttachModToInventoryItem / RemoveModFromInventoryItem pair (registration
+// read in sub_14115EFB0: NativeFunction2<TESObjectREFR, bool, TESForm*,
+// BGSMod::Attachment::Mod*> -> sub_141153560 -> this with attach=1).
+// Requires the item to be a SINGULAR stack in the refr's inventory
+// ("Can only mod singular items" — PA pieces always are); applies via
+// BGSInventoryItem::ModifyModDataFunctor + sub_140502230, then the
+// sub_141181930 post-update. vm/stackId feed only the script error report:
+// 0,0 is safe, same contract as the AddItem worker above. Main thread.
+// This is what makes a replica's piece the SAME Mk level as the original
+// instead of the engine's fresh leveled roll.
+constexpr std::uintptr_t PAPYRUS_ATTACH_MOD_RVA = 0x011808F0;
+
+// v25 RE (2026-09-14) — the Health extra on an inventory stack: a core's
+// remaining charge and a piece's condition are the SAME datum, BSExtraData
+// type 0x25 on the stack's ExtraDataList (stack+0x18), value float at
+// extra+0x18, read by the engine with sub_14027FDA0 = GetByType(list,0x25)
+// then *(float*)(extra+0x18), -1.0 meaning "no extra" (= full).
+// There is no Papyrus setter in this binary, so the replica creates the
+// extra exactly as the engine does (GetOrCreate for extra 0xBB,
+// sub_140290450, and the ExtraDataList deserializer, both read end to end):
+//   mem = sub_1401E0000(0x20)             lazy pool init + pool alloc
+//   sub_1402A3CC0(mem, value)             ExtraHealth ctor (type byte 0x25,
+//                                         next=0, flags=0, value at +0x18)
+//   sub_141659060(list+0x20)              write-lock the list
+//   sub_140272380(list+8, extra)          link + presence bitmap (handles the
+//                                         TLS memory context itself)
+//   sub_1416592C0(list+0x20)              unlock
+constexpr std::uintptr_t EXTRA_ALLOC_RVA        = 0x001E0000;
+constexpr std::uintptr_t EXTRAHEALTH_CTOR_RVA   = 0x002A3CC0;
+constexpr std::uintptr_t EXTRALIST_ADD_RVA      = 0x00272380;
+constexpr std::uintptr_t EXTRALIST_WLOCK_RVA    = 0x01659060;
+constexpr std::uintptr_t EXTRALIST_WUNLOCK_RVA  = 0x016592C0;
+constexpr std::size_t    EXTRAHEALTH_SIZE       = 0x20;
+constexpr std::uint32_t  EXTRA_TYPE_HEALTH      = 0x25;
+constexpr std::size_t    EXTRAHEALTH_VALUE_OFF  = 0x18;
+constexpr std::size_t    EXTRALIST_HEAD_OFF     = 0x08;
+constexpr std::size_t    EXTRALIST_LOCK_OFF     = 0x20;
 
 // --- B8 force-equip-cycle on game start (M9 architectural workaround) ---
 //
@@ -2299,7 +2498,17 @@ constexpr std::uintptr_t LOCK_RELEASE_WRITE_RVA         = 0x016592C0;
 
 // Build 30 Fix 3 — Handle table base (unk_1430DA390). Used to inline-
 // resolve a 32-bit handle to its Actor* without refcount mutation.
-// Layout: 16-byte entries indexed by `handle & 0x1FFFFF`:
+//
+// Build 70 (Piano A Fase 0) — CORRECTED: 0x1430DA390 is the address of the
+// global POINTER to the entry array (0x200000 entries x 16 B, allocated once
+// at session init by sub_140C2FAD0), NOT the array itself. Every engine
+// resolve site LOADS it — disasm text_0020.asm:24149
+// `mov rax, qword ptr cs:unk_1430DA390` — while Hex-Rays prints the load as
+// bare `unk_1430DA390 + 16*idx`, which is what misled Build 30/68 into
+// indexing off the slot address (all such resolves silently returned null).
+// Dereference the slot first; resolve_handle_inline does it now.
+//
+// Entry layout: 16-byte entries indexed by `handle & 0x1FFFFF`:
 //   +0x00: flags DWORD (bit 0x4000000 = active, bits 0x3E00000 = generation)
 //   +0x08: pointer-to-data (data is actor+32; subtract 32 for Actor*)
 // Verified at engine's resolver sub_14022CC20 funcs_0120.md:10046, also

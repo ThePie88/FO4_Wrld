@@ -17,6 +17,7 @@
 // (synthetic_refr's earlier WM_APP message has been removed; the API is sync)
 #include "../hook_manager.h"
 #include "../log.h"
+#include "../native/world_spawn.h"
 #include "../main_thread_dispatch.h"
 #include "../native/scene_inject.h"
 #include "../native/chargen_dump.h"    // character-creation catalogue capture
@@ -228,6 +229,10 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         // Keeps collision off while staged; Reset3D undoes it.
         fw::native::chargen_stage::tick(s_base);
+        // B6.14 - place spawned world objects the server relayed. Engine
+        // work, so it lives on this tick like everything else that touches
+        // the scene.
+        fw::native::world_spawn::tick(s_base);
     }
     if (msg == FW_MSG_LOAD_GAME) {
         // We're on the main (UI) thread — MinHook-level guarantees don't

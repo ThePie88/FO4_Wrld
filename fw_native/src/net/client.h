@@ -195,6 +195,29 @@ public:
                          bool          locked,
                          std::uint64_t timestamp_ms);
 
+    // B6.14 v22 - report a REFR this client just created in its world.
+    // pos/rot are 3-float arrays; flags bit0 = transient.
+    // v23: pieces = the frame's inventory at announce time (null/0 for
+    // everything that is not a PA frame).
+    void enqueue_world_spawn_op(std::uint32_t base_form_id,
+                                std::uint32_t local_form_id,
+                                const float pos[3], const float rot[3],
+                                std::uint32_t cell_id, std::uint8_t flags,
+                                std::uint64_t timestamp_ms,
+                                const PaPieceEntry* pieces = nullptr,
+                                std::uint8_t piece_n = 0);
+
+    // v23 - full piece list for a bound wid after a manual take/put on a
+    // PA frame (fire-and-forget; the server ledger replaces and rebroadcasts).
+    void enqueue_world_pa_pieces_op(std::uint32_t wid,
+                                    const PaPieceEntry* pieces,
+                                    std::uint8_t piece_n,
+                                    std::uint64_t timestamp_ms);
+
+    // B6.14 v22 - report that spawned object `wid` died in this world.
+    void enqueue_world_despawn_op(std::uint32_t wid, std::uint8_t reason,
+                                  std::uint64_t timestamp_ms);
+
     // B6.6w2: reliable NPC_DISCOVER — sender emits when its
     // npc_ai_suppress detour first auto-tracks a hostile NPC (vanilla
     // AI set the InCombat flag bit 0x4000 at Actor+0x2D0). Server

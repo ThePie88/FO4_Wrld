@@ -126,6 +126,13 @@ std::uint8_t*    g_load_in_progress   = nullptr;
 
 // Z.2: PlaceAtMe native + player singleton slot.
 PlaceAtMeFn      g_place_at_me         = nullptr;
+std::uintptr_t   g_module_base_for_place = 0;   // B6.14: worker RVA resolve
+
+// B6.14 - depth of OUR OWN PlaceAtMe calls (ghost donor, world-spawn receive
+// apply). The world-spawn sender detour consults this so the DLL's own
+// placements never re-broadcast: without it, two clients would ping-pong
+// every received spawn back onto the wire forever.
+std::atomic<int> g_internal_place_depth{0};
 void**           g_player_singleton_slot = nullptr;   // deref → Actor*
 
 // B6.5w3.b — anim graph variable setters + BSFixedString minter.
@@ -602,6 +609,17 @@ LockReleaseWriteFn g_lock_release_write = nullptr;
 // Build 30 Fix 3 — Handle table base for inline (no-refcount) resolution
 // during purge_stale_known_targets. Resolved at init() from
 // offsets::HANDLE_TABLE_BASE_RVA.
+//
+// Build 70 (Piano A Fase 0) — SEMANTICS CORRECTED. This is the address of the
+// GLOBAL SLOT that HOLDS the table pointer, not the table itself. Raw disasm
+// is decisive (text_0020.asm:24149 `mov rax, qword ptr cs:unk_1430DA390`,
+// same load-form at 20+ sites): the engine LOADS the qword at 0x1430DA390 and
+// indexes off the loaded value. Hex-Rays rendered that load as bare
+// `unk_1430DA390 + 16*idx`, which read like address arithmetic and led
+// Build 30/68 to index off the slot address — every resolve landed in
+// unrelated .data and returned null without faulting. c.39b
+// (ghost_ai_hit_applier) had independently gotten this right all along.
+// The deref now happens inside resolve_handle_inline.
 std::uint8_t* g_handle_table_base = nullptr;
 
 // Address of the static heap descriptor `unk_143E5E0F0` used by the vanilla
@@ -1232,6 +1250,7 @@ bool init(std::uintptr_t module_base) {
     // Z.2: PlaceAtMe native + player singleton slot (for anchor REFR).
     g_place_at_me = reinterpret_cast<PlaceAtMeFn>(
         module_base + offsets::PLACE_AT_ME_RVA);
+    g_module_base_for_place = module_base;   // B6.14
     g_player_singleton_slot = reinterpret_cast<void**>(
         module_base + offsets::PLAYER_SINGLETON_RVA);
 
@@ -2703,6 +2722,36 @@ void* resolve_refhandle(void* handle_ptr) {
         // sub_14021E230(out, handle_ptr) writes the resolved REFR* into *out
         // (or leaves it null if the handle is stale).
         g_refhandle_resolve(&result, handle_ptr);
+
+        // Build 70 (Piano A Fase 0) — RELEASE THE STRONG REF. The resolver
+        // does `_InterlockedIncrement(refr+0x28)` before returning (read in
+        // full, funcs_0119.md sub_14021E230), and this wrapper never gave
+        // that +1 back — one pinned refcount per successful call. The count
+        // field is only 10 bits (0x3FF): 1024 net leaks on one object carry
+        // into the has-handle bit and the handle-index bits at +0x28,
+        // corrupting the object's own back-check and blocking its
+        // destruction (deferred-destroy frees at refcount <= 2,
+        // sub_140C2A110). Borrow semantics instead: drop the ref before
+        // returning, exactly the engine's own release idiom (the tail of
+        // sub_14022CC20 and of DestroyByHandle sub_140C23EC0):
+        //   dec at +0x28; if ((new & 0x3FF) == 0) call vt[+8] on the
+        //   BSHandleRefObject subobject at +0x20.
+        // A live handle's object also holds the TABLE's strong ref, so the
+        // count cannot reach zero here in practice; the zero branch exists
+        // so the idiom is complete, not because we expect to take it.
+        // Callers get a borrowed pointer: use it this tick, never cache it.
+        if (result) {
+            auto* rc = reinterpret_cast<volatile long*>(
+                reinterpret_cast<std::uint8_t*>(result) + 0x28);
+            if ((_InterlockedDecrement(rc) & 0x3FF) == 0) {
+                auto* sub = reinterpret_cast<std::uint8_t*>(result) + 0x20;
+                using HandleObjReleaseFn = void(__fastcall*)(void*);
+                auto fn = *reinterpret_cast<HandleObjReleaseFn*>(
+                    *reinterpret_cast<std::uint8_t**>(sub) + 8);
+                fn(sub);
+                result = nullptr;   // we just freed it — never hand it out
+            }
+        }
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         FW_ERR("engine: SEH in resolve_refhandle(%p)", handle_ptr);
@@ -3809,6 +3858,7 @@ void* spawn_ghost_actor(std::uint32_t template_form_id) {
     void* form_pair[2] = { nullptr, template_form };
 
     void* actor = nullptr;
+    g_internal_place_depth.fetch_add(1, std::memory_order_relaxed);
     __try {
         actor = g_place_at_me(
             /* vm         = */ nullptr,
@@ -3818,10 +3868,12 @@ void* spawn_ghost_actor(std::uint32_t template_form_id) {
             /* count      = */ 1,
             /* persistent = */ 0);  // 0 = temp ref, skip MarkPersistent
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_internal_place_depth.fetch_sub(1, std::memory_order_relaxed);
         FW_ERR("[ghost] spawn: SEH in PlaceAtMe(template=0x%X)",
                template_form_id);
         return nullptr;
     }
+    g_internal_place_depth.fetch_sub(1, std::memory_order_relaxed);
 
     if (!actor) {
         FW_ERR("[ghost] spawn: PlaceAtMe returned null (template=0x%X)",
@@ -3854,6 +3906,356 @@ void* spawn_ghost_actor(std::uint32_t template_form_id) {
            "(TEMPORARY patched)",
            template_form_id, actor, actor_form_id);
     return actor;
+}
+
+// =========================================================================
+// B6.14 - world-object spawn: the receive-side placement primitive
+// =========================================================================
+//
+// The generic sibling of the ghost-donor spawn above: PlaceAtMe any base form
+// at the player anchor, flag the result TEMPORARY (the server owns spawned-
+// object lifetime; a save that kept the copy would duplicate it against the
+// join replay), and hand back the REFR + its minted form id. The caller
+// (world_spawn::tick) then teleports it to the real target.
+//
+// Wrapped in the internal-place depth so the sender detour ignores it.
+// All SEH lives in POD helpers (C2712).
+
+namespace {
+
+// THE PAPYRUS NATIVE IS NOT THE PLACER HERE, and that is a measured decision,
+// not a preference. The first live test used g_place_at_me for the receive
+// side and it returned null on all 240 attempts for the power-armor frame
+// 0x0002079E — the very base the console had just placed first-try on both
+// clients. The console's worker (offsets::CONSOLE_PLACE_WORKER_RVA) is the
+// routine PROVEN against the objects players actually spawn, and using it on
+// the receive side makes both ends of the wire run the same engine code.
+// It returns a HANDLE via the out param; resolve_refhandle turns it into the
+// REFR. Args (0, 0, 1.0f, 0) mirror the console handler's own defaults.
+using ConsolePlaceWorkerFn = std::uint32_t* (*)(std::uint32_t* out_handle,
+                                                void* target_refr,
+                                                void* base_form, int count,
+                                                int a5, int a6, float scale,
+                                                char persist);
+
+bool ws_seh_place_via_console(std::uintptr_t worker, void* player, void* form,
+                              std::uint32_t* out_handle) noexcept {
+    auto fn = reinterpret_cast<ConsolePlaceWorkerFn>(worker);
+    __try {
+        fn(out_handle, player, form, 1, 0, 0, 1.0f, 0);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+bool ws_seh_or_u32(void* at, std::uint32_t bits) noexcept {
+    if (!at) return false;
+    __try {
+        *reinterpret_cast<std::uint32_t*>(at) |= bits;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+std::uint32_t ws_seh_u32(const void* at) noexcept {
+    if (!at) return 0;
+    __try { return *reinterpret_cast<const std::uint32_t*>(at); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
+void* ws_seh_deref(void* const* slot) noexcept {
+    if (!slot) return nullptr;
+    __try { return *slot; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+
+}  // namespace
+
+bool in_internal_place() noexcept {
+    return g_internal_place_depth.load(std::memory_order_relaxed) > 0;
+}
+
+PlacementResult finalize_world_placement(void* refr, float x, float y, float z,
+                                         float yaw_rad) noexcept {
+    // Build 70f - see the header. Order matters: rotation first (the async
+    // 3D build reads +0xC0 when it lands), then the ground probe at the
+    // TARGET x/y, then the position leaf, then the cell re-file - the exact
+    // shape of the engine's own five-step move minus the NiNode block that
+    // only applies to already-loaded 3D.
+    PlacementResult r{};
+    if (!refr || !g_refr_set_position_leaf || !g_module_base_for_place)
+        return r;
+    const std::uintptr_t base = g_module_base_for_place;
+    __try {
+        auto* rb = reinterpret_cast<std::uint8_t*>(refr);
+
+        // 1. Upright, wire yaw (Build 70e, kept here).
+        auto* rot = reinterpret_cast<float*>(rb + fw::offsets::ROT_OFF);
+        rot[0] = 0.0f;
+        rot[1] = 0.0f;
+        rot[2] = yaw_rad;
+
+        void* cell = *reinterpret_cast<void**>(rb + offsets::PARENT_CELL_OFF);
+
+        // 2. Ground under the target: engine raycast (world geometry, roads
+        //    and floors included), terrain-height fallback. Snap refused
+        //    beyond 96 units so a bridge target keeps the wire truth.
+        if (cell) {
+            float ground = 0.0f;
+            bool  have_ground = false;
+
+            alignas(16) std::uint8_t q[0x100] = {};
+            float from[3] = { x, y, z + 128.0f };
+            float to[3]   = { x, y, z - 512.0f };
+            auto pick_init = reinterpret_cast<void(__fastcall*)(
+                void*, std::uint32_t, float*, float*)>(
+                base + offsets::BHK_PICK_INIT_FROMTO_RVA);
+            auto pick_cast = reinterpret_cast<void*(__fastcall*)(
+                void*, void*)>(base + offsets::BHK_PICK_CAST_CELL_RVA);
+            auto pick_hit = reinterpret_cast<bool(__fastcall*)(void*)>(
+                base + offsets::BHK_PICK_HAS_HIT_RVA);
+            pick_init(q, offsets::BHK_PICK_FILTER_WORLD, from, to);
+            (void)pick_cast(cell, q);
+            if (pick_hit(q)) {
+                const float* hit = reinterpret_cast<const float*>(
+                    q + offsets::BHK_PICK_HIT_POS_OFF);
+                ground = hit[2] * offsets::HAVOK_TO_GAME_UNITS;
+                have_ground = true;
+            } else {
+                // Build 70g - the terrain fallback may only LIFT, never sink.
+                // Measured: with the street cell's collision not yet loaded
+                // (fresh join) the raycast missed and the bilinear TERRAIN
+                // height fired - and terrain sits ~27 units BELOW the road
+                // mesh, so replicas were planted ankle-deep in the sidewalk
+                // (B: dz=-26.1/-27.8 at the same coords where A, with
+                // collision loaded, measured -0.1/+0.3). Terrain below the
+                // wire Z means the wire is standing on SOMETHING above the
+                // terrain - trust the wire.
+                auto terrain_z = reinterpret_cast<bool(__fastcall*)(
+                    void*, float*, float*)>(
+                    base + offsets::TERRAIN_HEIGHT_RVA);
+                float pos_xy[3] = { x, y, z };
+                float tz = 0.0f;
+                if (terrain_z(cell, pos_xy, &tz) && tz > z) {
+                    ground = tz;
+                    have_ground = true;
+                }
+            }
+            if (have_ground && ground > z - 512.0f && ground < z + 128.0f
+                && (ground - z) < 96.0f && (z - ground) < 96.0f) {
+                r.dz = ground - z;
+                z = ground;
+                r.snapped = true;
+            }
+        }
+
+        // 3. Position.
+        float pos[3] = { x, y, z };
+        g_refr_set_position_leaf(refr, pos);
+        r.moved = true;
+
+        // 4. The re-file (T4c) - exterior form, guarded. Interiors skip:
+        //    the ref was created in the player's interior cell and a same-
+        //    interior target is already filed right.
+        if (cell) {
+            const std::uint8_t cflags = *reinterpret_cast<std::uint8_t*>(
+                reinterpret_cast<std::uint8_t*>(cell)
+                + offsets::CELL_FLAGS40_OFF);
+            if ((cflags & 1) == 0) {   // exterior
+                void* ws = *reinterpret_cast<void**>(
+                    reinterpret_cast<std::uint8_t*>(cell)
+                    + offsets::CELL_WORLDSPACE_OFF);
+                if (ws) {
+                    const int gx = static_cast<int>(
+                        std::floor(x / 4096.0f));
+                    const int gy = static_cast<int>(
+                        std::floor(y / 4096.0f));
+                    auto cell_by_grid = reinterpret_cast<void*(__fastcall*)(
+                        void*, int, int)>(
+                        base + offsets::EXT_CELL_BY_GRID_RVA);
+                    void* tcell = cell_by_grid(ws, gx, gy);
+                    if (tcell == cell) {
+                        r.refiled = true;   // already in the right cell
+                    } else if (tcell) {
+                        void* tes = *reinterpret_cast<void**>(
+                            base + offsets::TES_SINGLETON_RVA);
+                        auto attached = reinterpret_cast<bool(__fastcall*)(
+                            void*, void*, int)>(
+                            base + offsets::IS_CELL_ATTACHED_RVA);
+                        if (tes && attached(tes, tcell, 0)) {
+                            auto refile = reinterpret_cast<void(__fastcall*)(
+                                void*, void*, void*)>(
+                                base + offsets::REFILE_BY_POSITION_RVA);
+                            refile(refr, nullptr, ws);
+                            r.refiled = true;
+                        }
+                        // not attached: leaf-only placement, the streaming
+                        // requeue model owns the consequences (status quo).
+                    }
+                }
+            } else {
+                r.refiled = true;   // interior: already filed right
+            }
+        }
+        return r;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("[world-spawn] SEH in finalize_world_placement refr=%p", refr);
+        return r;
+    }
+}
+
+bool destroy_world_refr(void* refr) noexcept {
+    // Build 70 — the duplicate-PA fix. disable_ref(fade=true) is PROVEN
+    // BROKEN for our objects (offsets.h Build 70 block): the fade entry
+    // never leaves the queue and the object stays on screen while the log
+    // reports success. This is the engine's own removal idiom instead,
+    // copied from the Unpersist kill branch + the workshop scrap core:
+    // vt[+0x580] disable (immediate scene-graph removal, no queue, no
+    // 0x4000 refusal) -> RemoveReference from the parent cell -> GetHandle
+    // -> DestroyByHandle. Main thread only (RemoveReference contract).
+    if (!refr || !g_module_base_for_place) return false;
+    const std::uintptr_t base = g_module_base_for_place;
+    __try {
+        auto* rb = reinterpret_cast<std::uint8_t*>(refr);
+
+        // 0. Build 70c — clear no-save BEFORE the teardown. A ref that dies
+        //    with 0x4000 set skips all global-manager unregistration in its
+        //    dtor chain (flag census site 11), and the stale registry entry
+        //    crashes BGSSaveLoadGame::ClearForm on the next reload (measured
+        //    AV at RVA 0xBED687). With the bit clear the dtor unregisters
+        //    like any vanilla dynamic ref. Save-skip no longer matters: the
+        //    object is dying right now.
+        *reinterpret_cast<std::uint32_t*>(rb + offsets::FLAGS_OFF)
+            &= ~offsets::REFR_FLAG_TEMPORARY;
+
+        // 1. Immediate hide: the disable primitive straight off the vtable.
+        //    Idempotent on an already-disabled ref; refuses only the player.
+        auto* vt = *reinterpret_cast<std::uint8_t**>(refr);
+        auto disable_prim = *reinterpret_cast<void(__fastcall**)(void*)>(
+            vt + offsets::TESOBJECTREFR_VT_DISABLE_OFF);
+        if (disable_prim) disable_prim(refr);
+
+        // 2. Un-file from the owning cell. Null cell would FAULT inside
+        //    RemoveReference (DEEP_1404CC240) - guard is mandatory.
+        void* cell = *reinterpret_cast<void**>(rb + offsets::PARENT_CELL_OFF);
+        if (cell) {
+            auto remove_ref = reinterpret_cast<void(__fastcall*)(void*, void*)>(
+                base + offsets::CELL_REMOVE_REFERENCE_RVA);
+            remove_ref(cell, refr);
+        }
+
+        // 3+4. Handle out, then the destruction funnel. GetHandle writes the
+        //      null-handle constant (0) for a refcount-0 corpse - skip then.
+        std::uint32_t handle = 0;
+        auto get_handle = reinterpret_cast<std::uint32_t*(__fastcall*)(
+            void*, std::uint32_t*)>(base + offsets::REFR_GET_HANDLE_RVA);
+        get_handle(refr, &handle);
+        if (handle != 0) {
+            auto destroy = reinterpret_cast<std::int64_t(__fastcall*)(
+                std::uint32_t*)>(base + offsets::DESTROY_BY_HANDLE_RVA);
+            destroy(&handle);
+        }
+        return handle != 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("[world-spawn] SEH in destroy_world_refr refr=%p", refr);
+        return false;
+    }
+}
+
+bool move_world_refr(void* refr, float x, float y, float z,
+                     float yaw_rad) noexcept {
+    // NOT actor_teleport_handoff, and the distinction was paid for live: that
+    // primitive is the ACTOR MoveTo (AI-process reattach and all) and it
+    // simply fails on a furniture REFR - both power-armor frames of the first
+    // working spawn test were placed fine and then left standing at the
+    // receiving player's feet because the actor teleport refused to move
+    // them. This is the generic path: the REFR::SetPosition leaf
+    // (sub_140513A80, resolved at init) writes the position triplet and
+    // emits the vt[13](2) cell-change broadcast; the yaw is a plain rotation
+    // write, same as the NPC pos apply does.
+    if (!refr || !g_refr_set_position_leaf) return false;
+    __try {
+        // Build 70e - write ALL THREE rotation components, upright forced.
+        // The creator copies the ANCHOR's full Euler triple into the new ref
+        // (verified bit-exact in sub_1405E0800), and our anchor is the local
+        // player - so a replica placed while the player looked up or down
+        // was born pitched. The furniture upright gate reads THIS field
+        // (+0xC0), not the mesh (physics_control_model.md par.3.3), which is
+        // why a tilted replica also refuses activation with "cannot be used".
+        // Zero pitch/roll + wire yaw = born straight, gate passes; the 3D
+        // builds from +0xC0 when its async load lands, so the mesh comes
+        // out straight too.
+        auto* rot = reinterpret_cast<float*>(
+            reinterpret_cast<std::uint8_t*>(refr) + fw::offsets::ROT_OFF);
+        rot[0] = 0.0f;
+        rot[1] = 0.0f;
+        rot[2] = yaw_rad;
+        float pos[3] = { x, y, z };
+        g_refr_set_position_leaf(refr, pos);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("[world-spawn] SEH in move_world_refr refr=%p", refr);
+        return false;
+    }
+}
+
+void* place_world_object(std::uint32_t base_form_id,
+                         std::uint32_t* out_form_id) noexcept {
+    // Build 70d - the two formerly SILENT failure paths now say their name
+    // (throttled): a whole post-respawn test window burned with the tick
+    // retrying one of these mutely every 250ms and the log showing nothing.
+    static DWORD s_silent_log_ms = 0;
+    if (out_form_id) *out_form_id = 0;
+    if (!g_place_at_me || base_form_id == 0) {
+        const DWORD n = GetTickCount();
+        if (n - s_silent_log_ms >= 2000) {
+            s_silent_log_ms = n;
+            FW_WRN("[world-spawn] place refused: resolver=%d base=0x%08X",
+                   g_place_at_me ? 1 : 0, base_form_id);
+        }
+        return nullptr;
+    }
+
+    void* form = lookup_by_form_id(base_form_id);
+    if (!form) {
+        FW_WRN("[world-spawn] base form 0x%08X not found - cannot place",
+               base_form_id);
+        return nullptr;
+    }
+    void* player = ws_seh_deref(g_player_singleton_slot);
+    if (!player) {
+        const DWORD n = GetTickCount();
+        if (n - s_silent_log_ms >= 2000) {
+            s_silent_log_ms = n;
+            FW_WRN("[world-spawn] place refused: player singleton NULL "
+                   "(load screen?) - retrying");
+        }
+        return nullptr;   // load screen - caller retries
+    }
+
+    std::uint32_t handle = 0;
+    g_internal_place_depth.fetch_add(1, std::memory_order_relaxed);
+    const bool called = ws_seh_place_via_console(
+        g_module_base_for_place + offsets::CONSOLE_PLACE_WORKER_RVA,
+        player, form, &handle);
+    g_internal_place_depth.fetch_sub(1, std::memory_order_relaxed);
+    if (!called || handle == 0 || handle == 0xFFFFFFFFu) {
+        FW_ERR("[world-spawn] console place worker gave no handle for "
+               "base=0x%08X (called=%d handle=0x%08X)", base_form_id,
+               called ? 1 : 0, handle);
+        return nullptr;
+    }
+    void* refr = resolve_refhandle(&handle);
+    if (!refr) {
+        FW_ERR("[world-spawn] handle 0x%08X did not resolve to a REFR "
+               "(base=0x%08X)", handle, base_form_id);
+        return nullptr;
+    }
+
+    auto* rb = reinterpret_cast<std::uint8_t*>(refr);
+    (void)ws_seh_or_u32(rb + offsets::FLAGS_OFF,
+                        offsets::REFR_FLAG_TEMPORARY);
+    const std::uint32_t fid = ws_seh_u32(rb + offsets::FORMID_OFF);
+    if (out_form_id) *out_form_id = fid;
+    return refr;
 }
 
 // =========================================================================
@@ -7368,17 +7770,33 @@ std::atomic<std::uint64_t>           g_fixed_sel_install_dedup_hits{0};
 // validation during purge: we're only READING ptr+flags from the global
 // handle table, no ownership transfer.
 //
+// Build 70 (Piano A Fase 0) — THE MISSING DEREFERENCE, found by the cellsweep
+// and confirmed on raw disasm. `htab_slot` (= image_base + 0x30DA390) is the
+// address of the global that HOLDS the entry-array pointer; from Build 30 to
+// Build 69 this function indexed off the slot address itself, so every lookup
+// read unrelated .data, failed the active/generation checks and returned
+// null. Consequences now void and to be re-run: the Build 30/31 purge
+// degenerated into "zero every entry" (still crash-safe, by accident), and
+// the Build 69g mirror-target probe measured target=0 everywhere because the
+// RESOLVER was blind, not because mirrors have no combat target.
+//
 // Returns the resolved Actor* or nullptr if:
 //   - handle is 0
-//   - handle table base is null
+//   - handle table slot is null, or holds null (table not allocated yet —
+//     it is created once at session init by sub_140C2FAD0)
 //   - entry's active bit (0x4000000) is clear
 //   - entry's generation bits don't match the handle's
 //   - actor's own generation (at actor+40 >> 11) doesn't match index
 //   - any read faults (e.g., table entry crosses an unmapped page)
 static void* resolve_handle_inline(std::uint32_t handle,
-                                   std::uint8_t* htab_base) noexcept {
-    if (!handle || !htab_base) return nullptr;
+                                   std::uint8_t* htab_slot) noexcept {
+    if (!handle || !htab_slot) return nullptr;
     __try {
+        // The load the engine does at every resolve site:
+        //   mov rax, qword ptr cs:unk_1430DA390
+        std::uint8_t* htab_base =
+            *reinterpret_cast<std::uint8_t* const*>(htab_slot);
+        if (!htab_base) return nullptr;
         const std::uint32_t idx = handle & 0x1FFFFFu;
         const std::uint32_t gen = handle & 0x3E00000u;
         auto* entry = htab_base + 16ULL * idx;

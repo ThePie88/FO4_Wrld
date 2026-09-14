@@ -163,6 +163,10 @@ struct Settings {
     // 2026-08-08 — clone the player's BUILT face subtree onto the ghost.
     // Supersedes anatomy_mirror; carries morphs, texture and colour.
     bool          ghost_face_clone = false;
+    // B6.14 - world-object spawn sync: detour PlaceAtMe (player-anchored
+    // creations broadcast; everything else observed), place what the server
+    // relays.
+    bool          world_spawn_sync = true;
 
     // 2026-08-08 — ghost body cull. true (default) = shipping behaviour: the
     // ghost's body geometry is hidden when the peer wears body armour. false

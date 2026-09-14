@@ -174,6 +174,35 @@ class QuestStageState:
     last_update_ms: float = 0.0
 
 
+@dataclass
+class WorldSpawnState:
+    """B6.14 v22 — one server-owned spawned world object.
+
+    `wid` is the shared logical name; every client maps it to its own local
+    REFR. `spawner_local_fid` matters only for the live echo to the spawner —
+    on the join bootstrap everyone re-places from scratch, spawner included,
+    because the local originals are TEMPORARY refs that die with the session.
+    Transient spawns (flags bit0) are broadcast but never stored here.
+    """
+    wid: int
+    spawner_peer: str
+    base_form_id: int
+    spawner_local_fid: int
+    px: float
+    py: float
+    pz: float
+    rx: float
+    ry: float
+    rz: float
+    cell_id: int
+    flags: int
+    timestamp_ms: int
+    # v23 — PA frame content: list of (form_id, count). The ledger here is
+    # AUTHORITATIVE: spawn announces seed it, WORLD_PA_PIECES_OP replaces
+    # it, every broadcast and the join bootstrap carry it.
+    pieces: tuple = ()
+
+
 @dataclass(slots=True)
 class LockWorldState:
     """B6.3 v0.5.3 — authoritative lock state for one REFR.
@@ -260,6 +289,9 @@ class ServerState:
     _appearances: dict[str, str] = field(default_factory=dict)
     # B6.3 v0.5.3: lock states keyed by (base_id, cell_id).
     lock_state: dict[tuple[int, int], LockWorldState] = field(default_factory=dict)
+    # B6.14 — spawned world objects, keyed by wid. Server-owned lifetime.
+    world_spawns: dict[int, WorldSpawnState] = field(default_factory=dict)
+    next_world_spawn_wid: int = 1
 
     # ---------------------------------------------------------- session mgmt
 
@@ -627,6 +659,41 @@ class ServerState:
 
     def all_locks(self) -> list[LockWorldState]:
         return list(self.lock_state.values())
+
+    def record_world_spawn(
+        self,
+        spawner_peer: str,
+        base_form_id: int,
+        spawner_local_fid: int,
+        px: float, py: float, pz: float,
+        rx: float, ry: float, rz: float,
+        cell_id: int,
+        flags: int,
+        timestamp_ms: int,
+        pieces: tuple = (),
+    ) -> WorldSpawnState:
+        """Assign a wid and (unless transient) store the object.
+
+        Transient spawns still get a wid — the broadcast needs a name — but
+        the server forgets them immediately: nothing to persist, nothing to
+        replay at join. That is the whole meaning of the flag.
+        """
+        wid = self.next_world_spawn_wid
+        self.next_world_spawn_wid += 1
+        st = WorldSpawnState(
+            wid=wid, spawner_peer=spawner_peer, base_form_id=base_form_id,
+            spawner_local_fid=spawner_local_fid,
+            px=px, py=py, pz=pz, rx=rx, ry=ry, rz=rz,
+            cell_id=cell_id, flags=flags, timestamp_ms=timestamp_ms,
+            pieces=tuple(pieces),
+        )
+        if not (flags & 1):
+            self.world_spawns[wid] = st
+        return st
+
+    def all_world_spawns(self) -> list[WorldSpawnState]:
+        return list(self.world_spawns.values())
+
 
     # ---------------------------------------------------------- convenience
 

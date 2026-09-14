@@ -11,6 +11,7 @@
 #include "../log.h"
 #include "../offsets.h"
 #include "../ref_identity.h"
+#include "../native/world_spawn.h"
 #include "../net/client.h"
 #include "../net/protocol.h"
 
@@ -42,6 +43,10 @@ struct PutObserveResult {
     std::uint32_t base_id;
     std::uint32_t cell_id;
     std::uint32_t container_form_id;
+    // v23 — set when the container is a PA frame (loot-exempt): after
+    // g_orig runs, the caller rescans and ships the frame's full state.
+    void*         pa_frame_ref;
+    std::uint32_t pa_frame_fid;
 };
 
 // Observe: extract (container REFR, item form_id, count) from the menu state.
@@ -55,6 +60,7 @@ static void observe_transfer(
     out->passthrough   = true;
     out->item_id = 0; out->base_id = 0; out->cell_id = 0;
     out->container_form_id = 0;
+    out->pa_frame_ref = nullptr; out->pa_frame_fid = 0;
 
     __try {
         // Sanity.
@@ -245,6 +251,21 @@ static void observe_transfer(
             return;
         }
 
+        // 2026-08-16 — THE POWER-ARMOR FRAME IS NOT LOOT. Mirror of the
+        // container_hook exemption (see the block comment there for the
+        // measured piece-destruction this caused): the frame's inventory
+        // is native PA machinery plus the wid-keyed pieces replication,
+        // never the loot layer. Blocking a frame PUT would eat the piece
+        // exactly like the blocked TAKEs did.
+        if (cid.base_id == 0x0002079Eu) {
+            FW_DBG("[put] PUT on a power-armor frame — passthrough, "
+                   "frames are not loot");
+            // v23 — a manual deposit IS state: report after g_orig runs.
+            out->pa_frame_ref = container_refr;
+            out->pa_frame_fid = cid.form_id;
+            return;  // passthrough=true
+        }
+
         // Populate output payload.
         out->should_submit = true;
         out->passthrough   = false;   // caller gates on ACK
@@ -345,6 +366,11 @@ std::int64_t __fastcall detour_transfer_item(
     FW_DBG("[put] calling g_orig_transfer(this=%p, idx=%d, cnt=%u, side=%u)",
            this_menu, inv_idx, count, side);
     const auto rc = g_orig_transfer(this_menu, inv_idx, count, side);
+    // v23 — a deposit went through on a PA frame: ship its full state.
+    if (r.pa_frame_ref) {
+        fw::native::world_spawn::report_frame_pieces(r.pa_frame_ref,
+                                                     r.pa_frame_fid);
+    }
     FW_DBG("[put] g_orig_transfer returned %lld",
            static_cast<long long>(rc));
     return rc;

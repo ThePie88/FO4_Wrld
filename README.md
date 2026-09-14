@@ -138,7 +138,7 @@ in real time).
 │  authoritative state · identity-keyed (base, cell) · validator         │
 │  reliable channel (SACK + retransmit) · JSON snapshot persistence      │
 └─────────────────────────┬──────────────────────────────────────────────┘
-                          │ binary protocol v21 (44B POS_BCAST · reliable channel · appearance recipes)
+                          │ binary protocol v25 (44B POS_BCAST · reliable channel · appearance recipes · world objects)
             ┌─────────────┼─────────────┐
             │             │             │
        ┌────▼─────┐  ┌────▼─────┐  ┌────▼─────┐
@@ -169,6 +169,7 @@ in real time).
 | `net/` | Python server (asyncio UDP, validator, persistence, snapshot v3) |
 | `frida/` | Frida JS scripts + Python attach helpers (RE / live tracing) |
 | `re/` | Reverse-engineering dossiers + IDA Python scripts |
+| `tools/` | Maintenance scripts: Frida traces, decode helpers |
 
 ## Major milestones
 
@@ -187,7 +188,7 @@ in real time).
 | **M8P3** Skin pipeline RE + per-bone pose replication | ✅ M8P3.23 — body+head+hands animated, see [CHANGELOG.md](CHANGELOG.md) |
 | **M8P4** First-person ghost animation | ✅ done (v0.6.5, 2026-08-06) — a sender in first person no longer freezes the remote ghost into a V/T-pose with grafted arms. The engine parks and deactivates the third-person animation graph on a camera switch, then copies the first-person skeleton over the third-person one every frame in a post-update hook; the DLL now drives the parked graph (revive, active-node refresh, forced flush/generate/apply), mirrors animation events onto it, raises the behavior's base-state trigger at wake-up, keeps it alive across camera switches, and suppresses the skeleton copy while driving. Pip-Boy re-parented to `PipboyBone`; pose channel made scale-immune. Residue: walk clip rate |
 | **B5** D3D11 custom render | 🗿 not needed — Strada B native injection replaced |
-| **B6** World-state sync expansion *(composite epic; NPC pos/pose + combat split out to the N branch)* | 🟡 4/12 wedges done (doors, cell-transitions, locks, terminals) |
+| **B6** World-state sync expansion *(composite epic; NPC pos/pose + combat split out to the N branch)* | 🟡 5/12 wedges done (doors, cell-transitions, locks, terminals, world-object spawns), power armor at three quarters |
 | ↳ **B6.0** Door open/close sync | ✅ done — `sub_140514180` Activate worker hook + dual-agent RE convergence, [30s demo](https://youtu.be/T8wLZmCqjxw), see [CHANGELOG.md](CHANGELOG.md) |
 | ↳ **B6.1** Cell-aware ghost transitions (interior / fast-travel / worldspace switch) | ✅ done (v0.5.2, 2026-05-08) — wire proto v11 ships `cell_id` in pos payloads; server validator accepts cross-cell teleport as baseline reset instead of rejecting it at the 2500 u/s speed gate. Receiver is a plain coord-bind: cross-cell distance (~120k units) puts the ghost outside the local frustum naturally; same-interior co-op puts both peers in the same coord frame. |
 | **M9** Equipment sync between peers *(clothing + armor + weapon visual replication)* | ✅ done (v0.5.1, 2026-05-08) — 5/5 wedges across **all firearm families**: pistols (10mm, handmade), sniper rifle, assault rifle, hunting rifle, combat shotgun, combat rifle, minigun, Fat Man, laser, plasma — all visible with mods on the remote ghost via engine BSConnectPoint pairing. Plus clothing + body cull + OMOD-driven ARMA tier + Vault Suit cycle stable. |
@@ -205,7 +206,8 @@ in real time).
 | ↳ **B6.10** One-shot loot pickups (bobbleheads, magazines, holotapes, skill books) | ⏳ — single-pickup persistence, partially covered by container `kill` events |
 | ↳ **B6.11** Time of day + weather sync | ⏳ — GlobalVar `GameHour` + Sky weather state |
 | ↳ **B6.12** Workshop / settlement build state sync | ⏳ — major epic; build/scrap/move workshop refs + furniture |
-| ↳ **B6.13** Power Armor frame + worn-state sync | ⏳ — chassis is a REFR with its own state (location, per-piece HP, fusion core); player-in-PA = chassis attached to player. Both visibilities require sync. Re-scoped from M9 to B6 (2026-05-04) — fundamentally world-state, not an equip event |
+| ↳ **B6.13** Power Armor frame + worn-state sync | 🟡 three quarters (v0.7.5, 2026-09-14) — the frame rides the spawn rails (enter = despawn, exit = rebirth); pieces, OMOD upgrade levels, condition and core charge travel with the object and persist in a per-wid server ledger; replicas are stocked through the engine's own `AddItem` (`sub_1411735A0`) and `AttachModToInventoryItem` (`sub_1411808F0`) workers and the Health extra is created the way the engine does it; manual take/put ships full state (deferred rescan); frames are exempt from the loot layer. The wearer's ghost is dressed: `Frame.nif` plus the model OMOD meshes of every piece on a ghost skeleton grafted with the 20 PA-only bones and retargeted to PA proportions while worn. Open: paint jobs and material mods, frame lost if the wearer quits (session lifecycle) |
+| ↳ **B6.14** World-object spawn sync | ✅ first version (v0.7.5, 2026-09-14) — `PlaceAtMe` detoured on both the Papyrus native and the console worker; server-assigned `wid`, JSON persistence, join bootstrap replay; receive-side placement = upright, ground snap, engine cell re-file, range-gated; lifecycle sweep reports deaths by wid, streaming losses re-queued, resurrection watch re-announces re-enabled refs; real removal idiom (`RemoveReference` + `DestroyByHandle`, no-save flag cleared first) |
 | **N** NPC co-op combat *(split out from B6.5 / B6.6 — grew into its own epic; my first iteration on the game's AI)* | 🟡 N2 + N3 + N4 done; **hardened in v0.6.3** (stale-pointer crash class closed via NiRefObject pinning, owner-state starvation fixed, locomotion relayed, 3 aggro defects fixed, deaths replayed to distant peers); **v0.6.4 closed the respawn-load crash** (freed-cell vcall in DetachReference: death release + engine passthrough in the death window + ownership quiescence, 8 deaths / 0 crashes). N1 still open: creature pose schema + post-mortem hardening. Scope still hostile raiders. |
 | ↳ **N1** NPC actor pos + pose sync (owner-driven) | 🟡 REOPENED partial (v0.6.2) — **major hardening in v0.6.3** (2026-07-29): the owner-state batch was capped at 17 entries with no rotation, so 12 of 29 owned NPCs never received a position at all (measured drift where data DID arrive: 0.0 on 4,591/5,133 samples) — now multi-batch, everyone at full 10 Hz; the engine's NATIVE position (AI char-controller proxy) is snapped via `sub_141894670` so it tracks the owner instead of diverging; locomotion is derived from the position delta and relayed (`anim=1/2 → SpeedSampled 100/200`), fixing the "slides like a log" mirrors; the bone cache is now refcount-pinned (+0x08) with a parent-detach probe, which closed the whole stale-pointer crash class. STILL OPEN: creature (non-humanoid) pose bleeds through a 1-name-match gate — a mole rat was seen stretched toward a map coordinate, needs a skeleton-schema gate, TODO in `scene_inject.cpp`; POST-mortem corpse hardening; leveled-list divergence means the same REFR can be a different NPC per client. |
 | ↳ **N2** NPC combat target + aggro + death sync (owner-driven threat table) | ✅ done (v0.6.0, 2026-06-01) — the Python server holds a threat table and elects the owner from whoever the raiders natively aggro (engine-native: noise / line of sight), with hysteresis anti-thrash; live aggro hand-off; bidirectional death-sync (corpse + ragdoll at the synced pos, either client's kill propagates). Scope: hostile raiders. **v0.6.3 fixed three defects that made ownership effectively immovable**: the engage signal was stamped once per NPC and decayed to zero forever (across 1,711 evaluations the challenger threat never exceeded 1.0, so only damage could move aggro — combat observes now refresh at 1.5 s); `Actor+0x380` is an ObjectRefHandle and not a form id, so the "I am fighting this NPC" signal was a permanent false negative (now resolved through the handle table); and the proximity tie-break was mathematically inert (weight 1.0 vs a required delta of 3.0 — raised to 6.0 so it can break the engage tie two fighting clients produce). Deaths are also remembered server-side and replayed to peers that were out of range when they fired. |
@@ -233,11 +235,63 @@ in real time).
   but a **direct pointer-to-matrix cache** (= `bones_fb[i]+0x70`). The GPU
   reads matrices via SRV indirection through this cache. Documented in
   `re/M8P3_skin_instance_dossier.txt`.
+- **Model-DB entry root shape** — a NIF loaded with the fade-wrap flag is
+  stored with a `BSFadeNode` root, and the engine's biped build silently
+  produces no geometry from such an entry. The engine never loads
+  `Frame.nif` through the public loader, so a mod-created entry is the only
+  one it finds. Biped loads must use the engine's own flags (`0x2C`).
+- **`NiNode::AttachChild` growth** (`sub_1416BE170` / `sub_1404E7B50`) —
+  a full children array is grown by `SetSize`, which frees the old buffer;
+  file-loaded bones keep theirs in the loader arena, so the free faults.
+  Pre-grow with the same pool allocation and never free the old block.
+- **Power-armor pieces** — the ARMA is a placeholder shared by every PA
+  model; the visible mesh is the model OMOD's `MODL`, skinned to PA-only
+  bones. Condition and core charge are one Health extra (`0x25`) on the
+  inventory stack; the engine's `AddItem` / `AttachModToInventoryItem`
+  workers and the `ExtraDataList` add idiom are all callable from the DLL.
 
 ## Changelog
 
 Latest 3 patches summarized below. **Full version history in
 [CHANGELOG.md](CHANGELOG.md).**
+
+### v0.7.5 (2026-09-14) — power armor, three quarters of it, and the start of world-object sync
+
+Tag v0.7.5, wire proto v25.
+
+- **World-object spawn sync (B6.14, first version)** — a REFR created in
+  one client's world is reported to the server, which mints a logical id,
+  persists it and has every client place a local copy; the sender binds
+  its own echo. Console spawns and power-armor frames today, settlement
+  builds later. Deaths are reported by a polling sweep, streaming losses
+  are re-queued instead of reported, and a frame re-enabled by a
+  power-armor exit is re-announced as a new spawn.
+- **Power armor (B6.13, three quarters)** — a frame left anywhere with any
+  pieces mounted is the same frame on every client: pieces, upgrade mods,
+  condition and core charge travel with the object (server ledger,
+  persisted), manual changes ship as full state, replicas are stocked
+  through the engine's own `AddItem` and `AttachModToInventoryItem`
+  workers, and the Health extra is created the way the engine creates it.
+  The wearer's ghost is dressed: frame plus the model meshes of every
+  piece, on a ghost skeleton grafted with the 20 PA-only bones and
+  retargeted to PA proportions while the frame is worn.
+- **Frames are not loot** — the shared-loot layer was mediating the native
+  enter transfer and destroying pieces on rejected takes. Exempted.
+- **The two-day bug** — "whoever enters second loses their body" was the
+  fade-wrap flag on my NIF load storing a `BSFadeNode` as the model-DB
+  entry root; the engine's biped build wants a plain `NiNode`. Loads now
+  use the engine's own biped flags.
+- **`AttachChild` on file-loaded bones** — growing a full children array
+  frees a loader-arena block and faults; I pre-grow the array myself. The
+  Pip-Boy bone had capacity zero all along.
+- **Steam version pin** — the Steam manifest for the game is pinned (buildid
+  and depot ids) so a Bethesda patch cannot replace the 1.11.191 binary; the
+  script that does it stays local.
+- **Not finished** — paint jobs and material mods are not replicated; a
+  client that quits while wearing power armor loses the frame for everyone
+  (session-lifecycle work); fingers do not articulate.
+
+Full detail in [CHANGELOG.md](CHANGELOG.md).
 
 ### v0.7.0 (2026-08-12) — character creation v1
 
@@ -312,40 +366,6 @@ Tag v0.6.5. No protocol change.
   the displacement spans gaps the delta time does not account for (one client
   measured 5953 where 100-200 was expected, the other a constant 0). The
   engine's own movement speed is the correct source.
-
-Full detail in [CHANGELOG.md](CHANGELOG.md).
-
-### v0.6.4 (2026-08-04) — PIENUVO auth v0 + player-death crash closed
-
-Tag v0.6.4, wire proto v19, 405 server tests.
-
-- **Identity** — every client proves an Ed25519 keypair instead of claiming
-  a name. Launcher-held seed in a DPAPI-wrapped vault; the signature binds
-  the server address so an auth blob replays nowhere else; HELLO carries an
-  optional 144 byte auth tail (legacy 26 byte HELLO still accepted). Client
-  id = `fw` + 13 hex of the pubkey hash: Steam and every non-Steam platform
-  get stable identities with zero platform dependencies. New `net/master/`
-  discovery server. `FoM.exe --connect` speaks pure JSON on stdout for the
-  external server-browser launcher.
-- **The crash** — an AV on the respawn load after a player death, roughly
-  one death in three: a freed-cell vcall in `TESObjectCELL::DetachReference`.
-  Three cooperating defects, each confirmed by a capture: mirror driving via
-  `vt[202]` re-hashes the actor in its current cell grid without re-filing
-  `refr+0xB8`; the non-owner bail hooks ate the engine's own repair writes
-  through the death window (650+ suppressed in one window, one from inside
-  the engine's MoveTo worker); the threat election kept scoring the dead
-  client's corpse position, handing it 7 NPCs 155 ms before one crash.
-- **The fix** — one reliable NPC_UNLOAD per owned NPC at death (raiders
-  flip to the survivor within a frame instead of after 8 s), full engine
-  passthrough on the bail hooks from death to stand-down close, and
-  ownership quiescence on both ends (claims deferred client-side, the dead
-  session excluded from election server-side until its respawn jump).
-  Validated: 4 two-client sessions, 8 deaths, 0 crashes.
-- **Forensics kept in the tree** — a 524k-record ring of every DLL write
-  into engine memory, dumped by the VEH on any AV with a crash-register
-  scan; a register prober that names the crash victim by form id; an ALT+F4
-  marker that stamps teardown AVs so a force-close is never again mistaken
-  for a gameplay crash.
 
 Full detail in [CHANGELOG.md](CHANGELOG.md).
 
@@ -438,6 +458,17 @@ that should be most reusable for anyone else attempting the same thing.
   loot on each screen. Parked: a clean fix needs either an ESL of fixed
   content or a seeded-RNG / capture-replicate hook, and I'm deliberately
   staying engine-native (no ESL, no Creation Kit) for now.
+- **A client that quits while wearing power armor loses the frame for
+  everyone** — the server forgets the wid at enter and only the exit
+  re-announces it; the fix (a worn-by state and a re-announce on
+  disconnect) is session-lifecycle work. Exit the frame before closing.
+- **Power-armor paint jobs and material mods are not replicated** on the
+  ghost; only model mods are (the Mk meshes, lamps).
+- **Fingers and toes do not articulate on ghosts** — 53 of the 80
+  canonical joints never leave the sender's render tree, so hands and
+  feet ride their parent joints without bending.
+- **The ghost skeleton is a session singleton** — the PA graft and
+  retarget assume one remote peer; more peers need a per-ghost skeleton.
 
 ## Reverse-engineering target
 

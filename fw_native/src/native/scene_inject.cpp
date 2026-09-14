@@ -194,6 +194,10 @@ static void populate_canonical_from_skel_native(void* skel_root) {
 // called both from try_inject_body_nif and ghost_attach_armor without
 // scope-shadow ambiguity.
 void* clone_nif_subtree(void* source);
+// Build 70s — same reason: privatise_shared_skins (defined next to the
+// clone machinery) calls the M9.5 manual skin deep-copier, whose definition
+// sits further down still.
+void* clone_skin_instance(void* source);
 // Defined much further down, next to the clone machinery it uses; declared
 // here because the injector above calls it. Same reason clone_nif_subtree
 // carries a forward declaration.
@@ -3151,6 +3155,72 @@ static int collect_all_bssitf_recursive(void* root, std::vector<void*>* out,
 }
 
 // =====================================================================
+// Build 70i — PA body-loss diagnostic walker (see header). No C++ objects
+// with destructors in these frames (C2712); counters passed by pointer.
+static void pa_diag_walk(void* node, int depth, int max_depth,
+                         int* logged, int* total) {
+    if (!node || depth > max_depth || !logged || !total) return;
+    ++*total;
+    std::uintptr_t vt_addr = 0;
+    __try { vt_addr = *reinterpret_cast<std::uintptr_t*>(node); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+    std::uint64_t flags = 0;
+    __try {
+        flags = *reinterpret_cast<std::uint64_t*>(
+            reinterpret_cast<char*>(node) + NIAV_FLAGS_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    if (*logged < 48) {
+        char nm[96] = {0};
+        (void)seh_read_name_diag(node, nm, sizeof(nm));
+        FW_LOG("[pa-diag]%*s node=%p vt_rva=0x%llX flags=0x%llX%s name='%s'",
+               depth * 2 + 1, "", node,
+               static_cast<unsigned long long>(
+                   vt_addr >= g_r.base ? vt_addr - g_r.base : 0),
+               static_cast<unsigned long long>(flags),
+               (flags & NIAV_FLAG_APP_CULLED) ? " **CULLED**" : "",
+               nm);
+        ++*logged;
+    }
+    void** kids = nullptr;
+    std::uint16_t count = 0;
+    __try {
+        char* nb = reinterpret_cast<char*>(node);
+        kids  = *reinterpret_cast<void***>(nb + NINODE_CHILDREN_PTR_OFF);
+        count = *reinterpret_cast<std::uint16_t*>(
+            nb + NINODE_CHILDREN_CNT_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+    if (!kids || count == 0 || count > 256) return;
+    for (std::uint16_t i = 0; i < count; ++i) {
+        void* k = nullptr;
+        __try { k = kids[i]; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { continue; }
+        if (k) pa_diag_walk(k, depth + 1, max_depth, logged, total);
+    }
+}
+
+void dump_local_player_tree(const char* label) {
+    if (g_r.base == 0) return;
+    const char* lbl = label ? label : "?";
+    void* root_a = nullptr;
+    void* root_b = nullptr;
+    if (!seh_read_player_3d_paths(g_r.base, root_a, root_b)) {
+        FW_LOG("[pa-diag] ===== %s: player singleton unreadable =====", lbl);
+        return;
+    }
+    FW_LOG("[pa-diag] ===== %s: local player 3D roots loadedData=%p "
+           "alt=%p =====", lbl, root_a, root_b);
+    int logged = 0;
+    int total  = 0;
+    if (root_a) pa_diag_walk(root_a, 0, 3, &logged, &total);
+    if (root_b && root_b != root_a) {
+        FW_LOG("[pa-diag] --- %s: alt root ---", lbl);
+        pa_diag_walk(root_b, 0, 3, &logged, &total);
+    }
+    FW_LOG("[pa-diag] ===== %s: end — %d nodes seen, %d logged "
+           "(depth<=3, cap 48) =====", lbl, total, logged);
+}
+
+// =====================================================================
 // M9.5 — Deep clone of a loaded NIF subtree (cache-share break)
 // =====================================================================
 //
@@ -3191,6 +3261,234 @@ static int collect_all_bssitf_recursive(void* root, std::vector<void*>* out,
 // External linkage on clone_nif_subtree is intentional — it's also called
 // from try_inject_body_nif (much earlier in this TU); a forward decl in
 // the fw::native namespace points at the definitions below.
+
+// Build 70s helpers — POD only, so the __try frames stay legal (C2712).
+static bool seh_read_ptr_field(void* obj, std::size_t off, void** out) {
+    if (!obj || !out) return false;
+    __try {
+        *out = *reinterpret_cast<void**>(
+            reinterpret_cast<char*>(obj) + off);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+static bool seh_write_ptr_field(void* obj, std::size_t off, void* val) {
+    if (!obj) return false;
+    __try {
+        *reinterpret_cast<void**>(
+            reinterpret_cast<char*>(obj) + off) = val;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// Collect EVERY skinnable geometry leaf (BSSubIndexTriShape AND BSTriShape)
+// in tree order. Order is deterministic and identical for a tree and its
+// clone, which is what makes the lockstep pairing below valid. Deliberately
+// broader than collect_all_bssitf_recursive: power-armor Frame.nif carries
+// both leaf kinds and the body-cull collector only ever wanted BSSITF.
+static void collect_all_geometry_recursive(void* node, std::vector<void*>* out,
+                                           int depth = 0, int max_depth = 32) {
+    if (!node || !out || depth > max_depth || g_r.base == 0) return;
+
+    std::uintptr_t vt_addr = 0;
+    __try {
+        vt_addr = *reinterpret_cast<std::uintptr_t*>(node);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+
+    if (vt_addr >= g_r.base) {
+        const std::uintptr_t vt_rva = vt_addr - g_r.base;
+        if (vt_rva == BSSUBINDEXTRISHAPE_VTABLE_RVA ||
+            vt_rva == BSTRISHAPE_VTABLE_RVA) {
+            out->push_back(node);
+            return;   // geometry leaves have no NiNode children
+        }
+    }
+
+    void** kids = nullptr;
+    std::uint16_t count = 0;
+    __try {
+        char* nb = reinterpret_cast<char*>(node);
+        kids  = *reinterpret_cast<void***>(nb + NINODE_CHILDREN_PTR_OFF);
+        count = *reinterpret_cast<std::uint16_t*>(
+            nb + NINODE_CHILDREN_CNT_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+    if (!kids || count == 0 || count > 256) return;
+
+    for (std::uint16_t i = 0; i < count; ++i) {
+        void* k = nullptr;
+        __try { k = kids[i]; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { continue; }
+        if (k) collect_all_geometry_recursive(k, out, depth + 1, max_depth);
+    }
+}
+
+// =====================================================================
+// Build 70s — PRIVATISE THE SKIN INSTANCE OF A CLONED SUBTREE
+// =====================================================================
+//
+// WHY THIS EXISTS. The engine's own deep-clone front-end does NOT clone a
+// geometry's BSSkin::Instance when the skin's bones live outside the
+// subtree being cloned. Proven in the decomp, BSSkin::Instance::CreateClone
+// sub_1416D6F70: it looks up skel_root (skin+0x48) in the clone map, then
+// every bone in the bones array (head +0x10, count +0x20); if none of them
+// is inside the map it ends with a bare
+//
+//     return a1;          // THE SOURCE INSTANCE
+//
+// An armor NIF is always cloned WITHOUT the actor skeleton its skin points
+// at, so that branch always wins: every "independent" armor clone this mod
+// makes has been sharing one BSSkin::Instance with the cached template in
+// the model DB. The comments in this file claiming otherwise were an
+// assumption, never a measurement.
+//
+// WHY IT IS THE POWER-ARMOR BUG. The frame is the only garment the local
+// player builds ON DEMAND, after a ghost may already hold the instance.
+// swap_skin_bones_to_skeleton then rewrites that shared skin (+0x10 bones,
+// +0x20 count, +0x28 bones_pri, +0x48 skel_root) to point at the GHOST
+// skeleton, and the local player's next PA body build takes its geometry
+// from the same template and is skinned to a skeleton that is not its own.
+// The engine's own attach worker re-binds the skin on every build, which is
+// exactly why ONE build breaks and the next is fine — the poisoned build
+// repairs the field on its way through.
+//
+// The measured law falls out of this with nothing left over: shared-attach
+// and clone-attach behave identically (the clone shares the skin, so the
+// routing was never a real experiment), and fade-wrap / POSTPROC / the cull
+// / the clone method are all irrelevant because none of them touch +0x140.
+//
+// WHAT THIS DOES. After the clone, walk clone and source geometry lists in
+// lockstep; wherever the two carry the SAME BSSkin::Instance pointer, build
+// a private copy with the manual deep-copier this file already owns
+// (clone_skin_instance, M9.5) and install it on the clone. After that the
+// skin swap writes only into memory the ghost owns.
+//
+// Returns the number of shared instances privatised. 0 with a non-empty
+// tree means the sharing hypothesis is WRONG for that NIF, and the log says
+// so — this function is its own experiment.
+static int privatise_shared_skins(void* clone_root, void* source_root,
+                                  const char* label) {
+    if (!clone_root || !source_root || g_r.base == 0) return 0;
+
+    std::vector<void*> clone_geoms;
+    std::vector<void*> source_geoms;
+    collect_all_geometry_recursive(clone_root, &clone_geoms);
+    collect_all_geometry_recursive(source_root, &source_geoms);
+
+    if (clone_geoms.size() != source_geoms.size()) {
+        FW_WRN("[skin-private] %s: geometry counts differ (clone=%zu "
+               "source=%zu) — lockstep pairing unsafe, skipping",
+               label, clone_geoms.size(), source_geoms.size());
+        return 0;
+    }
+    if (clone_geoms.empty()) {
+        FW_DBG("[skin-private] %s: no geometry in the clone", label);
+        return 0;
+    }
+
+    int shared = 0, fixed = 0;
+    for (std::size_t i = 0; i < clone_geoms.size(); ++i) {
+        void* cskin = nullptr;
+        void* sskin = nullptr;
+        if (!seh_read_ptr_field(clone_geoms[i], BSGEOMETRY_SKIN_INSTANCE_OFF,
+                                &cskin) ||
+            !seh_read_ptr_field(source_geoms[i], BSGEOMETRY_SKIN_INSTANCE_OFF,
+                                &sskin)) {
+            continue;
+        }
+        if (!cskin || cskin != sskin) continue;   // already private (or none)
+        ++shared;
+        void* priv = clone_skin_instance(cskin);
+        if (!priv) {
+            FW_ERR("[skin-private] %s: geom[%zu] shares skin=%p and the "
+                   "private copy FAILED — this clone still poisons the "
+                   "template", label, i, cskin);
+            continue;
+        }
+        if (seh_write_ptr_field(clone_geoms[i], BSGEOMETRY_SKIN_INSTANCE_OFF,
+                                priv)) {
+            ++fixed;
+        } else {
+            FW_ERR("[skin-private] %s: geom[%zu] install of private skin "
+                   "%p FAILED", label, i, priv);
+        }
+    }
+
+    if (shared > 0) {
+        FW_LOG("[skin-private] %s: %d/%zu geometries SHARED their skin with "
+               "the cached template — %d privatised (Build 70s). This is the "
+               "power-armor body poison; the engine's clone never copies a "
+               "skin whose bones live outside the cloned subtree "
+               "(sub_1416D6F70 'return a1')",
+               label, shared, clone_geoms.size(), fixed);
+    } else {
+        FW_LOG("[skin-private] %s: 0/%zu geometries shared a skin instance — "
+               "the engine clone already produced private skins here",
+               label, clone_geoms.size());
+    }
+    return fixed;
+}
+
+// Build 70t — the bisect state (see the header for the mode table). One
+// step per POWER ARMOR attach, so a session of alternating enters walks the
+// whole table without the user having to do anything special.
+std::atomic<int> g_pa_bisect_mode{0};
+
+int pa_bisect_mode() { return g_pa_bisect_mode.load(std::memory_order_relaxed); }
+
+// Build 70w — the table is down to TWO entries. The 2026-08-16 run put all
+// four old modes on the board and every one of them poisoned, INCLUDING
+// "load + clone, attach nothing": apply_materials, the scene attach and the
+// skin swap are therefore innocent, proven by measurement. What is left is
+// the pair that every mode had in common.
+const char* pa_bisect_mode_name() {
+    return (pa_bisect_mode() & 1) ? "LOAD+CLONE(then release, attach nothing)"
+                                  : "LOAD-ONLY(no clone at all)";
+}
+
+void log_local_player_geometry_names(const char* label) {
+    if (g_r.base == 0) return;
+    const char* lbl = label ? label : "?";
+    void* root_a = nullptr;
+    void* root_b = nullptr;
+    if (!seh_read_player_3d_paths(g_r.base, root_a, root_b)) {
+        FW_LOG("[pa-geom] %s: player 3D unreadable", lbl);
+        return;
+    }
+    std::vector<void*> geoms;
+    if (root_a) collect_all_geometry_recursive(root_a, &geoms);
+    if (root_b && root_b != root_a) {
+        collect_all_geometry_recursive(root_b, &geoms);
+    }
+    FW_LOG("[pa-geom] ===== %s: %zu geometry leaves on the LOCAL player "
+           "=====", lbl, geoms.size());
+    std::size_t shown = 0;
+    for (void* g : geoms) {
+        if (shown >= 40) break;
+        char nm[96] = {0};
+        (void)seh_read_name_diag(g, nm, sizeof(nm));
+        void* vtp = nullptr;
+        (void)seh_read_ptr_field(g, 0, &vtp);
+        const std::uintptr_t vt = reinterpret_cast<std::uintptr_t>(vtp);
+        FW_LOG("[pa-geom]   %-28s node=%p vt_rva=0x%llX", nm, g,
+               static_cast<unsigned long long>(
+                   vt >= g_r.base ? vt - g_r.base : 0));
+        ++shown;
+    }
+    FW_LOG("[pa-geom] ===== %s: end =====", lbl);
+}
+
+int count_local_player_geometries() {
+    if (g_r.base == 0) return -1;
+    void* root_a = nullptr;
+    void* root_b = nullptr;
+    if (!seh_read_player_3d_paths(g_r.base, root_a, root_b)) return -1;
+    std::vector<void*> geoms;
+    if (root_a) collect_all_geometry_recursive(root_a, &geoms);
+    if (root_b && root_b != root_a) {
+        collect_all_geometry_recursive(root_b, &geoms);
+    }
+    return static_cast<int>(geoms.size());
+}
 
 // Allocate a NiAVObject-pool block of `size` bytes via the engine's
 // resolved allocator. Returns nullptr if alloc fails or g_r isn't ready.
@@ -5711,8 +6009,452 @@ bool is_weapon_form(std::uint32_t item_form_id) {
     return resolve_weapon_nif_path(item_form_id) != nullptr;
 }
 
+// === Build 71e — the graft crash of 2026-09-14, root cause and fix =========
+//
+// NiNode::AttachChild (sub_1416BE170, read end to end) handles a full
+// children array with SetSize(size + growBy) — sub_1404E7B50, also read
+// end to end: it allocates the new buffer from the engine pool
+// (sub_1416579C0), copies the entries, and then FREES THE OLD BUFFER with
+// sub_1422B7620(old - 8). Bones loaded from a skeleton NIF have their
+// children arrays inside the loader's arena, not in a pool block of their
+// own, so that free faults. Measured: on Chest (14/14, growBy=1) the
+// attach raised a SEH inside AttachChild; on the 15:04 run four such
+// faults left half-updated arrays and the per-frame child walk
+// (sub_1416BEAC0) read a poisoned -1 slot until the process died. The
+// original three grafts were saved only by spare capacity.
+//
+// Fix: when the parent's array is full, pre-grow it OURSELVES with the
+// exact allocation SetSize makes (header word = capacity, entries after
+// it), move the entries, point the node at the new buffer — and leave the
+// old arena block alone (a few bytes leaked, no free of foreign memory).
+// AttachChild then finds room and never enters its growth path.
+static bool seh_ensure_children_slot(void* parent, std::uint16_t* cap,
+                                     std::uint16_t* cnt, bool* grew) {
+    *grew = false;
+    if (!parent || !g_r.allocate || !g_r.pool) return false;
+    __try {
+        auto* b = reinterpret_cast<std::uint8_t*>(parent);
+        auto* cap_p = reinterpret_cast<std::uint16_t*>(b + NINODE_CHILDREN_CAP_OFF);
+        auto* cnt_p = reinterpret_cast<std::uint16_t*>(b + NINODE_CHILDREN_CNT_OFF);
+        auto* data_p = reinterpret_cast<void***>(b + NINODE_CHILDREN_PTR_OFF);
+        *cap = *cap_p;
+        *cnt = *cnt_p;
+        if (*cnt < *cap && *data_p) return true;   // room already
+        const std::uint16_t new_cap =
+            static_cast<std::uint16_t>((*cap ? *cap : 0) + 8);
+        auto* raw = static_cast<std::uint64_t*>(
+            g_r.allocate(g_r.pool, 8u * new_cap + 8u, 0, false));
+        if (!raw) return false;
+        raw[0] = new_cap;                       // SetSize's header word
+        void** fresh = reinterpret_cast<void**>(raw + 1);
+        for (std::uint16_t i = 0; i < new_cap; ++i) fresh[i] = nullptr;
+        void** old = *data_p;
+        for (std::uint16_t i = 0; old && i < *cnt && i < *cap; ++i) {
+            fresh[i] = old[i];                  // pointers move; refs unchanged
+        }
+        *data_p = fresh;
+        *cap_p  = new_cap;
+        *grew   = true;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// Direct-children count of a node, for the post-clone check.
+static std::uint16_t seh_child_count(void* node) {
+    if (!node) return 0;
+    __try {
+        return *reinterpret_cast<std::uint16_t*>(
+            reinterpret_cast<std::uint8_t*>(node) + NINODE_CHILDREN_CNT_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
+// === Build 71 — PA bone graft ==============================================
+//
+// The ghost animates on the HUMAN skeleton (129 nodes). The power-armour
+// frame skin references 53 bones, and exactly three of them do not exist
+// in the human hierarchy — measured live 2026-08-16 by the swap itself:
+//
+//   'L_Pauldron'        NO MATCH in skel (visited=129)
+//   'R_Pauldron'        NO MATCH in skel (visited=129)
+//   'LLeg_Thigh_Armor'  NO MATCH in skel (visited=129)
+//
+// Unmatched bones leave their vertices in bind pose, so the pauldrons
+// float rigidly beside the ghost (user screenshot, same date). The PA
+// skeleton asset names their parents — read offline from the extracted
+// fw_native/assets/raw/.../PowerArmor/.../skeleton.nif, not guessed:
+//
+//   Pauldron_Armor { L_Pauldron, R_Pauldron }  under  Chest
+//   LLeg_Thigh_Armor                           under  LLeg_Thigh
+//   RLeg_Thigh_Armor                           under  RLeg_Thigh
+//
+// All three parents exist in the human skeleton (verified offline against
+// the extracted human skeleton.nif — and no name collisions: none of the
+// five PA bones exist there). So the repair is a graft: load the PA
+// skeleton once, engine-clone the three subtrees (5 nodes total), attach
+// them under the matching human parents. The clones keep their NIF-local
+// transforms, so each grafted bone rides its parent joint — pauldrons
+// follow the shoulders' Chest, thigh plates follow the thighs — with zero
+// new wire data. Then the swap finds them by name like any other bone.
+//
+// This is also the prerequisite for PA COMPONENTS on the ghost: the seven
+// ap_PowerArmor_* attach slots hang off exactly these bones.
+//
+// Refcount contract (same as the armor path): clone_nif_subtree returns a
+// caller-owned ref; attach_child_direct adds the engine's slot ref; we
+// drop ours after attach so the skeleton alone owns the graft. The loaded
+// PA skeleton root is a caller-owned ref on the cached instance — dropped
+// at the end, the model DB keeps or purges its (engine-shaped, 0x2C —
+// the 70y rule) entry as it pleases.
+//
+// Idempotent per skeleton: the cached ghost skeleton is a session
+// singleton, so one graft serves every ghost; "Pauldron_Armor already
+// present" is the whole check.
+static bool graft_pa_bones_into_skeleton(void* skel) {
+    if (!skel) return false;
+    // Per-node idempotence below; this flag only skips the PA skeleton
+    // load once every entry has been seen present.
+    static bool s_all_present = false;
+    if (s_all_present) return true;
+
+    constexpr const char* kPaSkelPath =
+        "Actors\\PowerArmor\\CharacterAssets\\skeleton.nif";
+    NifLoadOpts opts{};
+    opts.flags = 0x2C;  // engine-shaped model-DB entry (Build 70y)
+    std::uint8_t* ks = reinterpret_cast<std::uint8_t*>(
+        g_r.base + BSLSP_BIND_KILLSWITCH_BYTE_RVA);
+    const std::uint8_t saved_ks = *ks;
+    *ks = 1;
+    void* pa_skel = nullptr;
+    const std::uint32_t rc = seh_nif_load_armor(g_r.nif_load_by_path,
+                                                kPaSkelPath, &pa_skel, &opts);
+    *ks = saved_ks;
+    if (rc != 0 || !pa_skel) {
+        FW_ERR("[pa-graft] PA skeleton load failed rc=%u node=%p — pauldron "
+               "and thigh-armor bones stay missing", rc, pa_skel);
+        return false;
+    }
+
+    // Build 71e — EVERY PA-only node, one entry each, parents before
+    // children (DFS of the PA skeleton asset, offline diff against the
+    // human one: 20 nodes). Cloning an entry clones its subtree, so a
+    // child entry usually finds itself already present and is skipped;
+    // if a subtree clone ever drops a child (Tank_Armor went missing on
+    // 2026-09-14 although Back_Armor's clone should have carried it), the
+    // child's own entry grafts it under the cloned parent. Robust either
+    // way, and the log says which path each node took.
+    struct Graft { const char* bone; const char* parent; };
+    static constexpr Graft kGrafts[] = {
+        {"LLeg_Calf_Armor1",    "LLeg_Calf"},
+        {"LLeg_Calf_Armor2",    "LLeg_Calf_Armor1"},
+        {"LLeg_Thigh_Armor",    "LLeg_Thigh"},
+        {"RLeg_Calf_Armor1",    "RLeg_Calf"},
+        {"RLeg_Calf_Armor2",    "RLeg_Calf_Armor1"},
+        {"RLeg_Thigh_Armor",    "RLeg_Thigh"},
+        {"Pelvis_Armor",        "Pelvis"},
+        {"LArm_ForeArm_Armor",  "LArm_ForeArm1"},
+        {"LArm_UpperArm_Armor", "LArm_UpperArm"},
+        {"Helmet_Armor",        "HEAD"},
+        {"RArm_ForeArm_Armor",  "RArm_ForeArm1"},
+        {"RArm_UpperArm_Armor", "RArm_UpperArm"},
+        {"Pauldron_Armor",      "Chest"},
+        {"L_Pauldron",          "Pauldron_Armor"},
+        {"R_Pauldron",          "Pauldron_Armor"},
+        {"Back_Armor",          "Chest"},
+        {"Tank_Armor",          "Back_Armor"},
+        {"Wheel",               "Chest"},
+        {"ProjectileNode",      "Wheel"},
+        {"OpenArmor",           "Root"},
+    };
+    constexpr int kGraftCount = static_cast<int>(sizeof(kGrafts) / sizeof(kGrafts[0]));
+    int grafted = 0, present = 0;
+    for (const Graft& g : kGrafts) {
+        if (find_node_by_name_w4(skel, g.bone)) {
+            ++present;   // carried by an earlier subtree clone, or earlier call
+            continue;
+        }
+        void* src    = find_node_by_name_w4(pa_skel, g.bone);
+        void* parent = find_node_by_name_w4(skel, g.parent);
+        // The PA skeleton spells the head bone HEAD, the live ghost skeleton
+        // Head (measured in the [skel] dump); same joint, other case.
+        if (!parent && std::strcmp(g.parent, "HEAD") == 0) {
+            parent = find_node_by_name_w4(skel, "Head");
+        }
+        if (!src || !parent) {
+            FW_WRN("[pa-graft] '%s' -> '%s' FAILED (src=%p parent=%p)",
+                   g.bone, g.parent, src, parent);
+            continue;
+        }
+        std::uint16_t cap = 0, cnt = 0;
+        bool grew = false;
+        if (!seh_ensure_children_slot(parent, &cap, &cnt, &grew)) {
+            FW_WRN("[pa-graft] '%s': could not secure a child slot on '%s' "
+                   "(children %u/%u) — not attaching", g.bone, g.parent,
+                   cnt, cap);
+            continue;
+        }
+        void* clone = clone_nif_subtree(src);
+        if (!clone || clone == src) {
+            FW_WRN("[pa-graft] engine clone of '%s' FAILED (%p) — not "
+                   "attaching the shared bone", g.bone, clone);
+            continue;
+        }
+        if (!seh_attach_child_armor(g_r.attach_child_direct, parent, clone)) {
+            // Should be unreachable now that the slot is secured first;
+            // if it happens, stop rather than keep attaching onto a tree
+            // that may already be inconsistent.
+            FW_ERR("[pa-graft] SEH attaching '%s' under '%s' (children "
+                   "%u/%u) — GRAFT ABORTED, remaining nodes skipped",
+                   g.bone, g.parent, cnt, cap);
+            (void)seh_refcount_dec_armor(clone);
+            break;
+        }
+        (void)seh_refcount_dec_armor(clone);  // slot ref keeps it alive
+        FW_LOG("[pa-graft] '%s' grafted under '%s' (clone=%p carries %u "
+               "child(ren); parent children were %u/%u%s)", g.bone,
+               g.parent, clone, seh_child_count(clone), cnt, cap,
+               grew ? ", array PRE-GROWN" : "");
+        ++grafted;
+    }
+    if (grafted + present == kGraftCount) s_all_present = true;
+    (void)seh_refcount_dec_armor(pa_skel);
+    FW_LOG("[pa-graft] %d grafted + %d already present of %d PA-only nodes"
+           "%s", grafted, present, kGraftCount,
+           (grafted + present == kGraftCount)
+               ? " — the ghost skeleton now has every PA bone"
+               : " — SOME MISSING, see the lines above");
+    return grafted + present == kGraftCount;
+}
+
+// === Build 71b — PA bind retarget ==========================================
+//
+// The graft above fixes the three MISSING bones. This fixes the bones that
+// exist in both skeletons but sit at DIFFERENT offsets. Measured offline
+// from the two extracted skeleton assets (distance of each bone from its
+// parent, human vs power armour):
+//
+//   LArm_Hand   6.15  vs 26.96   (+20.8)
+//   LLeg_Foot  31.94  vs 52.54   (+20.6)
+//   every other joint in the chain: |delta| <= ~4
+//
+// The frame mesh is skinned against PA-space bind matrices, but the ghost
+// skeleton poses those bones at HUMAN offsets — so the hand renders ~21
+// units INSIDE the frame's forearm (the "fist sunk in the forearm" user
+// sighting, 2026-08-16) and the feet ~21 units up the calf. The live pose
+// stream cannot repair this: hand and foot are among the 53 joints the
+// sender never finds in its render tree (the M8P3 sentinel limit), so they
+// keep whatever bind local the ghost skeleton has.
+//
+// Repair: while the ghost wears the frame, copy the PA skeleton's local
+// transform (the 16-float NiTransform block) onto every same-named bone of
+// the ghost skeleton, saving each original for restore at frame detach.
+// Bones the pose stream DOES drive get overwritten by live data anyway —
+// live data sampled from a peer who is in PA, i.e. PA-proportioned, so the
+// mix stays consistent. Bones it does not drive stay at PA bind, which is
+// exactly where the frame mesh expects them.
+namespace {
+struct PaBindSave { float xf[16]; };
+std::mutex g_pa_bind_mtx;
+std::unordered_map<void*, PaBindSave> g_pa_bind_saved;  // bone -> human bind
+}  // namespace
+
+// SEH-safe read of the 16-float NiTransform at node+NIAV_LOCAL_ROTATE_OFF
+// (mirror of seh_write_local_transform).
+static bool seh_read_local_transform(void* node, float xf[16]) {
+    if (!node) return false;
+    __try {
+        const char* base =
+            reinterpret_cast<const char*>(node) + NIAV_LOCAL_ROTATE_OFF;
+        std::memcpy(xf, base, sizeof(float) * 16);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// Name -> node for every named node in a (skeleton) tree. Same walk and
+// the same SEH leaf helpers as find_node_by_name_w4; containers stay out
+// of any __try (C2712).
+static void collect_named_nodes_w4(void* root,
+                                   std::unordered_map<std::string, void*>& out,
+                                   int depth = 0) {
+    if (!root || depth > 16) return;
+    char nm[128];
+    if (seh_read_node_name_w4(root, nm, sizeof(nm)) && nm[0]) {
+        out.emplace(nm, root);  // first occurrence wins
+    }
+    void** kids = nullptr;
+    std::uint16_t count = 0;
+    if (!seh_read_children_w4(root, kids, count)) return;
+    if (!kids || count == 0 || count > 256) return;
+    for (std::uint16_t i = 0; i < count; ++i) {
+        if (void* k = seh_kid_at_w4(kids, i)) {
+            collect_named_nodes_w4(k, out, depth + 1);
+        }
+    }
+}
+
+static void pa_bind_retarget_enable(void* skel) {
+    if (!skel) return;
+    {
+        std::lock_guard<std::mutex> lk(g_pa_bind_mtx);
+        if (!g_pa_bind_saved.empty()) return;  // already retargeted
+    }
+
+    constexpr const char* kPaSkelPath =
+        "Actors\\PowerArmor\\CharacterAssets\\skeleton.nif";
+    NifLoadOpts opts{};
+    opts.flags = 0x2C;  // engine-shaped entry (Build 70y rule)
+    std::uint8_t* ks = reinterpret_cast<std::uint8_t*>(
+        g_r.base + BSLSP_BIND_KILLSWITCH_BYTE_RVA);
+    const std::uint8_t saved_ks = *ks;
+    *ks = 1;
+    void* pa_skel = nullptr;
+    const std::uint32_t rc = seh_nif_load_armor(g_r.nif_load_by_path,
+                                                kPaSkelPath, &pa_skel, &opts);
+    *ks = saved_ks;
+    if (rc != 0 || !pa_skel) {
+        FW_ERR("[pa-retarget] PA skeleton load failed rc=%u — hands and "
+               "feet stay at human offsets", rc);
+        return;
+    }
+
+    std::unordered_map<std::string, void*> pa_nodes;
+    std::unordered_map<std::string, void*> ghost_nodes;
+    collect_named_nodes_w4(pa_skel, pa_nodes);
+    collect_named_nodes_w4(skel, ghost_nodes);
+
+    // Build 71c — THE REWIRED THREE. Copying PA locals by name assumes the
+    // bone hangs off the same parent in both skeletons. Offline diff of the
+    // two hierarchies says that is true for every shared bone except three:
+    //
+    //   LArm_Hand / RArm_Hand / PipboyBone
+    //     human parent: *Arm_ForeArm3   (last of two 6.15-unit twist bones)
+    //     PA parent:    *Arm_ForeArm1   (direct at the elbow)
+    //
+    // PA's hand offset (26.96) is measured FROM THE ELBOW; on the human
+    // chain it gets applied after the two twist bones as well, so the arm
+    // came out ~10 units too long ("un po' troppo allungati", user
+    // comparison screenshot 2026-08-16). These translations are the offline
+    // model-space solve for the HUMAN chain (twist locals human, the rest
+    // PA): the hand lands exactly on the PA skeleton's model-space hand.
+    // Twist bind rotations deviate from identity by <0.006, so patching
+    // only the translation (floats [12..14] of the block) is exact to a
+    // rounding error; the copied PA rotation stays. L/R symmetry of the
+    // solve (16.9638 vs 16.9641) is the internal check that the math ran
+    // on the right convention.
+    struct RewiredFix { const char* name; float t[3]; };
+    static constexpr RewiredFix kRewired[] = {
+        {"LArm_Hand",  {16.9638f, -0.0001f, 0.0002f}},
+        {"RArm_Hand",  {16.9641f,  0.0002f, 0.0013f}},
+        {"PipboyBone", {-10.0001f, 0.0001f, 0.0003f}},
+    };
+
+    int retargeted = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_pa_bind_mtx);
+        for (const auto& [name, gnode] : ghost_nodes) {
+            auto pit = pa_nodes.find(name);
+            if (pit == pa_nodes.end()) continue;
+            float pa_xf[16];
+            PaBindSave save{};
+            if (!seh_read_local_transform(pit->second, pa_xf)) continue;
+            if (!seh_read_local_transform(gnode, save.xf)) continue;
+            for (const RewiredFix& rf : kRewired) {
+                if (std::strcmp(name.c_str(), rf.name) == 0) {
+                    pa_xf[12] = rf.t[0];
+                    pa_xf[13] = rf.t[1];
+                    pa_xf[14] = rf.t[2];
+                    break;
+                }
+            }
+            if (!seh_write_local_transform(gnode, pa_xf)) continue;
+            g_pa_bind_saved.emplace(gnode, save);
+            ++retargeted;
+        }
+    }
+    (void)seh_refcount_dec_armor(pa_skel);
+    FW_LOG("[pa-retarget] %d bones set to PA bind locals (ghost skel %zu "
+           "named, PA skel %zu named) — human bind saved for restore at "
+           "frame detach", retargeted, ghost_nodes.size(), pa_nodes.size());
+}
+
+static void pa_bind_retarget_disable() {
+    std::lock_guard<std::mutex> lk(g_pa_bind_mtx);
+    if (g_pa_bind_saved.empty()) return;
+    int restored = 0;
+    for (const auto& [node, save] : g_pa_bind_saved) {
+        if (seh_write_local_transform(node, save.xf)) ++restored;
+    }
+    const std::size_t total = g_pa_bind_saved.size();
+    g_pa_bind_saved.clear();
+    FW_LOG("[pa-retarget] restored %d/%zu bones to human bind locals",
+           restored, total);
+}
+
+// === v24 E4 — PA piece model mods ==========================================
+//
+// The visible mesh of a power-armour piece is NOT on its ARMA. ESM, read
+// 2026-09-14: ARMO Armor_Power_X01_Torso (0x154AC8) lists one addon,
+// AA_Power_Torso (0x140C41), shared by every PA model and pointing at the
+// placeholder Armor\PowerArmor\ArmorPABody.nif — which is exactly what the
+// resolver attached, and why the ghost showed a bare frame. The geometry
+// lives on the piece's MODEL OMOD: PA_X01_Torso (0x1681E9) MODL =
+// Actors\PowerArmor\CharacterAssets\Mods\PA_X1_Body.nif, a skinned mesh
+// (3 BSSITF + BSSkin::Instance, bones Chest / Pelvis / Pelvis_Armor). The
+// other mods on the piece (lining, material, misc nulls) carry no model.
+// So a piece renders as: placeholder + one skinned mesh per model OMOD,
+// attached like any armour and swapped onto the (grafted) ghost skeleton.
+//
+// OMOD layout from re/OMOD_assembly_AGENT_A.md: form tag byte +0x1A ==
+// 0x90; TESModel component at +0x48 (the helper adds the path offset).
+namespace {
+std::mutex g_pa_piece_mods_mtx;
+// peer -> piece form -> OMOD forms attached for it (each is its own
+// g_attached_armor entry keyed by the OMOD form id).
+std::unordered_map<std::string,
+                   std::unordered_map<std::uint32_t, std::vector<std::uint32_t>>>
+    g_pa_piece_mods;
+
+// The OMOD -> model path read itself is the M9-closure resolver
+// resolve_omod_model_path (scene_inject.h), shared with the weapon path.
+}  // namespace
+
+int ghost_attach_pa_piece_mods(const char* peer_id, std::uint32_t piece_form_id,
+                               const std::uint32_t* omod_form_ids,
+                               std::size_t omod_count) {
+    if (!peer_id || piece_form_id == 0 || !omod_form_ids || omod_count == 0) {
+        return 0;
+    }
+    const char* piece_path = resolve_armor_nif_path(piece_form_id, 0);
+    if (!piece_path || !seh_path_contains_ci(piece_path, std::strlen(piece_path),
+                                             "armor\\powerarmor\\armorpa")) {
+        return 0;   // not a power-armour piece: nothing to do
+    }
+    int attached = 0;
+    for (std::size_t i = 0; i < omod_count && i < 16; ++i) {
+        const std::uint32_t mod = omod_form_ids[i];
+        if (mod == 0) continue;
+        const char* mpath = resolve_omod_model_path(mod);
+        if (!mpath) {
+            FW_DBG("[pa-piece-mod] peer=%s piece=0x%X mod=0x%X carries no "
+                   "model — skipped", peer_id, piece_form_id, mod);
+            continue;
+        }
+        FW_LOG("[pa-piece-mod] peer=%s piece=0x%X mod=0x%X model='%s' -> "
+               "attaching as skinned armour", peer_id, piece_form_id, mod,
+               mpath);
+        if (ghost_attach_armor(peer_id, mod, 0, mpath)) {
+            ++attached;
+            std::lock_guard<std::mutex> lk(g_pa_piece_mods_mtx);
+            g_pa_piece_mods[peer_id][piece_form_id].push_back(mod);
+        }
+    }
+    FW_LOG("[pa-piece-mod] peer=%s piece=0x%X: %d model mod(s) attached",
+           peer_id, piece_form_id, attached);
+    return attached;
+}
+
 bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
-                        std::uint16_t effective_priority) {
+                        std::uint16_t effective_priority,
+                        const char* nif_path_override) {
     if (!peer_id || item_form_id == 0) return false;
 
     void* ghost = g_injected_cube.load(std::memory_order_acquire);
@@ -5755,7 +6497,11 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
         }
     }
 
-    const char* path = resolve_armor_nif_path(item_form_id, effective_priority);
+    // v24 E4 — a caller may hand in the NIF directly (a PA piece's model
+    // OMOD mesh, keyed by the OMOD form): no ARMA walk, no body cull.
+    const char* path = nif_path_override
+        ? nif_path_override
+        : resolve_armor_nif_path(item_form_id, effective_priority);
     if (!path) return false;  // resolve_armor_nif_path already logged the issue
 
     // Pool init guard — same as inject_body_nif. The NIF loader allocates
@@ -5769,8 +6515,56 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
     // Load the NIF. Same opts as body load: FADE_WRAP | POSTPROC (0x18).
     // POSTPROC triggers BSModelProcessor → resolves .bgsm → DDS textures
     // (without it, materials render pink/purple as we discovered in M6.1).
+    //
+    // Build 70q — POSTPROC RESTORED, and the 70p experiment is the lesson:
+    // dropping it poisoned the CLIENT'S CACHE whenever OUR ghost attach was
+    // the FIRST to load a NIF on that client (cache miss -> template
+    // created UNPROCESSED -> the engine's first build from it comes out
+    // missing its geometry). Measured deterministically 2026-08-15 night:
+    // whichever player entered the PA second lost its body; both-at-once
+    // was safe because each engine loaded its own template first; the
+    // engine HEALS the template on its own first build, so only the first
+    // local enter after our poisoned load broke. With 0x18 the template we
+    // create on a miss is processed exactly like an engine load — three
+    // months of production behavior. The 70j-era wave interaction is
+    // handled separately by the PA attach defer in the equip drain.
+    // ========================================================================
+    // Build 70y — NO FADE WRAP ON THE ARMOR LOAD. This is the answer, and
+    // the evidence is an A/B asymmetry that cannot be read two ways
+    // (2026-08-16 06:00, one pinned template per client):
+    //
+    //   client A  pinned template vt_rva 0x267C888 = plain NiNode
+    //             (our load HIT an entry the engine had made)
+    //             -> 23 geometry leaves, BODY PRESENT, 3 tests out of 3
+    //   client B  pinned template vt_rva 0x28FA3E8 = BSFadeNode
+    //             (our load MISSED and CREATED the entry itself)
+    //             -> 20 geometry leaves, BODY MISSING, 3 tests out of 3,
+    //                as first in, as second in, and simultaneously
+    //
+    // So: when the model-DB entry for Frame.nif is OURS, the engine's power
+    // armour body build fails every time; when it is the engine's, it works
+    // every time. The difference is this flag. NIF_OPT_FADE_WRAP (0x10)
+    // makes the loader store a BSFadeNode as the entry's root; the engine's
+    // own biped build wants the plain NiNode and silently produces no body
+    // geometry (exactly 3 leaves missing = the 3 geometries of Frame.nif).
+    //
+    // Normally the entry was purged and re-created by the engine soon after,
+    // which is why only the FIRST build after our load broke and the next
+    // one was fine — the whole "law" we spent the night measuring. Pinning
+    // the entry (Build 70x) removed the repair and made B's loss permanent,
+    // which is how the mechanism finally showed itself.
+    //
+    // 0x2C is what the engine passes for biped models ((old & 0xEC) | 0x2C):
+    // POSTPROC plus the two bits its own build sets, and NO fade wrap. If we
+    // are the ones to create the entry, it is now created exactly as the
+    // engine would have created it.
+    //
+    // Every earlier attempt kept the wrap: 0x18 (wrap + postproc) and the
+    // 70p experiment at 0x10 (wrap alone) both poisoned, which is why the
+    // flags looked innocent — the variable was never actually changed.
+    // ========================================================================
     NifLoadOpts opts{};
-    opts.flags = NIF_OPT_FADE_WRAP | NIF_OPT_POSTPROC;
+    opts.flags = 0x2C;
 
     // M6.1 killswitch dance — same as body load. byte_143E488C0 gates
     // the texture-resolution loop inside BSLightingShaderProperty bind.
@@ -5798,6 +6592,62 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
     // for "fresh tree per armor" — same AV as the body inject (worker
     // requires streamCtx from cache resolver, can't be called standalone
     // with streamCtx=0). Reverted to type-routed clone vs shared.
+    //
+    // Build 70n — POWER ARMOR: DO NOT TOUCH THE CACHE AT ALL. Measured
+    // 2026-08-15 evening with the [pa-trace]+[pa-diag] pair: the engine's
+    // enter pipeline is byte-identical between the healthy and the broken
+    // run (extra 0xBB, race switch, state 2, reload — all correct), and the
+    // player's tree is COMPLETE at enter+2.5s in both. The breakage lands
+    // later, in a mass actor-reload wave (every loaded actor re-queued for
+    // seconds), and the ONLY external touch of Frame.nif in that window is
+    // THIS load (cache hit + POSTPROC reprocessing on the SHARED instance)
+    // for the ghost's costume. Healthy run: attach far from the wave.
+    // Broken run: attach inside it. Nondeterminism = timing collision.
+    // Until the engine clone factory (sub_1416D5600) replaces this pipeline,
+    // the receiving client must not load, clone, or postprocess the PA NIF
+    // the local player is wearing. Ghost shows no PA visual — the body
+    // stays visible (70k skipped the cull) — and the local player NEVER
+    // loses its 3D again.
+    // ========================================================================
+    // Build 70r — THE PA GHOST VISUAL IS OFF, and this is the measured law
+    // behind it (2026-08-15 night, three builds of evidence):
+    //
+    //   "If this client attached a PA clone to a ghost since the local
+    //    player's last PA body build, the local player's NEXT PA build
+    //    comes out without a body. The build after that is fine."
+    //
+    // Verified in both directions and on both clients, four enters in a row:
+    //   A attach 21:41:36 -> A enter 21:41:47 BROKEN -> A enter 21:42:19 OK
+    //   B attach 21:41:47 -> B enter 21:42:20 BROKEN
+    //   (an enter with no attach since the last build is always fine)
+    // Hence the user-visible rule "whoever enters second loses its body",
+    // and why entering simultaneously is safe for both.
+    //
+    // What has been RULED OUT by measurement, not by argument:
+    //   - the ghost body cull (off for PA since 70k; bug persists)
+    //   - the clone method (manual memcpy AND the engine's own front-end
+    //     sub_1416BA800 both poison)
+    //   - the shared-vs-clone routing (70j SHARED and 70p CLONE both poison)
+    //   - POSTPROC on the load (0x10 and 0x18 poison identically)
+    //   - a double load of the same cached template: the trace proves the
+    //     ENGINE NEVER LOADS Frame.nif through this loader at all. Ours are
+    //     the only three loads in the session (tid = our main thread); the
+    //     engine only loads powerarmor\_1stPerson\...\skeleton.nif (0xBD).
+    //     So there is no "second postproc" and no shared template to spoil.
+    //
+    // What is left, and is NOT yet identified: our load/resolve of this
+    // specific ARMO's NIF perturbs whatever the engine's own biped build
+    // uses for the frame body. Until that mechanism is named, this client
+    // does not touch the PA NIF at all. The local player's body is worth
+    // more than the ghost's cosmetics; skipping is proven safe over many
+    // spam cycles (70n).
+    // ========================================================================
+    // Build 70s — the PA visual is BACK ON. The cause named above is now
+    // identified and repaired at its root: privatise_shared_skins() runs on
+    // every armor clone right after the clone, so the skin swap can no
+    // longer write into the cached template's BSSkin::Instance. If the
+    // sharing does not actually happen for some NIF, the [skin-private]
+    // line says "0/N shared" and this build is its own experiment.
     void* shared_armor = nullptr;
     const std::uint32_t rc = seh_nif_load_armor(g_r.nif_load_by_path,
                                                   path, &shared_armor, &opts);
@@ -5842,23 +6692,79 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
     const bool is_vault_suit_path = path && (
         std::strstr(path, "Vault111Suit") != nullptr ||
         std::strstr(path, "vault111suit") != nullptr);
-    if (is_vault_suit_path) {
-        // CLONE path — only for Vault Suit family.
+    const bool is_power_armor_path = path && (
+        std::strstr(path, "PowerArmor") != nullptr ||
+        std::strstr(path, "powerarmor") != nullptr ||
+        std::strstr(path, "POWERARMOR") != nullptr);
+
+    // Build 70x's session-pinned template is REMOVED (Build 70y). It was
+    // built to stop the model-DB entry churn, and instead it froze client B
+    // in the broken state permanently — which is precisely how it proved
+    // that the entry WE create is the defect. With the fade wrap gone the
+    // entry we may create is engine-shaped, so there is nothing to pin
+    // around and no reason to keep a reference alive for the session.
+
+    // ====================================================================
+    // Build 70j — THE LOAN BUG (2026-08-15, measured live twice). The SHARED
+    // path attaches the CACHED instance to the ghost. For power armor that
+    // instance is Frame.nif — THE WORN PA BODY — and the local player needs
+    // it the moment they enter a frame: B applied A's PA enter to the ghost
+    // at 17:55:03 (shared attach + skin swap to the ghost skeleton, "3 skin
+    // instances"), B entered at 17:55:15, and B's own PA body branch (3
+    // geoms) was simply ABSENT from the rebuilt player tree — floating
+    // head. The ghost rendered the PA perfectly because it was literally
+    // holding the player's instance. INVARIANT from this bug: the shared
+    // cached instance of anything the local player can WEAR must never be
+    // attached to the ghost. PA routing: try the manual clone (it may
+    // render, like the Vault Suit does); if the clone degrades, SKIP the
+    // attach entirely — a ghost without PA visuals is cosmetic, a player
+    // without a body is not. The real end-state fix is the engine's own
+    // clone factory sub_1416D5600 (does the NiSkinPartition/D3D setup our
+    // memcpy walker cannot) — tracked in B6.md.
+    // Build 70p — THE WHITELIST DIES. The "manual clone renders only the
+    // Vault Suit" premise described ATTEMPT #1 (the memcpy walker) and has
+    // been stale since 2026-05-06, when clone_nif_subtree became the
+    // ENGINE's clone front-end (sub_1416BA800) — production-proven on
+    // weapons/head/hands/VS/body ever since. EVERY armor now goes through
+    // the engine clone; a degrade falls back per-form (SHARED for normal
+    // armor, SKIP for power armor — the loan rule) and the log names the
+    // form so any real counterexample identifies itself.
+    if (true) {
         armor_node = clone_nif_subtree(shared_armor);
         if (armor_node != shared_armor) {
             was_cloned = true;
-            FW_LOG("[armor-attach] CLONE path (VS whitelist): shared=%p "
-                   "clone=%p (form=0x%X path='%s') — independent skin "
-                   "instance, fixes VS cycle bugs #1-#4",
+            FW_LOG("[armor-attach] ENGINE CLONE (Build 70p%s): shared=%p "
+                   "clone=%p (form=0x%X path='%s') — independent instance "
+                   "via sub_1416BA800",
+                   is_power_armor_path ? ", POWER ARMOR" : "",
                    shared_armor, armor_node, item_form_id, path);
+            // Build 70s — the engine clone shares the skin instance
+            // whenever the skin's bones live outside the cloned subtree
+            // (sub_1416D6F70 "return a1"), which is ALWAYS true for armor.
+            // Give the clone its own before anything rewrites bones.
+            (void)privatise_shared_skins(armor_node, shared_armor, path);
             // Drop our +1 caller-owned ref on shared; engine cache keeps it.
             const long after = seh_refcount_dec_armor(shared_armor);
             if (after == -999) {
                 FW_WRN("[armor-attach] SEH dec on shared (benign)");
             }
+        } else if (is_power_armor_path) {
+            // Build 70j — NEVER the shared path for power armor (see the
+            // invariant above). Release our ref and skip the attach.
+            FW_WRN("[armor-attach] PA clone walker returned shared for "
+                   "form=0x%X — SKIPPING attach (ghost shows no PA visual; "
+                   "the local player's body is not for lending)",
+                   item_form_id);
+            const long after = seh_refcount_dec_armor(shared_armor);
+            if (after == -999) {
+                FW_WRN("[armor-attach] SEH dec on shared (benign)");
+            }
+            return false;
         } else {
-            FW_WRN("[armor-attach] VS clone walker returned shared for "
-                   "form=0x%X — degrading to SHARED path", item_form_id);
+            FW_WRN("[armor-attach] ENGINE clone DEGRADED (returned shared) "
+                   "for form=0x%X path='%s' — SHARED fallback. NAME THIS "
+                   "FORM: it is the counterexample the Build 70p "
+                   "verification hunts", item_form_id, path);
             armor_node = shared_armor;  // already loaded with +1 ref, keep
         }
     } else {
@@ -5872,6 +6778,9 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
                static_cast<int>(has_bssitf),
                static_cast<int>(has_bstrishape));
     }
+    const bool skip_mats = false;   // Build 70w: those modes are settled
+    const bool skip_swap = false;   // (innocent) — see pa_bisect_mode_name
+
     {
         std::lock_guard<std::mutex> lk(g_armor_map_mtx);
         g_armor_was_cloned[armor_node] = was_cloned;
@@ -5880,7 +6789,12 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
     // apply_materials — runs BSModelProcessor's texture+shader bind so
     // the loaded NIF has its full PBR rendering set up. Without it the
     // armor would render with placeholder pink-squared materials.
-    seh_apply_materials_armor(g_r.apply_materials, armor_node);
+    if (skip_mats) {
+        FW_LOG("[pa-bisect] apply_materials SKIPPED on the clone (mode %d) "
+               "— the armor may render untextured; that is expected");
+    } else {
+        seh_apply_materials_armor(g_r.apply_materials, armor_node);
+    }
     *killswitch_byte = saved_ks;
 
     // Attach as child of the ghost root. attach_child_direct bumps engine
@@ -5902,8 +6816,15 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
             fw::native::skin_rebind::get_bone_by_name("PipboyBone");
         if (pipboy_bone) {
             attach_parent = pipboy_bone;
+            // Build 71e — a file-loaded bone: secure a child slot first so
+            // AttachChild never enters its growth path (which frees the
+            // loader's arena block and faults; see seh_ensure_children_slot).
+            std::uint16_t pcap = 0, pcnt = 0;
+            bool pgrew = false;
+            (void)seh_ensure_children_slot(pipboy_bone, &pcap, &pcnt, &pgrew);
             FW_LOG("[armor-attach] pipboy NIF detected — parenting under "
-                   "PipboyBone (%p) instead of ghost root", pipboy_bone);
+                   "PipboyBone (%p) instead of ghost root (children %u/%u%s)",
+                   pipboy_bone, pcnt, pcap, pgrew ? ", array PRE-GROWN" : "");
         } else {
             FW_WRN("[armor-attach] pipboy NIF but PipboyBone not found in "
                    "the ghost skeleton — falling back to ghost root");
@@ -5935,6 +6856,21 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
     // animated joint world matrices the body skin reads from. Armor
     // skinning becomes synchronized with body animation automatically.
     void* cached_skel = fw::native::skin_rebind::get_cached_skeleton();
+    if (skip_swap) {
+        FW_LOG("[pa-bisect] skin swap SKIPPED on the clone (mode %d) — the "
+               "ghost's armor will sit in T-pose; that is expected");
+        cached_skel = nullptr;
+    }
+    // Build 71 — before the swap can match the frame's pauldron/thigh
+    // bones, they have to exist in the ghost skeleton. One-time graft per
+    // session (see graft_pa_bones_into_skeleton above the function).
+    // Build 71b — and the bones that DO exist must sit at PA offsets while
+    // the frame is worn, or hands and feet render inside the limbs (see
+    // pa_bind_retarget_enable). Undone at frame detach.
+    if (is_power_armor_path && cached_skel) {
+        graft_pa_bones_into_skeleton(cached_skel);
+        pa_bind_retarget_enable(cached_skel);
+    }
     if (cached_skel) {
         // M9.w2 snapshot/restore — only for SHARED path. Clone has its
         // own skin instance (independent of engine cache) so snapshotting
@@ -5985,7 +6921,19 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
             g_r.base + offsets::LOOKUP_BY_FORMID_RVA);
         void* tes_form = seh_lookup_form(lookup, item_form_id);
         std::uint32_t mask = 0;
-        if (tes_form && seh_read_armo_biped_slots(tes_form, &mask)
+        // Build 70k — power armor NEVER culls the ghost body. The PA clone
+        // attaches fine but renders INVISIBLE (the May note: only the Vault
+        // Suit survives the manual clone's missing NiSkinPartition/D3D
+        // setup). Culling the body under an invisible armor produced the
+        // measured floating-head ghost when both players wore PA. A naked
+        // ghost inside an invisible frame is the honest interim until the
+        // engine clone factory (sub_1416D5600) replaces the manual walker.
+        if (is_power_armor_path || nif_path_override) {
+            FW_LOG("[body-cull] peer=%s form=0x%X: PA armo — cull SKIPPED "
+                   "(Build 70k: PA clone may render invisible; hiding the "
+                   "body would leave a floating head)",
+                   peer_id, item_form_id);
+        } else if (tes_form && seh_read_armo_biped_slots(tes_form, &mask)
             && (mask & offsets::BIPED_SLOT_BODY_MASK) != 0)
         {
             if (body_cull_register(peer_id, item_form_id)) {
@@ -6015,6 +6963,26 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
 
 bool ghost_detach_armor(const char* peer_id, std::uint32_t item_form_id) {
     if (!peer_id || item_form_id == 0) return false;
+
+    // v24 E4 — a PA piece's model mods hang as their own armour entries
+    // (keyed by OMOD form): they leave with the piece.
+    {
+        std::vector<std::uint32_t> mods;
+        {
+            std::lock_guard<std::mutex> lk(g_pa_piece_mods_mtx);
+            auto pit = g_pa_piece_mods.find(peer_id);
+            if (pit != g_pa_piece_mods.end()) {
+                auto fit = pit->second.find(item_form_id);
+                if (fit != pit->second.end()) {
+                    mods = fit->second;
+                    pit->second.erase(fit);
+                }
+            }
+        }
+        for (const std::uint32_t m : mods) {
+            (void)ghost_detach_armor(peer_id, m);
+        }
+    }
 
     void* ghost = g_injected_cube.load(std::memory_order_acquire);
     if (!ghost) {
@@ -6082,6 +7050,26 @@ bool ghost_detach_armor(const char* peer_id, std::uint32_t item_form_id) {
     }
     if (!was_cloned) {
         fw::native::skin_rebind::restore_skin_from_snapshot(armor_node);
+    }
+
+    // Build 71b — if the piece leaving the ghost is the PA FRAME, put the
+    // skeleton back on human bind locals (the retarget's exact inverse;
+    // no-op when nothing was retargeted). Resolved by path; priority 0 is
+    // fine — any addon variant of the form answers the question.
+    //
+    // 2026-09-14 — FRAME ONLY. The first version tested "powerarmor", which
+    // a piece's placeholder path (Armor\PowerArmor\ArmorPAHead.nif) also
+    // matches: unequipping one piece from the Pip-Boy while wearing the
+    // armour restored HUMAN bind on a ghost still inside the frame — hands
+    // back inside the forearms, feet up the calves (user screenshots). The
+    // frame is Actors\PowerArmor\CharacterAssets\Frame.nif and nothing
+    // else is.
+    {
+        const char* dpath = resolve_armor_nif_path(item_form_id, 0);
+        if (dpath && seh_path_contains_ci(dpath, std::strlen(dpath),
+                                          "characterassets\\frame.nif")) {
+            pa_bind_retarget_disable();
+        }
     }
 
     // Remove from ghost subtree. detach_child returns the pointer in
