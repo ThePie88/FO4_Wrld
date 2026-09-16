@@ -20,15 +20,14 @@ write-up of where the project stands and why it is built this way is
 
 ## Demo
 
-[![FalloutWorld demo on YouTube](https://img.youtube.com/vi/Qs3dNzXnnko/maxresdefault.jpg)](https://www.youtube.com/watch?v=Qs3dNzXnnko)
+[![FalloutWorld demo on YouTube](https://img.youtube.com/vi/r34D4IL7wAk/maxresdefault.jpg)](https://www.youtube.com/watch?v=r34D4IL7wAk)
 
-▶ **[Watch the 90s demo on YouTube](https://www.youtube.com/watch?v=Qs3dNzXnnko)**
+▶ **[Watch the demo on YouTube](https://www.youtube.com/watch?v=r34D4IL7wAk)**
 
-2 clients side-by-side. Movement + full-body animation sync, ground-pickup
-replication (peer A picks up an item → peer B sees it disappear from the
-world), and live container UI update across peers (peer A deposits items
-into a nightstand → peer B's open ContainerMenu reflects the new entries
-in real time).
+2 clients side-by-side, 1:52. Clothing and armor synced on the remote
+player, weapons with every attachment assembled by the engine exactly as
+equipped, and the full third-person animation set playing correctly on the
+ghost.
 
 ---
 
