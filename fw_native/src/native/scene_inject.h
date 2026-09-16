@@ -308,6 +308,9 @@ bool ghost_detach_armor(const char* peer_id, std::uint32_t item_form_id);
 // mesh). After the piece itself is attached, this resolves each received
 // OMOD's model path and attaches it as its own skinned armour entry keyed
 // by the OMOD form; ghost_detach_armor of the piece drops them again.
+// v26: the paint job is an OMOD without a model whose property records
+// carry BGSMaterialSwap forms; those are read off the OMOD and applied to
+// the placeholder and the model meshes with the engine's swap leaf.
 // Returns the number of model mods attached. Main thread.
 int ghost_attach_pa_piece_mods(const char* peer_id, std::uint32_t piece_form_id,
                                const std::uint32_t* omod_form_ids,

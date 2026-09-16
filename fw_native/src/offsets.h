@@ -304,6 +304,41 @@ constexpr std::uintptr_t INV_ADD_FROM_WORLD_RVA = 0x00500430;  // sub_140500430 
 constexpr std::uintptr_t CONTAINER_MENU_TRANSFER_ITEM_RVA = 0x0103E950;  // sub_14103E950
 constexpr std::uintptr_t REFHANDLE_RESOLVE_RVA            = 0x0021E230;  // sub_14021E230
 
+// --- v26 — power armor station edits (workbench_hook.cpp) ---------------
+//
+// The ExamineMenu applies a crafted OMOD and a repair to the selected item
+// through two workers whose first argument is the inventory OWNER refr
+// (the PA frame at the station). Found as the only UI-side constructors of
+// BGSInventoryItem::ModifyModDataFunctor / SetHealthFunctor; the Papyrus
+// workers (sub_1411808F0 / sub_141180AA0) are the other constructors and
+// are what our receive side calls, so hooking the UI pair never echoes.
+//
+//   double sub_14098AE30(TESObjectREFR* owner, __int64 a2)
+//     recipe -> COBJ created object (tag 0x90 = OMOD) -> selected item
+//     (sub_140987BA0) -> sub_140502230(owner, item, CheckStackIDFunctor,
+//     ModifyModDataFunctor, sub_140526BC0) -> owner biped slot rebuild.
+//   void   sub_14098E400(TESObjectREFR* owner, float health)
+//     selected item (sub_14098D270) -> sub_140502230(owner, item, ...,
+//     SetHealthFunctor{health}) — the Repair action.
+constexpr std::uintptr_t EXAMINE_MENU_APPLY_MOD_RVA        = 0x0098AE30;  // sub_14098AE30
+constexpr std::uintptr_t EXAMINE_MENU_SET_ITEM_HEALTH_RVA  = 0x0098E400;  // sub_14098E400
+//
+// Measured 2026-09-15: neither fires for the power armor station. The
+// station is its own menu class, PowerArmorModMenu: sub_140AF2170 registers
+// the name with the UI singleton (qword_1430DBF78[791]) and the creator
+// below; the ExamineMenu confirm handler (sub_14103D3E0) only calls
+// sub_14098AE30 when the inventory owner is an ACTOR (form type 0x41), and
+// the frame is a FURN refr. The station poll (world_spawn.cpp) runs on the
+// menu's lifetime instead, so only its creator and destructor are hooked.
+//   void* sub_140AF2400()                 creator: allocates 2128 bytes,
+//                                         base ctor sub_140A5D860(obj, 2),
+//                                         vtable PowerArmorModMenu (+0, +16)
+//   void* sub_140AF2310(this, char flags) destructor (slot 0 of the +16
+//                                         vtable is the thunk sub_140AF2300
+//                                         -> this-16 -> here)
+constexpr std::uintptr_t PA_MOD_MENU_CREATE_RVA            = 0x00AF2400;  // sub_140AF2400
+constexpr std::uintptr_t PA_MOD_MENU_DESTROY_RVA           = 0x00AF2310;  // sub_140AF2310
+
 // B1.k.3 CORRECTED (live log 2026-04-21): side=1 is WITHDRAW, not DEPOSIT.
 // Previous agent summary had these swapped. Proof from log: every side=1
 // ENTRY is followed by vt[0x7A] with source=container dest=player — that's
@@ -756,6 +791,21 @@ constexpr std::uintptr_t PA_EXIT_REQUEST_RVA   = 0x0098BAF0;
 constexpr std::uintptr_t PA_REPLAY_RVA         = 0x0098C9D0;
 constexpr std::uintptr_t PA_MODEL_RELOAD_A_RVA = 0x00D35EA0;
 constexpr std::uintptr_t PA_MODEL_RELOAD_B_RVA = 0x00D020E0;
+// 2026-09-15 — what RELOAD-B actually does (sub_140D020E0 decomp): it is the
+// per-frame "update this actor's 3D if anything asked for it" step, called
+// for EVERY loaded actor every frame (73/s per actor measured on both
+// clients). The work is gated:
+//   flags = *(u16*)(*(proc + 8) + 0x496)      // middle-high process bits
+//   if (sub_140CF0E60(proc) || (*(proc+16) && flags))  -> sub_140D26D60(...)
+// so a call is NOT a rebuild. The tracer now reads the gate itself and logs
+// only when the gate is open, plus a 1 Hz summary. If the player's flags
+// are non-zero every frame, something keeps asking for a 3D refresh and the
+// render thread races the rebuild (the 14:27:50 crash on B: a geometry
+// under a NiBillboardNode freed while both the accumulator and a worker
+// still held it).
+constexpr std::size_t    AIPROCESS_MIDDLE_HIGH_OFF        = 0x08;
+constexpr std::size_t    MIDDLEHIGH_3D_UPDATE_FLAGS_OFF   = 0x496;   // u16
+constexpr std::uintptr_t AIPROCESS_NEEDS_3D_LOAD_RVA      = 0x00CF0E60; // sub_140CF0E60(proc) -> bool
 constexpr std::uintptr_t PA_RACE_GETTER_RVA    = 0x00374740;
 constexpr std::uintptr_t EXTRA_GET_BY_TYPE_RVA = 0x002A0030;
 
@@ -782,6 +832,17 @@ constexpr std::uintptr_t PAPYRUS_ADDITEM_RVA   = 0x011735A0;
 // This is what makes a replica's piece the SAME Mk level as the original
 // instead of the engine's fresh leveled roll.
 constexpr std::uintptr_t PAPYRUS_ATTACH_MOD_RVA = 0x011808F0;
+// 2026-09-15 — the worker's own precondition, exposed so we can test it
+// BEFORE calling: sub_140502280(refr, item) = count of `item` in the refr's
+// inventory (BGSInventoryList at +0xF8, else the base object's container).
+// The worker refuses count 0 ("does not contain item ... for modification")
+// and count > 1 ("Can only mod singular items") and reports both through
+// the Papyrus error logger sub_1410DD940(item, msg, vm, stackId, 2) — with
+// our vm == nullptr that logger faults (140 SEH-caught AVs on B in one
+// session, each leaving a half-built CachedErrorMessageImpl and a
+// BSFixedString behind). Checking first keeps the failure in our log and
+// out of the engine.
+constexpr std::uintptr_t REFR_ITEM_COUNT_RVA = 0x00502280;   // sub_140502280(refr, item) -> i64
 
 // v25 RE (2026-09-14) — the Health extra on an inventory stack: a core's
 // remaining charge and a piece's condition are the SAME datum, BSExtraData
@@ -1081,8 +1142,9 @@ constexpr std::uint32_t GHOST_TEMPLATE_FORM_ID = 0x0001CA7D;
 //   +0x48  vtable_base_2    (BGSModelMaterialSwap-like)
 //
 // Per-mod data arrays (RE'd in tiebreaker via sub_140433870 DATA-record loader):
-//   +0x88  void*  property records ptr        (16-B stride per record)
-//   +0x90  u32    property records count
+//   +0x88  void*  property buffer base        (BSTDataBuffer-style, see below)
+//   +0x90  u32    header offset inside that buffer (NOT a count — corrected
+//                 2026-09-14 from sub_140252490/sub_1402523C0/sub_14024A830)
 //   +0x98  inline BGSAttachParentArray sub-object
 //          +0x00 vtable, +0x08 data ptr, +0x10 count u32 — i.e. abs offsets:
 //          +0x98 vtable, +0xA0 data ptr, +0xA8 count u32
@@ -1099,8 +1161,48 @@ constexpr std::uint32_t GHOST_TEMPLATE_FORM_ID = 0x0001CA7D;
 constexpr std::size_t BGSMOD_ATTACHMENT_MOD_SIZE          = 0xC8;
 constexpr std::uint8_t BGSMOD_ATTACHMENT_MOD_FORMTYPE     = 0x90;
 constexpr std::size_t BGSMOD_PROPERTY_ARRAY_DATA_OFF      = 0x88;
-constexpr std::size_t BGSMOD_PROPERTY_ARRAY_COUNT_OFF     = 0x90;
+constexpr std::size_t BGSMOD_PROPERTY_ARRAY_COUNT_OFF     = 0x90; // header offset, see below
 constexpr std::size_t BGSMOD_PROPERTY_RECORD_STRIDE       = 0x10;
+
+// --- v26 paint: the OMOD property buffer at runtime (2026-09-14) ---------
+//
+// sub_140252490 allocates `size + 8` bytes and stores the data pointer at
+// +0x88 and `size` at +0x90; the last 8 bytes (base + size) are two u32
+// section headers initialised to 0xFF000000. sub_1402523C0 claims a
+// section: header word = (byte_size & 0xFFFFFF) | (tag << 24), and a
+// section's data starts at base + sum of the byte sizes of the sections
+// declared before it. sub_1402500B0 declares tag 0 first (the Includes:
+// 16 B each at runtime, {OMOD* form, u8 level, u8 flags, ...}) and tag 1
+// second (the Properties: 16 B each). Every engine reader — sub_14024A830,
+// sub_140251A70 — walks the same two words and stops at tag 0xFF.
+//
+// Property record (16 B), from the loader sub_14043A300 and the armour
+// property handler sub_140421830 (reached from the Bridge<ARMO::
+// InstanceData> table at 0x142ED6570, entry 13 = "pwMaterialSwaps"):
+//   [0..7]   value: for value type 4/6 (FormID) the form POINTER, resolved
+//            at load (the handler checks its form tag byte, 0x91 = MSWP);
+//            for value type 3 (string) a BSFixedString; else u32 pair.
+//   [8..11]  (property & 0x7FF) | (function & 3) << 11 | (value_type & 7) << 13
+//            function: 0 SET (clear array, push), 1 REM, 2 ADD (push), 3 none
+//   [12..13] step * 100 as u16
+// The handler pushes the MSWP into the item instance's material swap
+// array (TBO_InstanceData vtable slot 10); the biped build then calls
+// sub_140255BA0(node, model_swap, 0, instance_data, 0) which applies
+// every entry of that array to the piece mesh. The ghost has no instance
+// data, so the receiver reads the records itself and applies each swap
+// with MATERIAL_SWAP_APPLY_RVA.
+constexpr std::size_t   BGSMOD_PROPERTY_BUFFER_BASE_OFF   = 0x88;
+constexpr std::size_t   BGSMOD_PROPERTY_BUFFER_HDR_OFF    = 0x90;
+constexpr std::uint8_t  BGSMOD_SECTION_TAG_INCLUDES       = 0x00;
+constexpr std::uint8_t  BGSMOD_SECTION_TAG_PROPERTIES     = 0x01;
+constexpr std::uint8_t  BGSMOD_SECTION_TAG_EMPTY          = 0xFF;
+constexpr std::uint32_t BGSMOD_ARMO_PROP_MATERIAL_SWAPS   = 13;  // pwMaterialSwaps
+constexpr std::uint32_t BGSMOD_VALUE_TYPE_FORM_INT        = 4;
+constexpr std::uint32_t BGSMOD_VALUE_TYPE_FORM_FLOAT      = 6;
+constexpr std::uint32_t BGSMOD_FUNC_SET                   = 0;
+constexpr std::uint32_t BGSMOD_FUNC_ADD                   = 2;
+constexpr std::size_t   TESFORM_TYPE_TAG_OFF              = 0x1A;
+constexpr std::uint8_t  BGSMATERIALSWAP_FORMTYPE          = 0x91;
 constexpr std::size_t BGSMOD_ATTACH_PARENT_ARRAY_OFF      = 0x98;
 constexpr std::size_t BGSMOD_ATTACH_PARENT_DATA_OFF       = 0xA0; // abs
 constexpr std::size_t BGSMOD_ATTACH_PARENT_COUNT_OFF      = 0xA8; // abs

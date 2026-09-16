@@ -89,6 +89,17 @@ constexpr std::size_t    NIAVOBJECT_SIZEOF    = 0x120;      // 288 bytes
 // NiRefObject — root of the hierarchy. We never allocate one directly,
 // but the refcount discipline applies to every object we create.
 constexpr std::uintptr_t NIREFOBJECT_VTABLE_RVA = 0x02462F88;
+// 2026-09-15 — BSValueNode: the "AddOnNode" marker. Every power armor
+// headlamp mod NIF (PA_X1_HeadLamp.nif and the 36 variants) is a NiNode plus
+// a BSValueNode 'AddOnNode158' and NO geometry: the engine attaches the
+// BGSAddonNode's model (PA_X1_Headlamp_FX.nif: 'ScreenGlowEffect007:0', a
+// BSTriShape with a BSEffectShaderProperty, under a NiBillboardNode it
+// creates) to that node at runtime and keeps it in a global add-on list.
+// Two crashes (B 14:27:50, A 17:25:21) died on a freed geometry under a
+// NiBillboardNode inside the node geometry-list rebuild and the render
+// accumulator, right after our ghost carried such a node. Clones we attach
+// must not carry add-on nodes.
+constexpr std::uintptr_t BSVALUENODE_VTABLE_RVA = 0x02695598;   // engine_rtti_catalog.md
 
 // ============================================================================
 // 3. SCENE ROOT  (dossier §1 — HIGH confidence)
@@ -722,11 +733,31 @@ constexpr std::uintptr_t NIF_CACHE_RESOLVER_RVA      = 0x0016A6D00; // sub_1416A
 constexpr std::uintptr_t PLAYER_SINGLETON_RVA      = 0x032D2260;  // qword_1432D2260
 constexpr std::size_t    REFR_LOADED_3D_OFF        = 0x0B78;      // BSFadeNode*
 
-// Opts flag bits.
+// Opts flag bits — read by sub_1417B3480 and acted on in the parse path
+// sub_1417B3D10 (re/pa_poison/DEEP_17B3D10.md §6).
+constexpr std::uint8_t   NIF_OPT_ENTRY_LATCH     = 0x01;  // entry+0x28 0->1->2 latch (sub_1417B4960)
 constexpr std::uint8_t   NIF_OPT_D3D_LOCK        = 0x02;  // render-thread-only
+constexpr std::uint8_t   NIF_OPT_PROCESSOR_MODE  = 0x04;  // TESProcessor::vt[1] mode bit
 constexpr std::uint8_t   NIF_OPT_POSTPROC        = 0x08;  // BSModelProcessor hook
 constexpr std::uint8_t   NIF_OPT_FADE_WRAP       = 0x10;  // result is BSFadeNode
-constexpr std::uint8_t   NIF_OPT_DYNAMIC         = 0x20;  // mark as dynamic
+// 0x20 — CORRECTED 2026-09-15: not "dynamic". The parser runs the shader
+// manager's apply-materials pass (0x1434380A8 vt+104) on the finished root
+// and then SETS NiAVObject flag bit 23 (0x800000, "materials applied") on
+// it; a load WITHOUT this bit actively CLEARS bit 23 (funcs_0502.md
+// 7699-7711). That bit is what TESObjectREFR::Load3D's closing walker
+// (sub_140255BA0 with no swap) tests before re-applying default materials
+// to the whole actor tree.
+constexpr std::uint8_t   NIF_OPT_DYNAMIC         = 0x20;  // shader pass + bit-23 latch
+// The engine's own opts for an actor skeleton (sub_140D5B250 for the
+// first-person one: `v66 & 0xC0 | 0x3D`, model kind 3; the 0x80 seen in
+// traces is uninitialised stack): latch + mode + postproc + wrap + shader
+// pass. Our earlier 0x2C (no wrap, no latch) left a bare NiNode template;
+// the engine then wrapped every clone in a fresh BSFadeNode that never
+// carried bit 23, and the second player to enter a painted power armor
+// lost the paint on the closing walker (2026-09-15, see
+// pa_skeleton_load_opts in scene_inject.cpp).
+constexpr std::uint8_t   NIF_OPT_ACTOR_SKELETON  = 0x3D;
+constexpr std::uint32_t  NIF_MODEL_KIND_ACTOR    = 3;
 
 // ============================================================================
 // 13. APPLY MATERIALS WALKER  —  THE pink-body fix
@@ -774,6 +805,27 @@ constexpr std::uintptr_t APPLY_MATERIALS_PERNODE_RVA = 0x00256070; // sub_140256
 constexpr std::uintptr_t BGSM_LOADER_RVA             = 0x017A9620; // sub_1417A9620
 constexpr std::uintptr_t MAT_BIND_TO_GEOM_RVA        = 0x02169AD0; // sub_142169AD0
 constexpr std::uintptr_t BSMATERIAL_DB_SLOT_RVA      = 0x030DC2A8; // qword_1430DC2A8
+
+// v26 paint — apply ONE BGSMaterialSwap (MSWP) to a loaded subtree.
+// This is the leaf the walker above reaches when it has a swap to apply:
+// sub_140255BA0 -> sub_140255D40 -> sub_140255F30 (recurse) ->
+// sub_140256070 (per geometry: strip "materials\\" from the shader
+// property name, look the name up in the swap's BNAM->SNAM map, load the
+// replacement .bgsm through sub_1417A9620 and bind it with sub_142169AD0).
+// The engine uses this same entry for ExtraMaterialSwap on references.
+//
+//   __int64 __fastcall sub_140255D40(NiAVObject* root,
+//                                     BGSMaterialSwap* swap,
+//                                     float color_remap_index,   // FLT_MAX = none
+//                                     float model_color_index,   // FLT_MAX = none
+//                                     void* prefetch_ctx);       // 0 = apply now
+//
+// With swap == 0 and both floats FLT_MAX it returns without walking,
+// which is why our apply_materials(node, 0, 0, 0, 0) never painted
+// anything: the swap has to come from the item's instance data (the
+// material OMOD's property 13) and the ghost has no instance data.
+// Main thread only (synchronous .bgsm load).
+constexpr std::uintptr_t MATERIAL_SWAP_APPLY_RVA    = 0x00255D40; // sub_140255D40
 
 // LEGACY — do NOT use. Kept as constant for documentation / historical
 // reference only. Calling this with ResourceManager + NiNode holder hangs.

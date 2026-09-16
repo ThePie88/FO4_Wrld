@@ -58,6 +58,7 @@ add_library(fw_native SHARED
     src/hooks/lock_hook.cpp         # B6.3: ForceUnlock + ForceLock detours
     src/hooks/world_spawn_hook.cpp  # B6.14: PlaceAtMe detour (spawn sender)
     src/hooks/lifecycle_tripwire.cpp # Build 70: destroy+unpersist observers (Piano B Fase 0)
+    src/hooks/workbench_hook.cpp    # v26: PA station apply-mod + repair -> pieces report
     src/hooks/pa_pipeline_trace.cpp  # Build 70m: PA enter/exit engine pipeline tracer
     src/hooks/npc_ai_suppress.cpp   # B6.5w4: Actor::Update_PerFrame suppression for tracked NPCs
     src/hooks/ownership_manager.cpp # Build 65: DLL-side mirror of server NPC ownership registry (Solver 2)

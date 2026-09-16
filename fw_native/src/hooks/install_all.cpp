@@ -89,6 +89,7 @@
 #include "kill_hook.h"
 #include "container_hook.h"
 #include "put_hook.h"
+#include "workbench_hook.h"   // v26: PA station edits are state too
 #include "pickup_hook.h"
 #include "player_pos_hook.h"
 #include "main_menu_hook.h"
@@ -164,6 +165,10 @@ InstallSummary install_all(std::uintptr_t module_base,
     // B1.k: must run after install_container_hook (shares MinHook manager);
     // captures PUT which vt[0x7A] doesn't see (live test 2026-04-21).
     s.put_ok         = install_put_hook(module_base);
+    // v26: a paint job, lining or repair done at the PA station changes the
+    // frame's pieces in place (no transfer, so no container hook); these
+    // two ExamineMenu workers queue the same deferred pieces report.
+    s.workbench_ok   = install_workbench_hook(module_base);
     // B1.n: PlayerCharacter::vt[0xEC] world pickup. Orthogonal to vt[0x7A]
     // (no feedback loop confirmed by BFS in RE agent); shares the
     // ApplyingRemoteGuard TLS flag with container_hook for feedback safety.
@@ -754,14 +759,15 @@ InstallSummary install_all(std::uintptr_t module_base,
         FW_WRN("hooks: clone_factory_tracker install FAILED");
     }
 
-    FW_LOG("hooks: install summary kill=%d container=%d put=%d pickup=%d "
+    FW_LOG("hooks: install summary kill=%d container=%d put=%d workbench=%d pickup=%d "
            "pos=%d main_menu=%d worldstate=%d door=%d equip=%d "
            "lock=%d npc_ai_suppress=%d ghost_ai_pkg=%d "
            "ghost_ai_combat=%d ghost_ai_aim=%d ghost_ai_mov=%d "
            "ghost_ai_pos_belt=%d ghost_ai_actor_setpos=%d "
            "ghost_ai_havok_step=%d ghost_ai_fire=%d nif_cache=%d "
-           "(total %zu/19)",
-           int(s.kill_ok), int(s.container_ok), int(s.put_ok), int(s.pickup_ok),
+           "(total %zu/20)",
+           int(s.kill_ok), int(s.container_ok), int(s.put_ok), int(s.workbench_ok),
+           int(s.pickup_ok),
            int(s.player_pos_ok), int(s.main_menu_ok), int(s.worldstate_ok),
            int(s.door_ok), int(s.equip_ok),
            int(s.lock_ok), int(s.npc_ai_suppress_ok), int(s.ghost_ai_package_ok),

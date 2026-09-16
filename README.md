@@ -6,113 +6,15 @@ This project uses unconventional approaches in several critical areas (scene gra
 Fallout 4 1.11.191 next-gen — multiplayer mod (FoM-lite framework).
 Solo-dev, evening project. Target: 10-player persistent-world survival MMO.
 
-> **Status (2026-08-12):** **Character creation v1 (v0.7.0).** First
-> iteration of a fully custom in-game character creator, still engine-native:
-> no ESP, no Creation Kit, no external UI process. The panel is drawn on the
-> game's own D3D11 device from a Present hook and opens as a forced
-> first-entry ritual whenever the server holds no character for the joining
-> identity: the player is staged 10,000 units up under a pinned auto-vanity
-> camera (the free camera renders no player at all, learned the hard way),
-> input is captured at the WM_INPUT level, and CONFIRM is the only exit that
-> publishes. Everything the panel offers is walked out of live form data at
-> runtime: head parts filtered exactly like the vanilla menu, the 32 real
-> hair colours (the other 134 CLFM records are tint swatches), and the
-> race's own tint groups (brows, skin tones, face paint, tattoos, damage,
-> grime). Edits go through the engine's own apply pair per tint, both tint
-> arrays, plus a head rebuild. The appearance itself is now a server-held
-> identity: the recipe (parts + tints, wire v21) persists per player, is
-> adopted back onto the local player at every join (the save file is just a
-> vessel), and replicates onto the remote ghost with its composited face
-> textures snapshotted into private copies, since the engine repaints those
-> in place inside a global render-target pool shared by reference. Four
-> separate sharing defects had every ghost wearing the local player's face;
-> all four are closed. Also closed, found by dying next to the spawn: the
-> death stand-down never released on same-cell respawns and froze every peer
-> ghost for up to 90 s, because the respawn was detected as a position jump.
-> Release is now driven by the health restore instead. Not finished by
-> design: morph sculpting, body build and the sex switch are out for now,
-> and the ImGui panel is a placeholder for the final UI. See
-> [CHANGELOG.md](CHANGELOG.md).
->
-> **Status (2026-08-06):** **First-person ghost animation (v0.6.5).** A peer
-> playing in first person appeared on the other screen as a V/T-pose mannequin
-> with contorted arms — a limitation carried for months, and the reason a
-> Pip-Boy or an aim pose looked impossible on the remote ghost. The capture
-> was never at fault. `PlayerCharacter` overrides the post-update hook of the
-> animation graph manager, and in first person that override copies the
-> first-person skeleton over the third-person one every frame for the bones in
-> an index map. It runs one call after the graph update, so whatever the
-> third-person graph produced was erased before the pose capture could read
-> it: first-person arms grafted onto a body whose legs never moved. Underneath
-> that, the engine also parks the third-person graph on a camera switch —
-> `BSAnimationGraphManager+0xD8` selects which of the player's two graphs is
-> ticked — and deactivates its Havok behavior, so it stops producing poses at
-> all. The fix drives that graph directly: revive it, refresh its active-node
-> list, run the engine's own flush/generate/apply sequence with a forced update
-> context (the LOD throttle resolves a hidden body to "generate nothing"),
-> mirror animation events onto it so its state machine keeps transitioning,
-> raise the behavior's base-state trigger at wake-up so a session starting in
-> first person is not stuck in T-pose, keep it alive across camera switches
-> instead of letting it be reborn, and suppress the skeleton copy while
-> driving. Outward traffic stays muted through the engine's own null-event-sink
-> idiom, so no duplicate footsteps or fire events reach gameplay, and the local
-> player's arms are never touched. Also fixed: the Pip-Boy now attaches to
-> `PipboyBone` instead of the ghost root (it used to render half-sunk between
-> the feet), and the pose channel strips scale before converting to a
-> quaternion, since it carries rotation only. Known residue: the walk clip
-> plays at a rate that does not match the distance covered until a camera
-> round-trip. See [CHANGELOG.md](CHANGELOG.md).
->
-> **Status (2026-08-04):** **PIENUVO auth v0 + the player-death crash closed
-> (v0.6.4).** Identity first: every client now proves an Ed25519 keypair
-> instead of claiming a name. The launcher keeps the seed in a DPAPI-wrapped
-> vault, signs the server's challenge bound to the server address, and hands
-> the triple to the game via `FoM.exe --auth`; HELLO carries an optional
-> 144 byte auth tail (wire v19), verification runs on vendored pure-Python
-> ed25519, and a minimal master server (`net/master/`) handles discovery.
-> `FoM.exe --connect` speaks pure JSON on stdout for the external
-> server-browser launcher. Second: the crash that fired on the respawn load
-> after a player death is closed. It was a freed-cell vcall in
-> `TESObjectCELL::DetachReference`, produced by three cooperating defects:
-> mirror driving via `vt[202]` re-hashes the actor in its current cell grid
-> without ever re-filing `refr+0xB8`; the non-owner bail hooks kept eating
-> the engine's own repair writes through the death window (650+ suppressed
-> in one window, one from inside the engine's MoveTo worker); and the threat
-> election kept scoring the dead client's frozen corpse position, handing it
-> 7 NPCs 155 ms before one crash. Fix: a reliable NPC_UNLOAD per owned NPC
-> at death (raiders flip to the survivor within a frame), full engine
-> passthrough on the bail hooks from death to stand-down close, and
-> ownership quiescence on both ends (claims deferred client-side, the dead
-> session excluded from election server-side until its respawn jump).
-> Validated: 4 two-client sessions, 8 deaths, 0 crashes, with the previously
-> suppressed engine writes now visibly passing in the logs. Crash forensics
-> stay in the tree: a 524k-record write ring dumped by the VEH on any AV, a
-> register prober that names the crash victim by form id, and an ALT+F4
-> marker that stamps teardown AVs so a force-close can never again be
-> mistaken for a gameplay crash. Wire proto v19, 405 server tests. See
-> [CHANGELOG.md](CHANGELOG.md).
->
-> **Status (2026-07-29):** **N hardening — stability, position, locomotion,
-> aggro.** This does not close branch N, it hardens it. The recurring client
-> crashes were one bug: writes through stale bone pointers into recycled heap
-> (caught red-handed as `1.0f` sitting where a smart pointer belongs, in a
-> `PathingRequest` destructor). Fixed with the engine's own lifetime protocol —
-> every cached bone is refcount-pinned at +0x08, so the free becomes impossible
-> rather than unlikely, plus a one-deref parent probe that detects detachment.
-> Raiders standing in the wrong place were not drift (measured 0.0 on 4,591 of
-> 5,133 samples): the owner-state batch streamed the same first 17 NPCs forever,
-> so 12 of 29 owned actors never received a position at all. Mirrors sliding
-> like logs were not the bones either — every moving NPC was relayed as `idle`,
-> so the graph played idle; the owner now derives WALKING/RUNNING from the
-> position delta. Aggro had three separate defects: the engage signal was
-> stamped once and decayed to zero forever, `Actor+0x380` is a handle and not a
-> form id (so "am I fighting this NPC" was dead from birth), and the proximity
-> tie-break was mathematically inert (weight 1.0 against a required delta of
-> 3.0). Deaths are now remembered by the server and replayed to peers that were
-> too far to receive them. Also: our own logger was the stutter (0.525 ms per
-> line, fsync per line), and the crouch channel had been silently dead on a
-> `WM_APP` id collision. Wire proto v18. See [CHANGELOG.md](CHANGELOG.md).
->
+## Support the project
+
+[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/thepie88)
+
+Six months in, solo, evenings, paid for out of my own pocket. The code is free
+forever under AGPLv3 and stays that way; a coffee goes to the API bill behind
+the reverse engineering and to the server the test clients run on. The longer
+write-up of where the project stands and why it is built this way is
+[on Ko-fi](https://ko-fi.com/post/FO4Wrld-Building-the-Fallout-4-Multiplayer-Nobod-Z6U8271ZW7).
 
 ---
 
@@ -206,7 +108,7 @@ in real time).
 | ↳ **B6.10** One-shot loot pickups (bobbleheads, magazines, holotapes, skill books) | ⏳ — single-pickup persistence, partially covered by container `kill` events |
 | ↳ **B6.11** Time of day + weather sync | ⏳ — GlobalVar `GameHour` + Sky weather state |
 | ↳ **B6.12** Workshop / settlement build state sync | ⏳ — major epic; build/scrap/move workshop refs + furniture |
-| ↳ **B6.13** Power Armor frame + worn-state sync | 🟡 three quarters (v0.7.5, 2026-09-14) — the frame rides the spawn rails (enter = despawn, exit = rebirth); pieces, OMOD upgrade levels, condition and core charge travel with the object and persist in a per-wid server ledger; replicas are stocked through the engine's own `AddItem` (`sub_1411735A0`) and `AttachModToInventoryItem` (`sub_1411808F0`) workers and the Health extra is created the way the engine does it; manual take/put ships full state (deferred rescan); frames are exempt from the loot layer. The wearer's ghost is dressed: `Frame.nif` plus the model OMOD meshes of every piece on a ghost skeleton grafted with the 20 PA-only bones and retargeted to PA proportions while worn. Open: paint jobs and material mods, frame lost if the wearer quits (session lifecycle) |
+| ↳ **B6.13** Power Armor frame + worn-state sync | ✅ closed (v0.7.6, 2026-09-16) — the frame rides the spawn rails (enter = despawn, exit = rebirth); pieces, OMOD upgrade levels, condition, core charge and paint jobs travel with the object and persist in a per-wid server ledger; replicas are stocked through the engine's own `AddItem` (`sub_1411735A0`) and `AttachModToInventoryItem` (`sub_1411808F0`) workers and the Health extra is created the way the engine does it; manual take/put and the power armor station (`PowerArmorModMenu`, polled while it lives) ship full state; frames are exempt from the loot layer and re-seat themselves after a station edit. The wearer's ghost is dressed and painted: `Frame.nif` plus the model OMOD meshes of every piece, material swaps read from the OMOD property records, on a ghost skeleton grafted with the 20 PA-only bones and retargeted to PA proportions while worn. Residue: frame lost if the wearer quits (session lifecycle), fingers do not articulate |
 | ↳ **B6.14** World-object spawn sync | ✅ first version (v0.7.5, 2026-09-14) — `PlaceAtMe` detoured on both the Papyrus native and the console worker; server-assigned `wid`, JSON persistence, join bootstrap replay; receive-side placement = upright, ground snap, engine cell re-file, range-gated; lifecycle sweep reports deaths by wid, streaming losses re-queued, resurrection watch re-announces re-enabled refs; real removal idiom (`RemoveReference` + `DestroyByHandle`, no-save flag cleared first) |
 | **N** NPC co-op combat *(split out from B6.5 / B6.6 — grew into its own epic; my first iteration on the game's AI)* | 🟡 N2 + N3 + N4 done; **hardened in v0.6.3** (stale-pointer crash class closed via NiRefObject pinning, owner-state starvation fixed, locomotion relayed, 3 aggro defects fixed, deaths replayed to distant peers); **v0.6.4 closed the respawn-load crash** (freed-cell vcall in DetachReference: death release + engine passthrough in the death window + ownership quiescence, 8 deaths / 0 crashes). N1 still open: creature pose schema + post-mortem hardening. Scope still hostile raiders. |
 | ↳ **N1** NPC actor pos + pose sync (owner-driven) | 🟡 REOPENED partial (v0.6.2) — **major hardening in v0.6.3** (2026-07-29): the owner-state batch was capped at 17 entries with no rotation, so 12 of 29 owned NPCs never received a position at all (measured drift where data DID arrive: 0.0 on 4,591/5,133 samples) — now multi-batch, everyone at full 10 Hz; the engine's NATIVE position (AI char-controller proxy) is snapped via `sub_141894670` so it tracks the owner instead of diverging; locomotion is derived from the position delta and relayed (`anim=1/2 → SpeedSampled 100/200`), fixing the "slides like a log" mirrors; the bone cache is now refcount-pinned (+0x08) with a parent-detach probe, which closed the whole stale-pointer crash class. STILL OPEN: creature (non-humanoid) pose bleeds through a 1-name-match gate — a mole rat was seen stretched toward a map coordinate, needs a skeleton-schema gate, TODO in `scene_inject.cpp`; POST-mortem corpse hardening; leveled-list divergence means the same REFR can be a different NPC per client. |
@@ -254,6 +156,38 @@ in real time).
 
 Latest 3 patches summarized below. **Full version history in
 [CHANGELOG.md](CHANGELOG.md).**
+
+### v0.7.6 (2026-09-16) — power armor closed: paint, the station, two crashes and the skeleton loan
+
+Tag v0.7.6, wire proto v25 (no protocol change: a paint job is an OMOD,
+and pieces already carried their OMOD lists).
+
+- **Paint jobs and material mods on the ghost** — the material swap of
+  every mod on a piece is read from the OMOD's own property records and
+  bound to the piece meshes on the wearer's ghost; a station edit is on
+  the other client's ghost before the menu closes.
+- **The power armor station** — it is not the ExamineMenu: the station
+  runs its own `PowerArmorModMenu`, previews mods while you browse and
+  makes the inventory count read 2 through a working copy. Nearby frames
+  are polled while the menu lives, reported once their contents are
+  stable, and the frame re-seats itself afterwards through the owner-side
+  drift watch (despawn and rebirth, as for any move).
+- **Two crashes closed** — every headlamp mod NIF is a `BSValueNode`
+  add-on point with no geometry; the engine hangs a glow effect under it
+  with global bookkeeping that outlived the ghost's clone. Headlamps are
+  skipped on the ghost and add-on nodes are stripped from every clone.
+- **The skeleton loan** — the second player to enter a painted frame lost
+  the paint locally. Third time for the same class of bug: my load of the
+  PA skeleton created the model-DB entry the engine later cloned for the
+  player, with a bare root and without the engine's "materials applied"
+  latch, so `Load3D` re-applied the default materials two milliseconds
+  after the biped had painted them. The load now uses the engine's own
+  skeleton options.
+- **Not finished** — a client that quits while wearing power armor loses
+  the frame for everyone (session-lifecycle work); fingers do not
+  articulate.
+
+Full detail in [CHANGELOG.md](CHANGELOG.md).
 
 ### v0.7.5 (2026-09-14) — power armor, three quarters of it, and the start of world-object sync
 
@@ -326,46 +260,6 @@ Tag v0.7.0, wire proto v21.
   restore, which every respawn performs regardless of distance.
 - **Not finished** — morph sculpting, body build and the sex switch are
   out for now; the ImGui panel is a placeholder for the final UI.
-
-Full detail in [CHANGELOG.md](CHANGELOG.md).
-
-### v0.6.5 (2026-08-06) — first-person ghost animation
-
-Tag v0.6.5. No protocol change.
-
-- **The defect** — with the sender in first person, the remote ghost showed a
-  V/T-pose body with first-person arms grafted on. Two independent causes, both
-  in the engine's first-person path:
-  1. `PlayerCharacter` overrides the animation-graph post-update hook and, in
-     first person, copies the first-person skeleton onto the third-person one
-     every frame through an index map. That call lands immediately after the
-     graph update, so anything the third-person graph wrote was overwritten
-     before the pose capture ran.
-  2. A camera switch parks the third-person graph — the manager ticks only
-     `graphs[activeGraph]` — and `SetActiveGraph` deactivates its Havok
-     behavior, so every per-graph call early-outs and no pose is produced.
-- **The fix** — drive the parked graph the way the engine's own out-of-band
-  path does: reactivate it, refresh its active-node list, then flush bound
-  channels, generate, and apply, using a forced update context (the distance
-  LOD throttle resolves a hidden body to a zero bone count). Animation events
-  are mirrored onto it so its state machine keeps transitioning; the
-  behavior's base-state trigger plus a settle event are raised at wake-up so a
-  session that starts in first person is not stuck in T-pose; the graph is kept
-  alive across camera switches rather than being reactivated into its initial
-  state; and the skeleton copy is suppressed while driving. All outward traffic
-  is muted with the engine's own null-event-sink idiom, so no duplicate
-  footsteps, fire events or root motion reach gameplay, and the graph feeding
-  the local player's arms is never touched.
-- **Also fixed** — the Pip-Boy attaches to `PipboyBone` instead of the ghost
-  root, where it rendered half-sunk between the feet; the pose channel
-  normalises each matrix row before converting to a quaternion, since it
-  carries rotation only and any scale leaked straight onto the ghost.
-- **Known residue** — the walk clip plays at a rate unrelated to the distance
-  covered until a camera round-trip. Deriving the rate from frame-to-frame
-  displacement was tried and reverted: this drive does not run every frame, so
-  the displacement spans gaps the delta time does not account for (one client
-  measured 5953 where 100-200 was expected, the other a constant 0). The
-  engine's own movement speed is the correct source.
 
 Full detail in [CHANGELOG.md](CHANGELOG.md).
 

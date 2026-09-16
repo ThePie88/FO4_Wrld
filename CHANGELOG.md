@@ -5,6 +5,121 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## Power armor closed: paint, the station, two crashes and the skeleton loan (2026-09-16) — v0.7.6
+
+Tag `v0.7.6`, wire proto v25, no protocol change: a paint job is an OMOD
+like any other mod, and every piece already carried its OMOD list on the
+wire. This closes B6.13. What was open after v0.7.5: paint jobs and
+material mods did not reach the other client, the power armor station did
+not sync at all, and two non-deterministic crashes. What is still open: a
+client that quits while wearing power armor loses the frame for everyone
+(session-lifecycle work), and fingers do not articulate.
+
+### Paint jobs and material mods on the ghost
+
+A paint job is an OMOD whose property list carries a `pwMaterialSwaps`
+entry pointing at a BGSMaterialSwap form. The engine applies it to the
+wearer's own pieces through the biped; the ghost is not a biped, so I read
+the OMOD's property buffer myself (base at `omod+0x88`, header offset at
+`+0x90`, two section headers packed as size and tag, tag 1 = properties,
+16-byte records with the form already resolved to a pointer in the first
+8 bytes and property id, function and value type packed in the next 4) and
+apply every swap found to the piece meshes attached to the ghost.
+
+- **The application is direct.** Per geometry, the name of the shader
+  property (the `.bgsm` the NIF asked for) is looked up in the swap's own
+  map (buckets at `+0x48`, 32-byte entries, names compared after stripping
+  the `materials\` prefix, as the engine's leaf does), the replacement is
+  loaded through the material DB and bound with the engine's bind. Nothing
+  is registered globally and the material handle keeps its reference, so
+  the DB cannot evict a material a ghost is wearing. The engine's own swap
+  leaf (`sub_140255D40`) stays in the code as a switched-off alternative:
+  I rewrote the path while chasing the bug in the last section, the
+  rewrite did not fix it, and I kept the direct path because it is the
+  safer fit for clones I destroy myself.
+- **Live update.** A paint applied at the station on one client is on the
+  other client's ghost before the menu closes.
+
+### The power armor station
+
+- **It is not the ExamineMenu.** The armor workbench for power armor runs
+  its own `PowerArmorModMenu` (creator `sub_140AF2400`, destructor
+  `sub_140AF2310`); my ExamineMenu detours never fired for it. Its
+  lifetime is detoured now, and while it lives plus three seconds the
+  frames within 1024 units are polled every 500 ms. A report goes out once
+  the piece list has been stable for three polls, because the menu
+  previews every mod you hover over and the first version reported the
+  whole browsing session.
+- **The working copy.** While the menu is open the inventory count of the
+  edited piece reads 2, and a replica stocked with count 2 failed: the
+  `AttachModToInventoryItem` worker refuses a stack that is not exactly
+  one, and the failure landed in the Papyrus error logger with a null VM
+  (140 access violations caught in one session). Counts are clamped to one
+  while the menu is open, the receiver stocks one, attaches the mods, sets
+  the health and only then adds the rest of the stack, and the item count
+  is checked through the engine's own counter (`sub_140502280`) before any
+  mod is attached.
+- **Re-seating.** The frame did not move back to its stand after the
+  station closed. An owner-side drift watch (24 units or 0.15 rad against
+  the last shipped pose) now treats the move like any other: despawn and
+  rebirth with a new wid, and the replica jumps to the right place.
+
+### Two crashes
+
+Both died on a freed geometry under a `NiBillboardNode`, once in the
+node's geometry-list rebuild and once in the render accumulator, right
+after a ghost had carried a headlamp. All 37 power armor headlamp NIFs are
+the same thing: a `NiNode` plus a `BSValueNode` named `AddOnNode158` and
+no geometry. The engine attaches the addon node's model
+(`PA_X1_Headlamp_FX.nif`, one `BSTriShape` with an effect shader under a
+billboard node it creates) to that node at runtime and keeps it in a
+global add-on list, which outlives a clone I destroy myself. Headlamp
+meshes are skipped on the ghost, and every `BSValueNode` (vtable RVA
+`0x2695598`) is detached from every clone before the engine sees it.
+
+### The skeleton loan
+
+The second player to enter a painted frame lost the paint, locally only:
+the frame on its stand was painted, the entry animation was painted, and
+the paint vanished the moment the view switched to the worn model. Third
+time for the same class of bug (the ghost's clothes and body were the
+first two), and this time the trace is complete.
+
+- **What erases it.** `TESObjectREFR::Load3D` (`sub_14050AC10`) closes by
+  running the material walker (`sub_140255BA0`) on the player's 3D root
+  with no swap. The walker hands the root to the shader manager's
+  apply-by-name pass unless the root carries NiAVObject flag bit 23, the
+  "materials applied" latch; every geometry then gets a fresh material
+  from its default `.bgsm` name, two milliseconds after the biped applied
+  the paint. Measured with a detour on `BSShaderProperty::SetMaterial`
+  (`sub_142161B10`) that logged the caller chain.
+- **Why only the second entrant.** The first entrant's client created the
+  model-DB entry for the PA skeleton itself: the engine loads skeletons
+  with model kind 3 and flags `0x3D`, which fade-wraps the root and runs
+  the parser's shader pass that sets bit 23. The second entrant's client
+  had the entry created by my graft two seconds earlier, when the first
+  entrant's ghost appeared, with flags `0x2C`: no wrap, a bare `NiNode`
+  root. The engine's 3D build wrapped the clone in a fresh `BSFadeNode`
+  that never carried the latch. Same client, same session: entering first
+  gave a root with the bit set, entering second gave it clear.
+- **The fix.** The PA skeleton is loaded with the engine's own skeleton
+  options. The graft and the retarget find bones by name, so the wrapper
+  root changes nothing for the ghost. The flag table in `ni_offsets.h` is
+  corrected: bit `0x20` is the shader pass plus the bit-23 latch, and a
+  load without it actively clears the latch.
+
+### Also
+
+- **The "reload wave" was noise.** The function I had logged as a model
+  reload at 73 calls per second (`sub_140D020E0`) is a per-frame gate on
+  the process's 3D update flags (`+0x496` of the middle-high process data,
+  needs-load through `sub_140CF0E60`) and rebuilds nothing.
+- **Diagnostics.** The material tracers (walker, leaf, `SetMaterial` with
+  caller chains) stay in the DLL as debug-only hooks; the per-clone
+  geometry dumps and the per-second gate summary are debug-level.
+
+---
+
 ## Power armor, three quarters of it, and the start of world-object sync (2026-09-14) — v0.7.5
 
 Tag `v0.7.5`, wire proto v25 (four bumps in this release: v22 world-object

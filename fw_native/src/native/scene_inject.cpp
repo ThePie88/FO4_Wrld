@@ -344,11 +344,14 @@ using WeaponGeoFactoryFn = void* (*)(
     const void*  remap_u16,
     char         build_mesh_extra);
 
-// 16-byte opts struct. zero-init and write flags byte at +0x8.
-// Keep plain aggregate — the loader touches only +0x4 (stream key
-// dword) and +0x8 (flag byte); everything else is slack.
+// 16-byte opts struct, zero-init then set what the load needs.
+//   +0x00 model kind (u32) — the engine passes 3 for actor skeletons and
+//         biped models; TESProcessor stamps it into root+0x11C (fade type).
+//   +0x04 stream context (u32) — engine: TLS+0x6D4; 0 on its skeleton path.
+//   +0x08 flag byte (NIF_OPT_*). Rest is slack. Keep plain aggregate.
 struct NifLoadOpts {
-    std::uint64_t ignored_qword;  // +0x00 — overlaps stream_key in decomp view
+    std::uint32_t model_kind;     // +0x00
+    std::uint32_t stream_ctx;     // +0x04
     std::uint8_t  flags;          // +0x08
     std::uint8_t  pad[7];         // +0x09..+0x0F
 };
@@ -368,6 +371,16 @@ using ApplyMaterialsWalkerFn = void (*)(void* root,
                                         std::int64_t a3,
                                         std::int64_t a4,
                                         std::int64_t a5);
+
+// v26 paint — sub_140255D40: apply one BGSMaterialSwap to a subtree. The
+// two floats are colour-remap indices (FLT_MAX = leave alone), the last
+// argument a texture-prefetch context (0 = bind the material right now).
+// See MATERIAL_SWAP_APPLY_RVA in ni_offsets.h.
+using MaterialSwapApplyFn = std::int64_t (__fastcall*)(void* root,
+                                                       void* swap,
+                                                       float color_remap_index,
+                                                       float model_color_index,
+                                                       void* prefetch_ctx);
 
 // M2.4 factory — 16 args. Windows x64 fastcall; first 4 in registers.
 using GeoBuilderFn = void* (*)(
@@ -438,6 +451,8 @@ struct Resolved {
 
     // M6.2 apply-materials walker — fixes pink textures post-NIF-load.
     ApplyMaterialsWalkerFn apply_materials = nullptr; // sub_140255BA0
+    // v26 paint — one material swap (MSWP) onto a loaded piece mesh.
+    MaterialSwapApplyFn    material_swap_apply = nullptr; // sub_140255D40
 
     // M7 v17 manual bgsm path: skip walker, do per-geom load+bind ourselves.
     BgsmLoadFn bgsm_load = nullptr;        // sub_1417A9620
@@ -564,6 +579,7 @@ bool resolve_once() {
 
     // M6.2: apply-materials walker — the missing post-NIF-load step.
     g_r.apply_materials       = reinterpret_cast<ApplyMaterialsWalkerFn>(base + APPLY_MATERIALS_WALKER_RVA);
+    g_r.material_swap_apply   = reinterpret_cast<MaterialSwapApplyFn>(base + MATERIAL_SWAP_APPLY_RVA);
 
     // M7 v17 manual per-geom bgsm load + bind.
     g_r.bgsm_load             = reinterpret_cast<BgsmLoadFn>     (base + BGSM_LOADER_RVA);
@@ -3263,6 +3279,48 @@ void dump_local_player_tree(const char* label) {
 // the fw::native namespace points at the definitions below.
 
 // Build 70s helpers — POD only, so the __try frames stay legal (C2712).
+// v26.1 — bounded SEH copy of an engine C string.
+static bool seh_copy_cstr(char* dst, std::size_t cap, const char* src) {
+    __try {
+        std::size_t n = 0;
+        while (n + 1 < cap && src[n]) { dst[n] = src[n]; ++n; }
+        dst[n] = 0;
+        return n > 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        dst[0] = 0;
+        return false;
+    }
+}
+
+// v26.1 — does the geometry's shader property name (the .bgsm the NIF
+// asked for, BSFixedString at shader+0x10) contain `needle`? Case-
+// insensitive, SEH-caged, for the local-player PA material diagnostic.
+static bool seh_geom_bgsm_has(void* geom, const char* needle) {
+    __try {
+        const char* gb = static_cast<const char*>(geom);
+        const char* prop = *reinterpret_cast<const char* const*>(gb + BSGEOM_SHADERPROP_OFF);
+        if (!prop) return false;
+        const char* entry = *reinterpret_cast<const char* const*>(prop + 0x10);
+        if (!entry) return false;
+        const char* s = entry + offsets::BSFIXEDSTRING_CSTR_OFF;
+        std::size_t nl = 0;
+        while (needle[nl]) ++nl;
+        for (std::size_t i = 0; i < 260 && s[i]; ++i) {
+            std::size_t k = 0;
+            for (; k < nl; ++k) {
+                char a = s[i + k], b = needle[k];
+                if (a == 0) return false;
+                if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
+                if (a != b) break;
+            }
+            if (k == nl) return true;
+        }
+        return false;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 static bool seh_read_ptr_field(void* obj, std::size_t off, void** out) {
     if (!obj || !out) return false;
     __try {
@@ -3473,6 +3531,14 @@ void log_local_player_geometry_names(const char* label) {
                static_cast<unsigned long long>(
                    vt >= g_r.base ? vt - g_r.base : 0));
         ++shown;
+        // v26.1 — the material behind each POWER ARMOR geometry of the local
+        // player (the "second entrant loses the skin" measurement: is the
+        // bound material the paint's .bgsm or the default one?). Debug-only
+        // since 2026-09-16 (closed by pa_skeleton_load_opts).
+        if (seh_geom_bgsm_has(g, "powerarmor")
+            && ::fw::log::get_level() >= ::fw::log::Level::Debug) {
+            dump_trishape_materials(g, 2);
+        }
     }
     FW_LOG("[pa-geom] ===== %s: end =====", lbl);
 }
@@ -6103,12 +6169,69 @@ static std::uint16_t seh_child_count(void* node) {
 // caller-owned ref; attach_child_direct adds the engine's slot ref; we
 // drop ours after attach so the skeleton alone owns the graft. The loaded
 // PA skeleton root is a caller-owned ref on the cached instance — dropped
-// at the end, the model DB keeps or purges its (engine-shaped, 0x2C —
-// the 70y rule) entry as it pleases.
+// at the end, the model DB keeps or purges its (engine-shaped: the
+// engine's own skeleton opts, see pa_skeleton_load_opts) entry as it
+// pleases.
 //
 // Idempotent per skeleton: the cached ghost skeleton is a session
 // singleton, so one graft serves every ghost; "Pauldron_Armor already
 // present" is the whole check.
+// 2026-09-15 — THE SKELETON LOAN, third form of the model-DB template
+// problem (the ghost's clothes and body were the first two).
+//
+// Symptom: the second player to enter a painted power armor loses the
+// paint LOCALLY, two milliseconds after the biped applied it. The engine's
+// own trace: TESObjectREFR::Load3D (sub_14050AC10 +0xC85) closes with the
+// material walker sub_140255BA0 on the player's 3D root with no swap; the
+// walker hands the root to the shader manager's apply-by-name pass unless
+// the root carries NiAVObject flag bit 23 (0x800000). Every geometry then
+// gets a fresh material from its default .bgsm name: X1Body01 over the
+// flames.
+//
+// Why only the second entrant: the first entrant's client created the
+// model-DB entry for Actors\PowerArmor\CharacterAssets\skeleton.nif
+// itself (engine opts: model kind 3, flags 0x3D — fade-wrapped root,
+// shader pass, bit 23 SET by the parser). The second entrant's client had
+// the entry created by THIS code two seconds earlier, when the first
+// entrant's ghost appeared: flags 0x2C, no wrap, a bare NiNode root
+// (log: nif_load RET vt_rva=0x267C888). The engine's 3D build wraps the
+// clone of such a root in a fresh BSFadeNode that never carried bit 23
+// (player root flags 0x4235000C00E instead of 0x4235080C00E), and the
+// closing walker erases the paint. Same client, same session: entering
+// first gave bit 23 set, entering second gave it clear (client A log
+// 17:48 / 17:50 / 17:51).
+//
+// Fix: create the entry exactly as the engine would (the Build 70y rule,
+// now for skeletons: NIF_OPT_ACTOR_SKELETON + NIF_MODEL_KIND_ACTOR). The
+// graft and the retarget read bones by name, so the wrapper root is
+// invisible to them. The report after each load prints the template
+// root's vtable and flags: expected vt_rva 0x28FA3E8 with bit 23 set.
+static void pa_skeleton_load_opts(NifLoadOpts* opts) {
+    *opts = NifLoadOpts{};
+    opts->model_kind = NIF_MODEL_KIND_ACTOR;
+    opts->flags      = NIF_OPT_ACTOR_SKELETON;
+}
+
+static void report_pa_skeleton_template(void* pa_skel, const char* who) {
+    std::uintptr_t vt = 0;
+    std::uint64_t  flags = 0;
+    __try {
+        vt    = *reinterpret_cast<std::uintptr_t*>(pa_skel);
+        flags = *reinterpret_cast<std::uint64_t*>(
+            static_cast<char*>(pa_skel) + NIAV_FLAGS_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("[%s] SEH reading PA skeleton template root %p", who, pa_skel);
+        return;
+    }
+    const std::uintptr_t vt_rva = (g_r.base && vt >= g_r.base) ? vt - g_r.base : 0;
+    FW_LOG("[%s] PA skeleton template root %p vt_rva=0x%llX flags=0x%llX "
+           "(bit 23 %s) — engine shape is a BSFadeNode (0x28FA3E8) with "
+           "bit 23 set", who, pa_skel,
+           static_cast<unsigned long long>(vt_rva),
+           static_cast<unsigned long long>(flags),
+           (flags & 0x800000ull) ? "SET" : "CLEAR");
+}
+
 static bool graft_pa_bones_into_skeleton(void* skel) {
     if (!skel) return false;
     // Per-node idempotence below; this flag only skips the PA skeleton
@@ -6119,7 +6242,7 @@ static bool graft_pa_bones_into_skeleton(void* skel) {
     constexpr const char* kPaSkelPath =
         "Actors\\PowerArmor\\CharacterAssets\\skeleton.nif";
     NifLoadOpts opts{};
-    opts.flags = 0x2C;  // engine-shaped model-DB entry (Build 70y)
+    pa_skeleton_load_opts(&opts);  // the engine's own skeleton opts
     std::uint8_t* ks = reinterpret_cast<std::uint8_t*>(
         g_r.base + BSLSP_BIND_KILLSWITCH_BYTE_RVA);
     const std::uint8_t saved_ks = *ks;
@@ -6133,6 +6256,7 @@ static bool graft_pa_bones_into_skeleton(void* skel) {
                "and thigh-armor bones stay missing", rc, pa_skel);
         return false;
     }
+    report_pa_skeleton_template(pa_skel, "pa-graft");
 
     // Build 71e — EVERY PA-only node, one entry each, parents before
     // children (DFS of the PA skeleton asset, offline diff against the
@@ -6301,7 +6425,7 @@ static void pa_bind_retarget_enable(void* skel) {
     constexpr const char* kPaSkelPath =
         "Actors\\PowerArmor\\CharacterAssets\\skeleton.nif";
     NifLoadOpts opts{};
-    opts.flags = 0x2C;  // engine-shaped entry (Build 70y rule)
+    pa_skeleton_load_opts(&opts);  // the engine's own skeleton opts
     std::uint8_t* ks = reinterpret_cast<std::uint8_t*>(
         g_r.base + BSLSP_BIND_KILLSWITCH_BYTE_RVA);
     const std::uint8_t saved_ks = *ks;
@@ -6315,6 +6439,7 @@ static void pa_bind_retarget_enable(void* skel) {
                "feet stay at human offsets", rc);
         return;
     }
+    report_pa_skeleton_template(pa_skel, "pa-retarget");
 
     std::unordered_map<std::string, void*> pa_nodes;
     std::unordered_map<std::string, void*> ghost_nodes;
@@ -6415,6 +6540,279 @@ std::unordered_map<std::string,
 
 // The OMOD -> model path read itself is the M9-closure resolver
 // resolve_omod_model_path (scene_inject.h), shared with the weapon path.
+
+// === v26 paint — material swaps carried by the piece's OMODs ==============
+//
+// A paint job is an OMOD with no model at all: its property records ADD
+// one or more BGSMaterialSwap forms (MSWP, e.g. mat_PA_X01_Hotrod_Jaws:
+// X1Body01.BGSM -> X1BodyJaws.BGSM) to the ARMO's instance data, and the
+// engine's biped build applies that array to the piece mesh. The ghost is
+// not an actor and has no instance data, so the receiver reads the same
+// records straight off the OMOD form (layout: offsets.h, "the OMOD
+// property buffer at runtime") and applies each swap with the engine's
+// own leaf, sub_140255D40, onto the meshes it just attached for the
+// piece. A generic paint OMOD lists the swap of every PA set (T-45, T-51,
+// T-60, X-01); the ones whose materials are not on the mesh simply match
+// nothing, exactly as they do for the local player.
+constexpr std::size_t kMaxSwapsPerPiece = 16;
+
+// POD walk of one OMOD's property records; returns the number of MSWP
+// pointers written. SEH-caged because every read is engine memory.
+std::size_t seh_collect_omod_material_swaps(void* omod, void** out,
+                                            std::size_t cap,
+                                            std::uint32_t* out_records,
+                                            std::uint32_t* out_hdr /* [2] */) {
+    __try {
+        const char* form = static_cast<const char*>(omod);
+        const char* base = *reinterpret_cast<const char* const*>(
+            form + offsets::BGSMOD_PROPERTY_BUFFER_BASE_OFF);
+        const std::uint32_t hdr_off = *reinterpret_cast<const std::uint32_t*>(
+            form + offsets::BGSMOD_PROPERTY_BUFFER_HDR_OFF);
+        if (!base || hdr_off == 0) return 0;
+        const std::uint32_t* hdr = reinterpret_cast<const std::uint32_t*>(base + hdr_off);
+        if (out_hdr) { out_hdr[0] = hdr[0]; out_hdr[1] = hdr[1]; }
+        std::size_t data_off = 0;
+        const char* recs = nullptr;
+        std::uint32_t count = 0;
+        for (int i = 0; i < 2; ++i) {   // the buffer holds at most two sections
+            const std::uint32_t word = hdr[i];
+            const std::uint8_t  tag  = static_cast<std::uint8_t>(word >> 24);
+            const std::uint32_t size = word & 0xFFFFFFu;
+            if (tag == offsets::BGSMOD_SECTION_TAG_EMPTY) break;
+            if (tag == offsets::BGSMOD_SECTION_TAG_PROPERTIES) {
+                recs  = base + data_off;
+                count = size >> 4;
+                break;
+            }
+            data_off += size;
+        }
+        if (out_records) *out_records = count;
+        if (!recs || count == 0) return 0;
+        if (count > 256) return 0;    // a record buffer that large is not an OMOD
+        std::size_t n = 0;
+        for (std::uint32_t i = 0; i < count && n < cap; ++i) {
+            const char* rec = recs + i * offsets::BGSMOD_PROPERTY_RECORD_STRIDE;
+            const std::uint32_t bits = *reinterpret_cast<const std::uint32_t*>(rec + 8);
+            const std::uint32_t prop = bits & 0x7FFu;
+            const std::uint32_t func = (bits >> 11) & 3u;
+            const std::uint32_t vtyp = (bits >> 13) & 7u;
+            if (prop != offsets::BGSMOD_ARMO_PROP_MATERIAL_SWAPS) continue;
+            if (vtyp != offsets::BGSMOD_VALUE_TYPE_FORM_INT &&
+                vtyp != offsets::BGSMOD_VALUE_TYPE_FORM_FLOAT) continue;
+            if (func != offsets::BGSMOD_FUNC_SET && func != offsets::BGSMOD_FUNC_ADD) continue;
+            void* swap = *reinterpret_cast<void* const*>(rec);
+            if (!swap) continue;
+            const std::uint8_t tag = *reinterpret_cast<const std::uint8_t*>(
+                static_cast<const char*>(swap) + offsets::TESFORM_TYPE_TAG_OFF);
+            if (tag != offsets::BGSMATERIALSWAP_FORMTYPE) continue;
+            out[n++] = swap;
+        }
+        return n;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+std::uint32_t seh_form_id_of(void* form) {
+    __try {
+        return *reinterpret_cast<const std::uint32_t*>(
+            static_cast<const char*>(form) + offsets::FORMID_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
+bool seh_apply_material_swap(MaterialSwapApplyFn fn, void* node, void* swap) {
+    __try {
+        (void)fn(node, swap, 3.4028235e38f, 3.4028235e38f, nullptr);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// === v26.1 — the DIRECT paint path ======================================
+//
+// Written 2026-09-15 against a symptom that had another cause. Measured
+// three times: after the engine swap leaf (sub_140255D40) painted the
+// first entrant's ghost on a client, that client's OWN power armor came up
+// with default materials when it entered next. I blamed the leaf and
+// rewrote the ghost paint to bypass it; the symptom survived the rewrite.
+// The real cause was the skeleton loan (see pa_skeleton_load_opts): our
+// model-DB entry for the PA skeleton lacked the fade wrap and the
+// materials-applied latch, so Load3D re-applied the defaults to the
+// player. The leaf was never guilty.
+//
+// The direct path stays because it is the better fit for a clone we own:
+// per geometry, the shader property's name (the .bgsm the NIF asked for)
+// is looked up in the swap's own map, the replacement is loaded through
+// the material DB and bound with the engine's bind, and nothing else is
+// touched. No global registration of unmatched geometries (the leaf does
+// that, and global bookkeeping outliving our clones is exactly the
+// headlamp crash class), and the handle keeps its reference (a few dozen
+// bytes per swap): the DB can never evict a material a ghost is wearing.
+//
+// BGSMaterialSwap map (sub_1404213C0): buckets at +0x48, capacity at
+// +0x2C, 32-byte entries { key BSFixedString, value BSFixedString, float
+// colour index, next } where a null `next` marks an empty slot. Names are
+// compared case-insensitively after stripping "data\\materials\\" or
+// "materials\\" exactly as the leaf does.
+constexpr bool        kPaintViaEngineLeaf    = false;
+constexpr std::size_t kBgsmHandleMaterialOff = 0x20;   // *(handle+32): sub_140256070
+constexpr std::size_t kMswpBucketsOff        = 0x48;
+constexpr std::size_t kMswpCapacityOff       = 0x2C;
+constexpr std::size_t kMswpEntryStride       = 32;
+
+// Case-insensitive equality of a bounded engine string with a local one.
+bool seh_streq_ci(const char* engine_s, const char* local_s) {
+    __try {
+        for (std::size_t i = 0; i < 260; ++i) {
+            char a = engine_s[i], b = local_s[i];
+            if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
+            if (b >= 'A' && b <= 'Z') b = static_cast<char>(b - 'A' + 'a');
+            if (a == '/') a = '\\';
+            if (b == '/') b = '\\';
+            if (a != b) return false;
+            if (a == 0) return true;
+        }
+        return false;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+const char* strip_materials_prefix(const char* p) {
+    auto starts_ci = [](const char* s, const char* pfx) -> std::size_t {
+        std::size_t i = 0;
+        for (; pfx[i]; ++i) {
+            char a = s[i], b = pfx[i];
+            if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
+            if (a == '/') a = '\\';
+            if (a != b) return 0;
+        }
+        return i;
+    };
+    if (std::size_t n = starts_ci(p, "data\\materials\\")) return p + n;
+    if (std::size_t n = starts_ci(p, "materials\\")) return p + n;
+    return p;
+}
+
+// Walks the swap's map; copies the replacement name into `out`.
+bool seh_mswp_lookup(void* swap, const char* orig, char* out, std::size_t cap) {
+    __try {
+        const char* s = static_cast<const char*>(swap);
+        const char* buckets = *reinterpret_cast<const char* const*>(s + kMswpBucketsOff);
+        const std::uint32_t n = *reinterpret_cast<const std::uint32_t*>(s + kMswpCapacityOff);
+        if (!buckets || n == 0 || n > 8192) return false;
+        for (std::uint32_t i = 0; i < n; ++i) {
+            const char* e = buckets + static_cast<std::size_t>(i) * kMswpEntryStride;
+            if (*reinterpret_cast<void* const*>(e + 24) == nullptr) continue;   // empty
+            const char* key = *reinterpret_cast<const char* const*>(e);
+            if (!key) continue;
+            if (!seh_streq_ci(key + offsets::BSFIXEDSTRING_CSTR_OFF, orig)) continue;
+            const char* val = *reinterpret_cast<const char* const*>(e + 8);
+            if (!val) return false;
+            return seh_copy_cstr(out, cap, val + offsets::BSFIXEDSTRING_CSTR_OFF);
+        }
+        return false;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+std::uint32_t seh_bgsm_load_handle(BgsmLoadFn fn, const char* path, void** out) {
+    __try {
+        return fn(path, out, 0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0xFFFFFFFFu;
+    }
+}
+
+bool seh_mat_bind(MatBindFn fn, void* mat, void* geom) {
+    __try {
+        (void)fn(mat, geom, 1);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Applies one MSWP to every geometry under `root`. Returns geometries painted.
+int apply_swap_direct(void* root, void* swap, const char* peer_id,
+                      std::uint32_t piece_form_id, std::uint32_t swap_fid) {
+    if (!root || !swap || !g_r.bgsm_load || !g_r.mat_bind_to_geom) return 0;
+    std::vector<void*> geoms;
+    collect_all_geometry_recursive(root, &geoms);
+    int painted = 0;
+    for (void* g : geoms) {
+        void* prop = nullptr;
+        if (!seh_read_ptr_field(g, BSGEOM_SHADERPROP_OFF, &prop) || !prop) continue;
+        void* nameh = nullptr;
+        if (!seh_read_ptr_field(prop, 0x10, &nameh) || !nameh) continue;
+        const char* nm = seh_bsfs_cstr(nameh);
+        if (!nm) continue;
+        char orig[264];
+        if (!seh_copy_cstr(orig, sizeof(orig), nm)) continue;
+        const char* stripped = strip_materials_prefix(orig);
+        char repl[264];
+        if (!seh_mswp_lookup(swap, stripped, repl, sizeof(repl))) continue;
+        void* handle = nullptr;
+        const std::uint32_t rc = seh_bgsm_load_handle(g_r.bgsm_load, repl, &handle);
+        if (rc != 0 || !handle) {
+            FW_WRN("[pa-paint] peer=%s piece=0x%X swap=0x%X: bgsm_load('%s') rc=%u "
+                   "handle=%p", peer_id, piece_form_id, swap_fid, repl, rc, handle);
+            continue;
+        }
+        void* mat = nullptr;
+        if (!seh_read_ptr_field(handle, kBgsmHandleMaterialOff, &mat) || !mat) {
+            FW_WRN("[pa-paint] peer=%s piece=0x%X swap=0x%X: handle %p has no material",
+                   peer_id, piece_form_id, swap_fid, handle);
+            continue;
+        }
+        const bool ok = seh_mat_bind(g_r.mat_bind_to_geom, mat, g);
+        char gname[64] = {0};
+        (void)seh_read_name_diag(g, gname, sizeof(gname));
+        FW_LOG("[pa-paint] peer=%s piece=0x%X swap=0x%X: '%s' %s -> %s (mat=%p) %s",
+               peer_id, piece_form_id, swap_fid, gname, stripped, repl, mat,
+               ok ? "bound" : "BIND FAULTED");
+        if (ok) ++painted;
+    }
+    return painted;
+}
+
+std::uint8_t seh_form_tag_of(void* form) {
+    __try {
+        return *(static_cast<const std::uint8_t*>(form) + offsets::TESFORM_TYPE_TAG_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+// Resolves the OMOD form and collects its MSWP pointers (deduplicated
+// into `out`, which may already hold swaps from a sibling OMOD).
+std::size_t collect_omod_material_swaps(std::uint32_t omod_form_id, void** out,
+                                        std::size_t n, std::size_t cap) {
+    if (omod_form_id == 0 || g_r.base == 0 || n >= cap) return n;
+    using LookupFn = void* (__fastcall*)(std::uint32_t);
+    auto lookup = reinterpret_cast<LookupFn>(g_r.base + offsets::LOOKUP_BY_FORMID_RVA);
+    void* form = seh_lookup_form(lookup, omod_form_id);
+    if (!form) return n;
+    if (seh_form_tag_of(form) != offsets::BGSMOD_ATTACHMENT_MOD_FORMTYPE) return n;
+    void* found[kMaxSwapsPerPiece] = {};
+    std::uint32_t records = 0;
+    std::uint32_t hdr[2] = {0, 0};
+    const std::size_t got = seh_collect_omod_material_swaps(form, found, kMaxSwapsPerPiece,
+                                                            &records, hdr);
+    for (std::size_t i = 0; i < got && n < cap; ++i) {
+        bool dup = false;
+        for (std::size_t j = 0; j < n; ++j) if (out[j] == found[i]) { dup = true; break; }
+        if (!dup) out[n++] = found[i];
+    }
+    // Always logged: a paint OMOD that reports records but no swap is the
+    // record layout being wrong, and that has to be visible without the
+    // debug level. Rare event (once per OMOD per piece attach).
+    FW_LOG("[pa-paint] mod 0x%X: hdr=%08X/%08X, %u property record(s), %zu material swap(s)",
+           omod_form_id, hdr[0], hdr[1], records, got);
+    return n;
+}
 }  // namespace
 
 int ghost_attach_pa_piece_mods(const char* peer_id, std::uint32_t piece_form_id,
@@ -6429,6 +6827,15 @@ int ghost_attach_pa_piece_mods(const char* peer_id, std::uint32_t piece_form_id,
         return 0;   // not a power-armour piece: nothing to do
     }
     int attached = 0;
+    // v26 paint — every OMOD on the piece may carry material swaps (the
+    // paint job does; model mods and linings normally do not). Collected
+    // first, applied below to each mesh attached for the piece.
+    void* swaps[kMaxSwapsPerPiece] = {};
+    std::size_t swap_n = 0;
+    for (std::size_t i = 0; i < omod_count && i < 16; ++i) {
+        swap_n = collect_omod_material_swaps(omod_form_ids[i], swaps, swap_n,
+                                             kMaxSwapsPerPiece);
+    }
     for (std::size_t i = 0; i < omod_count && i < 16; ++i) {
         const std::uint32_t mod = omod_form_ids[i];
         if (mod == 0) continue;
@@ -6437,6 +6844,20 @@ int ghost_attach_pa_piece_mods(const char* peer_id, std::uint32_t piece_form_id,
             FW_DBG("[pa-piece-mod] peer=%s piece=0x%X mod=0x%X carries no "
                    "model — skipped", peer_id, piece_form_id, mod);
             continue;
+        }
+        // 2026-09-15 — the headlamp mod NIFs carry no geometry at all, only
+        // the BSValueNode the engine hangs its glow/light FX on (see
+        // BSVALUENODE_VTABLE_RVA). Nothing to show on a ghost, and the FX
+        // bookkeeping outliving our clone is the crash. Skip them.
+        {
+            const std::size_t mlen = std::strlen(mpath);
+            if (seh_path_contains_ci(mpath, mlen, "headlamp")
+                || seh_path_contains_ci(mpath, mlen, "helmetlamp")) {
+                FW_LOG("[pa-piece-mod] peer=%s piece=0x%X mod=0x%X model='%s' -> "
+                       "headlamp add-on mesh, SKIPPED on the ghost",
+                       peer_id, piece_form_id, mod, mpath);
+                continue;
+            }
         }
         FW_LOG("[pa-piece-mod] peer=%s piece=0x%X mod=0x%X model='%s' -> "
                "attaching as skinned armour", peer_id, piece_form_id, mod,
@@ -6449,7 +6870,119 @@ int ghost_attach_pa_piece_mods(const char* peer_id, std::uint32_t piece_form_id,
     }
     FW_LOG("[pa-piece-mod] peer=%s piece=0x%X: %d model mod(s) attached",
            peer_id, piece_form_id, attached);
+
+    // v26 paint — apply the collected swaps to the piece placeholder and
+    // to every model mesh attached above. A swap whose materials are not
+    // on a mesh matches nothing, so applying all of them to all of them is
+    // exactly what the engine does with the instance array.
+    if (swap_n > 0 && g_r.material_swap_apply) {
+        void* nodes[18] = {};
+        std::size_t node_n = 0;
+        {
+            std::lock_guard<std::mutex> lk(g_armor_map_mtx);
+            auto pit = g_attached_armor.find(peer_id);
+            if (pit != g_attached_armor.end()) {
+                auto fit = pit->second.find(piece_form_id);
+                if (fit != pit->second.end() && fit->second) nodes[node_n++] = fit->second;
+                for (std::size_t i = 0; i < omod_count && i < 16 && node_n < 18; ++i) {
+                    auto mit = pit->second.find(omod_form_ids[i]);
+                    if (mit != pit->second.end() && mit->second) nodes[node_n++] = mit->second;
+                }
+            }
+        }
+        int applied = 0, failed = 0;
+        for (std::size_t si = 0; si < swap_n; ++si) {
+            const std::uint32_t sfid = seh_form_id_of(swaps[si]);
+            if (kPaintViaEngineLeaf) {
+                for (std::size_t ni = 0; ni < node_n; ++ni) {
+                    if (seh_apply_material_swap(g_r.material_swap_apply, nodes[ni], swaps[si])) ++applied;
+                    else ++failed;
+                }
+                FW_LOG("[pa-paint] peer=%s piece=0x%X swap=0x%X (MSWP %p) applied to %zu node(s)",
+                       peer_id, piece_form_id, sfid, swaps[si], node_n);
+            } else {
+                int painted = 0;
+                for (std::size_t ni = 0; ni < node_n; ++ni) {
+                    painted += apply_swap_direct(nodes[ni], swaps[si], peer_id,
+                                                 piece_form_id, sfid);
+                }
+                if (painted) ++applied;
+                FW_LOG("[pa-paint] peer=%s piece=0x%X swap=0x%X (MSWP %p): %d geometr%s "
+                       "painted directly across %zu node(s)", peer_id, piece_form_id,
+                       sfid, swaps[si], painted, painted == 1 ? "y" : "ies", node_n);
+            }
+        }
+        if (failed) {
+            FW_ERR("[pa-paint] peer=%s piece=0x%X: %d swap application(s) faulted (%d ok)",
+                   peer_id, piece_form_id, failed, applied);
+        }
+    } else if (swap_n == 0) {
+        FW_DBG("[pa-paint] peer=%s piece=0x%X: no material swap on its %zu mod(s)",
+               peer_id, piece_form_id, omod_count);
+    }
     return attached;
+}
+
+// 2026-09-15 — add-on nodes (BSValueNode, see BSVALUENODE_VTABLE_RVA) are
+// engine-managed attachment points: the engine hangs an FX model under them
+// during the cull/update pass and tracks it globally. On a clone we own and
+// destroy ourselves that tracking outlives the FX (two crashes). Collect
+// every BSValueNode in the clone and detach it before anything else sees
+// the subtree; the detach drops the parent's reference and the engine
+// deletes the node. Returns how many were removed.
+static void collect_value_nodes_recursive(void* node, std::vector<void*>* out,
+                                          int depth = 0) {
+    if (!node || !out || depth > 32 || g_r.base == 0) return;
+    std::uintptr_t vt_addr = 0;
+    __try {
+        vt_addr = *reinterpret_cast<std::uintptr_t*>(node);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+    if (vt_addr >= g_r.base && vt_addr - g_r.base == BSVALUENODE_VTABLE_RVA) {
+        out->push_back(node);
+        return;
+    }
+    void** kids = nullptr;
+    std::uint16_t count = 0;
+    __try {
+        char* nb = reinterpret_cast<char*>(node);
+        kids  = *reinterpret_cast<void***>(nb + NINODE_CHILDREN_PTR_OFF);
+        count = *reinterpret_cast<std::uint16_t*>(nb + NINODE_CHILDREN_CNT_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+    if (!kids || count == 0 || count > 256) return;
+    for (std::uint16_t i = 0; i < count; ++i) {
+        void* k = nullptr;
+        __try { k = kids[i]; } __except (EXCEPTION_EXECUTE_HANDLER) { k = nullptr; }
+        if (k) collect_value_nodes_recursive(k, out, depth + 1);
+    }
+}
+
+static int strip_addon_value_nodes(void* clone, std::uint32_t form_id, const char* path) {
+    if (!clone || !g_r.detach_child) return 0;
+    std::vector<void*> vnodes;
+    collect_value_nodes_recursive(clone, &vnodes);
+    int removed_n = 0;
+    for (void* vn : vnodes) {
+        void* parent = nullptr;
+        (void)seh_read_ptr_field(vn, NIAV_PARENT_OFF, &parent);
+        char nm[64] = {0};
+        (void)seh_read_name_diag(vn, nm, sizeof(nm));
+        if (!parent) {
+            FW_WRN("[armor-attach] form=0x%X: BSValueNode '%s' %p has no parent — "
+                   "left in place", form_id, nm, vn);
+            continue;
+        }
+        void* removed = nullptr;
+        if (seh_detach_child_armor(g_r.detach_child, parent, vn, &removed)) {
+            ++removed_n;
+            FW_LOG("[armor-attach] form=0x%X path='%s': add-on node '%s' %p detached "
+                   "from %p (engine FX attach point, not for the ghost)",
+                   form_id, path ? path : "?", nm, vn, parent);
+        } else {
+            FW_ERR("[armor-attach] form=0x%X: SEH detaching add-on node '%s' %p",
+                   form_id, nm, vn);
+        }
+    }
+    return removed_n;
 }
 
 bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
@@ -6743,6 +7276,8 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
             // (sub_1416D6F70 "return a1"), which is ALWAYS true for armor.
             // Give the clone its own before anything rewrites bones.
             (void)privatise_shared_skins(armor_node, shared_armor, path);
+            // 2026-09-15 — no engine add-on attachment points on our clones.
+            (void)strip_addon_value_nodes(armor_node, item_form_id, path);
             // Drop our +1 caller-owned ref on shared; engine cache keeps it.
             const long after = seh_refcount_dec_armor(shared_armor);
             if (after == -999) {
@@ -6890,6 +7425,32 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
     } else {
         FW_WRN("[armor-attach] no cached skeleton — armor will render in "
                "T-pose (body anim won't propagate to armor skinning)");
+    }
+
+    // 2026-09-15 — geometry leaves of every POWER ARMOR clone, with their
+    // addresses: B crashed on a freed geometry under a NiBillboardNode that
+    // nothing had ever logged. The next crash's object address is either
+    // in these lines (ours) or not (the engine's). Debug-only since
+    // 2026-09-16: that crash class is closed (BSVALUENODE_VTABLE_RVA).
+    if (is_power_armor_path
+        && ::fw::log::get_level() >= ::fw::log::Level::Debug) {
+        std::vector<void*> leaves;
+        collect_all_geometry_recursive(armor_node, &leaves);
+        FW_DBG("[armor-attach] form=0x%X clone=%p: %zu geometry leaf(ves)",
+               item_form_id, armor_node, leaves.size());
+        std::size_t shown = 0;
+        for (void* g : leaves) {
+            if (shown >= 48) break;
+            char nm[64] = {0};
+            (void)seh_read_name_diag(g, nm, sizeof(nm));
+            void* vtp = nullptr;
+            (void)seh_read_ptr_field(g, 0, &vtp);
+            const std::uintptr_t vt = reinterpret_cast<std::uintptr_t>(vtp);
+            FW_DBG("[armor-attach]   leaf %p vt_rva=0x%llX '%s'", g,
+                   static_cast<unsigned long long>(vt >= g_r.base ? vt - g_r.base : 0),
+                   nm);
+            ++shown;
+        }
     }
 
     // Track for later detach.
@@ -7064,8 +7625,23 @@ bool ghost_detach_armor(const char* peer_id, std::uint32_t item_form_id) {
     // back inside the forearms, feet up the calves (user screenshots). The
     // frame is Actors\PowerArmor\CharacterAssets\Frame.nif and nothing
     // else is.
+    //
+    // v26 — the model OMOD meshes of a PA piece (ghost_attach_pa_piece_mods)
+    // are detached through this same function keyed by the OMOD form; an
+    // OMOD is not an ARMO, the frame question cannot apply, and asking the
+    // armour resolver about it only produced the "claims N addons" noise.
     {
-        const char* dpath = resolve_armor_nif_path(item_form_id, 0);
+        bool is_omod = false;
+        {
+            using LookupFn = void* (__fastcall*)(std::uint32_t);
+            auto lookup = reinterpret_cast<LookupFn>(
+                g_r.base + offsets::LOOKUP_BY_FORMID_RVA);
+            void* f = seh_lookup_form(lookup, item_form_id);
+            is_omod = f && seh_form_tag_of(f)
+                             == offsets::BGSMOD_ATTACHMENT_MOD_FORMTYPE;
+        }
+        const char* dpath = is_omod ? nullptr
+                                    : resolve_armor_nif_path(item_form_id, 0);
         if (dpath && seh_path_contains_ci(dpath, std::strlen(dpath),
                                           "characterassets\\frame.nif")) {
             pa_bind_retarget_disable();

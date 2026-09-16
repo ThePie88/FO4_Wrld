@@ -22,6 +22,7 @@ struct InstallSummary {
     bool kill_ok        = false;
     bool container_ok   = false;
     bool put_ok         = false;    // B1.k: ContainerMenu::TransferItem
+    bool workbench_ok   = false;    // v26: PA station apply-mod + repair -> pieces report
     bool pickup_ok      = false;    // B1.n: PlayerCharacter::vt[0xEC] world pickup
     bool player_pos_ok  = false;
     bool main_menu_ok   = false;
@@ -44,6 +45,7 @@ struct InstallSummary {
         return (kill_ok ? 1u : 0u)
              + (container_ok ? 1u : 0u)
              + (put_ok ? 1u : 0u)
+             + (workbench_ok ? 1u : 0u)
              + (pickup_ok ? 1u : 0u)
              + (player_pos_ok ? 1u : 0u)
              + (main_menu_ok ? 1u : 0u)

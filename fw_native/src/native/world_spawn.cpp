@@ -3,6 +3,8 @@
 #include <windows.h>
 
 #include <atomic>
+#include <cmath>   // v26: std::sqrt in the drift watch
+#include "../hooks/workbench_hook.h"   // v26: PowerArmorModMenu open/closed
 #include <deque>
 #include <mutex>
 #include <unordered_map>
@@ -53,6 +55,16 @@ struct Bound {
     // of being reported as a world despawn. The server object is the truth;
     // a local death by streaming is not a world event.
     SpawnEntry    entry{};
+    // v26 — set when WE announced this object (the echo bound it). Only an
+    // owner may re-announce a moved object; a replica that drifts locally
+    // is somebody else's truth.
+    bool          ours = false;
+    // v26 — drift watch: the position seen on the previous sweep while the
+    // object stood away from entry.pos, and whether such a sweep happened.
+    // Two consecutive sweeps at the same new spot = the move has settled.
+    bool          move_seen = false;
+    float         last_pos[3] = {0.0f, 0.0f, 0.0f};
+    float         last_yaw = 0.0f;
 };
 std::unordered_map<std::uint32_t, Bound>         g_wid_to_bound;
 std::unordered_map<std::uint32_t, std::uint32_t> g_fid_to_wid;
@@ -90,6 +102,14 @@ std::vector<Tombstone> g_tombstones;
 constexpr DWORD       kTombstoneTtlMs = 15u * 60u * 1000u;
 constexpr std::size_t kTombstoneCap   = 256;
 
+// v26 — absolute yaw difference, wrapped to [0, pi].
+float yaw_delta(float a, float b) noexcept {
+    float d = a - b;
+    while (d >  3.14159265f) d -= 6.28318531f;
+    while (d < -3.14159265f) d += 6.28318531f;
+    return d < 0.0f ? -d : d;
+}
+
 bool seh_vec3_at(const void* at, float out[3]) noexcept {
     if (!at) return false;
     __try {
@@ -119,6 +139,99 @@ DWORD g_next_sweep_ms = 0;
 // sweep from ruling on freshly placed objects while the engine settles.
 constexpr float kPlaceRadius   = 4096.0f;
 constexpr DWORD kDeathGraceMs  = 5000;
+// v26 — a bound object of ours standing this far (3D) from the position we
+// announced has been MOVED by the engine: the power armor station docks the
+// frame onto its platform after the wearer steps out (measured 2026-09-15:
+// the exit rebirth carried the pre-dock spot, the peer's replica stood beside
+// the station instead of on it). A moved object is re-announced through the
+// same despawn + rebirth cycle the PA exit uses: despawn reason 4, the echo
+// puts the fid on the resurrection watch, the next sweep finds it alive and
+// announces it again at its live position with its pieces. Well above the
+// ground-snap and floating-point noise of a static ref, well below any
+// distance a player would call "the same place".
+constexpr float kMoveThresholdUnits = 24.0f;
+// The station also turns the frame to face out of the platform; a pure
+// rotation is a move too (about 9 degrees).
+constexpr float kMoveYawThresholdRad = 0.15f;
+
+// v26 — station poll. While the PowerArmorModMenu is open (plus a tail
+// after it closes, for the last edit) the tick compares every bound frame
+// near the player with the ledger and reports the ones that differ. The
+// menu is a local user action, so a client that touched nothing never
+// polls: the echo safety the ledger design relies on is kept.
+constexpr std::uint64_t kStationPollEveryMs = 500;
+constexpr std::uint64_t kStationPollTailMs  = 3000;
+constexpr float         kStationPollRange   = 1024.0f;
+std::uint64_t g_next_station_poll_ms = 0;
+// Measured 2026-09-15: the PowerArmorModMenu PREVIEWS the highlighted mod on
+// the piece while the user browses, so a poll that ships every difference
+// shipped every hover (A: a report every ~400 ms for the whole visit; B:
+// a destroy-and-restock per report). A state must be seen unchanged for
+// this many consecutive polls before it counts as an edit.
+constexpr int kStationStablePolls = 3;   // 3 x 500 ms
+struct StationSeen { std::uint64_t hash = 0; int repeats = 0; };
+std::unordered_map<std::uint32_t, StationSeen> g_station_seen;   // by wid
+
+// Order-insensitive content hash (same notion of equality as pieces_equal).
+std::uint64_t pieces_hash(const fw::net::PaPieceEntry* live, std::uint8_t n) {
+    std::uint64_t h = 1469598103934665603ull;
+    auto mix = [&h](std::uint64_t v) {
+        h ^= v; h *= 1099511628211ull;
+    };
+    // sort entries by form so the walk order does not matter
+    std::uint8_t idx[12];
+    for (std::uint8_t i = 0; i < n && i < 12; ++i) idx[i] = i;
+    for (std::uint8_t i = 1; i < n && i < 12; ++i)
+        for (std::uint8_t j = i; j > 0 && live[idx[j - 1]].form_id > live[idx[j]].form_id; --j) {
+            const std::uint8_t t = idx[j]; idx[j] = idx[j - 1]; idx[j - 1] = t;
+        }
+    mix(n);
+    for (std::uint8_t k = 0; k < n && k < 12; ++k) {
+        const fw::net::PaPieceEntry& p = live[idx[k]];
+        mix(p.form_id); mix(static_cast<std::uint64_t>(p.count)); mix(p.mod_n);
+        std::uint32_t mods[fw::net::kMaxPieceMods] = {};
+        for (std::uint8_t m = 0; m < p.mod_n && m < fw::net::kMaxPieceMods; ++m) mods[m] = p.mods[m];
+        for (std::uint8_t m = 1; m < p.mod_n && m < fw::net::kMaxPieceMods; ++m)
+            for (std::uint8_t l = m; l > 0 && mods[l - 1] > mods[l]; --l) { const auto t = mods[l]; mods[l] = mods[l - 1]; mods[l - 1] = t; }
+        for (std::uint8_t m = 0; m < p.mod_n && m < fw::net::kMaxPieceMods; ++m) mix(mods[m]);
+        mix(static_cast<std::uint64_t>(static_cast<std::int64_t>(p.health * 1000.0f)));
+    }
+    return h;
+}
+
+// Order-insensitive content comparison: pieces are matched by form (a
+// frame never holds two stacks of the same piece), mod lists as sorted
+// arrays, health within a hair. The ledger copy may have been captured by
+// another client, whose walk order need not match ours.
+bool pieces_equal(const SpawnEntry& e, const fw::net::PaPieceEntry* live,
+                  std::uint8_t n) {
+    if (e.piece_n != n) return false;
+    for (std::uint8_t i = 0; i < n; ++i) {
+        const fw::net::PaPieceEntry& a = live[i];
+        const fw::net::PaPieceEntry* m = nullptr;
+        for (std::uint8_t j = 0; j < e.piece_n; ++j) {
+            if (e.pieces[j].form_id == a.form_id) { m = &e.pieces[j]; break; }
+        }
+        if (!m) return false;
+        if (m->count != a.count || m->mod_n != a.mod_n) return false;
+        std::uint32_t x[fw::net::kMaxPieceMods] = {}, y[fw::net::kMaxPieceMods] = {};
+        for (std::uint8_t k = 0; k < a.mod_n && k < fw::net::kMaxPieceMods; ++k) {
+            x[k] = a.mods[k];
+            y[k] = m->mods[k];
+        }
+        // tiny insertion sorts (8 entries at most)
+        for (std::uint8_t k = 1; k < a.mod_n && k < fw::net::kMaxPieceMods; ++k) {
+            for (std::uint8_t l = k; l > 0 && x[l - 1] > x[l]; --l) { const auto t = x[l]; x[l] = x[l - 1]; x[l - 1] = t; }
+            for (std::uint8_t l = k; l > 0 && y[l - 1] > y[l]; --l) { const auto t = y[l]; y[l] = y[l - 1]; y[l - 1] = t; }
+        }
+        for (std::uint8_t k = 0; k < a.mod_n && k < fw::net::kMaxPieceMods; ++k) {
+            if (x[k] != y[k]) return false;
+        }
+        const float dh = m->health - a.health;
+        if (dh > 0.002f || dh < -0.002f) return false;
+    }
+    return true;
+}
 
 
 
@@ -213,9 +326,25 @@ static bool seh_papyrus_additem(void* refr, void* form, int count) {
     }
 }
 
+// v26 — sub_140502280: how many of `item` the refr holds (see the offset
+// note). -1 when the call faults.
+static std::int64_t seh_refr_item_count(void* refr, void* item_form) {
+    const std::uintptr_t base = g_module_base;
+    if (!base || !refr || !item_form) return -1;
+    using CountFn = std::int64_t(__fastcall*)(void* refr, void* item);
+    const auto fn = reinterpret_cast<CountFn>(base + fw::offsets::REFR_ITEM_COUNT_RVA);
+    __try {
+        return fn(refr, item_form);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
 // v24 — the AttachModToInventoryItem worker (offsets::PAPYRUS_ATTACH_MOD_RVA,
-// contract documented there). vm/stackId feed only the script error report:
-// 0,0 is safe. Main thread only.
+// contract documented there). vm/stackId feed only the script error report,
+// and with vm == nullptr that report FAULTS (SEH-caught, but inside the
+// engine): the caller checks the worker's precondition (exactly one of the
+// item in the refr) before coming here. Main thread only.
 static bool seh_papyrus_attachmod(void* refr, void* item_form,
                                   void* mod_form) {
     if (!refr || !item_form || !mod_form) return false;
@@ -332,6 +461,7 @@ void on_bcast(const SpawnEntry& e, bool is_self) {
         b.cell_id     = e.cell_id;
         b.bound_at_ms = GetTickCount();
         b.entry       = e;
+        b.ours        = true;
         g_wid_to_bound[e.wid]       = b;
         g_fid_to_wid[e.spawner_fid] = e.wid;
         FW_LOG("[world-spawn] wid=%u is OURS (base=0x%08X, local fid=0x%08X) "
@@ -616,6 +746,71 @@ void tick(std::uintptr_t module_base) {
     // has elapsed (the take-timing fix — see report_frame_pieces).
     fire_due_frame_reports();
 
+    // ---- v26: station poll (see kStationPollEveryMs). The PA station edits
+    // pieces in place; nothing else reports that, so while its menu lives
+    // the live content of every nearby bound frame is checked against the
+    // ledger and a difference queues the usual deferred report.
+    {
+        const std::uint64_t now64  = static_cast<std::uint64_t>(GetTickCount64());
+        const std::uint64_t closed = fw::hooks::pa_mod_menu_closed_ms();
+        const bool active = fw::hooks::pa_mod_menu_open()
+            || (closed != 0 && now64 - closed < kStationPollTailMs);
+        if (active && now64 >= g_next_station_poll_ms) {
+            g_next_station_poll_ms = now64 + kStationPollEveryMs;
+            float pp[3];
+            if (player_pos(module_base, pp)) {
+                struct Cand { std::uint32_t wid, fid; };
+                std::vector<Cand> cands;
+                {
+                    std::lock_guard<std::mutex> lk(g_mx);
+                    for (const auto& [wid, b] : g_wid_to_bound) {
+                        if (b.reported) continue;
+                        if (b.entry.base_form_id != kPaFrameBase) continue;
+                        const float dx = b.entry.pos[0] - pp[0];
+                        const float dy = b.entry.pos[1] - pp[1];
+                        const float dz = b.entry.pos[2] - pp[2];
+                        if (dx * dx + dy * dy + dz * dz
+                            > kStationPollRange * kStationPollRange) continue;
+                        cands.push_back({wid, b.fid});
+                    }
+                }
+                for (const Cand& c : cands) {
+                    void* refr = fw::engine::lookup_by_form_id(c.fid);
+                    if (!refr) continue;
+                    fw::net::PaPieceEntry live[12] = {};
+                    const std::uint8_t n =
+                        capture_frame_pieces(refr, kPaFrameBase, live);
+                    bool same = true;
+                    {
+                        std::lock_guard<std::mutex> lk(g_mx);
+                        auto it = g_wid_to_bound.find(c.wid);
+                        if (it != g_wid_to_bound.end()) {
+                            same = pieces_equal(it->second.entry, live, n);
+                        }
+                    }
+                    // Stability gate (see kStationStablePolls): a preview
+                    // changes on every hover, an edit stays.
+                    const std::uint64_t hsh = pieces_hash(live, n);
+                    StationSeen& seen = g_station_seen[c.wid];
+                    if (seen.hash == hsh) {
+                        if (seen.repeats < 1000) ++seen.repeats;
+                    } else {
+                        seen.hash = hsh;
+                        seen.repeats = 1;
+                    }
+                    if (!same && seen.repeats >= kStationStablePolls) {
+                        FW_LOG("[pa-pieces] station poll: frame fid=0x%08X (wid=%u) "
+                               "content differs from the ledger and held for %d "
+                               "polls (%u live entr%s) -> report queued", c.fid,
+                               c.wid, kStationStablePolls, unsigned(n),
+                               n == 1 ? "y" : "ies");
+                        report_frame_pieces(refr, c.fid);
+                    }
+                }
+            }
+        }
+    }
+
     // ---- lifecycle sweep: the despawn SENDER. Polls every bound object and
     // reports death by wid. A poll, not a teardown hook, on purpose.
     {
@@ -662,6 +857,48 @@ void tick(std::uintptr_t module_base) {
                         }
                         if (flags & kFlagDeleted)                 reason = 1;
                         else if (flags & fw::offsets::FLAG_DISABLED) reason = 2;
+                        else if (b.ours) {
+                            // v26 — drift watch (see kMoveThresholdUnits).
+                            float p[3], r[3];
+                            auto* rb = reinterpret_cast<std::uint8_t*>(refr);
+                            if (seh_vec3_at(rb + fw::offsets::POS_OFF, p)
+                                && seh_vec3_at(rb + fw::offsets::ROT_OFF, r)) {
+                                const float dx = p[0] - b.entry.pos[0];
+                                const float dy = p[1] - b.entry.pos[1];
+                                const float dz = p[2] - b.entry.pos[2];
+                                const float d2 = dx * dx + dy * dy + dz * dz;
+                                const float dyaw = yaw_delta(r[2], b.entry.rot[2]);
+                                if (d2 > kMoveThresholdUnits * kMoveThresholdUnits
+                                    || dyaw > kMoveYawThresholdRad) {
+                                    const float sx = p[0] - b.last_pos[0];
+                                    const float sy = p[1] - b.last_pos[1];
+                                    const float sz = p[2] - b.last_pos[2];
+                                    const bool settled = b.move_seen
+                                        && (sx * sx + sy * sy + sz * sz) < 1.0f
+                                        && yaw_delta(r[2], b.last_yaw) < 0.02f;
+                                    if (settled) {
+                                        FW_LOG("[world-spawn] wid=%u (ours) stands "
+                                               "%.0f units / %.0f deg from its "
+                                               "announced pose (%.1f, %.1f, %.1f) -> "
+                                               "(%.1f, %.1f, %.1f): moved by the "
+                                               "engine, re-announcing through "
+                                               "despawn reason 4 + rebirth", wid,
+                                               std::sqrt(d2), dyaw * 57.29578f,
+                                               b.entry.pos[0], b.entry.pos[1],
+                                               b.entry.pos[2], p[0], p[1], p[2]);
+                                        reason = 4;
+                                    } else {
+                                        b.move_seen = true;
+                                        b.last_pos[0] = p[0];
+                                        b.last_pos[1] = p[1];
+                                        b.last_pos[2] = p[2];
+                                        b.last_yaw    = r[2];
+                                    }
+                                } else {
+                                    b.move_seen = false;
+                                }
+                            }
+                        }
                     } else if (here != 0 && b.cell_id == here) {
                         reason = 3;   // vanished while its cell is loaded
                     } else if (!b.null_seen) {
@@ -715,7 +952,7 @@ void tick(std::uintptr_t module_base) {
             }
             for (const auto& d : deaths) {
                 FW_LOG("[world-spawn] wid=%u died locally (reason=%u: "
-                       "1=deleted 2=disabled 3=vanished-same-cell) -> "
+                       "1=deleted 2=disabled 3=vanished-same-cell 4=moved) -> "
                        "WORLD_DESPAWN_OP sent", d.wid, d.reason);
                 fw::net::client().enqueue_world_despawn_op(
                     d.wid, d.reason,
@@ -918,7 +1155,10 @@ void tick(std::uintptr_t module_base) {
                 continue;
             }
             const int cnt = (pe.count > 0) ? pe.count : 1;
-            if (!seh_papyrus_additem(refr, form, cnt)) {
+            // v26 — the mod worker needs a SINGULAR stack: add one, dress
+            // it, and only then add the rest (a bare copy lands in its own
+            // stack, the dressed one keeps its extras).
+            if (!seh_papyrus_additem(refr, form, 1)) {
                 FW_ERR("[pa-pieces] entry 0x%08X: AddItem SEH/call failed",
                        pe.form_id);
                 continue;
@@ -926,8 +1166,25 @@ void tick(std::uintptr_t module_base) {
             ++injected;
             // v24 — re-attach the source OMODs so the piece is the SAME
             // variant, not the engine leveled roll. The worker requires a
-            // singular stack: pieces are count 1 and each form is added
-            // exactly once, so the precondition holds.
+            // singular stack. v26: measured on B (2026-09-15) that one piece
+            // per re-stock round fails every mod, i.e. the worker's count
+            // check refuses it; ask the same question first and say what
+            // the answer was instead of letting the worker fault in its
+            // error logger.
+            const std::int64_t have = seh_refr_item_count(refr, form);
+            if (have != 1) {
+                mods_failed += pe.mod_n;
+                FW_WRN("[pa-pieces] piece 0x%08X: refr holds %lld of it after "
+                       "AddItem(%d) — %u mod(s) NOT attached (worker needs "
+                       "exactly one)", pe.form_id, static_cast<long long>(have),
+                       cnt, unsigned(pe.mod_n));
+                if (pe.health >= 0.0f) {
+                    const bool hok = write_stack_health(refr, pe.form_id, pe.health);
+                    FW_LOG("[pa-pieces] piece 0x%08X: health %.3f %s", pe.form_id,
+                           pe.health, hok ? "written" : "WRITE FAILED");
+                }
+                continue;
+            }
             for (std::uint8_t m = 0; m < pe.mod_n
                                      && m < fw::net::kMaxPieceMods; ++m) {
                 void* mod = fw::engine::lookup_by_form_id(pe.mods[m]);
@@ -946,6 +1203,12 @@ void tick(std::uintptr_t module_base) {
                 const bool hok = write_stack_health(refr, pe.form_id, pe.health);
                 FW_LOG("[pa-pieces] piece 0x%08X: health %.3f %s", pe.form_id,
                        pe.health, hok ? "written" : "WRITE FAILED");
+            }
+            if (cnt > 1) {
+                const bool rok = seh_papyrus_additem(refr, form, cnt - 1);
+                FW_LOG("[pa-pieces] piece 0x%08X: %d more bare cop%s %s",
+                       pe.form_id, cnt - 1, (cnt - 1) == 1 ? "y" : "ies",
+                       rok ? "added" : "ADD FAILED");
             }
         }
         FW_LOG("[pa-pieces] stocked replica fid=0x%08X (wid=%u) with %d/%u "
@@ -992,7 +1255,20 @@ std::uint8_t capture_frame_pieces(void* refr, std::uint32_t base_id,
     for (std::size_t i = 0; i < n; ++i) {
         out[i] = fw::net::PaPieceEntry{};
         out[i].form_id = ids[i];
-        out[i].count   = cnts[i];
+        // v26 — measured 2026-09-15: while the PowerArmorModMenu works on a
+        // piece the engine keeps a working copy in the same inventory entry
+        // and the count reads 2. Shipping that made every replica AddItem(2)
+        // and the mod worker refuse the stack ("holds 2 of it"): the piece
+        // came back stock on the peer, and from persistence on everyone.
+        // The copy is never inventory; while the menu is open one is one.
+        std::int32_t cnt = cnts[i];
+        if (cnt > 1 && fw::hooks::pa_mod_menu_open()) {
+            FW_LOG("[pa-pieces] piece 0x%08X: count %d read while the PA "
+                   "station menu is open -> shipped as 1 (workbench working "
+                   "copy)", ids[i], cnt);
+            cnt = 1;
+        }
+        out[i].count   = cnt;
         // v24 — the piece's identity is form + OMODs: the Mk level lives
         // in the mods, and without them the replica's AddItem rolls a
         // fresh leveled variant.
@@ -1070,6 +1346,19 @@ static void fire_due_frame_reports() {
         const auto rid = fw::read_ref_identity(refr);
         const std::uint8_t n =
             capture_frame_pieces(refr, rid.base_id, pieces);
+        // v26 — the ledger copy follows what we ship (the server does not
+        // echo our own pieces op), so the station poll compares against
+        // the last shipped state and stays quiet until the next edit.
+        {
+            std::lock_guard<std::mutex> lk(g_mx);
+            auto it = g_wid_to_bound.find(wid);
+            if (it != g_wid_to_bound.end()) {
+                it->second.entry.piece_n = n;
+                for (std::uint8_t i = 0; i < n; ++i) {
+                    it->second.entry.pieces[i] = pieces[i];
+                }
+            }
+        }
         fw::net::client().enqueue_world_pa_pieces_op(
             wid, pieces, n,
             static_cast<std::uint64_t>(GetTickCount64()));
