@@ -72,16 +72,40 @@ int dump_skeleton_bones(void* skel_root);
 
 // ---- Step 3 — cache + swap ----------------------------------------
 
-// Try to cache a freshly-loaded skeleton.nif root globally. If no
-// previous cache exists, takes ownership of caller's refcount (caller
-// must NOT release). If a cache already exists (race), releases
-// caller's copy refcount-safely. Either way, on return the global
-// cache is non-null.
-void cache_or_release_skeleton(void* skel_root);
+// ---- RIMOSSI il 2026-09-18: cache_or_release_skeleton / get_cached_skeleton
+//
+// Erano il singleton di sessione: UNA istanza di skeleton.nif per tutti i
+// ghost, mai rilasciata. Li tolgo invece di lasciarli deprecati perche'
+// hanno gia' fatto danno una volta in questa forma — quando ho smesso di
+// riempire la cache e ho lasciato tre siti a leggerla, quelli hanno
+// ricevuto null in silenzio e il ghost e' uscito calvo, con la pelle
+// sbagliata e la power armor senza piastre. Un accessore che nessuno
+// riempie non fallisce rumorosamente: restituisce zero.
+//
+// Sostituiti da skeleton_for(body) qui sotto.
 
-// Returns the cached skeleton root, or nullptr if not yet cached.
-// Non-owning — caller does not release.
-void* get_cached_skeleton();
+// ---- lo scheletro appartiene al SUO corpo, non alla sessione -----------
+//
+// Fino al 2026-09-18 c'era una sola istanza di skeleton.nif per sessione:
+// ogni corpo, anche quelli ricostruiti dopo uno smontaggio, si cuciva
+// addosso le STESSE ossa. Da li' venivano i guasti peggiori della giornata:
+// l'innesto delle ossa della power armor restava sullo scheletro per sempre
+// e deformava ogni ghost costruito dopo, e la lista canonica dei giunti
+// cambiava a meta' sessione perche' si rifaceva su uno scheletro innestato.
+//
+// Adesso ogni corpo registra le ossa che si e' caricato. Non serve nessuna
+// via di rilascio nuova, ed e' il punto dell'indagine: lo scheletro e'
+// ATTACCATO COME FIGLIO del corpo, quindi quando il corpo muore lo
+// decrementa. L'unico riferimento che lo teneva in vita oltre l'albero era
+// la cache stessa.
+//
+// Chiave = la radice del corpo (g_injected_cube per il ghost di oggi).
+void  set_skeleton_for(void* body_root, void* skel_root);
+void* skeleton_for(void* body_root) noexcept;
+// Da chiamare nello smontaggio PRIMA di lasciare andare il corpo. Non
+// rilascia niente: toglie solo la voce, perche' le ossa se ne vanno con il
+// corpo che le teneva.
+void  forget_skeleton_for(void* body_root) noexcept;
 
 // Walk `body_root` finding every BSGeometry, and for each skin
 // instance, swap the entries in skin->bones_fb (skin+0x10) with

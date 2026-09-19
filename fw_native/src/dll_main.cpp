@@ -218,8 +218,26 @@ DWORD WINAPI init_thread(LPVOID) {
     // On success the log will show "[native] M1 INJECT: success" and
     // the player is free to move around — if 10+ frames pass without
     // crash, Strada B feasibility is PROVED.
-    fw::native::arm_injection_after_boot(30000);
-    FW_LOG("[native] Strada B M1: injection armed (30s delay)");
+    // Fase 2 (2026-09-18) — il timer non arma piu' il ghost.
+    //
+    // Costruiva un corpo trenta secondi dopo l'avvio, ci fosse o no
+    // qualcuno a cui appartenesse, e chi entrava dopo un corpo non lo
+    // aveva mai: il commento sopra arm_worker chiama il risultato
+    // "fortuna, non progetto". Ora il ghost nasce dall'ingresso del peer e
+    // muore alla sua uscita, e il momento sicuro per costruirlo non si
+    // indovina una volta sola ma si misura a ogni tick (vedi
+    // ghost_scene_is_stable). La grazia fissa esisteva per un crash vero,
+    // e quella protezione non e' stata tolta: e' stata sostituita con una
+    // misura, che copre anche il peer che entra al minuto quaranta.
+    //
+    // fw::native::arm_injection_after_boot(30000);
+    //
+    // E qui sotto c'era una riga di log che continuava ad annunciare
+    // "injection armed (30s delay)" con la chiamata commentata sopra. Un log
+    // che dichiara armato cio' che e' spento e' peggio di nessun log: manda
+    // a cercare un difetto dove non c'e' niente in esecuzione.
+    FW_LOG("[native] Strada B M1: il timer a 30 s NON arma piu' niente — il "
+           "ghost nasce dall'ingresso del peer (ghost_lifecycle::tick)");
 
     // --- SPAI Tier 1: force-prewarm of weapon NIF resmgr (2026-05-05) ---
     //

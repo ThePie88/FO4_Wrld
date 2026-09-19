@@ -940,7 +940,7 @@ void probe_hp_churn(void* actor, std::uint32_t fid) noexcept {
 
     unsigned n[4] = {0, 0, 0, 0};
     for (unsigned i = 0; i < 32u; ++i) ++n[(w >> (2u * i)) & 3u];
-    FW_LOG("[hp-churn] fid=0x%08X w#%llu %016llX stable=%u gone=%u moved=%u "
+    FW_DBG("[hp-churn] fid=0x%08X w#%llu %016llX stable=%u gone=%u moved=%u "
            "wiped=%u hp=%p", fid,
            static_cast<unsigned long long>(st.words),
            static_cast<unsigned long long>(w),
@@ -2427,7 +2427,7 @@ void __fastcall detour_actor_update_perframe(void* actor, float sim_time) {
                         const auto pm = g_posmeas_no.fetch_add(
                             1, std::memory_order_relaxed);
                         if (pm < 40 || (pm % 20) == 0 || drift > 75.0f) {
-                            FW_LOG("[pos-meas] NONOWNER fid=0x%08X "
+                            FW_DBG("[pos-meas] NONOWNER fid=0x%08X "
                                    "eng=(%.0f,%.0f,%.0f) "
                                    "synced=(%.0f,%.0f,%.0f) drift=%.1f%s",
                                    fid, eng_x, eng_y, eng_z,
@@ -2500,7 +2500,7 @@ void __fastcall detour_actor_update_perframe(void* actor, float sim_time) {
                     const auto pmo = g_posmeas_o.fetch_add(
                         1, std::memory_order_relaxed);
                     if (pmo < 40 || (pmo % 20) == 0) {
-                        FW_LOG("[pos-meas] OWNER fid=0x%08X "
+                        FW_DBG("[pos-meas] OWNER fid=0x%08X "
                                "pos=(%.0f,%.0f,%.0f)", fid, omx, omy, omz);
                     }
                 }

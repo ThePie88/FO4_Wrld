@@ -5,6 +5,8 @@ elsewhere — every other module reads from here.
 """
 from __future__ import annotations
 
+import os
+
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -58,11 +60,47 @@ NATIVE_MODE: bool = True
 # ([container] ENTRY / OBSERVE / SUBMIT / ACK / calling g_orig_add / returned)
 # and other fine-grained lines. Production default: "info".
 # Build 68.4 — debug -> info. At debug the DLL emitted 26,054 lines in 168 s
-# (155/s) from the game main thread; DBG alone was 10,988 of them (42%). INF
-# still carries every diagnostic we actually read (pos-meas, ownership, pose
-# drive, bone-pin accounting) plus all WRN/ERR. Set back to "debug" only when
-# chasing something that needs the per-frame dispatch trace.
-DLL_LOG_LEVEL: str = "info"
+# (155/s) from the game main thread; DBG alone was 10,988 of them (42%).
+#
+# 2026-09-18 — the sentence that used to stand here ("INF still carries every
+# diagnostic we actually read: pos-meas, ownership, pose drive, bone-pin")
+# is no longer true, and that is deliberate. Those instruments belonged to
+# closed measuring campaigns and were emitting 52 MB/hour per client, so 114
+# call sites moved from INF to DBG. INF now carries game events (equip, power
+# armor, world spawns, locks, join/leave) plus every WRN/ERR.
+#
+# THE RULE: at the first sign of ANY new breakage, re-run the test with full
+# logs BEFORE reading code, so a failure that some past campaign already
+# instruments is recognised instead of re-derived.
+#
+# Two ways to ask for it, because hand-editing fw_config.ini is pointless
+# (this file is rewritten into it at every launch) and because side A is
+# started from the compiled launcher, which sets no environment of its own:
+#
+#   1. a marker FILE named FULL_LOGS in the repo root. Works no matter how
+#      the game is started, A from the launcher included. Create it to turn
+#      full logs on, delete it to go back. Nothing is recompiled either way.
+#   2. FW_LOG_LEVEL in the environment, which wins over the marker and is
+#      handy from a bat: `set FW_LOG_LEVEL=debug`.
+#
+# Server side reads the same marker (see start_server.bat).
+# Remember to remove it afterwards: two clients at debug are ~100 MB/hour.
+FULL_LOGS_MARKER: Path = REPO_ROOT / "FULL_LOGS"
+
+
+def _resolve_dll_log_level() -> str:
+    env = os.environ.get("FW_LOG_LEVEL", "").strip().lower()
+    if env:
+        return env
+    try:
+        if FULL_LOGS_MARKER.exists():
+            return "debug"
+    except OSError:
+        pass
+    return "info"
+
+
+DLL_LOG_LEVEL: str = _resolve_dll_log_level()
 
 
 # ------------------------------------------------------------------ client defaults

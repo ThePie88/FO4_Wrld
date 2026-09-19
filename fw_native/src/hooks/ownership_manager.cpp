@@ -134,6 +134,59 @@ std::mutex g_deferred_mtx;
 std::vector<fw::net::NPCOwnershipHandoffPhase2Payload> g_deferred_claims;
 }  // namespace
 
+void reset_for_new_session() {
+    // 2026-09-18 — IL GUAIO PIU' SILENZIOSO DELLA RICONNESSIONE.
+    //
+    // Il client deduplica NPC_OBSERVED per sessione e per sempre: una volta
+    // osservato un NPC non lo riannuncia mai piu' (vedi il commento sulla
+    // release piu' sotto, che e' l'unico caso in cui oggi il dedup viene
+    // tolto). Ha senso finche' la sessione e' una sola.
+    //
+    // Quando il client rientra dopo una caduta, pero', il server ha buttato
+    // ogni nostro record di ownership: non sa piu' che esistiamo per quegli
+    // NPC. Se non riemettiamo l'osservazione, nessuno li rivendica mai e
+    // restano CONGELATI per il resto della partita, senza un errore, senza
+    // una riga di log, solo predoni immobili. Quindi all'apertura di una
+    // sessione nuova si butta tutto lo stato per sessione: la mappa di
+    // ownership (il server ce la ri-spedira' col bootstrap), il dedup delle
+    // osservazioni, i tempi dell'ultima osservazione in combattimento, lo
+    // specchio degli NPC posseduti e le rivendicazioni parcheggiate.
+    //
+    // L'identita' locale NON si tocca: il peer_id e' lo stesso di prima.
+    std::size_t map_n = 0, obs_n = 0, owned_n = 0, claims_n = 0;
+    {
+        auto& s = state();
+        std::unique_lock lk(s.mtx);
+        map_n = s.map.size();
+        s.map.clear();
+    }
+    {
+        auto& tx = tx_state();
+        {
+            std::unique_lock olk(tx.obs_mtx);
+            obs_n = tx.observed.size();
+            tx.observed.clear();
+            tx.last_combat_obs_ms.clear();
+        }
+        {
+            std::unique_lock wlk(tx.owned_mtx);
+            owned_n = tx.owned.size();
+            tx.owned.clear();
+        }
+        tx.last_hb_ms    = 0;
+        tx.last_state_ms = 0;
+    }
+    {
+        std::lock_guard lk(g_deferred_mtx);
+        claims_n = g_deferred_claims.size();
+        g_deferred_claims.clear();
+    }
+    FW_LOG("ownership_manager: session reset — dropped %zu ownership record(s), "
+           "%zu observation dedup entr(ies), %zu owned mirror(s), %zu parked "
+           "claim(s); every NPC can be observed again",
+           map_n, obs_n, owned_n, claims_n);
+}
+
 void shutdown() {
     auto& s = state();
     {

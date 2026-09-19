@@ -39,7 +39,7 @@ ghost.
 │  authoritative state · identity-keyed (base, cell) · validator         │
 │  reliable channel (SACK + retransmit) · JSON snapshot persistence      │
 └─────────────────────────┬──────────────────────────────────────────────┘
-                          │ binary protocol v25 (44B POS_BCAST · reliable channel · appearance recipes · world objects)
+                          │ binary protocol v26 (44B POS_BCAST · reliable channel · appearance recipes · world objects · session lifecycle)
             ┌─────────────┼─────────────┐
             │             │             │
        ┌────▼─────┐  ┌────▼─────┐  ┌────▼─────┐
@@ -89,7 +89,7 @@ ghost.
 | **M8P3** Skin pipeline RE + per-bone pose replication | ✅ M8P3.23 — body+head+hands animated, see [CHANGELOG.md](CHANGELOG.md) |
 | **M8P4** First-person ghost animation | ✅ done (v0.6.5, 2026-08-06) — a sender in first person no longer freezes the remote ghost into a V/T-pose with grafted arms. The engine parks and deactivates the third-person animation graph on a camera switch, then copies the first-person skeleton over the third-person one every frame in a post-update hook; the DLL now drives the parked graph (revive, active-node refresh, forced flush/generate/apply), mirrors animation events onto it, raises the behavior's base-state trigger at wake-up, keeps it alive across camera switches, and suppresses the skeleton copy while driving. Pip-Boy re-parented to `PipboyBone`; pose channel made scale-immune. Residue: walk clip rate |
 | **B5** D3D11 custom render | 🗿 not needed — Strada B native injection replaced |
-| **B6** World-state sync expansion *(composite epic; NPC pos/pose + combat split out to the N branch)* | 🟡 5/12 wedges done (doors, cell-transitions, locks, terminals, world-object spawns), power armor at three quarters |
+| **B6** World-state sync expansion *(composite epic; NPC pos/pose + combat split out to the N branch)* | 🟡 6/13 wedges done (doors, cell-transitions, locks, terminals, world-object spawns, power armor); lights and time/weather parked, quests/companions/cell-cleared/one-shot loot/workshop open |
 | ↳ **B6.0** Door open/close sync | ✅ done — `sub_140514180` Activate worker hook + dual-agent RE convergence, [30s demo](https://youtu.be/T8wLZmCqjxw), see [CHANGELOG.md](CHANGELOG.md) |
 | ↳ **B6.1** Cell-aware ghost transitions (interior / fast-travel / worldspace switch) | ✅ done (v0.5.2, 2026-05-08) — wire proto v11 ships `cell_id` in pos payloads; server validator accepts cross-cell teleport as baseline reset instead of rejecting it at the 2500 u/s speed gate. Receiver is a plain coord-bind: cross-cell distance (~120k units) puts the ghost outside the local frustum naturally; same-interior co-op puts both peers in the same coord frame. |
 | **M9** Equipment sync between peers *(clothing + armor + weapon visual replication)* | ✅ done (v0.5.1, 2026-05-08) — 5/5 wedges across **all firearm families**: pistols (10mm, handmade), sniper rifle, assault rifle, hunting rifle, combat shotgun, combat rifle, minigun, Fat Man, laser, plasma — all visible with mods on the remote ghost via engine BSConnectPoint pairing. Plus clothing + body cull + OMOD-driven ARMA tier + Vault Suit cycle stable. |
@@ -107,7 +107,7 @@ ghost.
 | ↳ **B6.10** One-shot loot pickups (bobbleheads, magazines, holotapes, skill books) | ⏳ — single-pickup persistence, partially covered by container `kill` events |
 | ↳ **B6.11** Time of day + weather sync | ⏳ — GlobalVar `GameHour` + Sky weather state |
 | ↳ **B6.12** Workshop / settlement build state sync | ⏳ — major epic; build/scrap/move workshop refs + furniture |
-| ↳ **B6.13** Power Armor frame + worn-state sync | ✅ closed (v0.7.6, 2026-09-16) — the frame rides the spawn rails (enter = despawn, exit = rebirth); pieces, OMOD upgrade levels, condition, core charge and paint jobs travel with the object and persist in a per-wid server ledger; replicas are stocked through the engine's own `AddItem` (`sub_1411735A0`) and `AttachModToInventoryItem` (`sub_1411808F0`) workers and the Health extra is created the way the engine does it; manual take/put and the power armor station (`PowerArmorModMenu`, polled while it lives) ship full state; frames are exempt from the loot layer and re-seat themselves after a station edit. The wearer's ghost is dressed and painted: `Frame.nif` plus the model OMOD meshes of every piece, material swaps read from the OMOD property records, on a ghost skeleton grafted with the 20 PA-only bones and retargeted to PA proportions while worn. Residue: frame lost if the wearer quits (session lifecycle), fingers do not articulate |
+| ↳ **B6.13** Power Armor frame + worn-state sync | ✅ closed (v0.7.6, 2026-09-16) — the frame rides the spawn rails (enter = despawn, exit = rebirth); pieces, OMOD upgrade levels, condition, core charge and paint jobs travel with the object and persist in a per-wid server ledger; replicas are stocked through the engine's own `AddItem` (`sub_1411735A0`) and `AttachModToInventoryItem` (`sub_1411808F0`) workers and the Health extra is created the way the engine does it; manual take/put and the power armor station (`PowerArmorModMenu`, polled while it lives) ship full state; frames are exempt from the loot layer and re-seat themselves after a station edit. The wearer's ghost is dressed and painted: `Frame.nif` plus the model OMOD meshes of every piece, material swaps read from the OMOD property records, on a ghost skeleton grafted with the 20 PA-only bones and retargeted to PA proportions while worn. Residue: fingers do not articulate. The frame lost when the wearer quits is closed server side in v0.8.0 (handed back to the world on leave, eviction and timeout) and still owes the live test with a client killed from the task manager |
 | ↳ **B6.14** World-object spawn sync | ✅ first version (v0.7.5, 2026-09-14) — `PlaceAtMe` detoured on both the Papyrus native and the console worker; server-assigned `wid`, JSON persistence, join bootstrap replay; receive-side placement = upright, ground snap, engine cell re-file, range-gated; lifecycle sweep reports deaths by wid, streaming losses re-queued, resurrection watch re-announces re-enabled refs; real removal idiom (`RemoveReference` + `DestroyByHandle`, no-save flag cleared first) |
 | **N** NPC co-op combat *(split out from B6.5 / B6.6 — grew into its own epic; my first iteration on the game's AI)* | 🟡 N2 + N3 + N4 done; **hardened in v0.6.3** (stale-pointer crash class closed via NiRefObject pinning, owner-state starvation fixed, locomotion relayed, 3 aggro defects fixed, deaths replayed to distant peers); **v0.6.4 closed the respawn-load crash** (freed-cell vcall in DetachReference: death release + engine passthrough in the death window + ownership quiescence, 8 deaths / 0 crashes). N1 still open: creature pose schema + post-mortem hardening. Scope still hostile raiders. |
 | ↳ **N1** NPC actor pos + pose sync (owner-driven) | 🟡 REOPENED partial (v0.6.2) — **major hardening in v0.6.3** (2026-07-29): the owner-state batch was capped at 17 entries with no rotation, so 12 of 29 owned NPCs never received a position at all (measured drift where data DID arrive: 0.0 on 4,591/5,133 samples) — now multi-batch, everyone at full 10 Hz; the engine's NATIVE position (AI char-controller proxy) is snapped via `sub_141894670` so it tracks the owner instead of diverging; locomotion is derived from the position delta and relayed (`anim=1/2 → SpeedSampled 100/200`), fixing the "slides like a log" mirrors; the bone cache is now refcount-pinned (+0x08) with a parent-detach probe, which closed the whole stale-pointer crash class. STILL OPEN: creature (non-humanoid) pose bleeds through a 1-name-match gate — a mole rat was seen stretched toward a map coordinate, needs a skeleton-schema gate, TODO in `scene_inject.cpp`; POST-mortem corpse hardening; leveled-list divergence means the same REFR can be a different NPC per client. |
@@ -115,6 +115,7 @@ ghost.
 | ↳ **N3** Shared authoritative HP / damage | ✅ done (v0.6.2, 2026-06-06) — both clients deplete ONE server-held HP pool (damage captured at the engine HP-write funnel `sub_140CC9650`, FINAL post-resist; DLL floor-1 clamp stops either client soloing the kill; server fires the kill at pool=0). v0.6.2 closed it: the enemy-health HUD now shows the LIVE combined pool on both clients (the non-owner's local Health is driven to the pool fraction so the vanilla bar reads it — `max = GetCurrent − cell`, since the AVO GetMax leaf mis-reads), the aggro/first shot is no longer lost (claimed pre-tracking, server-buffered until the NPC registers), and multi-feeder + server-driven death are confirmed. The HUD bar is GREEN (non-hostile color — handy as a "this client has no aggro" tell); a RED color is TODO. Wire proto v18. |
 | ↳ **N4** Player death + respawn sync | ✅ done (v0.6.2, 2026-06-06) — a client's death is vanilla: it ragdolls + respawns at Sanctuary, and the raiders re-aggro the surviving client (the threat table re-elects on the death). **v0.6.4 closed the death transition properly**: the respawn-load crash is fixed (see N row), and the aggro flip is now a message, not a timeout: one reliable NPC_UNLOAD per owned NPC at death, so the raiders turn on the survivor within a frame instead of after 8 s. |
 | **CG1** Character creation + appearance identity *(new epic, my first custom in-game UI)* | 🟡 v1 shipped (v0.7.0, 2026-08-12), deliberately unfinished. Forced first-entry ritual (server flag), sky staging + pinned auto-vanity camera, runtime catalogs (filtered head parts, 32 hair colours, 9 tint groups from race CharGenData), live editing of hair / eyes / beard / teeth / brows / skin tone / marks through the engine's own apply calls, recipe v2 (parts + tints, wire v21) stored per identity on the server, adopted at join and replicated onto the ghost with private composite textures and engine-computed body skin. Open: morph sculpting, body build, sex switch, Markings tab placement, per-peer ghost cache; the ImGui panel is a placeholder for the final UI |
+| **S1** Session lifecycle *(join / leave / disconnect / rejoin / late join)* | 🟡 phases 0-2 done (v0.8.0, 2026-09-19) — the ghost is born from PEER_JOIN and torn down on PEER_LEAVE instead of from a 30 s timer that never re-armed; a registry keyed by peer id replaces the single body pointer, and the census of single-peer globals in the ghost path is empty (body, head, bones, geometries, cull contributors, PA graft and bind all per peer; the ghost skeleton is a private deep clone that dies with its body). Server side: presence that outlives the session, resume tokens for a rejoin without the launcher, reject reasons on the wire, eviction with notice, a queued join bootstrap, and a worn power-armor frame handed back to the world when its wearer disappears. Client side: a reconnection loop with backoff, a dead-server detector, a goodbye on ALT+F4. Phase 3 (outfit announced at load) and phase 4 (test matrix, nametags, chat) open; three reconnection holes and the second-ghost gate documented in [CHANGELOG.md](CHANGELOG.md) |
 | **B7** Rust server port | ⏳ |
 
 ## Major RE achievements
@@ -155,6 +156,48 @@ ghost.
 
 Latest 3 patches summarized below. **Full version history in
 [CHANGELOG.md](CHANGELOG.md).**
+
+### v0.8.0 (2026-09-19) — session lifecycle: the ghost belongs to a peer
+
+Tag v0.8.0, wire proto v26 (reject reason and resume token in WELCOME,
+display name in PEER_JOIN, new `HELLO_RESUME`).
+
+- **The ghost is born from a join and dies with a leave** — a registry keyed
+  by peer id replaces the thirty-second timer that never re-armed and the
+  PEER_LEAVE handler that only logged. Events queue on the network thread, a
+  main-thread tick injects once the scene is proven stable (120 ticks and two
+  real seconds, with loads bracketed because `LoadGame` blocks for six), and
+  teardown follows the order law from the bottom of the wardrobe up.
+- **The single pointer is gone** — `g_injected_cube` was read from thirty
+  places; body, head, bones, geometries, cull contributors, power-armor graft
+  and saved binds now live in a per-peer record, the pose and crouch slots are
+  deleted outright because the handlers iterate the registry, and the ghost
+  skeleton is a private deep clone that dies with its body. Only the canonical
+  joint names stay global, because they are the wire's bone index order.
+- **The face that rotted after a power armor** — a rejoin gave the ghost a
+  stretched sheet anchored to the local player's frame, or no head with the
+  eyes left hanging. Seven explanations were killed by measurement. The
+  master was always intact: it keeps raw pointers to the LIVE player's bone
+  nodes, and entering or leaving power armor rebuilds that rig, so the re-bind
+  read names out of recycled memory. The master is anchored to a reference
+  skeleton this DLL owns at the one moment its pointers are still valid.
+- **The power armor a joiner could not see** — the pending equip queue held
+  two fields and dropped the OMOD list, so six empty placeholders attached and
+  the frame stayed naked. A power-armor piece keeps its whole mesh on the
+  model OMOD.
+- **Reconnection** — a session loop with backoff, resume tokens, reject
+  reasons that decide between retrying and giving up, and a dead-server
+  detector. A goodbye on ALT+F4, so a peer who closes the game stops standing
+  in everyone else's world.
+- **Presence** — a late joiner is shown where everyone is and what they wear,
+  the arriving peer's outfit is announced to those already there, and a worn
+  power-armor frame is handed back to the world when its wearer disappears.
+- **Not finished** — three reconnection holes left open on purpose, a second
+  remote ghost still refused until there is a third client to test with, and
+  the outfit still only as complete as the equip events the server saw, which
+  is phase 3.
+
+Full detail in [CHANGELOG.md](CHANGELOG.md).
 
 ### v0.7.6 (2026-09-16) — power armor closed: paint, the station, two crashes and the skeleton loan
 
@@ -226,42 +269,6 @@ Tag v0.7.5, wire proto v25.
 
 Full detail in [CHANGELOG.md](CHANGELOG.md).
 
-### v0.7.0 (2026-08-12) — character creation v1
-
-Tag v0.7.0, wire proto v21.
-
-- **The editor** — a fully custom in-game character creator, engine-native
-  (no ESP, no Creation Kit): ImGui drawn on the game's own D3D11 device from
-  an `IDXGISwapChain::Present` hook, five tabs (Face / Hair / Skin / Marks /
-  Preset), every option list walked out of live form data at runtime. Scope
-  is face and hair by design; the body stays under clothes.
-- **The ritual** — when the server holds no character for the joining
-  identity, WELCOME carries `chargen_required` and the client stages the
-  player 10,000 units up with collision off, pins the auto-vanity camera in
-  front of the face (the free camera renders no player at all), captures
-  input at the WM_INPUT level, and withholds the peer from every other
-  client's world until CONFIRM publishes the finished recipe.
-- **Server-held identity** — the recipe (head parts + tints, wire v21)
-  persists per identity, comes back in the join bootstrap, and is adopted
-  onto the local player before anything is published, so the save file's
-  default look never overwrites the stored character again.
-- **Ghost replication** — four sharing defects had every ghost wearing the
-  local player's face: the player's two tint arrays (record + actor side),
-  non-reproductive tint applies, the composited face textures living in a
-  global render-target pool repainted in place, and the body-skin copy taken
-  from the local player's stale body materials. All four closed; the clone
-  now owns private snapshots of its three composite textures and the body
-  skin is computed by the engine from the recipe being worn.
-- **Post-death freeze** — dying next to the spawn exposed a latent bug:
-  the death stand-down detected the respawn as a 5,000-unit position jump,
-  so a same-cell respawn never released it and every peer ghost stayed
-  frozen for up to 90 s. A second detector now releases on the health
-  restore, which every respawn performs regardless of distance.
-- **Not finished** — morph sculpting, body build and the sex switch are
-  out for now; the ImGui panel is a placeholder for the final UI.
-
-Full detail in [CHANGELOG.md](CHANGELOG.md).
-
 ## Why this exists
 
 I've been waiting ~10 years for someone to ship Fallout 4 multiplayer.
@@ -307,8 +314,11 @@ that should be most reusable for anyone else attempting the same thing.
   open. What is missing is the gesture: vanilla has no third-person
   arm-raise for a remote player consulting a Pip-Boy, so the ghost shows
   its normal standing pose instead of the animation the peer sees.
-- **Tested with 2 peers** — multi-peer ghost cache (peer-id keyed
-  registry) not yet implemented; 10-peer scaling is theoretical.
+- **Tested with 2 peers** — the peer-keyed registry landed in v0.8.0 and the
+  ghost path holds no single-peer global any more, but a second remote ghost
+  is still refused on purpose: that path has never been executed, because two
+  clients means one remote peer each. It opens when there is a third client to
+  prove it with. 10-peer scaling stays theoretical.
 - **Network rate-limited to 20Hz** — works smoothly on LAN, untested
   over real-world internet routes; receiver-side interpolation between
   POSE_BROADCAST frames is open work.
@@ -351,17 +361,24 @@ that should be most reusable for anyone else attempting the same thing.
   loot on each screen. Parked: a clean fix needs either an ESL of fixed
   content or a seeded-RNG / capture-replicate hook, and I'm deliberately
   staying engine-native (no ESL, no Creation Kit) for now.
-- **A client that quits while wearing power armor loses the frame for
-  everyone** — the server forgets the wid at enter and only the exit
-  re-announces it; the fix (a worn-by state and a re-announce on
-  disconnect) is session-lifecycle work. Exit the frame before closing.
-- **Power-armor paint jobs and material mods are not replicated** on the
-  ghost; only model mods are (the Mk meshes, lamps).
+- **A client that quits while wearing power armor** no longer loses the frame
+  for everyone: v0.8.0 marks the record worn instead of deleting it and hands
+  the frame back at its last known position on a graceful leave, an eviction
+  or a timeout, taking the plates out of the stored outfit so the rejoining
+  peer is not wearing an empty shell. Covered by unit tests; the live test
+  with a wearer killed from the task manager (T7) has not been run yet.
+- **Power-armor headlamps do not light up on the ghost** — the lamp mesh is
+  an engine add-on point whose glow effect is bookkept globally, which is
+  the crash class closed in v0.7.6; the ghost skips it.
 - **Fingers and toes do not articulate on ghosts** — 53 of the 80
   canonical joints never leave the sender's render tree, so hands and
   feet ride their parent joints without bending.
-- **The ghost skeleton is a session singleton** — the PA graft and
-  retarget assume one remote peer; more peers need a per-ghost skeleton.
+- **A face master built while the local player wears power armor is not
+  validated** — the master keeps pointers into the rig it was cloned from, and
+  v0.8.0 anchors them to a reference skeleton this DLL owns so a power-armor
+  rebuild cannot recycle them underneath. What is not checked is the master
+  itself: nothing refuses to park one whose bone names do not exist in the
+  human skeleton. The permanent tripwire is the `[face-slots]` debug line.
 
 ## Reverse-engineering target
 

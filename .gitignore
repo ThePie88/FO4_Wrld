@@ -285,3 +285,15 @@ net/*.out
 
 # local Steam version-pin script (machine-specific paths)
 tools/steam_pin_fo4.py
+
+# Local switch: presence turns server and both clients to DEBUG logs.
+/FULL_LOGS
+
+# Working trackers and research notes: mixed-language scratch, live hypotheses
+# and dead ends. They are how I think, not what the repo documents; the
+# findings that survive go into CHANGELOG.md and re/ dossiers instead.
+/SESSION_LIFECYCLE.md
+/RESEARCH_*.md
+
+# local Frida freeze probe (machine-specific paths, attaches by PID)
+tools/freeze_probe.py

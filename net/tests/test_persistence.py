@@ -10,7 +10,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from server.state import ServerState  # noqa: E402
-from server.persistence import snapshot, rotate_snapshots  # noqa: E402
+from server.persistence import (  # noqa: E402
+    snapshot, rotate_snapshots, SNAPSHOT_FORMAT_VERSION,
+)
 from protocol import PosStatePayload, ActorEventPayload, ActorEventKind  # noqa: E402
 
 
@@ -21,7 +23,9 @@ class TestSnapshot:
         snapshot(s, path)
         assert path.exists()
         data = json.loads(path.read_text())
-        assert data["version"] == 4  # v3 added containers; v4 adds locks (B6.3)
+        # Symbolic on purpose: a format bump is a deliberate act and this
+        # assertion should not be the thing that notices it.
+        assert data["version"] == SNAPSHOT_FORMAT_VERSION
         assert data["sessions"] == []
         assert data["world_actors"] == []
         assert data["containers"] == []

@@ -6,6 +6,7 @@ Pure data + mutation methods. No I/O, no asyncio here — main.py drives this.
 from __future__ import annotations
 
 import itertools
+import secrets
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any, Optional
@@ -20,6 +21,7 @@ from protocol import (  # noqa: E402
     WelcomePayload, PeerJoinPayload, PeerLeavePayload,
     PosStatePayload, ActorEventPayload,
     ContainerOpPayload, ContainerOpKind,
+    RejectCode, RESUME_TOKEN_LEN, RESUME_TOKEN_TTL_S,
 )
 
 
@@ -112,6 +114,24 @@ class PeerSession:
     # so combat_target_form_id substitution targets the right local fid
     # per viewer. 0 = unregistered (ghost not spawned yet, or spawn failed).
     ghost_form_id: int = 0
+    # v26 — bootstrap frames waiting their turn, as (msg_type, payload).
+    #
+    # The join bootstrap used to be dumped into the socket in one synchronous
+    # burst: every world object (up to 1024), every lock, every appearance,
+    # every presence entry, all registered in flight at once. The receiver's
+    # window is 32 frames wide, so anything past that was silently discarded
+    # on arrival and had to be retransmitted; with a retransmit cap of 8 the
+    # burst could kill the channel of the peer that had just joined. The
+    # queue costs nothing and makes the burst much smaller.
+    #
+    # Corrected 2026-09-19: "impossible" was too strong. Five frame kinds go
+    # through the queue (appearance, world spawn, lock, position, equip);
+    # world state, container state, quests, global vars, ownership and the two
+    # PEER_JOIN rounds still go straight into the socket inside the same
+    # bootstrap. The in-flight cap does not cover those. Ordering holds only
+    # because the unqueued ones are sent first, not because anything orders
+    # them.
+    pending_bootstrap: list = field(default_factory=list)
     # One-shot: says once, not sixty times a second, that this peer's
     # position is being withheld from the others pending character creation.
     chargen_hidden_logged: bool = False
@@ -201,6 +221,18 @@ class WorldSpawnState:
     # AUTHORITATIVE: spawn announces seed it, WORLD_PA_PIECES_OP replaces
     # it, every broadcast and the join bootstrap carry it.
     pieces: tuple = ()
+    # v26 — who is WEARING this frame, "" when nobody is.
+    #
+    # Entering power armor makes the engine disable the frame REFR, which the
+    # client reports as an ordinary death (reason 2). Before v26 the server
+    # deleted the record, and since "removal persists by omission" that also
+    # erased the piece ledger: if the wearer then quit or crashed, the exit
+    # that would have re-announced the frame never arrived and the armour was
+    # gone for everyone, in every future session. Now the record survives,
+    # marked, and is skipped by the join bootstrap so no ghost frame is placed
+    # in the world while somebody is inside it.
+    worn_by_peer_id: str = ""
+    worn_since_ms: float = 0.0
 
 
 @dataclass(slots=True)
@@ -233,12 +265,87 @@ class GlobalVarState:
     last_update_ms: float = 0.0
 
 
+@dataclass(frozen=True, slots=True)
+class OutfitEntry:
+    """One item a peer currently wears, as last seen on the wire.
+
+    Equipment reaches the server as CHANGE notifications, never as a
+    snapshot: one EQUIP_OP per item, and an UNEQUIP that carries nothing but
+    the form id. So the replayable model is a dictionary keyed by item, an
+    equip inserts or replaces, an unequip pops. Every field here is exactly
+    what `EquipBroadcastPayload` needs, because the replay to a late joiner
+    is that same message and nothing else: the client cannot tell a replayed
+    outfit from a live equip, and that is the point.
+    """
+    item_form_id: int
+    slot_form_id: int
+    count: int
+    effective_priority: int
+    mods: tuple = ()          # tuple[EquipModRecord, ...]
+    timestamp_ms: int = 0
+
+
+@dataclass(slots=True)
+class PeerPresence:
+    """What a peer looks like right now, kept so somebody who joins later can
+    be shown the same thing the peers already connected can see.
+
+    Keyed by peer_id and deliberately NOT deleted when the peer leaves: that
+    is what makes a late join work hours later, and it mirrors how the
+    appearance recipe has always behaved.
+
+    The outfit is only ever as complete as the equip events the server has
+    witnessed. Items a player was already wearing when the save loaded fire
+    no engine event at all, so they are missing here until the client learns
+    to announce them (a later phase). This is a known, deliberate hole, not
+    an oversight.
+    """
+    peer_id: str
+    display_name: str = ""
+    last_pos: Optional[Any] = None       # PosStatePayload
+    last_pos_at_ms: float = 0.0
+    outfit: dict = field(default_factory=dict)   # item_form_id -> OutfitEntry
+    worn_frame_wid: int = 0
+    updated_at_ms: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class ResumeTicket:
+    """A minted resume token and what it entitles the bearer to.
+
+    The launcher's login proof is single use and the game DLL holds no
+    private key, so without this a client that drops cannot prove who it is
+    and has to be relaunched through the launcher. The token is a bearer
+    credential: whoever holds it gets the session. It is therefore bound to
+    one identity, expires, and is rotated on every use.
+    """
+    peer_id: str
+    identity_hex: str
+    issued_at_ms: float
+    expires_at_ms: float
+
+
 @dataclass(slots=True)
 class ServerState:
     """Total server-side state. Thread-unsafe — only one asyncio task may mutate."""
 
     tick_rate_hz: int = 20
     server_version: tuple[int, int] = (1, 0)
+    # Five seconds, and it stays five seconds by decision, 2026-09-18.
+    #
+    # v26 had raised this to 15 s: with a resume token a rejoin is invisible,
+    # so the timeout could afford to survive a network hiccup instead of
+    # kicking on one. That raise NEVER took effect. The snapshot carries this
+    # field and restores it on every boot, so the running servers kept the
+    # 5 s written in an older snapshot while the code claimed 15 s — a knob
+    # that no longer turned, and nobody noticed for a whole phase.
+    #
+    # Asked, and the answer was to keep five seconds: a ghost left standing
+    # is the thing you SEE, a peer evicted on a hiccup is the thing you can
+    # retry. The real fix for a clean exit is a goodbye on the wire, not a
+    # longer timeout, and that is still owed. The number is written here to
+    # match what actually runs; see load_snapshot, which now says out loud
+    # when a snapshot overrides it.
     peer_timeout_ms: float = 5_000.0
     # Dedicated-server capacity. accept_peer refuses past this with a reason
     # the browser can show. 0 = unlimited (used by tests).
@@ -292,6 +399,12 @@ class ServerState:
     # B6.14 — spawned world objects, keyed by wid. Server-owned lifetime.
     world_spawns: dict[int, WorldSpawnState] = field(default_factory=dict)
     next_world_spawn_wid: int = 1
+    # v26 — peer_id -> PeerPresence. Survives the peer leaving, exactly like
+    # the appearance recipe above, because that is what a late joiner needs.
+    _presence: dict[str, PeerPresence] = field(default_factory=dict)
+    # v26 — resume token (raw 32 bytes) -> ticket. In memory and in the
+    # snapshot, because a server restart must not lock every client out.
+    _resume_tokens: dict[bytes, ResumeTicket] = field(default_factory=dict)
 
     # ---------------------------------------------------------- session mgmt
 
@@ -301,6 +414,7 @@ class ServerState:
         peer_id: str,
         client_version: tuple[int, int],
         now_ms: float,
+        on_evict=None,
     ) -> tuple[Optional[PeerSession], str]:
         """Register a new peer. Returns (session, reason). session=None if rejected.
 
@@ -308,6 +422,13 @@ class ServerState:
         - "peer_id_taken": ID already used by an active peer
         - "peer_id_invalid": bad format
         - "version_mismatch": major version different from server
+
+        `on_evict(session)` is called for every session this admission
+        displaces, BEFORE it is removed. v26: without it the two eviction
+        branches below dropped a session silently, so the NPCs that peer owned
+        stayed owned by a peer that no longer existed and the other clients
+        were never told it had gone. The callback lets the caller run the same
+        teardown a timeout runs, which is the only correct answer.
         """
         if not peer_id or len(peer_id) > MAX_CLIENT_ID_LEN:
             return (None, "peer_id_invalid")
@@ -317,6 +438,8 @@ class ServerState:
         # If same addr already has session (reconnection with same IP:port), replace it
         existing = self._sessions_by_addr.get(addr)
         if existing is not None:
+            if on_evict is not None:
+                on_evict(existing)
             self._remove_session(existing)
 
         # Same peer_id from a DIFFERENT address: either a genuine duplicate, or
@@ -330,6 +453,8 @@ class ServerState:
         if prior is not None:
             if (now_ms - prior.last_seen_ms) <= self.peer_timeout_ms:
                 return (None, "peer_id_taken")
+            if on_evict is not None:
+                on_evict(prior)
             self._remove_session(prior)
 
         # Version check: same major required
@@ -655,6 +780,135 @@ class ServerState:
     def all_appearances(self) -> list[tuple[str, str]]:
         return list(self._appearances.items())
 
+    # --------------------------------------------------- presence (v26)
+    #
+    # Same contract as the appearance recipe above, for the same reason: a
+    # player who joins hours after everyone else must see the others as they
+    # are, not as a naked mannequin at the origin waiting for them to move or
+    # change clothes. Keyed by peer_id, kept after the peer leaves, persisted.
+
+    def _presence_for(self, peer_id: str) -> PeerPresence:
+        rec = self._presence.get(peer_id)
+        if rec is None:
+            rec = PeerPresence(peer_id=peer_id)
+            self._presence[peer_id] = rec
+        return rec
+
+    def record_presence_name(self, peer_id: str, display_name: str,
+                             now_ms: float) -> None:
+        rec = self._presence_for(peer_id)
+        rec.display_name = display_name
+        rec.updated_at_ms = now_ms
+
+    def record_presence_pos(self, peer_id: str, pos, now_ms: float) -> None:
+        """Called from the POS path, AFTER validation, so a rejected update
+        never becomes the position a late joiner is shown."""
+        rec = self._presence_for(peer_id)
+        rec.last_pos = pos
+        rec.last_pos_at_ms = now_ms
+        rec.updated_at_ms = now_ms
+
+    def record_presence_equip(self, peer_id: str, entry: OutfitEntry,
+                              equipped: bool, now_ms: float) -> None:
+        """Apply one equip event to the stored outfit.
+
+        An equip inserts or replaces by item form id; an unequip removes by
+        form id, which is all an unequip carries. Weapons and apparel share
+        the dictionary because the wire does not separate them either.
+        """
+        rec = self._presence_for(peer_id)
+        if equipped:
+            rec.outfit[entry.item_form_id] = entry
+        else:
+            rec.outfit.pop(entry.item_form_id, None)
+        rec.updated_at_ms = now_ms
+
+    def record_presence_worn_frame(self, peer_id: str, wid: int,
+                                   now_ms: float) -> None:
+        rec = self._presence_for(peer_id)
+        rec.worn_frame_wid = wid
+        rec.updated_at_ms = now_ms
+
+    def drop_items_from_outfit(self, peer_id: str, form_ids) -> int:
+        """Togli questi oggetti dal vestito memorizzato. Torna quanti erano li'.
+
+        Serve a una regola sola, ed e' quella che chiude il vestito fossile:
+        una power armor e' indosso a qualcuno OPPURE e' un oggetto nel mondo,
+        mai le due cose insieme. Quando il portatore se ne va e il telaio
+        viene ri-annunciato dov'era, le piastre tornano a essere roba del
+        telaio e devono sparire da cio' che quel peer "indossa".
+
+        Senza questo il vestito memorizzato e' un'UNIONE che non cala mai —
+        un dizionario da cui un pezzo esce solo se arriva un UNEQUIP con quel
+        form id, e uscire dal telaio non ne produce sei che il server veda.
+        Nei log del 2026-09-18 si vedeva il risultato: pezzi PA di un'ora
+        prima rigiocati a ogni ingresso, con una gamba mancante perche' per
+        quella l'unequip era arrivato. Il ghost si vestiva di un fossile, e
+        ogni fossile retargeta lo scheletro condiviso al bind della power
+        armor, che e' cio' che stirava il corpo anche senza piastre visibili.
+        """
+        rec = self._presence.get(peer_id)
+        if rec is None:
+            return 0
+        dropped = 0
+        for fid in form_ids:
+            if rec.outfit.pop(fid, None) is not None:
+                dropped += 1
+        return dropped
+
+    def presence(self, peer_id: str) -> Optional[PeerPresence]:
+        return self._presence.get(peer_id)
+
+    def all_presence(self) -> list[PeerPresence]:
+        return list(self._presence.values())
+
+    # ----------------------------------------------- resume tokens (v26)
+
+    def issue_resume_token(self, session: PeerSession, now_ms: float,
+                           ttl_s: float = RESUME_TOKEN_TTL_S) -> bytes:
+        """Mint a token for this session, retiring any it already held.
+
+        Retiring the old one is what makes the token single use: the WELCOME
+        that answers a resume carries a fresh token, so a captured one buys
+        exactly one rejoin and only until the real client rejoins again.
+        """
+        self.retire_resume_tokens(session.peer_id)
+        token = secrets.token_bytes(RESUME_TOKEN_LEN)
+        self._resume_tokens[token] = ResumeTicket(
+            peer_id=session.peer_id,
+            identity_hex=session.identity_hex,
+            issued_at_ms=now_ms,
+            expires_at_ms=now_ms + ttl_s * 1000.0,
+        )
+        return token
+
+    def retire_resume_tokens(self, peer_id: str) -> int:
+        dead = [t for t, tk in self._resume_tokens.items() if tk.peer_id == peer_id]
+        for t in dead:
+            del self._resume_tokens[t]
+        return len(dead)
+
+    def consume_resume_token(self, token: bytes,
+                             now_ms: float) -> tuple[Optional[ResumeTicket], str]:
+        """Spend a token. Returns (ticket, reason); ticket is None on refusal.
+
+        The token is removed whether it was live or expired, so a stale one
+        cannot be retried in a loop.
+        """
+        ticket = self._resume_tokens.pop(token, None)
+        if ticket is None:
+            return (None, "resume_unknown")
+        if now_ms > ticket.expires_at_ms:
+            return (None, "resume_expired")
+        return (ticket, "ok")
+
+    def prune_resume_tokens(self, now_ms: float) -> int:
+        dead = [t for t, tk in self._resume_tokens.items()
+                if now_ms > tk.expires_at_ms]
+        for t in dead:
+            del self._resume_tokens[t]
+        return len(dead)
+
     # ---------------------------------------------------------- locks (B6.3)
 
     def all_locks(self) -> list[LockWorldState]:
@@ -697,7 +951,8 @@ class ServerState:
 
     # ---------------------------------------------------------- convenience
 
-    def welcome_for(self, session: PeerSession) -> WelcomePayload:
+    def welcome_for(self, session: PeerSession,
+                    resume_token: bytes = b"") -> WelcomePayload:
         # The ritual is required only when the server both wants it AND has
         # nothing stored for this identity. Asking a returning player to create
         # a character again would be a bug, not a ritual.
@@ -711,10 +966,18 @@ class ServerState:
             server_version_minor=self.server_version[1],
             tick_rate_hz=self.tick_rate_hz,
             chargen_required=needs_chargen,
+            reject_code=RejectCode.NONE,
+            resume_token=resume_token or b"",
         )
 
     def peer_join_for(self, session: PeerSession) -> PeerJoinPayload:
-        return PeerJoinPayload(peer_id=session.peer_id, session_id=session.session_id)
+        # v26 — the name rides the join so peers can label each other without
+        # a second round trip. It is cosmetic: the identity is the peer_id.
+        return PeerJoinPayload(
+            peer_id=session.peer_id,
+            session_id=session.session_id,
+            display_name=session.display_name or "",
+        )
 
     def peer_leave_for(self, session: PeerSession, reason: int = 0) -> PeerLeavePayload:
         return PeerLeavePayload(peer_id=session.peer_id, reason=reason)

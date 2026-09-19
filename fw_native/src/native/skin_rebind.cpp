@@ -197,7 +197,7 @@ void diagnose_geometry(void* geom, DiagAccum& acc) {
     if (gname_len <= 0) std::strncpy(gname, "<noname>", sizeof(gname) - 1);
 
     if (!skin) {
-        FW_LOG("[skin] diag: geom=%p name='%s' NO_SKIN_INSTANCE",
+        FW_DBG("[skin] diag: geom=%p name='%s' NO_SKIN_INSTANCE",
                geom, gname);
         return;
     }
@@ -229,14 +229,14 @@ void diagnose_geometry(void* geom, DiagAccum& acc) {
         return;
     }
 
-    FW_LOG("[skin] diag: geom=%p name='%s' skin=%p skin_vt_rva=0x%llX",
+    FW_DBG("[skin] diag: geom=%p name='%s' skin=%p skin_vt_rva=0x%llX",
            geom, gname, skin,
            static_cast<unsigned long long>(skin_vt_rva));
-    FW_LOG("[skin] diag:   bones_primary  head=%p count=%u",
+    FW_DBG("[skin] diag:   bones_primary  head=%p count=%u",
            static_cast<void*>(bones_pri_head), bones_pri_count);
-    FW_LOG("[skin] diag:   bones_fallback head=%p count=%u",
+    FW_DBG("[skin] diag:   bones_fallback head=%p count=%u",
            static_cast<void*>(bones_fb_head), bones_fb_count);
-    FW_LOG("[skin] diag:   skel_root=%p (vt_rva=0x%llX)",
+    FW_DBG("[skin] diag:   skel_root=%p (vt_rva=0x%llX)",
            skel_root,
            static_cast<unsigned long long>(read_vt_rva(skel_root)));
 
@@ -252,7 +252,7 @@ void diagnose_geometry(void* geom, DiagAccum& acc) {
     auto hex_dump_block = [](const char* label, const void* addr, int rows) {
         for (int line = 0; line < rows; ++line) {
             auto p = reinterpret_cast<const std::uint8_t*>(addr) + line * 16;
-            FW_LOG("[skin] diag:     %s+0x%02X: "
+            FW_DBG("[skin] diag:     %s+0x%02X: "
                    "%02X %02X %02X %02X %02X %02X %02X %02X "
                    "%02X %02X %02X %02X %02X %02X %02X %02X "
                    "  '%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c'",
@@ -279,7 +279,7 @@ void diagnose_geometry(void* geom, DiagAccum& acc) {
     };
 
     __try {
-        FW_LOG("[skin] diag:   DEBUG skin instance %p hex (192 bytes):", skin);
+        FW_DBG("[skin] diag:   DEBUG skin instance %p hex (192 bytes):", skin);
         hex_dump_block("skin", skin, 12);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         FW_ERR("[skin] diag:   DEBUG SEH during skin hex dump");
@@ -288,7 +288,7 @@ void diagnose_geometry(void* geom, DiagAccum& acc) {
     if (bones_pri_head && bones_pri_count > 0) {
         __try {
             void* bone_pri0 = bones_pri_head[0];
-            FW_LOG("[skin] diag:   DEBUG bones_pri[0]=%p (head=%p)",
+            FW_DBG("[skin] diag:   DEBUG bones_pri[0]=%p (head=%p)",
                    bone_pri0, static_cast<void*>(bones_pri_head));
             if (bone_pri0) hex_dump_block("pri0", bone_pri0, 4);
         } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -299,7 +299,7 @@ void diagnose_geometry(void* geom, DiagAccum& acc) {
     if (bones_fb_head && bones_fb_count > 0) {
         __try {
             void* bone_fb0 = bones_fb_head[0];
-            FW_LOG("[skin] diag:   DEBUG bones_fb[0]=%p (head=%p)",
+            FW_DBG("[skin] diag:   DEBUG bones_fb[0]=%p (head=%p)",
                    bone_fb0, static_cast<void*>(bones_fb_head));
             if (bone_fb0) hex_dump_block("fb0 ", bone_fb0, 4);
         } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -311,7 +311,7 @@ void diagnose_geometry(void* geom, DiagAccum& acc) {
     __try {
         void* boneData = *reinterpret_cast<void**>(
             reinterpret_cast<char*>(skin) + 0x40);
-        FW_LOG("[skin] diag:   DEBUG boneData (skin+0x40 deref) = %p", boneData);
+        FW_DBG("[skin] diag:   DEBUG boneData (skin+0x40 deref) = %p", boneData);
         if (boneData) hex_dump_block("bd  ", boneData, 4);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         FW_ERR("[skin] diag:   DEBUG SEH during boneData dump");
@@ -337,19 +337,19 @@ void diagnose_geometry(void* geom, DiagAccum& acc) {
             }
 
             if (!bone) {
-                FW_LOG("[skin] diag:     bones_fb[%u] = NULL", i);
+                FW_DBG("[skin] diag:     bones_fb[%u] = NULL", i);
                 continue;
             }
 
             // Read NiNode name at bone+0x10 (BSFixedString -> pool_entry+0x18)
             bname_len = try_read_ni_name(bone, bname, sizeof(bname));
             if (bname_len < 0) {
-                FW_LOG("[skin] diag:     bones_fb[%u] = %p (name AV)", i, bone);
+                FW_DBG("[skin] diag:     bones_fb[%u] = %p (name AV)", i, bone);
                 continue;
             }
             const auto vt_rva = read_vt_rva(bone);
             const bool stub = name_is_skin_stub(bname, bname_len);
-            FW_LOG("[skin] diag:     bones_fb[%u] = %p vt=0x%llX name='%s'%s",
+            FW_DBG("[skin] diag:     bones_fb[%u] = %p vt=0x%llX name='%s'%s",
                    i, bone,
                    static_cast<unsigned long long>(vt_rva),
                    bname, stub ? " [STUB]" : "");
@@ -357,7 +357,7 @@ void diagnose_geometry(void* geom, DiagAccum& acc) {
             acc.total_bones++;
         }
         acc.total_stubs += stub_in_geom;
-        FW_LOG("[skin] diag:   geom STUB count = %d / %u",
+        FW_DBG("[skin] diag:   geom STUB count = %d / %u",
                stub_in_geom, bones_fb_count);
     } else if (bones_fb_count >= 256) {
         FW_WRN("[skin] diag:   !! bones_fb_count=%u >= 256, capping",
@@ -442,7 +442,7 @@ int diagnose_skin_stubs(void* body_root) {
     if (try_read_ni_name(body_root, root_name, sizeof(root_name)) <= 0) {
         std::strncpy(root_name, "<?>", sizeof(root_name) - 1);
     }
-    FW_LOG("[skin] diag START body_root=%p vt_rva=0x%llX name='%s'",
+    FW_DBG("[skin] diag START body_root=%p vt_rva=0x%llX name='%s'",
            body_root,
            static_cast<unsigned long long>(root_vt_rva),
            root_name);
@@ -450,7 +450,7 @@ int diagnose_skin_stubs(void* body_root) {
     DiagAccum acc{};
     walk_for_geometries(body_root, 0, acc);
 
-    FW_LOG("[skin] diag END  geometries_seen=%d skinned=%d "
+    FW_DBG("[skin] diag END  geometries_seen=%d skinned=%d "
            "total_bones=%d total_stubs=%d",
            acc.geometries_seen, acc.geometries_skinned,
            acc.total_bones, acc.total_stubs);
@@ -589,7 +589,7 @@ void swap_for_geometry(void* geom, void* skel_root,
     if (try_read_ni_name(geom, gname, sizeof(gname)) <= 0)
         std::strncpy(gname, "<?>", sizeof(gname) - 1);
     if (!tls_skin_swap_silent) {
-        FW_LOG("[skin] swap: geom=%p name='%s' bones=%u",
+        FW_DBG("[skin] swap: geom=%p name='%s' bones=%u",
                geom, gname, bones_fb_count);
     }
 
@@ -627,7 +627,7 @@ void swap_for_geometry(void* geom, void* skel_root,
         void* match = find_node_by_name(skel_root, bname, 0, visited, 1000);
         if (!match) {
             if (!tls_skin_swap_silent) {
-                FW_LOG("[skin] swap:   [%u] '%s' NO MATCH in skel "
+                FW_DBG("[skin] swap:   [%u] '%s' NO MATCH in skel "
                        "(visited=%d)", i, bname, visited);
             }
             failed++;
@@ -640,7 +640,7 @@ void swap_for_geometry(void* geom, void* skel_root,
 
         niptr_swap(&bones_fb_head[i], match);
         if (!tls_skin_swap_silent) {
-            FW_LOG("[skin] swap:   [%u] '%s' %p -> %p OK",
+            FW_DBG("[skin] swap:   [%u] '%s' %p -> %p OK",
                    i, bname, current, match);
         }
         swapped++;
@@ -684,7 +684,7 @@ void swap_for_geometry(void* geom, void* skel_root,
             pri_updated++;
         }
         if (!tls_skin_swap_silent) {
-            FW_LOG("[skin] swap: bones_pri re-cache %d/%u entries (point at "
+            FW_DBG("[skin] swap: bones_pri re-cache %d/%u entries (point at "
                    "post-swap fb[i]+0x70)", pri_updated, bones_fb_count);
         }
     } else if (bones_pri_head) {
@@ -703,7 +703,7 @@ void swap_for_geometry(void* geom, void* skel_root,
     if (old_skel != skel_root) {
         niptr_swap(skel_slot, skel_root);
         if (!tls_skin_swap_silent) {
-            FW_LOG("[skin] swap: skin=%p skel_root rebind %p -> %p",
+            FW_DBG("[skin] swap: skin=%p skel_root rebind %p -> %p",
                    skin, old_skel, skel_root);
         }
     }
@@ -741,27 +741,8 @@ void walk_for_swap(void* node, int depth, void* skel_root,
     }
 }
 
-// Global skeleton cache (singleton across session).
-std::atomic<void*> g_skel_root_cached{nullptr};
 
 } // namespace
-
-void cache_or_release_skeleton(void* skel_root) {
-    if (!skel_root) return;
-    void* expected = nullptr;
-    if (g_skel_root_cached.compare_exchange_strong(expected, skel_root)) {
-        FW_LOG("[skin] cache_skeleton: cached %p (took ownership of "
-               "caller's refcount)", skel_root);
-    } else {
-        FW_LOG("[skin] cache_skeleton: race-loss, releasing local %p "
-               "(cached is %p)", skel_root, expected);
-        niptr_release(skel_root);
-    }
-}
-
-void* get_cached_skeleton() {
-    return g_skel_root_cached.load(std::memory_order_acquire);
-}
 
 int swap_skin_bones_to_skeleton(void* body_root, void* skel_root, bool silent) {
     ensure_base();
@@ -772,12 +753,12 @@ int swap_skin_bones_to_skeleton(void* body_root, void* skel_root, bool silent) {
     const bool prev_silent = tls_skin_swap_silent;
     tls_skin_swap_silent = silent;
     if (!silent) {
-        FW_LOG("[skin] swap START body=%p skel=%p", body_root, skel_root);
+        FW_DBG("[skin] swap START body=%p skel=%p", body_root, skel_root);
     }
     int swapped = 0, failed = 0, already = 0;
     walk_for_swap(body_root, 0, skel_root, swapped, failed, already);
     if (!silent) {
-        FW_LOG("[skin] swap END  swapped=%d failed=%d already_correct=%d",
+        FW_DBG("[skin] swap END  swapped=%d failed=%d already_correct=%d",
                swapped, failed, already);
     }
     tls_skin_swap_silent = prev_silent;
@@ -975,7 +956,7 @@ int take_skin_snapshot(void* body_root) {
         std::lock_guard lk(g_armor_snap_mtx);
         g_armor_snapshots[body_root] = std::move(snap);
     }
-    FW_LOG("[skin] take_snapshot: body=%p stored snapshot for %zu skin "
+    FW_DBG("[skin] take_snapshot: body=%p stored snapshot for %zu skin "
            "instances", body_root,
            g_armor_snapshots[body_root].skins.size());
     return 0;
@@ -1038,14 +1019,58 @@ int restore_skin_from_snapshot(void* body_root) {
                ss.skel_root);
     }
 
-    FW_LOG("[skin] restore: body=%p restored %d/%zu skin instances",
+    FW_DBG("[skin] restore: body=%p restored %d/%zu skin instances",
            body_root, restored_skins, snap.skins.size());
     return 0;
 }
 
+// ---- lo scheletro appartiene al suo corpo ------------------------------
+namespace {
+std::mutex                          g_skel_by_body_mtx;
+std::unordered_map<void*, void*>    g_skel_by_body;
+// L'ULTIMO scheletro registrato. Non e' un ritorno del singleton: e' il
+// ripiego DICHIARATO per get_bone_by_name(), che cerca un osso per nome e
+// non ha nessun corpo in mano — i suoi chiamanti (l'aggancio dell'arma, il
+// PipboyBone) arrivano al ghost per altre strade. Con un corpo solo e'
+// esatto; con due sarebbe un sorteggio, ed e' per questo che muore col
+// record, insieme ai due siti che iterano i peer.
+void*                               g_last_skel = nullptr;
+}  // namespace
+
+void set_skeleton_for(void* body_root, void* skel_root) {
+    if (!body_root || !skel_root) return;
+    std::lock_guard<std::mutex> lk(g_skel_by_body_mtx);
+    g_skel_by_body[body_root] = skel_root;
+    g_last_skel = skel_root;
+    FW_LOG("[skin] skeleton_for: body %p -> skel %p (%zu tracked)",
+           body_root, skel_root, g_skel_by_body.size());
+}
+
+void* skeleton_for(void* body_root) noexcept {
+    if (!body_root) return nullptr;
+    std::lock_guard<std::mutex> lk(g_skel_by_body_mtx);
+    auto it = g_skel_by_body.find(body_root);
+    return it == g_skel_by_body.end() ? nullptr : it->second;
+}
+
+void forget_skeleton_for(void* body_root) noexcept {
+    if (!body_root) return;
+    std::lock_guard<std::mutex> lk(g_skel_by_body_mtx);
+    const bool had = g_skel_by_body.erase(body_root) > 0;
+    if (g_skel_by_body.empty()) g_last_skel = nullptr;
+    if (had) {
+        FW_LOG("[skin] skeleton_for: forgot body %p (%zu left)",
+               body_root, g_skel_by_body.size());
+    }
+}
+
 void* get_bone_by_name(const char* name) {
     if (!name) return nullptr;
-    void* skel = g_skel_root_cached.load(std::memory_order_acquire);
+    void* skel = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(g_skel_by_body_mtx);
+        skel = g_last_skel;
+    }
     if (!skel) return nullptr;
     int visited = 0;
     return find_node_by_name(skel, name, 0, visited, 1000);
@@ -1288,7 +1313,7 @@ bool install_world_update_hook(std::uintptr_t module_base) {
         g_hook_installed.store(false);
         return false;
     }
-    FW_LOG("[skin] world-update hook installed @ %p (RVA 0x%llX)",
+    FW_DBG("[skin] world-update hook installed @ %p (RVA 0x%llX)",
            target, static_cast<unsigned long long>(kUpdateWorldDataRva));
     return true;
 }
@@ -1354,7 +1379,7 @@ void walk_skel_dump(void* node, int depth, int& visited, int max_visit) {
     int n = try_read_ni_name(node, nname, sizeof(nname));
     if (n < 0) std::strncpy(nname, "<AV>", sizeof(nname) - 1);
 
-    FW_LOG("[skel] %*s%p vt=0x%llX name='%s'",
+    FW_DBG("[skel] %*s%p vt=0x%llX name='%s'",
            depth * 2, "", node,
            static_cast<unsigned long long>(vt_rva), nname);
 
@@ -1407,7 +1432,7 @@ int dump_skeleton_bones(void* skel_root) {
     }
     auto root_vt_rva = read_vt_rva(skel_root);
 
-    FW_LOG("[skel] dump START root=%p vt=0x%llX name='%s'",
+    FW_DBG("[skel] dump START root=%p vt=0x%llX name='%s'",
            skel_root,
            static_cast<unsigned long long>(root_vt_rva),
            root_name);
@@ -1415,7 +1440,7 @@ int dump_skeleton_bones(void* skel_root) {
     int visited = 0;
     walk_skel_dump(skel_root, 0, visited, 1000);
 
-    FW_LOG("[skel] dump END  visited=%d nodes", visited);
+    FW_DBG("[skel] dump END  visited=%d nodes", visited);
     return visited;
 }
 
@@ -1517,7 +1542,7 @@ bool install_bone_iter_shield(std::uintptr_t module_base) {
         g_iter_shield_installed.store(false);
         return false;
     }
-    FW_LOG("[skin] bone-iter shield installed @ %p (RVA 0x%llX) — "
+    FW_DBG("[skin] bone-iter shield installed @ %p (RVA 0x%llX) — "
            "intercepts NULL+0x10 calls to sub_1416C7510 (engine AV "
            "prevention, last line of defense)",
            target, static_cast<unsigned long long>(kBoneIterRva));

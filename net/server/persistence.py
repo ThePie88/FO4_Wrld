@@ -28,16 +28,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from server.state import (  # noqa: E402
     WorldSpawnState,
     ServerState, SessionState, ActorWorldState, ContainerWorldState,
-    LockWorldState,
+    LockWorldState, OutfitEntry, ResumeTicket,
 )
+from protocol import PosStatePayload, EquipModRecord  # noqa: E402
 
 
 log = logging.getLogger("persistence")
 
-SNAPSHOT_FORMAT_VERSION: int = 4
+SNAPSHOT_FORMAT_VERSION: int = 5
 # v4 (B6.3 v0.5.3, 2026-05-08): adds `locks` section keyed by
 #     (base_id, cell_id), with form_id hint + locked bool + timestamp.
 #     v3 snapshots load fine (no locks key → empty lock_state).
+# v5 (session lifecycle phase 0, 2026-09-18): adds `presence` (per peer: the
+#     name, the last accepted position, the worn outfit, the power-armour
+#     frame being worn) and `resume_tokens`. Both must survive a restart:
+#     presence is what a late joiner is shown, and a token that died with the
+#     server would lock every client out of rejoining an authenticated one.
+#     v2/v3/v4 snapshots load fine — the missing sections simply come up
+#     empty, which is the same shape as a first run.
 
 
 def snapshot(state: ServerState, path: Path, *, pretty: bool = True) -> None:
@@ -110,6 +118,11 @@ def snapshot(state: ServerState, path: Path, *, pretty: bool = True) -> None:
         "world_spawns": [
             {
                 "wid": w.wid,
+                # v26 — who is wearing it. Without this a restart puts an
+                # empty suit of power armour in the world next to the player
+                # standing inside it.
+                "worn_by_peer_id": w.worn_by_peer_id,
+                "worn_since_ms": w.worn_since_ms,
                 "spawner_peer": w.spawner_peer,
                 "base_form_id": w.base_form_id,
                 "spawner_local_fid": w.spawner_local_fid,
@@ -136,6 +149,49 @@ def snapshot(state: ServerState, path: Path, *, pretty: bool = True) -> None:
         # Stored as the recipe line verbatim, which is also what the wire
         # carries — a snapshot is therefore directly comparable with a capture.
         "appearances": dict(state.all_appearances()),
+        # v26 — presence. Same argument as the appearances above: the whole
+        # point is that somebody joining hours later sees the others where
+        # they are and dressed as they are, and a restart must not undo that.
+        "presence": [
+            {
+                "peer_id": p.peer_id,
+                "display_name": p.display_name,
+                "last_pos": _pos_to_dict(p.last_pos) if p.last_pos else None,
+                "last_pos_cell_id": (
+                    getattr(p.last_pos, "cell_id", 0) if p.last_pos else 0),
+                "worn_frame_wid": p.worn_frame_wid,
+                "outfit": [
+                    {
+                        "item_form_id": e.item_form_id,
+                        "slot_form_id": e.slot_form_id,
+                        "count": e.count,
+                        "effective_priority": e.effective_priority,
+                        "timestamp_ms": e.timestamp_ms,
+                        "mods": [
+                            [m.form_id, m.attach_index, m.rank, m.flag]
+                            for m in e.mods
+                        ],
+                    }
+                    for e in p.outfit.values()
+                ],
+            }
+            for p in state.all_presence()
+        ],
+        # v26 — resume tokens, hex-encoded. These are BEARER CREDENTIALS in
+        # clear text: whoever reads this file can rejoin as any identity in
+        # it until the token expires. Acceptable while the server runs on the
+        # developer's own machine next to the repo, and the first thing to
+        # revisit when it moves anywhere else.
+        "resume_tokens": [
+            {
+                "token": tok.hex(),
+                "peer_id": t.peer_id,
+                "identity_hex": t.identity_hex,
+                "issued_at_ms": t.issued_at_ms,
+                "expires_at_ms": t.expires_at_ms,
+            }
+            for tok, t in state._resume_tokens.items()
+        ],
     }
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -188,7 +244,19 @@ def load_into(state: ServerState, path: Path) -> int:
     if "tick_rate_hz" in server_cfg:
         state.tick_rate_hz = int(server_cfg["tick_rate_hz"])
     if "peer_timeout_ms" in server_cfg:
-        state.peer_timeout_ms = float(server_cfg["peer_timeout_ms"])
+        # Say it out loud when the snapshot disagrees with the code. This
+        # field silently pinned 5 s over a 15 s default for a whole phase:
+        # the value was raised in ServerState, deployed, and never applied,
+        # because every boot restored the old one from the world file. A
+        # tuning knob that cannot be turned is worse than a wrong value.
+        snapshot_timeout = float(server_cfg["peer_timeout_ms"])
+        if snapshot_timeout != state.peer_timeout_ms:
+            log.info(
+                "snapshot %s: peer_timeout_ms %.0f ms from the snapshot "
+                "overrides the %.0f ms built into this build",
+                path, snapshot_timeout, state.peer_timeout_ms,
+            )
+        state.peer_timeout_ms = snapshot_timeout
 
     if version == 1:
         # Legacy v1 snapshots keyed entries by form_id alone. Those form_ids
@@ -207,10 +275,10 @@ def load_into(state: ServerState, path: Path) -> int:
     # v2 snapshots have no containers section; v3 adds containers; v4 adds
     # locks. All three are readable — older missing sections become empty.
     # Unknown versions (> 4 or other) are rejected.
-    if version not in (2, 3, SNAPSHOT_FORMAT_VERSION):
+    if version not in (2, 3, 4, SNAPSHOT_FORMAT_VERSION):
         raise ValueError(
             f"snapshot format version {version!r} unsupported "
-            f"(expected {SNAPSHOT_FORMAT_VERSION}, 3, 2, or 1)"
+            f"(expected {SNAPSHOT_FORMAT_VERSION}, 4, 3, 2, or 1)"
         )
 
     # Restore world actors (the authoritative game state)
@@ -327,6 +395,66 @@ def load_into(state: ServerState, path: Path) -> int:
         log.warning("snapshot %s: skipped %d malformed appearance entries",
                     path, appearance_skipped)
 
+    # v26 — presence and resume tokens. Both sections are absent from v2..v4
+    # snapshots, which simply means "nothing known yet".
+    presence_restored = 0
+    for p in (data.get("presence") or []):
+        try:
+            peer_id = str(p["peer_id"])
+            if not peer_id:
+                continue
+            rec = state._presence_for(peer_id)
+            rec.display_name = str(p.get("display_name", "") or "")
+            rec.worn_frame_wid = int(p.get("worn_frame_wid", 0) or 0)
+            pos = p.get("last_pos")
+            if pos:
+                rec.last_pos = PosStatePayload(
+                    x=float(pos["x"]), y=float(pos["y"]), z=float(pos["z"]),
+                    rx=float(pos["rx"]), ry=float(pos["ry"]),
+                    rz=float(pos["rz"]),
+                    timestamp_ms=int(pos.get("timestamp_ms", 0)),
+                    cell_id=int(p.get("last_pos_cell_id", 0) or 0),
+                )
+            for item in (p.get("outfit") or []):
+                mods = tuple(
+                    EquipModRecord(
+                        form_id=int(m[0]), attach_index=int(m[1]),
+                        rank=int(m[2]), flag=int(m[3]),
+                    )
+                    for m in (item.get("mods") or [])
+                )
+                entry = OutfitEntry(
+                    item_form_id=int(item["item_form_id"]),
+                    slot_form_id=int(item.get("slot_form_id", 0)),
+                    count=int(item.get("count", 1)),
+                    effective_priority=int(item.get("effective_priority", 0)),
+                    mods=mods,
+                    timestamp_ms=int(item.get("timestamp_ms", 0)),
+                )
+                rec.outfit[entry.item_form_id] = entry
+            presence_restored += 1
+        except (KeyError, TypeError, ValueError) as e:
+            log.warning("snapshot %s: skipping malformed presence entry: %s",
+                        path, e)
+
+    tokens_restored = 0
+    for t in (data.get("resume_tokens") or []):
+        try:
+            raw = bytes.fromhex(str(t["token"]))
+            state._resume_tokens[raw] = ResumeTicket(
+                peer_id=str(t["peer_id"]),
+                identity_hex=str(t.get("identity_hex", "") or ""),
+                issued_at_ms=float(t.get("issued_at_ms", 0.0)),
+                expires_at_ms=float(t.get("expires_at_ms", 0.0)),
+            )
+            tokens_restored += 1
+        except (KeyError, TypeError, ValueError) as e:
+            log.warning("snapshot %s: skipping malformed resume token: %s",
+                        path, e)
+    if presence_restored or tokens_restored:
+        log.info("snapshot %s: restored presence for %d peer(s), %d resume "
+                 "token(s)", path, presence_restored, tokens_restored)
+
     # B6.14 — restore spawned world objects and keep the wid counter ahead of
     # everything ever issued, so a restart can never mint a duplicate wid.
     for w in data.get("world_spawns", []):
@@ -347,6 +475,8 @@ def load_into(state: ServerState, path: Path) -> int:
                      tuple(int(m) for m in (e[2] if len(e) > 2 else ())),
                      float(e[3]) if len(e) > 3 else -1.0)
                     for e in w.get("pieces", []) if len(e) >= 2),
+                worn_by_peer_id=str(w.get("worn_by_peer_id", "") or ""),
+                worn_since_ms=float(w.get("worn_since_ms", 0.0) or 0.0),
             )
         except (KeyError, TypeError, ValueError):
             continue

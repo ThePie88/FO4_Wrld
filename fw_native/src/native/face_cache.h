@@ -86,6 +86,25 @@ void* peek_master(const std::string& key) noexcept;
 // a style choice here, it is the only shape that compiles at the call site.
 void* any_master(char* peer_out, std::size_t peer_out_size) noexcept;
 
+// La maschera di QUESTO peer, costruita dalla ricetta che ha ADESSO.
+//
+// E' la risposta che any_master non poteva dare, e il suo commento lo diceva:
+// "when multi-peer ghosts land, this becomes a per-peer lookup". Ci siamo.
+//
+// Fa da sola il giro giusto: prende la ricetta corrente del peer, ne calcola
+// l'hash e chiede get_master con quello. Quindi un aspetto cambiato invalida
+// la maschera vecchia invece di resuscitarla, che e' esattamente cio' che
+// peek_master non garantisce (per quello il suo commento dice "diagnostics
+// and teardown", non "rendering").
+//
+// `const char*` e non std::string di proposito: il chiamante vive dentro la
+// gabbia SEH dell'iniettore, dove un temporaneo con distruttore e' un errore
+// di compilazione (C2712). Stessa ragione del buffer di any_master.
+//
+// Torna null se quel peer non ha ricetta, o non ha una maschera costruita da
+// quella ricetta.
+void* master_for_peer(const char* peer_id) noexcept;
+
 // Drop one peer's master (they left), or all of them (session ended).
 // Note: the nodes are NOT released here. Releasing a parked NiNode needs the
 // engine's refcount path, which lives with the rest of the scene-graph code;

@@ -101,6 +101,29 @@ public:
     bool start(const config::Settings& cfg);
     void stop();
 
+    // L'ADDIO, e si manda SUBITO sul thread di chi chiama.
+    //
+    // Non e' un enqueue come tutto il resto, e il motivo e' che quando
+    // serve il processo sta morendo: la finestra ha ricevuto WM_CLOSE, il
+    // giocatore ha premuto ALT+F4, e il thread di rete potrebbe non girare
+    // mai piu'. Una coda qui non verrebbe drenata da nessuno.
+    //
+    // Senza, l'uscita di un peer la scopre soltanto il timeout del server —
+    // cinque secondi in cui il suo ghost resta in piedi a mentire, e la sua
+    // power armor resta "indossata" quindi non torna nel mondo. Il server
+    // gestisce gia' DISCONNECT e ci fa il teardown completo: rilascia gli
+    // NPC, ri-annuncia il telaio all'ultima posizione e manda PEER_LEAVE
+    // agli altri. Mancava solo che qualcuno glielo dicesse.
+    //
+    // Spedito NON affidabile e ripetuto qualche volta, perche' un frame
+    // affidabile vorrebbe ritrasmissioni da un thread che sta per sparire.
+    // Se si perde non e' un dramma: si ricade sul timeout, cioe' su come
+    // funzionava prima. Idempotente: chiamarlo due volte manda due addii e
+    // il secondo trova la sessione gia' chiusa.
+    //
+    // Qualunque thread, ma in pratica il thread della finestra.
+    void send_goodbye_now(std::uint8_t reason = 0);
+
     bool is_connected() const noexcept { return connected_.load(); }
     bool is_dead()      const noexcept { return dead_.load(); }
     std::uint32_t session_id() const noexcept { return session_id_.load(); }
@@ -391,6 +414,16 @@ public:
     // thread (render thread uses this every frame).
     RemotePlayerSnapshot get_remote_snapshot() const;
 
+    // La stessa cosa, ma di UN peer preciso. Questo e' l'accessore giusto:
+    // quello senza argomenti torna "l'ultimo che ha parlato", che con due
+    // giocatori remoti non e' una risposta ma un sorteggio.
+    //
+    // has_state=false se da quel peer non e' ancora arrivato niente.
+    RemotePlayerSnapshot get_remote_snapshot(const std::string& peer_id) const;
+
+    // Quanti peer remoti abbiamo sentito almeno una volta. Diagnostica.
+    std::size_t remote_peer_count() const;
+
 private:
     struct QueuedSend {
         MessageType msg_type;
@@ -399,7 +432,66 @@ private:
     };
 
     void run_loop();
-    bool do_handshake();
+
+    // 2026-09-18 — esito di un tentativo di handshake.
+    //
+    //   Ok    = sessione aperta
+    //   Retry = riprovare piu' tardi (server giu', pieno, o la nostra
+    //           sessione vecchia deve ancora scadere)
+    //   Fatal = non migliorera' mai da solo: versione incompatibile,
+    //           identita' rifiutata. Si smette e si scrive il motivo.
+    enum class HandshakeOutcome { Ok, Retry, Fatal };
+
+    // `use_resume` sceglie la forma: HELLO_RESUME col token che il server ci
+    // ha dato l'ultima volta, oppure HELLO normale.
+    HandshakeOutcome do_handshake(bool use_resume);
+
+    // Attesa del WELCOME (o del rifiuto), condivisa dai due ingressi.
+    HandshakeOutcome await_welcome(bool was_resume);
+
+    // Traduce il motivo del rifiuto in "riprova" o "smetti".
+    HandshakeOutcome on_rejected(std::uint8_t code, bool was_resume,
+                                 std::uint8_t server_major,
+                                 std::uint8_t server_minor);
+
+    // Butta tutto lo stato che appartiene a UNA sessione, prima di aprirne
+    // un'altra. Solo dal thread del worker.
+    void reset_session_state();
+
+    // Attesa fra due tentativi, a fette, controllando `stopping_`. Torna
+    // false se nel frattempo ci hanno chiesto di fermarci.
+    bool backoff_wait(unsigned attempt);
+
+    // Sveglia chi e' bloccato su un'operazione contenitore con un rifiuto
+    // sintetico, invece di lasciarlo scadere. Usata sia alla caduta della
+    // sessione sia all'uscita del thread.
+    void wake_pending_ops();
+
+    // Si accodano messaggi finche' non ci hanno chiesto di fermarci, anche
+    // mentre la sessione e' caduta: quello che e' affidabile deve aspettare
+    // il rientro, non sparire.
+    //
+    // La seconda meta' di questo commento diceva che chi vuole una risposta
+    // SUBITO guarda `connected_` per conto suo. Non e' vero di nessuno: vedi
+    // submit_container_op_blocking, che guarda questo predicato e quindi a
+    // sessione caduta si appende invece di rifiutare. Difetto noto, aperto.
+    bool accepting_enqueue() const noexcept { return !stopping_.load(); }
+
+    // Inserimento in coda CON il tetto. Torna false se il messaggio e' stato
+    // buttato.
+    //
+    // NON e' l'unico punto di inserimento, malgrado quanto diceva qui prima:
+    // quattro produttori fanno queue_.push_back diretto e scavalcano il tetto
+    // — i chunk di MESH_BLOB, quelli di NIF_BLOB, quelli di CONTAINER_SEED e
+    // submit_container_op_blocking. Sono proprio i piu' voluminosi, quindi
+    // kSendQueueMax non limita cio' che piu' avrebbe bisogno di un limite.
+    bool push_queued(QueuedSend&& q);
+
+    // Tetto della coda in uscita. Il messaggio piu' grosso e' una posa
+    // completa, circa 1,3 KB, quindi il soffitto sta sotto il megabyte.
+    // Prima della Fase 1 non c'era alcun limite: l'unica cosa che teneva
+    // corta la coda era il fatto che da disconnessi si buttava tutto.
+    static constexpr std::size_t kSendQueueMax = 512;
 
     // Dispatch a delivered frame to the appropriate in-process handler.
     // In B0.4 these are stubs that just count; B0.5 fills them in.
@@ -415,6 +507,24 @@ private:
     std::atomic<bool> connected_{false};
     std::atomic<bool> dead_{false};
     std::atomic<std::uint32_t> session_id_{0};
+    // v26 — la credenziale che ci fa rientrare senza ripassare dal launcher,
+    // la cui prova di login e' monouso. Vive solo in memoria e solo sul
+    // thread del worker: non finisce ne' su disco ne' nei log.
+    std::vector<std::uint8_t> resume_token_;
+    // Il rituale di creazione del personaggio si fa una volta per processo:
+    // rifarlo a ogni WELCOME farebbe comparire l'editor in mezzo alla
+    // partita quando il client rientra.
+    bool chargen_ritual_seen_ = false;
+    // Istante dell'ultimo frame arrivato dal server, di qualunque tipo: un
+    // frame qualsiasi dimostra che il server e' vivo. E' l'unico modo per
+    // accorgersi di un server morto, perche' un client che manda solo
+    // posizioni (non affidabili) non ha niente in volo da ritrasmettere e
+    // il canale non si dichiara mai morto.
+    std::atomic<std::uint64_t> last_server_frame_ms_{0};
+    // Istante dell'ultima POSIZIONE effettivamente spedita, per il freno nel
+    // drenaggio: il validatore del server rifiuta due posizioni arrivate a
+    // meno di 20 ms l'una dall'altra. Solo thread del worker.
+    std::chrono::steady_clock::time_point last_pos_sent_at_{};
 
     // --- I/O state (owned by run_loop thread) ---
     UdpSocket socket_;
@@ -506,13 +616,24 @@ private:
     std::mutex pending_ops_mutex_;
     std::unordered_map<std::uint32_t, std::shared_ptr<PendingOp>> pending_ops_;
 
-    // --- ε.pivot: latest remote player snapshot ---
-    // Written by dispatch() (net worker thread) on every POS_BROADCAST;
-    // read by the body renderer on every Present. MVP holds ONE remote
-    // player — the most recently heard from. When multi-peer lands this
-    // becomes a peer_id → snapshot map.
+    // --- l'istantanea dei peer remoti ---
+    //
+    // Scritta da dispatch() sul thread di rete a ogni POS_BROADCAST, letta
+    // dal renderer a ogni Present e dal tick della scena.
+    //
+    // 2026-09-18 — la mappa promessa e' arrivata. Il commento qui diceva
+    // "MVP holds ONE remote player, the most recently heard from. When
+    // multi-peer lands this becomes a peer_id -> snapshot map": e' questa.
+    //
+    // `remote_snapshot_` RESTA, e non e' un residuo: e' l'ultimo che ha
+    // parlato, ed e' cio' che leggono i consumatori che ancora non sanno di
+    // CHI stanno disegnando il corpo. Con un solo peer remoto — il caso di
+    // oggi — e' identico alla voce della mappa, quindi questo passo non
+    // cambia il comportamento di nessuno. Sparira' quando i consumatori
+    // avranno un peer_id in mano, cioe' quando il corpo entra nel record.
     mutable std::mutex remote_mutex_;
     RemotePlayerSnapshot remote_snapshot_;
+    std::unordered_map<std::string, RemotePlayerSnapshot> remote_by_peer_;
 
     // --- stats ---
     Stats stats_;

@@ -43,6 +43,14 @@ void set_local_peer_id(const std::string& peer_id);
 // Reset on disconnect / shutdown. Drops every tracked NPC.
 void shutdown();
 
+// Drop every piece of state that belongs to ONE server session, keeping the
+// local identity. Called when the network client opens a new session after a
+// drop: without it the per-session observation dedup would keep us from ever
+// re-announcing the NPCs we had already seen, and since the server has
+// forgotten our ownership records those NPCs would stay frozen for the rest
+// of the game. See the long comment on the definition.
+void reset_for_new_session();
+
 // Net-thread entry points. All operate under the writer lock.
 
 // Apply an NPC_OWNERSHIP_HANDOFF_PHASE_2 (server-authoritative). Inserts

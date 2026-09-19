@@ -18,6 +18,8 @@
 #include "../hook_manager.h"
 #include "../log.h"
 #include "../native/world_spawn.h"
+#include "../native/ghost_lifecycle.h"
+#include "../net/client.h"   // l'addio alla chiusura della finestra
 #include "../main_thread_dispatch.h"
 #include "../native/scene_inject.h"
 #include "../native/chargen_dump.h"    // character-creation catalogue capture
@@ -96,7 +98,78 @@ HWND find_fo4_hwnd() {
     return ctx.found;
 }
 
+// Il battito del WndProc.
+//
+// Il blocco di tick qui sotto e' l'unico posto in cui questo progetto
+// tocca il grafo di scena, e gira a ogni MESSAGGIO della finestra. Il
+// 2026-09-18 si e' scoperto cosa vuol dire davvero: il client A, entrato
+// per primo e fermo sul posto, ha ricevuto l'ingresso di B dalla rete alle
+// 15:03:14.462 e il thread principale l'ha guardato alle 15:03:29.166.
+// Quattordici secondi e sette in coda, perche' un giocatore immobile non
+// genera messaggi e il rendering non ne genera affatto. Il ghost di B e'
+// arrivato tre secondi DOPO quello di A sull'altro client, che nel
+// frattempo aveva fatto un caricamento intero.
+//
+// WM_TIMER e' la risposta giusta proprio per come Windows lo tratta: e'
+// sintetizzato solo quando la coda e' vuota, quindi non puo' aggiungere
+// carico quando c'e' gia' traffico. Alza il PAVIMENTO — da zero a trenta
+// al secondo — e lascia il soffitto dov'era. I moduli del blocco sono
+// tutti scritti come sondaggi (autolimitati, idempotenti, uno dice
+// testualmente di riprovare "while the save is still loading") e gia'
+// vedevano 26-40 messaggi al secondo quando qualcosa si muoveva: questo
+// fa somigliare l'inattivita' al movimento, non il contrario.
+constexpr UINT_PTR kHeartbeatTimerId = 0xFA11;
+constexpr UINT     kHeartbeatMs      = 33;
+
+// IL BATTITO C'E', MA STA ZITTO MENTRE IL MOTORE CARICA.
+//
+// La bisezione del 2026-09-18 ha dato una risposta netta: col battito
+// acceso il client B moriva 19 secondi dopo il rientro, spento e' rimasto
+// vivo oltre due minuti. Trenta tick al secondo in piu' sul thread
+// principale, DENTRO la finestra del caricamento, sono quello che
+// ammazzava — e quella finestra il progetto originale la teneva vuota con
+// una grazia di 15-30 secondi, per la ragione scritta dall'utente:
+// caricare roba durante il caricamento iniziale faceva crashare.
+//
+// Quindi il battito torna dov'e' utile e sparisce dov'e' letale: si spegne
+// quando invochiamo LoadGame e si riaccende quando il cancello dichiara la
+// scena assestata — 120 tick consecutivi E almeno due secondi veri, senza
+// caricamenti in volo e senza cambi di cella. E' la grazia dell'utente,
+// misurata invece che a tempo.
+//
+// Fuori dal caricamento serve eccome: senza, il blocco di tick gira solo
+// sui messaggi veri e un giocatore fermo puo' restare 14,7 secondi senza
+// un tick — misurati — con l'ingresso di un peer fermo in coda per tutto
+// quel tempo.
+
 LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    // Armato da qui e non da install_wndproc_subclass perche' qui siamo
+    // certi di essere sul thread che possiede la finestra, che e' l'unico
+    // posto da cui un timer di finestra si arma senza domande.
+    // Lo stato del battito vive qui perche' SetTimer e KillTimer vogliono il
+    // thread che possiede la finestra, e questo e' quello.
+    static bool s_heartbeat_on = false;
+    {
+        const bool want = fw::native::ghost_scene_settled();
+        if (want && !s_heartbeat_on) {
+            if (SetTimer(hwnd, kHeartbeatTimerId, kHeartbeatMs, nullptr)) {
+                s_heartbeat_on = true;
+                FW_LOG("[main_menu] tick heartbeat ON: the scene is settled, "
+                       "WM_TIMER every %u ms so a standing-still player still "
+                       "gets a tick", kHeartbeatMs);
+            } else {
+                FW_WRN("[main_menu] SetTimer failed (err=%lu) — the tick keeps "
+                       "running only on real window messages", GetLastError());
+            }
+        } else if (!want && s_heartbeat_on) {
+            KillTimer(hwnd, kHeartbeatTimerId);
+            s_heartbeat_on = false;
+            FW_LOG("[main_menu] tick heartbeat OFF: the scene is not settled "
+                   "(a load, a cell change or a 3D rebuild) — staying out of "
+                   "the engine's way until it is");
+        }
+    }
+
     // THE TOGGLE KEY COMES FIRST. Before the editor is offered the message,
     // because the editor swallows WM_KEYDOWN while it is open — so handling the
     // toggle after it meant the key that CLOSES the panel could never arrive.
@@ -170,6 +243,12 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                "logged after this line is process-teardown fallout, NOT a "
                "gameplay crash");
         fw::diag::note_user_shutdown();
+        // E lo diciamo al server MENTRE possiamo ancora parlare. Da qui in
+        // poi il processo scende, e il thread di rete potrebbe non girare
+        // piu': l'addio si spedisce subito, su questo thread. Senza, gli
+        // altri ci vedono in piedi per altri cinque secondi e la nostra
+        // power armor non torna nel mondo fino al timeout.
+        fw::net::client().send_goodbye_now(/*reason=*/0);
     }
     // Build 68.4 — bone-cache lifetime sweep. Hosted here because this is the
     // one unconditional main-thread tick we have that keeps running regardless
@@ -190,7 +269,42 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     //
     // The repeat-count guard matters — holding the key down otherwise flips the
     // flag every auto-repeat.
-    {
+    // IL BLOCCO DI TICK NON GIRA DENTRO SE STESSO.
+    //
+    // Trovato il 2026-09-18 con la mappa dei simboli appena aggiunta. Il
+    // client B si e' piantato per sempre subito dopo la schermata di
+    // caricamento, col thread principale fermo in un'attesa dentro ntdll, e
+    // nello stack c'era `fw_wndproc` DUE VOLTE. Questa e' l'unica lettura
+    // possibile: qualcosa qui dentro chiama il motore, il motore pompa la
+    // coda dei messaggi, e il nostro WndProc rientra mentre il giro
+    // precedente e' ancora a meta'. Se quel giro tiene un lucchetto — e qui
+    // dentro se ne prendono parecchi, dalla mappa delle armature alla lista
+    // canonica — il giro annidato lo richiede, e uno std::mutex non e'
+    // rientrante. Fine.
+    //
+    // Chi pompa, qui dentro: face_borrow chiama Actor::Reset3D,
+    // chargen_stage teletrasporta, world_spawn piazza oggetti. Tutte cose
+    // che durante un caricamento ci mettono parecchio.
+    //
+    // E il motivo per cui e' esploso ADESSO e' altrettanto documentato:
+    // questo blocco girava solo sui messaggi veri, e con un ghost assente
+    // il battito delle ossa non ne mandava. Da oggi arrivano un WM_TIMER
+    // ogni 33 ms e un tick delle ossa ogni 50, quindi il blocco gira ANCHE
+    // durante il caricamento, che e' esattamente la finestra che la vecchia
+    // grazia da trenta secondi teneva sgombra "per sicurezza, perche'
+    // caricare durante il caricamento iniziale faceva crashare".
+    //
+    // La guardia e' una variabile del thread principale e basta: un giro
+    // annidato salta il blocco e basta. Non si perde niente, perche' qui
+    // dentro e' tutto un sondaggio: quello che non fa questo giro lo fa il
+    // prossimo, trentatre millisecondi dopo.
+    struct TickReentryGuard {
+        static bool& flag() { static bool in_tick = false; return in_tick; }
+        bool taken;
+        TickReentryGuard() : taken(!flag()) { if (taken) flag() = true; }
+        ~TickReentryGuard() { if (taken) flag() = false; }
+    } tick_guard;
+    if (tick_guard.taken) {
         static const std::uintptr_t s_base = reinterpret_cast<std::uintptr_t>(
             GetModuleHandleW(L"Fallout4.exe"));
         fw::native::chargen_dump::maybe_dump_catalogue(s_base);
@@ -233,7 +347,17 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // work, so it lives on this tick like everything else that touches
         // the scene.
         fw::native::world_spawn::tick(s_base);
+        // Fase 2 - il ghost dei peer nasce e muore col ciclo di vita
+        // della sessione invece che con un timer. Vive qui per lo
+        // stesso motivo di tutto il resto: ogni mutazione del grafo
+        // di scena e' solo main-thread, e questo e' l'unico tick
+        // incondizionato che abbiamo.
+        fw::native::ghost_lifecycle::tick(s_base);
     }
+    // Il nostro battito si ferma qui: il blocco di tick qui sopra l'ha gia'
+    // consumato, e il gioco non sa niente di questo timer.
+    if (msg == WM_TIMER && wp == kHeartbeatTimerId) return 0;
+
     if (msg == FW_MSG_LOAD_GAME) {
         // We're on the main (UI) thread — MinHook-level guarantees don't
         // apply here (no MinHook involved), but Win32 semantics do:
@@ -245,7 +369,14 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         FW_LOG("[main_menu] WM_APP+0x42 received on WndProc main thread — "
                "invoking engine LoadGame('%s')", g_save_name.c_str());
+        // Il ghost non va costruito mentre siamo qui dentro. Questa
+        // chiamata BLOCCA per secondi (sei, misurati) e nel frattempo il
+        // motore pompa la coda dei messaggi, quindi il blocco di tick qui
+        // sopra continua a girare — PEER_JOIN compreso, che viene drenato
+        // proprio da li'. Vedi il cancello sopra ghost_scene_is_stable.
+        fw::native::ghost_note_load_begin();
         const bool ok = fw::engine::load_game_by_name(g_save_name.c_str());
+        fw::native::ghost_note_load_end();
         if (!ok) {
             FW_WRN("[main_menu] LoadGame returned failure — main menu stays up");
             return 0;

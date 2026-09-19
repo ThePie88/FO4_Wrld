@@ -173,7 +173,7 @@ void walk_one(void* node, int depth, int max_depth, std::uintptr_t base) {
         const int pad = depth * 2;
         const char* ind = indent + (24 - (pad > 24 ? 24 : pad));
 
-        FW_LOG("[walk]%s%p vt_rva=0x%llX [%s] name='%s' pos=(%.0f,%.0f,%.0f) "
+        FW_DBG("[walk]%s%p vt_rva=0x%llX [%s] name='%s' pos=(%.0f,%.0f,%.0f) "
                "chld=%u/%u ptr=%p",
                ind, node,
                static_cast<unsigned long long>(vt_rva), cls, name,
@@ -204,7 +204,7 @@ void walk_one(void* node, int depth, int max_depth, std::uintptr_t base) {
                 void* expected = nullptr;
                 if (g_first_bstri_shape.compare_exchange_strong(
                         expected, node, std::memory_order_acq_rel)) {
-                    FW_LOG("[walk]%s  ^^ captured as first_bstri_shape "
+                    FW_DBG("[walk]%s  ^^ captured as first_bstri_shape "
                            "(vdesc=0x%llX, unskinned)",
                            ind, static_cast<unsigned long long>(vdesc));
                 }
@@ -222,7 +222,7 @@ void walk_one(void* node, int depth, int max_depth, std::uintptr_t base) {
             void* expected = nullptr;
             if (g_shadow_scene_node.compare_exchange_strong(
                     expected, node, std::memory_order_acq_rel)) {
-                FW_LOG("[walk]%s  ^^ captured as ShadowSceneNode for M2 attach", ind);
+                FW_DBG("[walk]%s  ^^ captured as ShadowSceneNode for M2 attach", ind);
             }
         }
 
@@ -289,16 +289,16 @@ void walk_and_dump_scene(void* root, int max_depth) {
     g_first_bstri_shape.store(nullptr, std::memory_order_release);
     g_shadow_scene_node.store(nullptr, std::memory_order_release);
 
-    FW_LOG("[walk] ===== BEGIN scene dump (root=%p, max_depth=%d) =====",
+    FW_DBG("[walk] ===== BEGIN scene dump (root=%p, max_depth=%d) =====",
            root, max_depth);
     walk_one(root, 0, max_depth, base);
-    FW_LOG("[walk] ===== END scene dump =====");
+    FW_DBG("[walk] ===== END scene dump =====");
 
     void* first = g_first_bstri_shape.load(std::memory_order_acquire);
     void* ssn   = g_shadow_scene_node.load(std::memory_order_acquire);
-    FW_LOG("[walk] first_bstri_shape captured: %p%s",
+    FW_DBG("[walk] first_bstri_shape captured: %p%s",
            first, first ? "" : "  (NONE FOUND — M2.3 clone will skip)");
-    FW_LOG("[walk] shadow_scene_node captured: %p%s",
+    FW_DBG("[walk] shadow_scene_node captured: %p%s",
            ssn, ssn ? "" : "  (NONE FOUND — M2.5 attach will skip)");
 }
 

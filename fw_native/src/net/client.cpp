@@ -20,6 +20,7 @@
 #include "../hooks/hp_bar_hook.h"      // v18: shared-pool HP → enemy bar
 #include "../main_thread_dispatch.h"
 #include "../native/scene_inject.h"
+#include "../native/ghost_lifecycle.h"
 #include "../native/face_cache.h"
 #include "../native/world_spawn.h"   // v20: land peer recipes off the wire
 #include "../native/appearance_recipe.h"  // v21: the entry ritual raises the
@@ -47,6 +48,20 @@ Client::~Client() {
     stop();
 }
 
+RemotePlayerSnapshot Client::get_remote_snapshot(
+    const std::string& peer_id) const
+{
+    std::lock_guard lk(remote_mutex_);
+    auto it = remote_by_peer_.find(peer_id);
+    if (it == remote_by_peer_.end()) return RemotePlayerSnapshot{};
+    return it->second;   // copia: il chiamante si porta via dati stabili
+}
+
+std::size_t Client::remote_peer_count() const {
+    std::lock_guard lk(remote_mutex_);
+    return remote_by_peer_.size();
+}
+
 RemotePlayerSnapshot Client::get_remote_snapshot() const {
     std::lock_guard lk(remote_mutex_);
     return remote_snapshot_;   // copy out; caller gets stable data
@@ -69,31 +84,53 @@ bool Client::start(const config::Settings& cfg) {
 }
 
 void Client::stop() {
+    // Un addio anche qui, per la chiusura ordinata della DLL. Costa tre
+    // datagrammi e chiude la sessione sul server invece di lasciarla morire
+    // di timeout. Se la finestra l'ha gia' mandato, questo e' un doppione
+    // innocuo: il server ha gia' chiuso e lo ignora.
+    send_goodbye_now(/*reason=*/0);
     if (!thread_.joinable()) return;
     stopping_.store(true);
     thread_.join();
 }
 
+void Client::send_goodbye_now(std::uint8_t reason) {
+    if (!connected_.load(std::memory_order_acquire)) return;
+    DisconnectPayload d{};
+    d.reason = reason;
+    // NON affidabile: vedi il commento nell'header. Tre copie perche' e'
+    // UDP e non ci sara' nessuna ritrasmissione — costa tre pacchetti da
+    // una manciata di byte e ci risparmia cinque secondi di ghost fantasma
+    // sullo schermo degli altri.
+    int sent = 0;
+    for (int i = 0; i < 3; ++i) {
+        auto frame = channel_.send_unreliable(
+            MessageType::DISCONNECT, &d, sizeof(d));
+        if (frame.empty()) break;
+        if (socket_.send(frame.data(), frame.size())) ++sent;
+    }
+    FW_LOG("net: goodbye sent (reason=%u, %d/3 datagrams out) — the others "
+           "lose our ghost now instead of in five seconds",
+           static_cast<unsigned>(reason), sent);
+}
+
 // ---------------------------------------------------------------- enqueue
 
 void Client::enqueue_pos_state(const PosStatePayload& p) {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     QueuedSend q;
     q.msg_type = MessageType::POS_STATE;
     q.reliable = false;
     q.payload_bytes.resize(sizeof(p));
     std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 void Client::enqueue_pose_state(std::uint64_t header_ts_ms,
                                 const PoseBoneEntry* bones,
                                 std::size_t bone_count)
 {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     if (bone_count > MAX_POSE_BONES) bone_count = MAX_POSE_BONES;
 
     QueuedSend q;
@@ -111,17 +148,14 @@ void Client::enqueue_pose_state(std::uint64_t header_ts_ms,
         std::memcpy(q.payload_bytes.data() + sizeof(hdr),
                     bones, bone_count * sizeof(PoseBoneEntry));
     }
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 void Client::enqueue_pose_crouch_state(const PoseCrouchEntry* entries,
                                        std::size_t count,
                                        std::uint64_t header_ts_ms)
 {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     if (count > MAX_POSE_CROUCH_BONES) count = MAX_POSE_CROUCH_BONES;
 
     QueuedSend q;
@@ -139,10 +173,7 @@ void Client::enqueue_pose_crouch_state(const PoseCrouchEntry* entries,
         std::memcpy(q.payload_bytes.data() + sizeof(hdr),
                     entries, count * sizeof(PoseCrouchEntry));
     }
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 void Client::enqueue_npc_pose_state(std::uint32_t form_id,
@@ -150,7 +181,7 @@ void Client::enqueue_npc_pose_state(std::uint32_t form_id,
                                     const PoseBoneEntry* bones,
                                     std::size_t bone_count)
 {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     if (bone_count > MAX_POSE_BONES) bone_count = MAX_POSE_BONES;
 
     QueuedSend q;
@@ -169,10 +200,7 @@ void Client::enqueue_npc_pose_state(std::uint32_t form_id,
         std::memcpy(q.payload_bytes.data() + sizeof(hdr),
                     bones, bone_count * sizeof(PoseBoneEntry));
     }
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 void Client::enqueue_npc_crouch(std::uint32_t form_id,
@@ -180,7 +208,7 @@ void Client::enqueue_npc_crouch(std::uint32_t form_id,
                                 std::size_t count,
                                 std::uint64_t header_ts_ms)
 {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     if (count > MAX_POSE_CROUCH_BONES) count = MAX_POSE_CROUCH_BONES;
 
     QueuedSend q;
@@ -199,15 +227,12 @@ void Client::enqueue_npc_crouch(std::uint32_t form_id,
         std::memcpy(q.payload_bytes.data() + sizeof(hdr),
                     entries, count * sizeof(PoseCrouchEntry));
     }
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 void Client::enqueue_npc_damage_claim(std::uint32_t form_id, float amount,
                                       float max_hp) {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     if (form_id == 0 || form_id == 0xFFFFFFFFu || amount <= 0.0f) return;
 
     // Accumulate per fid; flush at most ~6 Hz/fid (batch rapid-fire hits).
@@ -241,40 +266,31 @@ void Client::enqueue_npc_damage_claim(std::uint32_t form_id, float amount,
     NpcDamageClaim p{ form_id, to_send, to_send_max };
     q.payload_bytes.resize(sizeof(p));
     std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 void Client::enqueue_actor_event(const ActorEventPayload& a) {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     QueuedSend q;
     q.msg_type = MessageType::ACTOR_EVENT;
     q.reliable = true;
     q.payload_bytes.resize(sizeof(a));
     std::memcpy(q.payload_bytes.data(), &a, sizeof(a));
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 void Client::enqueue_container_op(const ContainerOpPayload& op) {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     QueuedSend q;
     q.msg_type = MessageType::CONTAINER_OP;
     q.reliable = true;
     q.payload_bytes.resize(sizeof(op));
     std::memcpy(q.payload_bytes.data(), &op, sizeof(op));
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 void Client::enqueue_global_var_set(std::uint32_t global_form_id, double value) {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     if (global_form_id == 0) return;
 
     GlobalVarSetPayload p{};
@@ -290,14 +306,11 @@ void Client::enqueue_global_var_set(std::uint32_t global_form_id, double value) 
     q.reliable = true;
     q.payload_bytes.resize(sizeof(p));
     std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 void Client::enqueue_appearance_set(const std::string& recipe) {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     if (recipe.empty()) return;
     // Refuse rather than truncate. A truncated recipe would parse into a
     // DIFFERENT character on the receiving side and render as a silently
@@ -319,10 +332,7 @@ void Client::enqueue_appearance_set(const std::string& recipe) {
     std::memcpy(q.payload_bytes.data(), &h, sizeof(h));
     std::memcpy(q.payload_bytes.data() + sizeof(h), recipe.data(),
                 recipe.size());
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
     FW_LOG("[appearance] queued APPEARANCE_SET, %zu bytes of recipe: %s",
            recipe.size(), recipe.c_str());
 }
@@ -332,7 +342,7 @@ void Client::enqueue_door_op(std::uint32_t door_form_id,
                              std::uint32_t door_cell_id,
                              std::uint64_t timestamp_ms)
 {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     if (door_form_id == 0 || door_base_id == 0) return;
 
     DoorOpPayload p{};
@@ -346,10 +356,7 @@ void Client::enqueue_door_op(std::uint32_t door_form_id,
     q.reliable = true;
     q.payload_bytes.resize(sizeof(p));
     std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 void Client::enqueue_lock_op(std::uint32_t lock_form_id,
@@ -358,7 +365,7 @@ void Client::enqueue_lock_op(std::uint32_t lock_form_id,
                              bool          locked,
                              std::uint64_t timestamp_ms)
 {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     if (lock_form_id == 0 || lock_base_id == 0) return;
 
     LockOpPayload p{};
@@ -373,10 +380,7 @@ void Client::enqueue_lock_op(std::uint32_t lock_form_id,
     q.reliable = true;
     q.payload_bytes.resize(sizeof(p));
     std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 void Client::enqueue_world_spawn_op(std::uint32_t base_form_id,
@@ -387,7 +391,7 @@ void Client::enqueue_world_spawn_op(std::uint32_t base_form_id,
                                     const PaPieceEntry* pieces,
                                     std::uint8_t piece_n)
 {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     if (base_form_id == 0 || local_form_id == 0) return;
 
     WorldSpawnOpPayload p{};
@@ -409,10 +413,7 @@ void Client::enqueue_world_spawn_op(std::uint32_t base_form_id,
     q.reliable = true;
     q.payload_bytes.resize(sizeof(p));
     std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 void Client::enqueue_world_pa_pieces_op(std::uint32_t wid,
@@ -420,7 +421,7 @@ void Client::enqueue_world_pa_pieces_op(std::uint32_t wid,
                                         std::uint8_t piece_n,
                                         std::uint64_t timestamp_ms)
 {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     if (wid == 0) return;
 
     WorldPaPiecesOpPayload p{};
@@ -437,16 +438,13 @@ void Client::enqueue_world_pa_pieces_op(std::uint32_t wid,
     q.reliable = true;
     q.payload_bytes.resize(sizeof(p));
     std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 void Client::enqueue_world_despawn_op(std::uint32_t wid, std::uint8_t reason,
                                       std::uint64_t timestamp_ms)
 {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     if (wid == 0) return;
 
     WorldDespawnOpPayload p{};
@@ -459,14 +457,11 @@ void Client::enqueue_world_despawn_op(std::uint32_t wid, std::uint8_t reason,
     q.reliable = true;
     q.payload_bytes.resize(sizeof(p));
     std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 void Client::enqueue_peer_ghost_register(std::uint32_t ghost_form_id) {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     if (ghost_form_id == 0 || ghost_form_id == 0xFFFFFFFFu) return;
 
     PeerGhostRegisterPayload p{};
@@ -477,10 +472,7 @@ void Client::enqueue_peer_ghost_register(std::uint32_t ghost_form_id) {
     q.reliable = true;
     q.payload_bytes.resize(sizeof(p));
     std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 void Client::enqueue_npc_discover(std::uint32_t form_id,
@@ -488,7 +480,7 @@ void Client::enqueue_npc_discover(std::uint32_t form_id,
                                   std::uint32_t cell_id,
                                   float pos_x, float pos_y, float pos_z)
 {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     if (form_id == 0 || form_id == 0xFFFFFFFFu || form_id == 0x14u) return;
 
     NPCDiscoverPayload p{};
@@ -504,10 +496,7 @@ void Client::enqueue_npc_discover(std::uint32_t form_id,
     q.reliable = true;
     q.payload_bytes.resize(sizeof(p));
     std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 // === Build 65 — owner-driven TX entry points ==============================
@@ -518,7 +507,7 @@ void Client::enqueue_npc_observed(std::uint32_t form_id,
                                   float pos_x, float pos_y, float pos_z,
                                   float observer_distance_sq)
 {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     if (form_id == 0 || form_id == 0xFFFFFFFFu || form_id == 0x14u) return;
 
     NPCObservedPayload p{};
@@ -535,16 +524,13 @@ void Client::enqueue_npc_observed(std::uint32_t form_id,
     q.reliable = true;
     q.payload_bytes.resize(sizeof(p));
     std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 void Client::enqueue_npc_owner_heartbeat(
     const NPCOwnerHeartbeatEntry* entries, std::size_t count)
 {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     if (entries == nullptr || count == 0) return;
     if (count > MAX_HEARTBEAT_ENTRIES) count = MAX_HEARTBEAT_ENTRIES;
 
@@ -560,32 +546,26 @@ void Client::enqueue_npc_owner_heartbeat(
     std::memcpy(q.payload_bytes.data(), &hdr, sizeof(hdr));
     std::memcpy(q.payload_bytes.data() + sizeof(hdr),
                 entries, count * sizeof(*entries));
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 void Client::enqueue_npc_unload(const NPCUnloadPayload& p) {
     // Build 69q — voluntary owner release (death sphere despawn). Reliable:
     // a lost release would leave the raider frozen on the peer until the 8s
     // heartbeat timeout, exactly the lag this message exists to remove.
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     QueuedSend q;
     q.msg_type = MessageType::NPC_UNLOAD;
     q.reliable = true;
     q.payload_bytes.resize(sizeof(p));
     std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 void Client::enqueue_npc_state_from_owner(
     const NPCOwnerStateEntry* entries, std::size_t count)
 {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     if (entries == nullptr || count == 0) return;
     if (count > MAX_OWNER_STATES_PER_FRAME) count = MAX_OWNER_STATES_PER_FRAME;
 
@@ -600,15 +580,12 @@ void Client::enqueue_npc_state_from_owner(
     std::memcpy(q.payload_bytes.data(), &hdr, sizeof(hdr));
     std::memcpy(q.payload_bytes.data() + sizeof(hdr),
                 entries, count * sizeof(*entries));
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 void Client::enqueue_npc_fire_from_owner(const NPCFireFromOwnerPayload& p)
 {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     if (p.form_id == 0 || p.form_id == 0xFFFFFFFFu) return;
 
     QueuedSend q;
@@ -617,15 +594,12 @@ void Client::enqueue_npc_fire_from_owner(const NPCFireFromOwnerPayload& p)
                           // one missed muzzle flash, not a desync.
     q.payload_bytes.resize(sizeof(p));
     std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 void Client::enqueue_npc_death_from_owner(const NPCDeathFromOwnerPayload& p)
 {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     if (p.form_id == 0 || p.form_id == 0xFFFFFFFFu) return;
 
     QueuedSend q;
@@ -635,10 +609,7 @@ void Client::enqueue_npc_death_from_owner(const NPCDeathFromOwnerPayload& p)
                           // → @0xC0F510 use-after-free when it's shot.
     q.payload_bytes.resize(sizeof(p));
     std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 // Build 65.c.23 — FNV-1a 32-bit (matches Python `fnv1a_hash` used server-
@@ -655,7 +626,7 @@ static std::uint32_t fnv1a_32(const std::string& s) noexcept {
 
 bool Client::enqueue_engagement_claim_dedup(std::uint32_t form_id)
 {
-    if (!connected_.load() || stopping_.load()) return false;
+    if (!accepting_enqueue()) return false;
     if (form_id == 0 || form_id == 0xFFFFFFFFu) return false;
     if (form_id == 0x00000014u) return false;   // never claim on player
 
@@ -696,10 +667,7 @@ bool Client::enqueue_engagement_claim_dedup(std::uint32_t form_id)
                           // long as the engine sees a target.
     q.payload_bytes.resize(sizeof(p));
     std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 
     static std::atomic<std::uint64_t> g_claims_sent{0};
     const auto n = g_claims_sent.fetch_add(1, std::memory_order_relaxed);
@@ -723,7 +691,7 @@ void Client::enqueue_equip_op(std::uint32_t item_form_id,
                               const NifDescriptor*  nif_descs,
                               std::uint8_t          nif_count)
 {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
     if (item_form_id == 0) return;  // sender filters this too, defensive
     if (kind != static_cast<std::uint8_t>(EquipOpKind::EQUIP)
         && kind != static_cast<std::uint8_t>(EquipOpKind::UNEQUIP)) {
@@ -791,10 +759,7 @@ void Client::enqueue_equip_op(std::uint32_t item_form_id,
     // Final size = fixed bytes + actually-encoded NIF tail
     q.payload_bytes.resize(consumed_so_far + nif_written);
 
-    {
-        std::lock_guard lk(queue_mutex_);
-        queue_.push_back(std::move(q));
-    }
+    push_queued(std::move(q));
 }
 
 // M9.w4 v9 — sender side of MESH_BLOB chunked replication.
@@ -809,7 +774,7 @@ std::size_t Client::enqueue_mesh_blob_for_equip(
     const MeshBlobMesh* meshes,
     std::size_t num_meshes)
 {
-    if (!connected_.load() || stopping_.load()) return 0;
+    if (!accepting_enqueue()) return 0;
     if (!meshes || num_meshes == 0) return 0;
     if (item_form_id == 0) return 0;
     if (num_meshes > MAX_MESHES_PER_BLOB) {
@@ -1003,7 +968,7 @@ std::size_t Client::enqueue_nif_blob_for_equip(
     const void*   nif_buf,
     std::size_t   nif_size)
 {
-    if (!connected_.load() || stopping_.load()) return 0;
+    if (!accepting_enqueue()) return 0;
     if (!nif_buf || nif_size == 0) return 0;
     if (item_form_id == 0) return 0;
 
@@ -1081,7 +1046,7 @@ void Client::enqueue_container_seed(std::uint32_t base_id, std::uint32_t cell_id
                                     const ContainerStateEntry* entries,
                                     std::size_t num_entries)
 {
-    if (!connected_.load() || stopping_.load()) return;
+    if (!accepting_enqueue()) return;
 
     constexpr std::size_t max_per_chunk = (MAX_PAYLOAD_SIZE - sizeof(ChunkHeader))
                                           / sizeof(ContainerStateEntry); // 87
@@ -1128,8 +1093,20 @@ void Client::enqueue_container_seed(std::uint32_t base_id, std::uint32_t cell_id
 std::optional<ContainerOpAckPayload> Client::submit_container_op_blocking(
     ContainerOpPayload op, std::uint32_t timeout_ms)
 {
-    if (!connected_.load() || stopping_.load()) {
-        FW_WRN("net: submit_container_op_blocking called while disconnected");
+    // ATTENZIONE, il commento che stava qui mentiva e il difetto e' reale.
+    //
+    // Diceva "questo NON passa da accepting_enqueue" e la riga sotto lo
+    // chiama. Peggio: accepting_enqueue e' !stopping_, non connected_, quindi
+    // a sessione caduta questa funzione NON rifiuta subito. Accoda, e chi
+    // prende un oggetto da una cassa resta appeso per tutto il suo timeout —
+    // esattamente il comportamento che il vecchio testo dichiarava evitato.
+    //
+    // Lasciato com'e' di proposito, e dichiarato aperto nel changelog di
+    // v0.8.0 insieme agli altri due buchi della riconnessione: sono tre
+    // percorsi di rete che vanno provati dal vivo, non corretti al buio a
+    // ridosso di un commit. Si chiude con le fasi 3 e 4.
+    if (!accepting_enqueue()) {
+        FW_DBG("net: container op refused — no session right now");
         return std::nullopt;
     }
 
@@ -1180,7 +1157,42 @@ std::optional<ContainerOpAckPayload> Client::submit_container_op_blocking(
 
 // ---------------------------------------------------------------- main loop
 
-bool Client::do_handshake() {
+Client::HandshakeOutcome Client::do_handshake(bool use_resume) {
+    // v26 — RIENTRO COL TOKEN.
+    //
+    // La prova di login che il launcher mette in fw_config.ini e' MONOUSO:
+    // il server consuma il challenge al primo ingresso riuscito. Quindi un
+    // client caduto non puo' ripresentarsi con lo stesso HELLO, e la DLL non
+    // possiede la chiave privata per firmarne uno nuovo. Il server, dentro
+    // ogni WELCOME accettato, ci lascia un token: lo rispediamo qui e lui
+    // sfratta la nostra sessione vecchia e ci rifa' tutto il bootstrap.
+    if (use_resume) {
+        if (resume_token_.size() != RESUME_TOKEN_LEN) {
+            FW_WRN("net: resume asked for but no token held — full HELLO");
+        } else {
+            HelloResumePayload hr{};
+            hr.peer_id.set(cfg_.client_id);
+            std::memcpy(hr.resume_token, resume_token_.data(),
+                        RESUME_TOKEN_LEN);
+            // Stessa versione applicativa dell'HELLO: il server la confronta
+            // col proprio major e un valore diverso qui prenderebbe la via
+            // del rifiuto per versione.
+            hr.client_version_major = 1;
+            hr.client_version_minor = 0;
+            FW_LOG("net: HELLO_RESUME as '%s' with the token from the last "
+                   "WELCOME", cfg_.client_id.c_str());
+            auto rframe = channel_.send_reliable(
+                MessageType::HELLO_RESUME, &hr, sizeof(hr));
+            if (!socket_.send(rframe.data(), rframe.size())) {
+                FW_ERR("net: HELLO_RESUME send failed (err=%d)",
+                       socket_.last_error());
+                return HandshakeOutcome::Retry;
+            }
+            stats_.reliable_sent.fetch_add(1);
+            return await_welcome(/*was_resume=*/true);
+        }
+    }
+
     // v19 PIENUVO: when the launcher minted an auth blob we send the 170-byte
     // authed HELLO; otherwise the legacy 26-byte form. Both live in one
     // buffer — `send_len` picks the wire shape.
@@ -1222,16 +1234,21 @@ bool Client::do_handshake() {
         MessageType::HELLO, &ha, send_len);
     if (!socket_.send(frame.data(), frame.size())) {
         FW_ERR("net: initial HELLO send failed (err=%d)", socket_.last_error());
-        return false;
+        return HandshakeOutcome::Retry;
     }
     stats_.reliable_sent.fetch_add(1);
+    return await_welcome(/*was_resume=*/false);
+}
 
+// Aspetta il WELCOME (o il rifiuto) per cinque secondi, ridando fiato alle
+// ritrasmissioni. Condivisa dai due ingressi, HELLO e HELLO_RESUME.
+Client::HandshakeOutcome Client::await_welcome(bool was_resume) {
     // Wait up to 5 seconds for WELCOME, re-driving retransmits via tick.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     std::uint8_t rxbuf[MAX_FRAME_SIZE];
 
     while (std::chrono::steady_clock::now() < deadline) {
-        if (stopping_.load()) return false;
+        if (stopping_.load()) return HandshakeOutcome::Retry;
 
         // Run tick for retransmit of HELLO if needed.
         const auto now = std::chrono::steady_clock::now();
@@ -1240,8 +1257,8 @@ bool Client::do_handshake() {
             socket_.send(f.data(), f.size());
         }
         if (channel_.is_dead()) {
-            FW_ERR("net: channel dead during handshake");
-            return false;
+            FW_WRN("net: channel gave up during the handshake — will retry");
+            return HandshakeOutcome::Retry;
         }
 
         // Recv with small timeout.
@@ -1262,17 +1279,27 @@ bool Client::do_handshake() {
         {
             if (delivered->payload.size() < sizeof(WelcomePayload)) {
                 FW_ERR("net: WELCOME payload too short");
-                return false;
+                return HandshakeOutcome::Retry;
             }
             WelcomePayload w{};
             std::memcpy(&w, delivered->payload.data(), sizeof(w));
             if (!w.accepted) {
-                FW_ERR("net: server rejected HELLO (server_ver=%u.%u)",
-                       w.server_version_major, w.server_version_minor);
-                return false;
+                return on_rejected(w.reject_code, was_resume,
+                                   w.server_version_major,
+                                   w.server_version_minor);
             }
             session_id_.store(w.session_id);
             connected_.store(true);
+            last_server_frame_ms_.store(now_ms_wall(),
+                                        std::memory_order_relaxed);
+            // v26 — il token per la prossima volta. Il server ne conia uno
+            // nuovo a ogni WELCOME accettato e ritira il precedente, quindi
+            // vale un solo rientro: va sempre sovrascritto, mai accumulato.
+            resume_token_.assign(w.resume_token,
+                                 w.resume_token + RESUME_TOKEN_LEN);
+            // Fase 2 — siamo tornati: i ghost nascosti si rivedono, e il
+            // bootstrap della presenza li rimette dove sono davvero.
+            fw::native::ghost_lifecycle::on_local_session_restored();
             // Build 65 — once the server has accepted us, hand our
             // canonical peer_id to the ownership manager so PHASE_2
             // payloads can be compared byte-for-byte against the
@@ -1295,7 +1322,8 @@ bool Client::do_handshake() {
             // Lowering it is the editor's job. Until the editor exists that is
             // the configured `editor_key`, which makes the ritual testable and
             // — more to the point — escapable.
-            if (w.chargen_required) {
+            if (w.chargen_required && !chargen_ritual_seen_) {
+                chargen_ritual_seen_ = true;
                 // BOTH flags, and they are not redundant. set_editing raises the
                 // panel and is lowered by whatever closes it, including the
                 // toggle key; set_chargen_pending records that there is no
@@ -1309,38 +1337,110 @@ bool Client::do_handshake() {
                        "borrows are held until it is CONFIRMED - closing the "
                        "panel any other way leaves the ritual outstanding");
             }
-            return true;
+            return HandshakeOutcome::Ok;
         }
         // Other messages during handshake are unusual but OK; just dispatch.
         dispatch(*delivered);
     }
 
-    FW_ERR("net: timeout waiting for WELCOME (5s)");
-    return false;
+    FW_WRN("net: no WELCOME within 5s — will retry");
+    return HandshakeOutcome::Retry;
 }
+
+// Traduce il motivo del rifiuto in una decisione. Prima della v26 il motivo
+// non viaggiava affatto e il client poteva solo scrivere "rejected" e morire.
+Client::HandshakeOutcome Client::on_rejected(std::uint8_t code, bool was_resume,
+                                             std::uint8_t smaj,
+                                             std::uint8_t smin) {
+    switch (code) {
+    case REJECT_RESUME_UNKNOWN:
+    case REJECT_RESUME_EXPIRED:
+        // Il server e' ripartito senza il nostro token, o sono passate piu'
+        // di ventiquattro ore. Si butta e si ripresenta un HELLO normale:
+        // su un server che non esige autenticazione funziona, e il
+        // personaggio resta il nostro perche' lo stato e' indicizzato per id.
+        FW_WRN("net: the server does not know our resume token (%s) — "
+               "dropping it and coming back with a plain HELLO",
+               code == REJECT_RESUME_EXPIRED ? "expired" : "unknown");
+        resume_token_.clear();
+        return HandshakeOutcome::Retry;
+    case REJECT_SERVER_FULL:
+        FW_WRN("net: server is full — retrying");
+        return HandshakeOutcome::Retry;
+    case REJECT_PEER_ID_TAKEN:
+    case REJECT_IDENTITY_TAKEN:
+        // Quasi sempre siamo noi stessi: la sessione precedente non e'
+        // ancora scaduta lato server. Basta aspettare.
+        FW_WRN("net: the server still holds a live session for us — "
+               "retrying while it times out");
+        return HandshakeOutcome::Retry;
+    case REJECT_AUTH_REQUIRED:
+    case REJECT_AUTH_INVALID:
+        FW_ERR("net: the server demands a valid login proof and ours is not "
+               "good any more. Relaunch from the launcher, which is the only "
+               "thing that can sign one.");
+        return HandshakeOutcome::Fatal;
+    case REJECT_VERSION_MISMATCH:
+    case REJECT_CLIENT_ID_MISMATCH:
+        FW_ERR("net: the server refused us for a reason that will not change "
+               "(code=%u, server %u.%u). Client, launcher and server must be "
+               "rebuilt together.", unsigned(code), smaj, smin);
+        return HandshakeOutcome::Fatal;
+    default:
+        FW_ERR("net: %s refused with code=%u (server %u.%u) — retrying",
+               was_resume ? "resume" : "HELLO", unsigned(code), smaj, smin);
+        return HandshakeOutcome::Retry;
+    }
+}
+
+// Quanto silenzio dal server prima di dichiarare caduta la sessione.
+// Il nostro battito parte ogni 1500 ms e il server risponde: cinque secondi
+// sono tre echi persi. Serve perche' un client che manda solo posizioni non
+// ha niente di affidabile in volo, quindi il canale non si dichiara MAI
+// morto e senza questo controllo si continuerebbe a parlare nel vuoto per
+// sempre.
+static constexpr std::uint64_t kServerSilenceMs = 5000;
 
 void Client::run_loop() {
     FW_LOG("net: client thread starting  server=%s:%u  client_id=%s",
            server_host_.c_str(), server_port_, cfg_.client_id.c_str());
 
-    if (!socket_.open(server_host_, server_port_)) {
-        FW_ERR("net: socket open failed — client will not run");
-        dead_.store(true);
-        return;
-    }
-
-    if (!do_handshake()) {
-        dead_.store(true);
-        socket_.close();
-        return;
-    }
-
     constexpr auto HEARTBEAT_INTERVAL = std::chrono::milliseconds(1500);
     constexpr auto STATS_INTERVAL     = std::chrono::seconds(10);
+    std::uint8_t rxbuf[MAX_FRAME_SIZE];
+    unsigned attempt = 0;
+
+    // ===================== ciclo delle SESSIONI ==========================
+    //
+    // Prima della Fase 1 qui c'era una sola sessione: aperta una volta, al
+    // primo intoppo il thread usciva e il gioco restava acceso con un ghost
+    // congelato e nessun segnale. Ora ogni giro di questo while e' una
+    // sessione, e la sua fine e' solo l'inizio della prossima.
+    while (!stopping_.load()) {
+        reset_session_state();
+        if (!socket_.open(server_host_, server_port_)) {
+            FW_ERR("net: socket open failed (err=%d)", socket_.last_error());
+            if (!backoff_wait(++attempt)) break;
+            continue;
+        }
+
+        const bool want_resume = (resume_token_.size() == RESUME_TOKEN_LEN);
+        const HandshakeOutcome hr = do_handshake(want_resume);
+        if (hr == HandshakeOutcome::Fatal) {
+            socket_.close();
+            dead_.store(true);
+            break;
+        }
+        if (hr != HandshakeOutcome::Ok) {
+            socket_.close();
+            if (!backoff_wait(++attempt)) break;
+            continue;
+        }
+        attempt = 0;
+
     auto next_heartbeat = std::chrono::steady_clock::now() + HEARTBEAT_INTERVAL;
     auto next_stats     = std::chrono::steady_clock::now() + STATS_INTERVAL;
-
-    std::uint8_t rxbuf[MAX_FRAME_SIZE];
+    bool session_lost = false;
 
     while (!stopping_.load()) {
         const auto now = std::chrono::steady_clock::now();
@@ -1351,7 +1451,86 @@ void Client::run_loop() {
             std::lock_guard lk(queue_mutex_);
             drained.swap(queue_);
         }
+
+        // 2026-09-18 — DELLE FOTOGRAFIE TIENI SOLO L'ULTIMA.
+        //
+        // Posizione, posa e crouch descrivono un istante: se nella coda ne
+        // sono finite due, la piu' vecchia non serve a nessuno. E non e'
+        // solo spreco. Il drenaggio spedisce tutto quello che trova una
+        // riga dietro l'altra, mentre il validatore del server misura
+        // l'intervallo di ARRIVO e rifiuta come TOO_FAST_REPEAT qualunque
+        // posizione giunta meno di 20 ms dopo la precedente: circa 40
+        // rifiuti al minuto misurati il 2026-09-18, banda e CPU buttate su
+        // pacchetti che il server scarta. Il produttore gira a 20 Hz ma il
+        // ciclo di rete non e' cadenzato: ogni volta che rallenta (decodifica
+        // di un blob, un log, un'attesa di ACK) due campioni si accodano.
+        //
+        // Si accorpa solo qui, sulla copia gia' drenata: farlo dentro
+        // l'enqueue significherebbe scorrere la coda sul thread del gioco a
+        // ogni spinta. E non si tocca MAI niente di affidabile: quelli sono
+        // eventi, non stati, e perderne uno cambia il mondo.
+        {
+            auto is_snapshot = [](MessageType t) {
+                return t == MessageType::POS_STATE
+                    || t == MessageType::POSE_STATE
+                    || t == MessageType::POSE_CROUCH_STATE;
+            };
+            std::size_t keep_pos = SIZE_MAX, keep_pose = SIZE_MAX,
+                        keep_crouch = SIZE_MAX;
+            for (std::size_t i = 0; i < drained.size(); ++i) {
+                if (drained[i].reliable) continue;
+                switch (drained[i].msg_type) {
+                case MessageType::POS_STATE:          keep_pos = i;    break;
+                case MessageType::POSE_STATE:         keep_pose = i;   break;
+                case MessageType::POSE_CROUCH_STATE:  keep_crouch = i; break;
+                default: break;
+                }
+            }
+            std::size_t dropped = 0;
+            std::deque<QueuedSend> kept;
+            for (std::size_t i = 0; i < drained.size(); ++i) {
+                const auto& q = drained[i];
+                if (!q.reliable && is_snapshot(q.msg_type)) {
+                    const std::size_t keep =
+                        (q.msg_type == MessageType::POS_STATE)  ? keep_pos :
+                        (q.msg_type == MessageType::POSE_STATE) ? keep_pose :
+                                                                  keep_crouch;
+                    if (i != keep) { ++dropped; continue; }
+                }
+                kept.push_back(std::move(drained[i]));
+            }
+            if (dropped) {
+                FW_DBG("net: coalesced %zu stale snapshot frame(s) out of %zu",
+                       dropped, drained.size());
+            }
+            drained.swap(kept);
+        }
+
         for (auto& q : drained) {
+            // 2026-09-18 — FRENO ALL'INVIO DELLE POSIZIONI.
+            //
+            // Tenere solo la piu' recente di ogni gruppo drenato non basta,
+            // e la misura lo dice: i rifiuti del server sono scesi da ~40 a
+            // ~30 al minuto, non a zero. Il motivo e' che il residuo non
+            // sono due posizioni nello stesso drenaggio, sono due giri
+            // CONSECUTIVI del ciclo troppo vicini: la recv torna subito ogni
+            // volta che c'e' un datagramma in attesa, quindi il periodo del
+            // ciclo non e' 50 ms, e' "quanto parla il server". Il validatore
+            // misura l'intervallo di arrivo e rifiuta sotto i 20 ms.
+            //
+            // Venticinque e non venti, cosi' il jitter non puo' finire
+            // sotto la soglia. La posizione scartata non si riaccoda: il
+            // campione successivo arriva comunque entro 50 ms
+            // (player_pos_hook, POLL_INTERVAL_MS).
+            if (q.msg_type == MessageType::POS_STATE && !q.reliable) {
+                const auto since = std::chrono::duration_cast<
+                    std::chrono::milliseconds>(now - last_pos_sent_at_).count();
+                if (last_pos_sent_at_.time_since_epoch().count() != 0
+                    && since < 25) {
+                    continue;
+                }
+                last_pos_sent_at_ = now;
+            }
             std::vector<std::uint8_t> frame;
             if (q.reliable) {
                 frame = channel_.send_reliable(q.msg_type,
@@ -1378,14 +1557,39 @@ void Client::run_loop() {
             socket_.send(f.data(), f.size());
         }
         if (channel_.is_dead()) {
-            FW_ERR("net: channel dead — stopping client loop");
-            dead_.store(true);
+            FW_WRN("net: the reliable channel gave up retransmitting — "
+                   "session lost");
+            session_lost = true;
             break;
+        }
+
+        // Silenzio del server: vedi kServerSilenceMs. Qualunque frame in
+        // arrivo rinfresca il contatore, non solo l'eco del battito.
+        {
+            const std::uint64_t last =
+                last_server_frame_ms_.load(std::memory_order_relaxed);
+            const std::uint64_t nowms = now_ms_wall();
+            if (last != 0 && nowms > last
+                && (nowms - last) > kServerSilenceMs) {
+                FW_WRN("net: nothing from the server for %llu ms — "
+                       "session lost",
+                       static_cast<unsigned long long>(nowms - last));
+                session_lost = true;
+                break;
+            }
         }
 
         // -------- 3. Recv one datagram if available (50ms max wait) --------
         const int n = socket_.recv(rxbuf, sizeof(rxbuf), 50);
         if (n > 0) {
+            // v26 — il timbro di vita va messo QUI, sul datagramma grezzo,
+            // non dentro dispatch. Un ACK puro non viene mai "consegnato"
+            // (il canale lo consuma e restituisce vuoto) ma dimostra che il
+            // server e' vivo esattamente come qualunque altro frame:
+            // marcarlo solo in dispatch farebbe dichiarare morta una
+            // sessione tranquilla in cui l'unico traffico sono gli ACK.
+            last_server_frame_ms_.store(now_ms_wall(),
+                                        std::memory_order_relaxed);
             std::vector<std::uint8_t> ack_bytes;
             auto delivered = channel_.on_receive(
                 rxbuf, static_cast<std::size_t>(n), now, &ack_bytes);
@@ -1454,27 +1658,94 @@ void Client::run_loop() {
                        fw::hooks::get_npc_ai_seh_failures()));
             next_stats = now + STATS_INTERVAL;
         }
-    }
+    }   // ---------------- fine del ciclo di UNA sessione ----------------
 
-    // -------- graceful shutdown: DISCONNECT reliable, best-effort flush --------
-    if (connected_.load()) {
-        DisconnectPayload d{};
-        d.reason = 0;
-        auto frame = channel_.send_reliable(
-            MessageType::DISCONNECT, &d, sizeof(d));
-        socket_.send(frame.data(), frame.size());
-        // Brief drain so the UDP flush reaches the server.
-        Sleep(100);
-    }
+        // Uscita pulita: si saluta il server, cosi' gli altri client sanno
+        // subito che siamo andati invece di aspettare il timeout.
+        if (stopping_.load() && connected_.load()) {
+            DisconnectPayload d{};
+            d.reason = 0;
+            auto frame = channel_.send_reliable(
+                MessageType::DISCONNECT, &d, sizeof(d));
+            socket_.send(frame.data(), frame.size());
+            Sleep(100);   // breve drenaggio perche' l'UDP esca davvero
+        }
+        connected_.store(false);
+        socket_.close();
+
+        if (stopping_.load()) break;
+        if (session_lost) {
+            // Chi sta aspettando il verdetto su una cassa non deve restare
+            // appeso al proprio timeout: gli si risponde subito di no, e il
+            // motore non muta niente. Prima della Fase 1 questa sveglia
+            // stava solo sull'uscita del thread, quindi durante una caduta
+            // ogni presa o deposito mangiava cento millisecondi a vuoto.
+            wake_pending_ops();
+            // Fase 2 — gli altri stanno ancora giocando, noi non li
+            // vediamo piu': i loro corpi si nascondono invece di restare
+            // statue immobili a mentire.
+            fw::native::ghost_lifecycle::on_local_session_lost();
+            FW_WRN("net: session lost — reconnecting%s",
+                   (resume_token_.size() == RESUME_TOKEN_LEN)
+                       ? " with the resume token" : "");
+            if (!backoff_wait(++attempt)) break;
+        }
+    }   // =============== fine del ciclo delle SESSIONI ===================
+
     connected_.store(false);
-    socket_.close();
 
-    // Wake all pending blocking submitters with a synthetic "no answer".
-    // They see ready=false in ack — treated as "reject/timeout" → do not mutate.
-    // We leave ack zeroed; the caller already has timeout logic for
-    // "wait_for returned false" but here we set ready=true so it doesn't
-    // stall for the full timeout at shutdown. Status=0 (ACCEPTED) would be
-    // wrong, so we use REJ_RATE as a harmless reject sentinel.
+    wake_pending_ops();
+
+    FW_LOG("net: client thread exiting");
+}
+
+// Wake all pending blocking submitters with a synthetic "no answer".
+// They see ready=false in ack — treated as "reject/timeout" → do not mutate.
+// We leave ack zeroed; the caller already has timeout logic for
+// "wait_for returned false" but here we set ready=true so it doesn't
+// stall for the full timeout. Status=0 (ACCEPTED) would be wrong, so we use
+// REJ_RATE as a harmless reject sentinel.
+// Unico punto di inserimento in coda.
+//
+// Prima della Fase 1 la coda non aveva alcun tetto: l'unica cosa che la
+// teneva corta era che da disconnessi ogni enqueue usciva subito. Ora che
+// gli eventi di stato attraversano una caduta il limite serve davvero, coi
+// produttori che vanno a 20 Hz.
+//
+// Quando si e' al tetto si sacrifica sempre la cosa piu' vecchia fra quelle
+// sacrificabili, cioe' una fotografia: e' gia' stata superata da una piu'
+// recente. Se in coda ci sono solo eventi, l'ultimo arrivato viene rifiutato
+// e lo si dice, perche' a quel punto stiamo perdendo qualcosa che conta.
+bool Client::push_queued(QueuedSend&& q) {
+    std::lock_guard lk(queue_mutex_);
+    if (queue_.size() >= kSendQueueMax) {
+        bool made_room = false;
+        for (auto it = queue_.begin(); it != queue_.end(); ++it) {
+            if (!it->reliable) {
+                queue_.erase(it);
+                made_room = true;
+                break;
+            }
+        }
+        if (!made_room) {
+            static std::uint64_t s_next_warn_ms = 0;
+            const std::uint64_t now = now_ms_wall();
+            if (now >= s_next_warn_ms) {
+                s_next_warn_ms = now + 5000;
+                FW_WRN("net: outbound queue full with %zu state event(s) — "
+                       "dropping the newest. The session has been down long "
+                       "enough that something will be out of sync.",
+                       queue_.size());
+            }
+            return false;
+        }
+    }
+    queue_.push_back(std::move(q));
+    return true;
+}
+
+void Client::wake_pending_ops() {
+    std::size_t woken = 0;
     {
         std::lock_guard lk(pending_ops_mutex_);
         for (auto& [id, p] : pending_ops_) {
@@ -1486,15 +1757,91 @@ void Client::run_loop() {
                 p->ready = true;
             }
             p->cv.notify_all();
+            ++woken;
+        }
+        pending_ops_.clear();
+    }
+    if (woken) {
+        FW_LOG("net: answered %zu pending container op(s) with a refusal",
+               woken);
+    }
+}
+
+// Tutto quello che appartiene a UNA sessione e non deve sopravvivere alla
+// successiva. Solo dal thread del worker, fra una sessione e l'altra.
+void Client::reset_session_state() {
+    // Socket e canale vanno azzerati INSIEME e in quest'ordine. Il server
+    // indicizza le sessioni per indirizzo UDP e riparte da capo coi numeri
+    // di sequenza: tenere il canale vecchio con un socket nuovo (o
+    // viceversa) manda le due finestre fuori fase e il bootstrap verrebbe
+    // scartato in silenzio dal livello di trasporto.
+    socket_.close();
+    channel_ = ReliableChannel{};
+    session_id_.store(0);
+    connected_.store(false);
+    last_server_frame_ms_.store(0, std::memory_order_relaxed);
+
+    // Le chiavi sono (peer, equip_seq) e il numero di sequenza riparte da
+    // capo a ogni sessione del peer: una voce vecchia mezza piena
+    // corromperebbe in silenzio il primo blob della sessione nuova.
+    // Nessun lock: questa mappa la tocca solo il thread del worker, in
+    // dispatch, e questa funzione gira sullo stesso thread.
+    mesh_blob_reasm_.clear();
+    // Il bootstrap dei contenitori FONDE invece di sostituire, quindi senza
+    // svuotare resterebbero accanto le voci di una cassa cambiata mentre
+    // eravamo via e quelle nuove.
+    {
+        std::lock_guard lk(container_mirror_mutex_);
+        container_mirror_.clear();
+    }
+    // Le fotografie accodate mentre si era giu' sono vecchie di secondi e
+    // non servono a nessuno. Gli eventi di stato invece restano: perderne
+    // uno (un equip, uno spawn, una morte) lascia i due client disallineati
+    // finche' non lo si rifa' a mano.
+    {
+        std::lock_guard lk(queue_mutex_);
+        std::deque<QueuedSend> keep;
+        std::size_t dropped = 0;
+        for (auto& q : queue_) {
+            if (q.reliable) keep.push_back(std::move(q));
+            else            ++dropped;
+        }
+        queue_.swap(keep);
+        if (dropped || !queue_.empty()) {
+            FW_LOG("net: carrying %zu state event(s) into the new session, "
+                   "dropped %zu stale snapshot(s)", queue_.size(), dropped);
         }
     }
+    // E il pezzo che nessuno vedrebbe mancare finche' non e' troppo tardi:
+    // senza questo gli NPC gia' osservati non verrebbero mai riannunciati e
+    // resterebbero congelati per il resto della partita.
+    fw::ownership::reset_for_new_session();
+}
 
-    FW_LOG("net: client thread exiting");
+// Attesa fra due tentativi. A fette da 50 ms perche' `stop()` fa un join
+// incondizionato da DLL_PROCESS_DETACH, cioe' sotto il loader lock: una
+// attesa lunga e indivisibile qui bloccherebbe la chiusura del gioco per
+// tutta la sua durata. Torna false se ci hanno chiesto di fermarci.
+bool Client::backoff_wait(unsigned attempt) {
+    static constexpr unsigned kLadderMs[] = {1000, 2000, 4000, 8000, 15000};
+    const unsigned idx = (attempt == 0) ? 0 : (attempt - 1);
+    const unsigned wait_ms =
+        kLadderMs[(idx < 5) ? idx : 4];
+    FW_LOG("net: next attempt in %u ms (attempt %u)", wait_ms, attempt);
+    for (unsigned waited = 0; waited < wait_ms; waited += 50) {
+        if (stopping_.load()) return false;
+        Sleep(50);
+    }
+    return !stopping_.load();
 }
 
 // ---------------------------------------------------------------- dispatch
 
 void Client::dispatch(const Delivered& d) {
+    // v26 — QUALUNQUE frame dal server dimostra che e' vivo, non solo l'eco
+    // del battito. Questo timbro e' l'unico rilevatore di silenzio che
+    // abbiamo (vedi kServerSilenceMs).
+    last_server_frame_ms_.store(now_ms_wall(), std::memory_order_relaxed);
     switch (d.header.msg_type) {
     case static_cast<std::uint16_t>(MessageType::POSE_BROADCAST): {
         if (d.payload.size() < sizeof(PoseBroadcastHeader)) break;
@@ -1507,7 +1854,9 @@ void Client::dispatch(const Delivered& d) {
         const PoseBoneEntry* bones = reinterpret_cast<const PoseBoneEntry*>(
             d.payload.data() + sizeof(hdr));
         // Hand off to main thread (stashes + posts WM_APP).
-        fw::native::store_remote_pose(hdr.timestamp_ms, bones, hdr.bone_count);
+        fw::native::store_remote_pose(hdr.peer_id.get().c_str(),
+                                      hdr.timestamp_ms, bones,
+                                      hdr.bone_count);
         break;
     }
 
@@ -1524,7 +1873,9 @@ void Client::dispatch(const Delivered& d) {
         if (d.payload.size() < need) break;
         const PoseCrouchEntry* entries = reinterpret_cast<const PoseCrouchEntry*>(
             d.payload.data() + sizeof(hdr));
-        fw::native::store_remote_crouch(hdr.timestamp_ms, entries, hdr.count);
+        fw::native::store_remote_crouch(hdr.peer_id.get().c_str(),
+                                        hdr.timestamp_ms, entries,
+                                        hdr.count);
         break;
     }
 
@@ -1535,7 +1886,7 @@ void Client::dispatch(const Delivered& d) {
         { static std::atomic<std::uint64_t> s_d{0};
           const auto dc = s_d.fetch_add(1, std::memory_order_relaxed);
           if (dc < 10 || (dc % 200) == 0)
-            FW_LOG("[npc-pose-net] DISPATCH recv payloadsz=%zu hdr=%zu",
+            FW_DBG("[npc-pose-net] DISPATCH recv payloadsz=%zu hdr=%zu",
                    d.payload.size(), sizeof(NpcPoseHeader)); }
         if (d.payload.size() < sizeof(NpcPoseHeader)) break;
         NpcPoseHeader hdr{};
@@ -1587,6 +1938,9 @@ void Client::dispatch(const Delivered& d) {
         std::memcpy(&p, d.payload.data(), sizeof(p));
 
         const std::string peer = p.peer_id.get();
+        // Fase 2 — la data dell'ultima posizione, per la rete di sicurezza
+        // sul PEER_LEAVE perduto. Solo una data, nessun lavoro di scena.
+        fw::native::ghost_lifecycle::on_peer_position(peer.c_str());
 
         // Legacy ghost_map path (B1) — DISABLED 2026-04-29.
         //   Was KEPT as dev-marker during custom-render-engine build-out:
@@ -1607,21 +1961,26 @@ void Client::dispatch(const Delivered& d) {
         //         p.x, p.y, p.z, p.rx, p.ry, p.rz);
         // }
 
-        // ε.pivot: publish snapshot for the custom body renderer. One
-        // slot, last-writer-wins (single remote peer in MVP).
+        // L'istantanea di QUESTO peer, piu' la copia "ultimo che ha
+        // parlato" per i consumatori che non sanno ancora di chi parlano.
+        // Le due coincidono finche' i peer remoti sono uno solo.
         {
+            RemotePlayerSnapshot snap;
+            snap.has_state      = true;
+            snap.peer_id        = peer;
+            snap.pos[0]         = p.x;
+            snap.pos[1]         = p.y;
+            snap.pos[2]         = p.z;
+            snap.rot[0]         = p.rx;
+            snap.rot[1]         = p.ry;
+            snap.rot[2]         = p.rz;
+            snap.server_ts_ms   = p.timestamp_ms;
+            snap.received_at_ms = GetTickCount64();
+            snap.cell_id        = p.cell_id;   // v11 — B6 prologue
+
             std::lock_guard lk(remote_mutex_);
-            remote_snapshot_.has_state      = true;
-            remote_snapshot_.peer_id        = peer;
-            remote_snapshot_.pos[0]         = p.x;
-            remote_snapshot_.pos[1]         = p.y;
-            remote_snapshot_.pos[2]         = p.z;
-            remote_snapshot_.rot[0]         = p.rx;
-            remote_snapshot_.rot[1]         = p.ry;
-            remote_snapshot_.rot[2]         = p.rz;
-            remote_snapshot_.server_ts_ms   = p.timestamp_ms;
-            remote_snapshot_.received_at_ms = GetTickCount64();
-            remote_snapshot_.cell_id        = p.cell_id;   // v11 — B6 prologue
+            remote_by_peer_[peer] = snap;
+            remote_snapshot_      = snap;
         }
 
         // M3.1 event-driven cube tracking (Strada B): post WM_APP+0x46 to
@@ -2945,30 +3304,48 @@ void Client::dispatch(const Delivered& d) {
         break;
     }
 
-    // TODO (ghost lifecycle — PEER_JOIN must REQUEST a ghost, never inject one).
+    // PEER_JOIN CHIEDE un ghost, non lo inietta. Fatto nella Fase 2.
     //
-    // This handler is where "a player arrived" becomes known, so it is where a
-    // ghost should be requested for that peer — but it must only record the
-    // need in a pending set. Injecting from here (or from this thread at all)
-    // reproduces a known crash: the save-load flow fires several LoadGame
-    // events in a row and destroys the ShadowSceneNode each time, and a peer
-    // can join precisely inside that window. See the long TODO on arm_worker
-    // in scene_inject.cpp for why local_player_in_world() is not a sufficient
-    // guard, and for the event-decides-WHAT / worker-decides-WHEN split.
+    // Qui si registra soltanto che a quel peer serve un corpo: il grafo di
+    // scena non si tocca dal thread di rete, mai. Iniettare da qui
+    // riproduceva un crash noto — il caricamento di un salvataggio spara
+    // piu' eventi di LoadGame di fila e smonta il nodo della scena ogni
+    // volta, e un peer puo' entrare esattamente li' dentro.
     //
-    // Also unfinished here: the newcomer needs the CURRENT state of everyone
-    // already in the world (appearance, equipment, pose, position). The server
-    // bootstraps world/container/quest/ownership at join but NOT peers. The
-    // equipment half of this was solved once — the re-broadcast call below —
-    // and then disabled after the bridge crash; its intended replacement,
-    // hooks/equip_announce.h, is still marked NON TESTATO.
+    // E quella finestra dura molto piu' di quanto chiunque immaginasse:
+    // misurata il 2026-09-18, SEI SECONDI, durante i quali
+    // local_player_in_world() resta vero perche' il giocatore del mondo
+    // vecchio e' ancora intero. Il cancello che decide QUANDO sta sopra
+    // ghost_scene_is_stable in scene_inject.cpp, e non e' un predicato: e'
+    // una striscia di tick consecutivi piu' un caricamento dichiarato.
+    //
+    // Lo stato degli altri per chi entra NON e' piu' un buco: la Fase 0 ha
+    // aggiunto il bootstrap della presenza (posizione, cella e vestito
+    // memorizzato di ogni peer, rigiocati come broadcast normali) e il
+    // 2026-09-18 anche lo specchio, cioe' il vestito di CHI ENTRA annunciato
+    // a chi c'era gia'. Resta il fatto che il vestito memorizzato e'
+    // completo quanto gli eventi di equip che il server ha visto passare: un
+    // capo gia' indosso quando il salvataggio e' stato caricato non ha
+    // prodotto nessun evento, quindi non c'e'. Quella e' la Fase 3.
+    //
+    // Ancora aperto qui: il compenso lato client. La ri-trasmissione del
+    // nostro equipaggiamento a ogni ingresso altrui era stata risolta una
+    // volta — la chiamata qui sotto — e poi SPENTA dopo il crash del ponte;
+    // il suo sostituto, hooks/equip_announce.h, e' ancora marcato NON
+    // TESTATO. Oggi quel lavoro lo fa il server, che e' il posto giusto,
+    // perche' il suo annuncio porta anche la lista OMOD di ogni pezzo.
     case static_cast<std::uint16_t>(MessageType::PEER_JOIN): {
+        // Fase 2 — l'evento decide COSA, il tick decide QUANDO. Qui si
+        // registra soltanto che a quel peer serve un corpo: il grafo di
+        // scena non si tocca dal thread di rete, mai.
+
         if (d.payload.size() < sizeof(PeerJoinPayload)) break;
         PeerJoinPayload p{};
         std::memcpy(&p, d.payload.data(), sizeof(p));
         FW_LOG("net: peer joined: %s (sid=%u) — re-arming equip cycle to "
                "re-broadcast our current equipment state to the new peer",
                p.peer_id.get().c_str(), p.session_id);
+        fw::native::ghost_lifecycle::on_peer_join(p.peer_id.get().c_str());
 
         // M9 v0.3.x — boot-timing race fix.
         //
@@ -2998,32 +3375,67 @@ void Client::dispatch(const Delivered& d) {
         break;
     }
 
-    // TODO (ghost lifecycle — PEER_LEAVE currently does NOTHING but log).
+    // FATTO nella Fase 2 (2026-09-18). Qui c'era un TODO che diceva
+    // "PEER_LEAVE currently does NOTHING but log" e che il corpo del ghost
+    // "stays in the world forever": non e' piu' vero, e un commento che
+    // descrive un comportamento gia' chiuso fa ripartire da zero chi lo
+    // legge fra un mese. Cosa e' vero adesso:
     //
-    // When a peer disconnects, its ghost body stays in the world forever,
-    // frozen at the last relayed position: it is never hidden, never detached,
-    // and its slot is never freed. To a player it looks like the person who
-    // quit is still standing there.
+    //   * questo gestore ACCODA soltanto. Gira sul thread di rete, e ogni
+    //     mutazione del grafo di scena e' solo main-thread: lo smontaggio
+    //     lo fa ghost_lifecycle::tick, dal WndProc.
+    //   * lo smontaggio rispetta la legge d'ordine scritta sopra
+    //     detach_debug_cube — code in attesa, arma, armature su una
+    //     fotografia della mappa, cache dei mod, faccia, contributori al
+    //     culling, e solo alla fine testa e corpo.
     //
-    // What this must do (see the TODO on detach_debug_cube for the ordering it
-    // has to respect): settle that peer's in-flight synthetic-REFR work, drop
-    // its pose/crouch/equip caches, and detach its ghost — all dispatched to
-    // the MAIN THREAD, because every scene-graph mutation is main-thread-only.
-    // Do not call detach from this net-thread handler directly.
+    // Aggiornamento del 2026-09-19: anche l'ultimo pezzo del vecchio TODO e'
+    // caduto. Il corpo non e' piu' un puntatore singolo — g_injected_cube non
+    // esiste piu' — e corpo, testa, ossa, geometrie, contributori al culling,
+    // innesto e bind della power armor vivono tutti in GhostRecord, indicizzati
+    // per peer. Il parametro last_ghost resta perche' la cache delle facce e
+    // lo scheletro di riferimento sono di sessione e si liberano una volta
+    // sola.
     //
-    // Blocked on the same prerequisite as the join path: g_injected_cube is a
-    // single pointer, so "that peer's ghost" is not yet an addressable thing.
-    // Per-peer teardown only becomes meaningful once ghosts are a map keyed by
-    // peer identity.
+    // Un secondo ghost resta comunque rifiutato, ma per un motivo diverso e
+    // scritto dove il rifiuto avviene (ghost_lifecycle.cpp): il percorso a due
+    // peer remoti non e' mai stato eseguito, perche' il collaudo e' a due
+    // client e ognuno vede un peer solo.
     case static_cast<std::uint16_t>(MessageType::PEER_LEAVE): {
         if (d.payload.size() < sizeof(PeerLeavePayload)) break;
         PeerLeavePayload p{};
         std::memcpy(&p, d.payload.data(), sizeof(p));
         FW_LOG("net: peer left: %s (reason=%u)", p.peer_id.get().c_str(), p.reason);
+        // Fase 2 — da qui in poi il ghost di quel peer non resta piu' in
+        // piedi per sempre: il tick sul thread principale lo smonta
+        // nell'ordine che la legge sopra detach_debug_cube impone.
+        fw::native::ghost_lifecycle::on_peer_leave(p.peer_id.get().c_str());
         break;
     }
 
-    case static_cast<std::uint16_t>(MessageType::HEARTBEAT):
+    case static_cast<std::uint16_t>(MessageType::HEARTBEAT): {
+        // v26 — l'eco del server. Prima della Fase 1 finiva qui e moriva,
+        // e il client non aveva NESSUN modo di accorgersi che il server era
+        // morto: ritrasmette solo cio' che e' affidabile, e un client che
+        // manda posizioni non ha niente in volo. Il tempo di andata e
+        // ritorno viene gratis, perche' il server rimanda indietro il nostro
+        // stesso timestamp.
+        if (d.payload.size() >= sizeof(HeartbeatPayload)) {
+            HeartbeatPayload hb{};
+            std::memcpy(&hb, d.payload.data(), sizeof(hb));
+            const std::uint64_t now = now_ms_wall();
+            if (hb.timestamp_ms && now >= hb.timestamp_ms) {
+                static std::uint64_t s_next_rtt_log = 0;
+                if (now >= s_next_rtt_log) {
+                    s_next_rtt_log = now + 30000;
+                    FW_LOG("net: server round trip %llu ms",
+                           static_cast<unsigned long long>(
+                               now - hb.timestamp_ms));
+                }
+            }
+        }
+        break;
+    }
     case static_cast<std::uint16_t>(MessageType::CHAT):
         // not meaningful in B0.5; future blocks handle these
         break;

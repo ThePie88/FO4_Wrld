@@ -96,7 +96,7 @@ std::uint32_t __fastcall detour_nif_load(
         if (opts) flags = reinterpret_cast<std::uint8_t*>(opts)[8];
     } __except (EXCEPTION_EXECUTE_HANDLER) { flags = 0xFE; }
 
-    FW_LOG("[trace] nif_load #%llu tid=%lu path='%s' opts=%p flags=0x%02X",
+    FW_DBG("[trace] nif_load #%llu tid=%lu path='%s' opts=%p flags=0x%02X",
            static_cast<unsigned long long>(n), tid, ps, opts, flags);
 
     const std::uint32_t rc = g_orig_nif_load(path, out_node, opts);
@@ -111,7 +111,7 @@ std::uint32_t __fastcall detour_nif_load(
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) { vt_rva = 0xDEAD; }
 
-    FW_LOG("[trace] nif_load #%llu RET rc=%u result=%p vt_rva=0x%llX",
+    FW_DBG("[trace] nif_load #%llu RET rc=%u result=%p vt_rva=0x%llX",
            static_cast<unsigned long long>(n), rc, result,
            static_cast<unsigned long long>(vt_rva));
     return rc;
@@ -128,7 +128,7 @@ void* __fastcall detour_tex_load(
     char pbuf[260];
     const char* ps = safe_cstr(path, pbuf, sizeof(pbuf));
 
-    FW_LOG("[trace] tex_load #%llu tid=%lu path='%s' blocking=%d "
+    FW_DBG("[trace] tex_load #%llu tid=%lu path='%s' blocking=%d "
            "force_def=%d emisNrm=%d tlsSmp=%d",
            static_cast<unsigned long long>(n), tid, ps,
            int(blocking), int(force_special_default),
@@ -139,7 +139,7 @@ void* __fastcall detour_tex_load(
         emissive_or_normal, tls_sampler_flag);
 
     void* handle = out_handle ? *out_handle : nullptr;
-    FW_LOG("[trace] tex_load #%llu RET ret=%p handle=%p",
+    FW_DBG("[trace] tex_load #%llu RET ret=%p handle=%p",
            static_cast<unsigned long long>(n), ret, handle);
     return ret;
 }
@@ -154,7 +154,7 @@ void* __fastcall detour_texset_set_path(
     const char* ps = safe_cstr(
         reinterpret_cast<const char*>(path), pbuf, sizeof(pbuf));
 
-    FW_LOG("[trace] texset_setPath #%llu tid=%lu self=%p slot=%d path='%s'",
+    FW_DBG("[trace] texset_setPath #%llu tid=%lu self=%p slot=%d path='%s'",
            static_cast<unsigned long long>(n), tid, self, slot, ps);
     return g_orig_texset_path(self, slot, path);
 }
@@ -173,7 +173,7 @@ void* __fastcall detour_bind_mat(
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) { mat_vt_rva = 0xDEAD; }
 
-    FW_LOG("[trace] bind_mat #%llu tid=%lu mat=%p (vt_rva=0x%llX) "
+    FW_DBG("[trace] bind_mat #%llu tid=%lu mat=%p (vt_rva=0x%llX) "
            "arg2=%p texset=%p",
            static_cast<unsigned long long>(n), tid, material,
            static_cast<unsigned long long>(mat_vt_rva),
@@ -195,7 +195,7 @@ void* __fastcall detour_bslsp_new() {
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) { vt_rva = 0xDEAD; }
 
-    FW_LOG("[trace] bslsp_new #%llu tid=%lu RET=%p vt_rva=0x%llX",
+    FW_DBG("[trace] bslsp_new #%llu tid=%lu RET=%p vt_rva=0x%llX",
            static_cast<unsigned long long>(n), tid, ret,
            static_cast<unsigned long long>(vt_rva));
     return ret;
@@ -215,7 +215,7 @@ void* __fastcall detour_material_ctor(void* self) {
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) { vt_rva = 0xDEAD; }
 
-    FW_LOG("[trace] material_ctor #%llu tid=%lu self=%p vt_rva=0x%llX "
+    FW_DBG("[trace] material_ctor #%llu tid=%lu self=%p vt_rva=0x%llX "
            "RET=%p",
            static_cast<unsigned long long>(n), tid, self,
            static_cast<unsigned long long>(vt_rva), ret);
@@ -238,7 +238,7 @@ static bool install_one(
     void* target = reinterpret_cast<void*>(base + rva);
     const bool ok = install(target, detour, reinterpret_cast<void**>(orig_slot));
     if (ok) {
-        FW_LOG("[trace] hook installed: %s @ RVA 0x%lX (target=%p)",
+        FW_DBG("[trace] hook installed: %s @ RVA 0x%lX (target=%p)",
                name, static_cast<unsigned long>(rva), target);
     } else {
         FW_ERR("[trace] hook install FAILED: %s @ RVA 0x%lX (target=%p)",
@@ -251,7 +251,7 @@ static bool install_one(
 
 bool install_engine_tracer(std::uintptr_t module_base) {
     g_base = module_base;
-    FW_LOG("[trace] installing engine tracer hooks (MINIMAL: nif_load only, "
+    FW_DBG("[trace] installing engine tracer hooks (MINIMAL: nif_load only, "
            "base=0x%llX)", static_cast<unsigned long long>(module_base));
 
     // M6.3 use-case: observe what NIF paths the engine loads natively,
@@ -276,7 +276,7 @@ bool install_engine_tracer(std::uintptr_t module_base) {
     (void)&detour_bind_mat; (void)&detour_bslsp_new;
     (void)&detour_material_ctor;
 
-    FW_LOG("[trace] engine tracer install %s (nif_load only)",
+    FW_DBG("[trace] engine tracer install %s (nif_load only)",
            all ? "OK" : "FAILED");
     return all;
 }

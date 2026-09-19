@@ -31,8 +31,9 @@ from protocol import (
     WorldSpawnBroadcastPayload,
     WorldDespawnOpPayload,
     WorldDespawnBroadcastPayload,  # noqa: E402
-    MessageType, ProtocolError,
+    MessageType, ProtocolError, PROTOCOL_VERSION,
     HelloPayload, WelcomePayload, PeerJoinPayload, PeerLeavePayload,
+    HelloResumePayload, RejectCode, derive_client_id,
     HeartbeatPayload, DisconnectPayload, PosStatePayload, PosBroadcastPayload,
     PoseStatePayload, PoseBroadcastPayload,
     PoseCrouchStatePayload, PoseCrouchBroadcastPayload,   # v16 — ghost crouch
@@ -76,7 +77,9 @@ from protocol import (
     PeerGhostRegisterPayload,
     encode_frame, decode_frame,
 )
-from server.state import ServerState, PeerSession, SessionState, LockWorldState  # noqa: E402
+from server.state import (  # noqa: E402
+    ServerState, PeerSession, SessionState, LockWorldState, OutfitEntry,
+)
 from server.auth import (  # noqa: E402
     ChallengeRegistry, verify_hello_auth, sanitize_display_name,
 )
@@ -218,6 +221,9 @@ class ServerProtocol(asyncio.DatagramProtocol):
         # Owners run vanilla AI locally; non-owners suppress + apply
         # broadcasted state. The server is a relay, not a simulator.
         self.ownership: OwnershipRegistry = OwnershipRegistry()
+        # v26 — addresses we have already warned about, so a peer speaking a
+        # foreign protocol produces one line instead of one per packet.
+        self._logged_once: set = set()
         self._counters = {
             "rx_frames": 0,
             "tx_frames": 0,
@@ -262,7 +268,28 @@ class ServerProtocol(asyncio.DatagramProtocol):
             frame = decode_frame(data)
         except ProtocolError as e:
             self._counters["rx_invalid"] += 1
-            log.debug("bad frame from %s: %s", addr, e)
+            # v26 — say it out loud when the peer speaks another protocol.
+            #
+            # The version byte is checked on EVERY frame, so a client built
+            # against a different version has every packet dropped here: it
+            # never gets a WELCOME and gives up after five silent seconds
+            # with nothing in either log to explain it. There is no rolling
+            # upgrade to be had, but there is no excuse for the silence.
+            msg = str(e)
+            if "unsupported protocol version" in msg:
+                key = ("protover", addr)
+                if key not in self._logged_once:
+                    self._logged_once.add(key)
+                    # Plain ASCII on purpose: this line is read in a console
+                    # that is not always UTF-8, and a diagnostic that renders
+                    # as mojibake is a diagnostic nobody reads.
+                    log.warning(
+                        "%s speaks a different protocol (%s). This server is "
+                        "v%d. Client, launcher and server must all be rebuilt "
+                        "together; every frame from this peer is dropped.",
+                        addr, msg, PROTOCOL_VERSION)
+            else:
+                log.debug("bad frame from %s: %s", addr, e)
             return
 
         mtype = frame.header.msg_type
@@ -306,9 +333,35 @@ class ServerProtocol(asyncio.DatagramProtocol):
         session = self.state.get_by_addr(addr)
 
         # HELLO: bootstrap session if new. Retransmits fall through to channel dedup.
-        if mtype == MessageType.HELLO:
+        if mtype in (MessageType.HELLO, MessageType.HELLO_RESUME):
+            # v26 — A HELLO FROM AN ADDRESS WE ALREADY KNOW.
+            #
+            # Before v26 this was a deadlock. The packet refreshed the old
+            # session's liveness (session.touch below) and was then discarded
+            # as an already-handled HELLO, so a client relaunching onto the
+            # same UDP port kept its own zombie alive with its own retransmits
+            # and could never get back in. The "same addr replaces" branch in
+            # accept_peer was unreachable from the wire.
+            #
+            # A genuine handshake retransmit only happens inside the client's
+            # own 5-second WELCOME timeout, and a client that has been given
+            # its WELCOME never sends HELLO again in that process. So a HELLO
+            # arriving on a session older than that window is a new process,
+            # and the session it landed on is a corpse.
+            if session is not None and (
+                    now_ms - session.joined_at_ms) > self._HELLO_RELAUNCH_GRACE_MS:
+                log.info("HELLO from %s on a %0.1fs-old session (%s): treating "
+                         "it as a relaunch, evicting the old one", addr,
+                         (now_ms - session.joined_at_ms) / 1000.0,
+                         session.peer_id)
+                self._evict_session(session, now_ms)
+                self.state.remove(session.peer_id)
+                session = None
             if session is None:
-                self._handle_hello_initial(addr, frame.payload, now_ms)
+                if mtype == MessageType.HELLO:
+                    self._handle_hello_initial(addr, frame.payload, now_ms)
+                else:
+                    self._handle_hello_resume(addr, frame.payload, now_ms)
                 session = self.state.get_by_addr(addr)
             # If session exists (new or retransmit), continue to channel processing
             # so ReceiveWindow tracks seq + emits ACK. HELLO retransmits will be
@@ -330,14 +383,23 @@ class ServerProtocol(asyncio.DatagramProtocol):
             return  # duplicate, ACK frame, or already-handled HELLO retransmit
 
         # Dispatch app-level payload. HELLO was already handled at bootstrap; skip.
-        if delivered.header.msg_type == MessageType.HELLO:
+        if delivered.header.msg_type in (MessageType.HELLO,
+                                         MessageType.HELLO_RESUME):
             return
 
         self._dispatch(session, delivered.header.msg_type, delivered.payload, now_ms)
 
     def _dispatch(self, session: PeerSession, mtype: int, payload, now_ms: float) -> None:
         if mtype == MessageType.HEARTBEAT:
-            return  # already touched
+            # v26 — answer it. The beat already refreshed our side of the
+            # liveness (session.touch), but the client had no way to notice
+            # that WE had died: it kept talking into a void with a frozen
+            # ghost on screen and no signal. An echo is the cheapest possible
+            # "the server is still here", and the client's reconnect logic
+            # keys off its absence.
+            self._send(session.addr, encode_frame(
+                MessageType.HEARTBEAT, 0, payload, reliable=False))
+            return
         if mtype == MessageType.DISCONNECT:
             self._handle_disconnect(session, payload, now_ms)
             return
@@ -473,16 +535,39 @@ class ServerProtocol(asyncio.DatagramProtocol):
             passworded=False,
         )
 
-    def _send_hello_reject(self, addr: tuple[str, int]) -> None:
-        """Best-effort, non-reliable WELCOME(accepted=False). The reject
-        REASON stays in the server log only — the wire payload has no reason
-        field, and adding one is not worth a protocol bump: the launcher's
-        preflight already diagnoses full/version problems before launch."""
+    # v26 — the string reasons `accept_peer` and the auth path already
+    # produce, mapped to the codes that now travel on the wire. Anything not
+    # listed falls back to AUTH_INVALID rather than silently becoming
+    # "accepted", because an unmapped reason is still a refusal.
+    _REJECT_CODES: dict[str, int] = {
+        "auth_invalid":       RejectCode.AUTH_INVALID,
+        "auth_required":      RejectCode.AUTH_REQUIRED,
+        "identity_taken":     RejectCode.IDENTITY_TAKEN,
+        "peer_id_taken":      RejectCode.PEER_ID_TAKEN,
+        "peer_id_invalid":    RejectCode.PEER_ID_INVALID,
+        "version_mismatch":   RejectCode.VERSION_MISMATCH,
+        "server_full":        RejectCode.SERVER_FULL,
+        "client_id_mismatch": RejectCode.CLIENT_ID_MISMATCH,
+        "resume_unknown":     RejectCode.RESUME_UNKNOWN,
+        "resume_expired":     RejectCode.RESUME_EXPIRED,
+    }
+
+    def _send_hello_reject(self, addr: tuple[str, int],
+                           reason: str = "auth_invalid") -> None:
+        """Best-effort, non-reliable WELCOME(accepted=False).
+
+        v26 — the reason now rides the wire. Until then it stayed in the
+        server log, so a refused client could only print "rejected" and give
+        up, and the player saw a dead session with no explanation. Every
+        caller already computed the exact reason and threw it away; this just
+        carries it."""
+        code = self._REJECT_CODES.get(reason, RejectCode.AUTH_INVALID)
         reject = WelcomePayload(
             session_id=0, accepted=False,
             server_version_major=self.state.server_version[0],
             server_version_minor=self.state.server_version[1],
             tick_rate_hz=self.state.tick_rate_hz,
+            reject_code=code,
         )
         self._send(addr, encode_frame(
             MessageType.WELCOME, 0, reject, reliable=False))
@@ -508,32 +593,48 @@ class ServerProtocol(asyncio.DatagramProtocol):
             if not result.ok:
                 log.warning("rejecting %s (%s): %s", addr,
                             payload.client_id, result.reason)
-                self._send_hello_reject(addr)
+                self._send_hello_reject(addr, "auth_invalid")
                 return
             identity_hex = result.identity_hex
+            # v26 — THE KEY IS THE ACCOUNT. Every persistent record (the
+            # appearance recipe, the presence, the world objects a peer
+            # spawned) is filed under the CLAIMED client_id, so before v26
+            # anyone could claim somebody else's id and inherit their
+            # character. Now a client that proves an identity must claim the
+            # id that identity derives, which closes the hole without
+            # migrating a single stored key. An anonymous HELLO is untouched:
+            # that is how the second test client connects from its bat.
+            expected_id = derive_client_id(payload.auth_pubkey)
+            if payload.client_id != expected_id:
+                log.warning("rejecting %s: client_id_mismatch (claimed %r, "
+                            "key derives %r)", addr, payload.client_id,
+                            expected_id)
+                self._send_hello_reject(addr, "client_id_mismatch")
+                return
             # One live session per identity — same staleness rule as
             # peer_id_taken: a heartbeating holder wins, a corpse is evicted.
             prior = self.state.find_live_identity(identity_hex, now_ms)
             if prior is not None:
                 log.warning("rejecting %s (%s): identity_taken by %s",
                             addr, payload.client_id, prior.peer_id)
-                self._send_hello_reject(addr)
+                self._send_hello_reject(addr, "identity_taken")
                 return
         elif self.require_auth:
             log.warning("rejecting %s (%s): auth_required (unauthenticated "
                         "HELLO on a --require-auth server)", addr,
                         payload.client_id)
-            self._send_hello_reject(addr)
+            self._send_hello_reject(addr, "auth_required")
             return
 
         session, reason = self.state.accept_peer(
             addr, payload.client_id,
             (payload.client_version_major, payload.client_version_minor),
             now_ms,
+            on_evict=lambda prior: self._evict_session(prior, now_ms),
         )
         if session is None:
             log.warning("rejecting %s (%s): %s", addr, payload.client_id, reason)
-            self._send_hello_reject(addr)
+            self._send_hello_reject(addr, reason)
             return
 
         # B6.6w5 — record Steam ID from HELLO. It is a CLAIM (Goldberg can
@@ -556,11 +657,111 @@ class ServerProtocol(asyncio.DatagramProtocol):
         log.info("peer joined: %s from %s (sid=%d) %s %s",
                  session.peer_id, addr, session.session_id, sid_str, auth_str)
 
+        # v26 — the resume token. Minted here so an accepted client always
+        # leaves the handshake holding the one thing it needs to come back
+        # without the launcher.
+        token = self.state.issue_resume_token(session, now_ms)
+        self.state.record_presence_name(
+            session.peer_id, session.display_name or "", now_ms)
+
         # WELCOME is reliable — client needs to know it's accepted
-        welcome = self.state.welcome_for(session)
+        welcome = self.state.welcome_for(session, resume_token=token)
         raw = session.channel.send_reliable(MessageType.WELCOME, welcome, now_ms)
         self._send(addr, raw)
+        self._send_join_bootstrap(session, now_ms)
 
+    def _evict_session(self, session: PeerSession, now_ms: float) -> None:
+        """Tear down a session that a new admission is displacing.
+
+        v26 — the two eviction branches inside `accept_peer` used to drop a
+        session with no notice at all: the NPCs it owned stayed owned by a
+        peer that no longer existed, and the other clients were never told it
+        had left, so its ghost stood in their world forever. This is the same
+        teardown a timeout performs, minus the removal itself, which the
+        caller does.
+        """
+        for change in self.ownership.on_peer_disconnect(session.peer_id, now_ms):
+            self._emit_ownership_change(change, now_ms)
+        self._reannounce_worn_frames(session.peer_id, now_ms)
+        leave = PeerLeavePayload(peer_id=session.peer_id, reason=0)
+        for other in self.state.all_sessions():
+            if other is session:
+                continue
+            raw = other.channel.send_reliable(
+                MessageType.PEER_LEAVE, leave, now_ms)
+            self._send(other.addr, raw)
+
+    def _handle_hello_resume(self, addr: tuple[str, int], payload,
+                             now_ms: float) -> None:
+        """v26 — rejoin with the token from a previous WELCOME.
+
+        This is the whole point of the token: the launcher's proof is single
+        use and the DLL cannot mint one, so before v26 a client that dropped
+        could only be relaunched through the launcher, which is why "A and B
+        reconnect whenever they want" was impossible.
+
+        A resume deliberately force-evicts whatever session that peer id
+        still holds, even a live one. A client asking to resume has already
+        lost its old session; the thing still heartbeating on the server is
+        by definition a corpse the server has not noticed yet.
+        """
+        if not isinstance(payload, HelloResumePayload):
+            return
+        ticket, reason = self.state.consume_resume_token(
+            payload.resume_token, now_ms)
+        if ticket is None:
+            log.warning("rejecting resume from %s (%s): %s", addr,
+                        payload.peer_id, reason)
+            self._send_hello_reject(addr, reason)
+            return
+        if ticket.peer_id != payload.peer_id:
+            log.warning("rejecting resume from %s: token belongs to %s, "
+                        "claim was %s", addr, ticket.peer_id, payload.peer_id)
+            self._send_hello_reject(addr, "client_id_mismatch")
+            return
+
+        prior = self.state.get_by_peer_id(payload.peer_id)
+        if prior is not None:
+            log.info("resume: evicting the previous session of %s (sid=%d)",
+                     prior.peer_id, prior.session_id)
+            self._evict_session(prior, now_ms)
+            self.state.remove(prior.peer_id)
+
+        session, reason = self.state.accept_peer(
+            addr, payload.peer_id,
+            (payload.client_version_major, payload.client_version_minor),
+            now_ms,
+            on_evict=lambda p: self._evict_session(p, now_ms),
+        )
+        if session is None:
+            log.warning("rejecting resume from %s (%s): %s", addr,
+                        payload.peer_id, reason)
+            self._send_hello_reject(addr, reason)
+            return
+        session.identity_hex = ticket.identity_hex
+        presence = self.state.presence(session.peer_id)
+        if presence is not None:
+            session.display_name = presence.display_name
+        log.info("peer resumed: %s from %s (sid=%d) identity=%s",
+                 session.peer_id, addr, session.session_id,
+                 (ticket.identity_hex[:16] + "…") if ticket.identity_hex
+                 else "ANONYMOUS")
+
+        token = self.state.issue_resume_token(session, now_ms)
+        welcome = self.state.welcome_for(session, resume_token=token)
+        raw = session.channel.send_reliable(MessageType.WELCOME, welcome, now_ms)
+        self._send(addr, raw)
+        # A resumed client lost everything it had, so it gets the whole
+        # bootstrap, exactly like a first join.
+        self._send_join_bootstrap(session, now_ms)
+
+    def _send_join_bootstrap(self, session: PeerSession, now_ms: float) -> None:
+        """Everything a peer must receive to see the world as it is now.
+
+        Shared by the first join and by a resume, because a client that
+        dropped has lost all of it either way.
+        """
+        addr = session.addr
         # Bootstrap: send authoritative world state (dead/alive actors) to the new peer
         self._send_world_state_bootstrap(session, now_ms)
         # Bootstrap: container inventories (chunked)
@@ -594,6 +795,134 @@ class ServerProtocol(asyncio.DatagramProtocol):
             existing = self.state.peer_join_for(other)
             raw = session.channel.send_reliable(MessageType.PEER_JOIN, existing, now_ms)
             self._send(addr, raw)
+
+        # v26 — and what those peers look like: where they are and what they
+        # are wearing. Without this a late joiner saw everyone naked at the
+        # origin until they happened to move or change clothes.
+        self._send_presence_bootstrap(session, now_ms)
+        # ...and the mirror, which was missing. See the docstring.
+        self._announce_joiner_outfit(session, now_ms)
+
+    def _send_presence_bootstrap(self, session: PeerSession,
+                                 now_ms: float) -> None:
+        """v26 — show a joiner where the other peers are and what they wear.
+
+        Both replays use the SAME message a live change uses, POS_BROADCAST
+        and EQUIP_BCAST, which is the house idiom (locks and world spawns
+        already replay as ordinary broadcasts with a synthesized sender). The
+        client therefore needs no new code and cannot tell a replay from a
+        live event, which is exactly what makes a ten-hour-late join look
+        like a normal one.
+
+        Known hole, deliberate: the stored outfit is only as complete as the
+        equip events the server witnessed. Whatever a player was already
+        wearing when their save loaded fired no engine event, so it is not
+        here. A later phase teaches the client to announce its worn items at
+        load; until then a peer who never changed clothes still replays
+        empty. Modded weapons also degrade to their base mesh, because the
+        mesh blobs are relayed and never stored.
+        """
+        sent_pos = 0
+        sent_items = 0
+        for rec in self.state.all_presence():
+            if rec.peer_id == session.peer_id:
+                continue
+            # Never reveal a peer that the chargen gate is still hiding.
+            if not self.state.ghost_visible(rec.peer_id):
+                continue
+            if rec.last_pos is not None:
+                pos = PosBroadcastPayload(
+                    peer_id=rec.peer_id,
+                    x=rec.last_pos.x, y=rec.last_pos.y, z=rec.last_pos.z,
+                    rx=rec.last_pos.rx, ry=rec.last_pos.ry, rz=rec.last_pos.rz,
+                    timestamp_ms=rec.last_pos.timestamp_ms,
+                    cell_id=rec.last_pos.cell_id,
+                )
+                # Reliable, unlike a live position: this one is a statement of
+                # fact the joiner has no other way to learn, and dropping it
+                # leaves a ghost at the origin until that peer next moves.
+                self._queue_bootstrap(
+                    session, MessageType.POS_BROADCAST, pos)
+                sent_pos += 1
+            for entry in rec.outfit.values():
+                bcast = EquipBroadcastPayload(
+                    peer_id=rec.peer_id,
+                    item_form_id=entry.item_form_id,
+                    kind=EquipOpKind.EQUIP,
+                    slot_form_id=entry.slot_form_id,
+                    count=entry.count,
+                    timestamp_ms=entry.timestamp_ms,
+                    effective_priority=entry.effective_priority,
+                    mods=entry.mods,
+                    nif_descs=(),
+                )
+                self._queue_bootstrap(
+                    session, MessageType.EQUIP_BCAST, bcast)
+                sent_items += 1
+        if sent_pos or sent_items:
+            log.info("presence bootstrap for %s: %d position(s), %d worn item(s)",
+                     session.peer_id, sent_pos, sent_items)
+
+    def _announce_joiner_outfit(self, session: PeerSession,
+                                now_ms: float) -> None:
+        """Tell the peers already here what the ARRIVING peer is wearing.
+
+        The mirror of _send_presence_bootstrap, and the reason it had to
+        exist. That method answers "what do the others look like" for a
+        joiner; nothing answered "what does the joiner look like" for the
+        others. One direction, and the asymmetry is exactly why a ghost was
+        dressed the first time and naked ever after:
+
+          * A connects. The server replays B's stored outfit TO A, because A
+            is the joiner. A queues it and paints it on the first ghost body
+            it builds. Dressed.
+          * B quits and comes back. The server replays A's outfit TO B,
+            because B is now the joiner. A is told nothing, its queue was
+            emptied long ago, and its ghost of B comes back naked.
+
+        Before v26 there was no stored outfit at all and the first spawn was
+        naked too; the client-side workaround was to step in and out of a
+        power armour frame, which fires real equip events. Storing the
+        outfit is what made the first spawn dressed. This makes every
+        subsequent one dressed as well.
+
+        Same message a live change uses, same replay idiom, so the client
+        needs no new code and cannot tell this from someone getting dressed
+        in front of it. Server-side on purpose: it carries the OMOD list
+        with each item, which a client-side memory of "what it wore last"
+        cannot reconstruct — attaching an armour without its mods is what
+        made the ghost come back wrong.
+
+        Position is deliberately NOT mirrored: the joiner starts streaming
+        its own within a second, and a stale one would only move the ghost
+        twice.
+        """
+        rec = self.state.presence(session.peer_id)
+        if rec is None or not rec.outfit:
+            return
+        # Never reveal a peer the chargen gate is still hiding — same rule
+        # the other direction follows.
+        if not self.state.ghost_visible(session.peer_id):
+            return
+        others = self.state.other_sessions(session.addr)
+        if not others:
+            return
+        for entry in rec.outfit.values():
+            bcast = EquipBroadcastPayload(
+                peer_id=session.peer_id,
+                item_form_id=entry.item_form_id,
+                kind=EquipOpKind.EQUIP,
+                slot_form_id=entry.slot_form_id,
+                count=entry.count,
+                timestamp_ms=entry.timestamp_ms,
+                effective_priority=entry.effective_priority,
+                mods=entry.mods,
+                nif_descs=(),
+            )
+            for other in others:
+                self._queue_bootstrap(other, MessageType.EQUIP_BCAST, bcast)
+        log.info("announced %s's %d worn item(s) to %d peer(s) already here",
+                 session.peer_id, len(rec.outfit), len(others))
 
     def _send_world_state_bootstrap(self, session: PeerSession, now_ms: float) -> None:
         """Send authoritative world-actor snapshot to a newly-joined peer, chunked."""
@@ -682,7 +1011,14 @@ class ServerProtocol(asyncio.DatagramProtocol):
             # the owner's screen). Need visibility on WHICH validator
             # branch is firing so we can either fix the rule or carve a
             # legitimate exception.
-            log.info("reject POS from %s: %s %s",
+            # 2026-09-18 - demoted. The Build 65.c.12 investigation is
+            # over, and the line now fires ~40 times a minute with a
+            # single reason (TOO_FAST_REPEAT, dt=0.0ms: the client
+            # enqueues two POS in the same millisecond - real bug,
+            # tracked separately). The rejection COUNTER still rides
+            # the periodic stats line, so a rejection storm stays
+            # visible at INFO without one line per packet.
+            log.debug("reject POS from %s: %s %s",
                      session.peer_id, RejectReason(result.reason).name, result.detail)
             return
 
@@ -704,6 +1040,11 @@ class ServerProtocol(asyncio.DatagramProtocol):
         session.last_pos = payload
         session.last_pos_at_ms = now_ms
         session.total_pos_updates += 1
+        # v26 — and keep it past the session, so somebody joining later can be
+        # told where this peer is instead of seeing a ghost at the origin.
+        # After validation on purpose: a rejected update must never become the
+        # position a late joiner is shown.
+        self.state.record_presence_pos(session.peer_id, payload, now_ms)
 
         # Recorded above, relayed below -- and the order matters. The server's own
         # logic (ownership election, npc_brain distances) wants this peer's
@@ -1120,9 +1461,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
         sent = 0
         for peer_id, recipe in self.state.all_appearances():
             payload = AppearanceBroadcastPayload(peer_id=peer_id, recipe=recipe)
-            raw = session.channel.send_reliable(
-                MessageType.APPEARANCE_BCAST, payload, now_ms)
-            self._send(session.addr, raw)
+            self._queue_bootstrap(session, MessageType.APPEARANCE_BCAST, payload)
             sent += 1
         if sent:
             log.info("appearance bootstrap: %d recipe(s) -> %s",
@@ -1197,6 +1536,24 @@ class ServerProtocol(asyncio.DatagramProtocol):
                         "objects already stored", session.peer_id)
             return
 
+        # v26 — did this peer just climb OUT of power armour?
+        #
+        # The client announces the exit as a brand-new spawn, so without this
+        # the frame they were wearing stayed marked worn for the rest of the
+        # server's life: invisible (the bootstrap skips it) but very much
+        # alive, and it would have been handed back as a SECOND frame the
+        # moment that peer disconnected. The new wid is that frame; the old
+        # record is superseded and goes.
+        if payload.base_form_id == self._PA_FRAME_BASE:
+            for old_wid, old in list(self.state.world_spawns.items()):
+                if (old.worn_by_peer_id == session.peer_id
+                        and old.base_form_id == payload.base_form_id):
+                    del self.state.world_spawns[old_wid]
+                    log.info("wid=%d was worn by %s and has just been "
+                             "re-announced: the old record is superseded",
+                             old_wid, session.peer_id)
+            self.state.record_presence_worn_frame(session.peer_id, 0, now_ms)
+
         st = self.state.record_world_spawn(
             spawner_peer=session.peer_id,
             base_form_id=payload.base_form_id,
@@ -1242,12 +1599,35 @@ class ServerProtocol(asyncio.DatagramProtocol):
         """
         if not isinstance(payload, WorldDespawnOpPayload):
             return
-        st = self.state.world_spawns.pop(payload.wid, None)
+        st = self.state.world_spawns.get(payload.wid)
         if st is None:
             log.debug("world_despawn_op wid=%d from %s: unknown wid — "
                       "already removed or transient", payload.wid,
                       session.peer_id)
             return
+
+        # v26 — SOMEBODY CLIMBED INTO IT, it did not die.
+        #
+        # Entering power armour makes the engine disable the frame REFR, and
+        # the client reports that as reason 2. Deleting the record here is
+        # what made a frame vanish for everyone when its wearer quit or
+        # crashed: the exit that would have re-announced it never arrived, and
+        # "removal persists by omission" had already erased the piece ledger
+        # from the snapshot too, so the armour was gone from every future
+        # session as well. Mark it instead. The bootstrap skips marked frames
+        # so no ghost frame is placed in the world while somebody is inside,
+        # and the wearer disconnecting brings it back where they stood.
+        if (payload.reason == 2 and st.base_form_id == self._PA_FRAME_BASE
+                and not st.worn_by_peer_id):
+            st.worn_by_peer_id = session.peer_id
+            st.worn_since_ms = now_ms
+            self.state.record_presence_worn_frame(
+                session.peer_id, st.wid, now_ms)
+            log.info("world spawn wid=%d (PA frame) marked WORN by %s — kept "
+                     "with its %d piece(s) instead of deleted",
+                     st.wid, session.peer_id, len(st.pieces))
+        else:
+            self.state.world_spawns.pop(payload.wid, None)
         bcast = WorldDespawnBroadcastPayload(
             peer_id=session.peer_id,
             wid=payload.wid,
@@ -1309,7 +1689,12 @@ class ServerProtocol(asyncio.DatagramProtocol):
         ref that died with its previous session, which is the design — the
         server owns spawned-object lifetime, saves never do.
         """
-        spawns = self.state.all_world_spawns()
+        # v26 — skip the frames somebody is currently wearing. The record is
+        # kept (that is what stops a worn frame being lost when its wearer
+        # quits), but placing it would put an empty suit of power armour in
+        # the world next to the player already inside it.
+        spawns = [w for w in self.state.all_world_spawns()
+                  if not w.worn_by_peer_id]
         if not spawns:
             return
         log.info("world-spawn bootstrap %s: %d object(s)",
@@ -1326,9 +1711,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 timestamp_ms=w.timestamp_ms,
                 pieces=w.pieces,
             )
-            raw = session.channel.send_reliable(
-                MessageType.WORLD_SPAWN_BCAST, payload, now_ms)
-            self._send(session.addr, raw)
+            self._queue_bootstrap(session, MessageType.WORLD_SPAWN_BCAST, payload)
 
     def _send_lock_state_bootstrap(
         self, session: PeerSession, now_ms: float
@@ -1355,9 +1738,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 locked=1 if lk.locked else 0,
                 timestamp_ms=lk.timestamp_ms,
             )
-            raw = session.channel.send_reliable(
-                MessageType.LOCK_BCAST, payload, now_ms)
-            self._send(session.addr, raw)
+            self._queue_bootstrap(session, MessageType.LOCK_BCAST, payload)
 
     def _send_ownership_state_bootstrap(
         self, session: PeerSession, now_ms: float
@@ -1601,6 +1982,29 @@ class ServerProtocol(asyncio.DatagramProtocol):
     # we never assign a raider to someone whose engine can't engage.
     _AGGRO_RANGE_SQ: float = 6000.0 * 6000.0
     _POS_FRESH_MS: float = 3000.0
+    # v26 — how old a session has to be before a HELLO landing on its address
+    # counts as a relaunch rather than a handshake retransmit. The client
+    # gives up on its WELCOME after 5 s, so past that window it is never
+    # retransmitting a HELLO; and a relaunched Fallout 4 takes ~40 s to boot,
+    # so the two cases never overlap in practice.
+    _HELLO_RELAUNCH_GRACE_MS: float = 6000.0
+    # v26 — the power armour frame base. Entering one disables the REFR, which
+    # reaches us as an ordinary death; only for THIS base does a disable mean
+    # "somebody climbed inside" rather than "it is gone".
+    _PA_FRAME_BASE: int = 0x0002079E
+    # L'indossabile che disegna l'esoscheletro. Non e' la base del REFR qui
+    # sopra: e' il pezzo che il client equipaggia entrando, e che quindi
+    # finisce nel vestito memorizzato insieme alle piastre. Torna al telaio
+    # con loro, o il ghost di chi rientra si ritrova addosso un esoscheletro
+    # vuoto — sintomo osservato dal vivo il 2026-09-18.
+    _PA_FRAME_WEARABLE: int = 0x0003E577
+    # v26 — how many bootstrap frames may be in flight to one peer at once.
+    # Comfortably inside the 32-frame receive window, leaving room for the
+    # ordinary traffic that keeps flowing during a join.
+    _BOOTSTRAP_INFLIGHT_CAP: int = 16
+    # And how many we are willing to hand to the socket in a single tick,
+    # so a large world drains steadily instead of in one lump.
+    _BOOTSTRAP_PER_TICK: int = 8
 
     def _in_range_peer_ids(
         self, rx: float, ry: float, rz: float, now_ms: float
@@ -2286,6 +2690,25 @@ class ServerProtocol(asyncio.DatagramProtocol):
             mods=payload.mods,
             nif_descs=payload.nif_descs,
         )
+        # v26 — remember it. Equipment reaches us as change notifications,
+        # never as a snapshot, so the stored outfit is this dictionary of
+        # items: an equip inserts or replaces, an unequip removes by form id,
+        # which is all an unequip carries. That dictionary is what a late
+        # joiner is replayed, one EQUIP_BCAST per entry.
+        self.state.record_presence_equip(
+            session.peer_id,
+            OutfitEntry(
+                item_form_id=payload.item_form_id,
+                slot_form_id=payload.slot_form_id,
+                count=payload.count,
+                effective_priority=payload.effective_priority,
+                mods=payload.mods,
+                timestamp_ms=payload.timestamp_ms,
+            ),
+            equipped=(payload.kind == EquipOpKind.EQUIP),
+            now_ms=now_ms,
+        )
+
         for other in self.state.other_sessions(session.addr):
             raw = other.channel.send_reliable(
                 MessageType.EQUIP_BCAST, broadcast, now_ms)
@@ -2710,6 +3133,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
         # Per-session retransmit + ACK flush
         for session in self.state.all_sessions():
             try:
+                self._drain_bootstrap(session, now_ms)
                 retrans, ack = session.channel.tick(now_ms)
             except ChannelError:
                 log.warning("peer %s channel dead (max retransmits); kicking",
@@ -2728,6 +3152,14 @@ class ServerProtocol(asyncio.DatagramProtocol):
             # Build 65 — release every NPC owned by the timed-out peer.
             for change in self.ownership.on_peer_disconnect(s.peer_id, now_ms):
                 self._emit_ownership_change(change, now_ms)
+            # v26 — AND GIVE BACK THEIR POWER ARMOUR.
+            #
+            # This is the path that actually matters for it. A player who
+            # crashes, alt-F4s or closes the game does not send a DISCONNECT:
+            # they simply stop talking and land here. The first version of
+            # this feature only ran on the graceful paths, so the one case it
+            # was built for was the one case it missed.
+            self._reannounce_worn_frames(s.peer_id, now_ms)
             # Already removed from sessions; notify others
             leave = PeerLeavePayload(peer_id=s.peer_id, reason=0)
             for other in self.state.all_sessions():
@@ -2780,7 +3212,79 @@ class ServerProtocol(asyncio.DatagramProtocol):
                     player_positions, self._AGGRO_RANGE_SQ, now_ms):
                 self._emit_ownership_change(change, now_ms)
 
+        # v26 — two janitors that existed and were never run. The pending
+        # damage buffer grew for the whole session, and expired resume tokens
+        # were never dropped.
+        self.ownership.prune_pending_damage(now_ms)
+        self.state.prune_resume_tokens(now_ms)
+
     # ----- helpers
+
+    def _reannounce_worn_frames(self, peer_id: str, now_ms: float) -> None:
+        """v26 — give back the power armour of a peer that just left.
+
+        The frame was marked worn instead of deleted when they climbed in, so
+        the ledger and the pieces are still here. The peer's last known
+        position is where they were standing, which is where the frame is.
+        Everyone still connected is told to place it, and the mark is cleared
+        so the frame is an ordinary world object again.
+        """
+        presence = self.state.presence(peer_id)
+        for st in list(self.state.world_spawns.values()):
+            if st.worn_by_peer_id != peer_id:
+                continue
+            if presence is not None and presence.last_pos is not None:
+                st.px = presence.last_pos.x
+                st.py = presence.last_pos.y
+                st.pz = presence.last_pos.z
+                st.cell_id = presence.last_pos.cell_id
+            st.worn_by_peer_id = ""
+            st.worn_since_ms = 0.0
+            # La power armor torna a essere un oggetto del mondo, PER INTERO.
+            #
+            # Il telaio riappare qui sotto all'ultima posizione del portatore
+            # con il suo registro di piastre, che e' autorevole. Le stesse
+            # piastre devono percio' USCIRE da cio' che quel peer risulta
+            # indossare: e' indosso a lui o e' nel mondo, mai tutte e due.
+            #
+            # Non farlo era la radice di tutti i guasti visivi del
+            # 2026-09-18: il vestito memorizzato non cala mai da solo, il
+            # server lo rigiocava a ogni ingresso, e ogni pezzo PA fasullo
+            # retargeta lo scheletro condiviso al bind della power armor.
+            # Le voci del registro non sono coppie: portano anche i mod e
+            # un timbro. Serve solo il form id, che e' sempre il primo campo.
+            returned = {
+                (p[0] if isinstance(p, (tuple, list)) else p)
+                for p in st.pieces
+            }
+            returned.add(self._PA_FRAME_WEARABLE)
+            dropped = self.state.drop_items_from_outfit(peer_id, returned)
+            bcast = WorldSpawnBroadcastPayload(
+                peer_id="server",
+                wid=st.wid,
+                base_form_id=st.base_form_id,
+                spawner_local_fid=0,
+                px=st.px, py=st.py, pz=st.pz,
+                rx=st.rx, ry=st.ry, rz=st.rz,
+                cell_id=st.cell_id,
+                flags=st.flags,
+                timestamp_ms=int(now_ms),
+                pieces=st.pieces,
+            )
+            sent = 0
+            for other in self.state.all_sessions():
+                if other.peer_id == peer_id:
+                    continue
+                raw = other.channel.send_reliable(
+                    MessageType.WORLD_SPAWN_BCAST, bcast, now_ms)
+                self._send(other.addr, raw)
+                sent += 1
+            log.info("wid=%d was worn by %s who just left: re-announced at "
+                     "their last position to %d peer(s); %d piece(s) went "
+                     "back to the frame and out of their stored outfit",
+                     st.wid, peer_id, sent, dropped)
+        if presence is not None:
+            presence.worn_frame_wid = 0
 
     def _remove_and_notify(self, session: PeerSession, *, reason: int, now_ms: float) -> None:
         # Build 65 — release every NPC owned by the departing peer. The
@@ -2790,6 +3294,9 @@ class ServerProtocol(asyncio.DatagramProtocol):
         ownership_changes = self.ownership.on_peer_disconnect(
             session.peer_id, now_ms,
         )
+        # v26 — before the session is gone, hand back any power armour frame
+        # this peer was wearing. Without this the frame is lost for everyone.
+        self._reannounce_worn_frames(session.peer_id, now_ms)
         self.state.remove(session.peer_id)
         for change in ownership_changes:
             self._emit_ownership_change(change, now_ms)
@@ -2798,10 +3305,55 @@ class ServerProtocol(asyncio.DatagramProtocol):
             raw = other.channel.send_reliable(MessageType.PEER_LEAVE, leave, now_ms)
             self._send(other.addr, raw)
 
+    def _queue_bootstrap(self, session: PeerSession, msg_type,
+                         payload) -> None:
+        """Enqueue one bootstrap frame instead of firing it immediately.
+
+        Ordering is preserved: the queue is drained in order.
+
+        It is NOT true that everything a join sends goes through here, as this
+        docstring used to claim. Only appearance, world spawn, lock, position
+        and equip frames are queued; world state, container state, quests,
+        global vars, ownership and the two PEER_JOIN rounds are still written
+        straight to the socket earlier in the same bootstrap, and the
+        in-flight cap does not apply to them. A lock never overtakes its world
+        state because the world state left first, not because of this queue.
+        """
+        session.pending_bootstrap.append((msg_type, payload))
+
+    def _drain_bootstrap(self, session: PeerSession, now_ms: float) -> int:
+        """Hand a few queued frames to the socket, respecting the in-flight
+        cap. Called from the periodic tick."""
+        sent = 0
+        while session.pending_bootstrap and sent < self._BOOTSTRAP_PER_TICK:
+            if len(session.channel.send.in_flight) >= self._BOOTSTRAP_INFLIGHT_CAP:
+                break
+            msg_type, payload = session.pending_bootstrap.pop(0)
+            try:
+                raw = session.channel.send_reliable(msg_type, payload, now_ms)
+            except Exception as e:
+                log.warning("bootstrap frame for %s dropped: %s",
+                            session.peer_id, e)
+                session.pending_bootstrap.clear()
+                return sent
+            self._send(session.addr, raw)
+            sent += 1
+        return sent
+
     def _send(self, addr: tuple[str, int], raw: bytes) -> None:
         if self.transport is None:
             return
-        self.transport.sendto(raw, addr)
+        try:
+            self.transport.sendto(raw, addr)
+        except OSError as e:
+            # v26 — `_send_raw` has had this guard for a while; this one did
+            # not, so a single dead peer could take down whichever fan-out
+            # loop was running (containers, locks, equip, positions). On
+            # Windows the usual culprit is the ICMP port-unreachable that
+            # comes back as WinError 10054.
+            self._counters["tx_errors"] = self._counters.get("tx_errors", 0) + 1
+            log.debug("sendto %s failed: %s", addr, e)
+            return
         self._counters["tx_frames"] += 1
 
     def stats(self) -> dict[str, int]:
@@ -3160,6 +3712,22 @@ async def run_server(cfg: Config) -> None:
         log.info("server v1 ready")
         await asyncio.gather(*tasks)
     finally:
+        # v26 — WRITE THE SNAPSHOT ON THE WAY OUT.
+        #
+        # The periodic writer ran every 30 s and nothing ran at shutdown, so
+        # Ctrl+C threw away up to half a minute of state. The case that
+        # actually bit: a player finishes the character creator and the
+        # server is stopped a few seconds later, so on the next start the
+        # server has no appearance for that identity and demands the whole
+        # ritual again. Presence and resume tokens now ride the same file and
+        # would be lost the same way.
+        if cfg.snapshot_path is not None:
+            try:
+                snapshot(protocol.state, cfg.snapshot_path)
+                log.info("final snapshot written to %s", cfg.snapshot_path)
+            except Exception as e:
+                log.error("final snapshot FAILED (%s): up to %.0fs of state "
+                          "is lost", e, cfg.snapshot_interval_s)
         transport.close()
 
 

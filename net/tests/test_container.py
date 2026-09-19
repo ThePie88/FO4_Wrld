@@ -25,7 +25,9 @@ from server.state import ServerState, ContainerWorldState, PeerSession, SessionS
 from server.validator import (  # noqa: E402
     validate_container_op, RejectReason,
 )
-from server.persistence import snapshot, load_into  # noqa: E402
+from server.persistence import (  # noqa: E402
+    snapshot, load_into, SNAPSHOT_FORMAT_VERSION,
+)
 from server.main import ServerProtocol  # noqa: E402
 from client.main import FalloutWorldClient, ClientConfig  # noqa: E402
 from client.frida_bridge import ContainerCapture  # noqa: E402
@@ -310,7 +312,7 @@ class TestPersistence:
         path = tmp_path / "snap.json"
         snapshot(src, path)
         data = json.loads(path.read_text())
-        assert data["version"] == 4  # v4 adds locks (B6.3); v3 added containers
+        assert data["version"] == SNAPSHOT_FORMAT_VERSION
         assert len(data["containers"]) == 1
         c = data["containers"][0]
         assert c["base_id"] == f"0x{TRUNK_BASE:X}"

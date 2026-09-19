@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from net.protocol import (  # noqa: E402
+    derive_client_id, RejectCode,
     AUTH_SIGN_DOMAIN,
     auth_sign_message,
     HelloPayload,
@@ -186,7 +187,17 @@ def _request_challenge(proto, addr=("127.0.0.1", 40000)):
     return f.payload.challenge
 
 
-def _send_hello(proto, addr, pub=b"", ch=b"", sig=b"", name="", peer="player_A"):
+def _send_hello(proto, addr, pub=b"", ch=b"", sig=b"", name="", peer=None):
+    """v26 — an AUTHENTICATED hello must claim the id its own key derives.
+
+    That is what the launcher has always sent; the hardcoded "player_A" here
+    was a fiction the server used to accept, and accepting it is precisely
+    the hole v26 closes (anyone could claim someone else's id and inherit
+    their character). Pass `peer=` explicitly only when the mismatch IS the
+    thing under test.
+    """
+    if peer is None:
+        peer = derive_client_id(pub) if len(pub) == 32 else "player_A"
     hello = HelloPayload(peer, 1, 0, 0, pub, ch, sig, name)
     frame = encode_frame(MessageType.HELLO, 0, hello, reliable=True)
     proto.datagram_received(frame, addr)
@@ -227,7 +238,7 @@ def test_server_rejects_replayed_challenge():
     assert proto.state.get_by_addr(a1) is not None
     # same signed challenge from a different socket = replay
     a2 = ("127.0.0.1", 40004)
-    _send_hello(proto, a2, pub, ch, sig, peer="player_B")
+    _send_hello(proto, a2, pub, ch, sig)
     welcomes = _hello_frames_for(proto, a2)
     assert welcomes and not welcomes[-1].accepted
 
@@ -245,7 +256,7 @@ def test_server_identity_taken():
     a2 = ("127.0.0.1", 40006)
     ch2 = _request_challenge(proto)
     _send_hello(proto, a2, pub, ch2,
-                ed25519.sign(seed, auth_sign_message("", ch2)), peer="player_B")
+                ed25519.sign(seed, auth_sign_message("", ch2)))
     welcomes = _hello_frames_for(proto, a2)
     assert welcomes and not welcomes[-1].accepted
     assert proto.state.get_by_addr(a2) is None
@@ -315,3 +326,52 @@ def test_rejected_join_does_not_burn_the_challenge():
     welcomes = _hello_frames_for(proto, ("127.0.0.1", 40011))
     assert welcomes and not welcomes[-1].accepted          # server_full
     assert proto.auth_challenges.is_live(ch2), "nonce burned on a full server"
+
+
+def test_authenticated_hello_must_claim_the_derived_id():
+    """v26 — the key IS the account.
+
+    Every persistent record (appearance, presence, the objects a peer
+    spawned) is filed under the CLAIMED client_id, so an authenticated login
+    that claims somebody else's id would inherit their character. A proof of
+    identity now has to name the identity it proves.
+    """
+    proto = _mkproto()
+    seed, pub = ed25519.create_keypair()
+    ch = _request_challenge(proto)
+    sig = ed25519.sign(seed, auth_sign_message("", ch))
+    addr = ("127.0.0.1", 40011)
+    _send_hello(proto, addr, pub, ch, sig, peer="somebodyelse")
+    welcomes = _hello_frames_for(proto, addr)
+    assert welcomes and not welcomes[-1].accepted
+    assert welcomes[-1].reject_code == RejectCode.CLIENT_ID_MISMATCH
+    assert proto.state.get_by_addr(addr) is None
+
+
+def test_anonymous_hello_may_still_claim_any_id():
+    """The second test client connects from a bat with no launcher and no
+    proof; a test server without --require-auth must keep accepting it, or
+    the whole two-client loop breaks."""
+    proto = _mkproto()
+    addr = ("127.0.0.1", 40012)
+    _send_hello(proto, addr, peer="player_B")
+    welcomes = _hello_frames_for(proto, addr)
+    assert welcomes and welcomes[-1].accepted
+    sess = proto.state.get_by_addr(addr)
+    assert sess is not None and sess.peer_id == "player_B"
+    assert sess.identity_hex == ""
+
+
+def test_reject_reason_reaches_the_client():
+    """Before v26 every refusal was an accepted=0 with no reason, so the
+    client could only log "rejected" and die."""
+    proto = _mkproto()
+    proto.state.max_players = 1
+    a1 = ("127.0.0.1", 40013)
+    _send_hello(proto, a1, peer="player_A")
+    assert proto.state.get_by_addr(a1) is not None
+    a2 = ("127.0.0.1", 40014)
+    _send_hello(proto, a2, peer="player_B")
+    welcomes = _hello_frames_for(proto, a2)
+    assert welcomes and not welcomes[-1].accepted
+    assert welcomes[-1].reject_code == RejectCode.SERVER_FULL

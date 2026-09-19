@@ -22,6 +22,7 @@
 #include "anatomy_mirror.h"   // 2026-08-07: ghost wears the local player's face parts
 #include "ni_offsets.h"
 #include "scene_walker.h"
+#include "ghost_lifecycle.h"
 #include "face_cache.h"   // 2026-08-08: a peer's built face, kept warm
 #include "skin_rebind.h"
 #include "weapon_witness.h"  // read_parent_pub for detach-via-parent helper
@@ -73,7 +74,274 @@ namespace bone_copy {
 // reference the same symbols.
 static std::mutex                g_canonical_mutex;
 static std::vector<std::string>  g_canonical_names;   // size == joint count
-static std::vector<void*>        g_ghost_bone_ptrs;   // parallel: skel joint[i]
+// 2026-09-18 — g_ghost_bone_ptrs NON ESISTE PIU'. Era la lista dei nodi vivi
+// dei giunti, una sola per sessione: due ghost che si muovono in modo
+// indipendente avrebbero scritto rotazioni l'uno nelle ossa dell'altro. I
+// puntatori ora stanno in GhostRecord::bones, uno per peer; qui restano solo
+// i NOMI, che sono l'ordine degli indici sul filo e devono essere identici su
+// ogni client (vedi il blocco sul congelamento, poco sotto).
+
+// ===== IL GHOST DI CHI? ===================================================
+//
+// Fase 2, 2026-09-18. Il commento sopra local_player_in_world lo dice da
+// mesi: "Blocking prerequisite for more than 2 players: g_injected_cube is a
+// SINGLE pointer". Finche' il corpo del ghost e' UNA variabile, "il ghost di
+// quel peer" non e' una cosa indirizzabile: non lo si puo' costruire, non lo
+// si puo' smontare, e il secondo giocatore semplicemente non ha dove stare.
+//
+// Questo e' il record che lo rende indirizzabile. Nasce con un campo solo —
+// il corpo — e assorbira' gli altri singleton del censimento un passo alla
+// volta (testa, innesto delle ossa PA, bind salvati dal retarget). Si comincia
+// dal corpo perche' e' ventisette letture su ventisette.
+//
+// IL PUNTATORE UNICO E' MORTO, e con lui il debito che questo commento
+// annunciava. Nella mattinata del 2026-09-18 il record conviveva con
+// g_injected_cube perche' dodici siti lo leggevano ancora senza avere un peer
+// fra le mani: i gestori dei messaggi di rete, lo smontaggio primitivo, la
+// ricucitura delle pelli. Sono stati convertiti tutti, uno alla volta, e ogni
+// passo e' stato compilato prima del successivo.
+//
+// Quello che resta da sapere: i gestori di rete adesso ITERANO i ghost
+// registrati e dentro il giro usano `continue` e mai `return`, perche' il
+// dato che manca a un peer non deve fermare l'animazione degli altri.
+//
+// NESSUN RIPIEGO NELL'ACCESSORE, ed e' una scelta. ghost_body_for torna
+// nullptr se quel peer non ha un corpo, invece di ripiegare sul puntatore
+// unico. Un accessore che ripiega in silenzio restituisce il corpo di
+// qualcun altro e non fallisce mai rumorosamente — e' la stessa trappola che
+// stamattina e' costata un ghost calvo e una power armor senza piastre. Il
+// ripiego sarebbe servito a una sola strada, l'iniezione senza peer del
+// timer a trenta secondi, e quella e' gia' morta: la sua unica accensione e'
+// commentata in dll_main.cpp ("// arm_injection_after_boot(30000);"), quindi
+// FW_MSG_STRADAB_INJECT non viene piu' postato da nessuno.
+// Il blocco di 16 float che descrive la posa di riposo di un osso. Sta qui e
+// non piu' in fondo al file perche' il record lo contiene.
+struct PaBindSave { float xf[16]; };
+
+struct GhostRecord {
+    void* body = nullptr;   // la radice del corpo: era g_injected_cube
+    // I nodi vivi dei giunti, nell'ordine della lista canonica. I NOMI
+    // restano globali perche' sono l'ordine degli indici sul filo e devono
+    // essere identici su ogni client; i PUNTATORI sono di questo corpo e di
+    // nessun altro. E' la regola che il commento sopra la lista canonica
+    // gia' scriveva — "nomi condivisi, puntatori locali" — e che finora non
+    // aveva dove essere applicata.
+    std::vector<void*> bones;
+    // La testa e' un BSFadeNode a se' (BaseMaleHead.nif col retro come
+    // figlio), attaccata sotto il corpo ma tenuta a parte perche' la
+    // posizione le applica una rotazione INDIPENDENTE: al corpo solo
+    // l'imbardata, alla testa solo il beccheggio. Senza quel disaccoppiamento
+    // un peer che guarda in alto ruota tutto come un tronco.
+    void* head = nullptr;
+
+    // Le ossa della power armor sono gia' innestate in QUESTO scheletro.
+    // Era un bool di sessione: bastava che un ghost fosse passato per una
+    // power armor perche' ogni ghost successivo saltasse l'innesto e si
+    // ritrovasse le piastre appese a ossa inesistenti.
+    bool pa_grafted = false;
+
+    // Il bind UMANO di ogni osso, salvato prima di scrivergli sopra quello
+    // della power armor, per poterlo rimettere allo stacco del telaio.
+    // Indicizzato per nodo, e i nodi sono di questo corpo.
+    std::unordered_map<void*, PaBindSave> pa_bind;
+
+    // Le BSSubIndexTriShape del corpo nudo, raccolte alla nascita del ghost.
+    // Sono quelle che il culling nasconde quando addosso c'e' un'armatura da
+    // slot BODY. MaleBody.nif ne porta DUE, non una: nascondere solo la prima
+    // lasciava la seconda visibile e dava il ghost "testa e mani volanti".
+    std::vector<void*> body_geoms;
+};
+
+std::mutex                                   g_ghosts_mtx;
+std::unordered_map<std::string, GhostRecord> g_ghosts;
+
+// Il corpo di QUESTO peer, o nullptr. Non ripiega: vedi sopra.
+static void* ghost_body_for(const char* peer_id) noexcept {
+    if (!peer_id || !*peer_id) return nullptr;
+    std::lock_guard<std::mutex> lk(g_ghosts_mtx);
+    auto it = g_ghosts.find(peer_id);
+    return it == g_ghosts.end() ? nullptr : it->second.body;
+}
+
+// Registra il corpo appena nato. Chiamata nello stesso punto in cui si
+// scrive g_injected_cube, di proposito: due verita' scritte insieme non
+// possono divergere.
+static void ghost_record_body(const char* peer_id, void* body) {
+    if (!peer_id || !*peer_id || !body) {
+        FW_WRN("[ghost-rec] corpo %p senza peer — NON registrato; i siti "
+               "per peer non lo troveranno", body);
+        return;
+    }
+    std::lock_guard<std::mutex> lk(g_ghosts_mtx);
+    g_ghosts[peer_id].body = body;
+    FW_LOG("[ghost-rec] peer=%s -> corpo %p (%zu ghost registrati)",
+           peer_id, body, g_ghosts.size());
+}
+
+// Le ossa di QUESTO peer, copiate fuori dal lock. Vuoto se quel peer non ha
+// un corpo, o se il suo corpo non ha ancora camminato lo scheletro.
+static std::vector<void*> ghost_bones_for(const char* peer_id) {
+    if (!peer_id || !*peer_id) return {};
+    std::lock_guard<std::mutex> lk(g_ghosts_mtx);
+    auto it = g_ghosts.find(peer_id);
+    return it == g_ghosts.end() ? std::vector<void*>{} : it->second.bones;
+}
+
+static void* ghost_head_for(const char* peer_id) noexcept {
+    if (!peer_id || !*peer_id) return nullptr;
+    std::lock_guard<std::mutex> lk(g_ghosts_mtx);
+    auto it = g_ghosts.find(peer_id);
+    return it == g_ghosts.end() ? nullptr : it->second.head;
+}
+
+static void ghost_record_head(const char* peer_id, void* head) {
+    if (!peer_id || !*peer_id) return;
+    std::lock_guard<std::mutex> lk(g_ghosts_mtx);
+    g_ghosts[peer_id].head = head;
+}
+
+// Le geometrie del corpo di QUESTO peer.
+static std::vector<void*> ghost_geoms_for(const char* peer_id) {
+    if (!peer_id || !*peer_id) return {};
+    std::lock_guard<std::mutex> lk(g_ghosts_mtx);
+    auto it = g_ghosts.find(peer_id);
+    return it == g_ghosts.end() ? std::vector<void*>{} : it->second.body_geoms;
+}
+
+static void ghost_record_geoms(const char* peer_id, std::vector<void*> geoms) {
+    if (!peer_id || !*peer_id) return;
+    std::lock_guard<std::mutex> lk(g_ghosts_mtx);
+    g_ghosts[peer_id].body_geoms = std::move(geoms);
+}
+
+// Quanti ghost esistono adesso. Per i siti che chiedevano "esiste un ghost?"
+// leggendo il puntatore unico: la domanda era gia' quella, mancava il modo di
+// porla senza nominare l'unico.
+static std::size_t ghost_count() noexcept {
+    std::lock_guard<std::mutex> lk(g_ghosts_mtx);
+    return g_ghosts.size();
+}
+
+// Un corpo qualunque fra quelli registrati. NON e' un accessore per peer ed
+// e' l'ultimo residuo del "ce n'e' uno solo": lo usano i siti che vogliono un
+// ghost qualsiasi (una diagnostica, un cancello di prontezza del motore) e il
+// gancio del proxy Actor, che e' spento da Build c.34. Chi disegna o anima
+// deve usare ghost_body_for.
+static void* ghost_any_body() noexcept {
+    std::lock_guard<std::mutex> lk(g_ghosts_mtx);
+    for (const auto& [peer, rec] : g_ghosts) if (rec.body) return rec.body;
+    return nullptr;
+}
+
+// Dal CORPO al peer. Serve allo smontaggio primitivo, che il corpo ce l'ha e
+// il peer no: e' nato quando di ghost ce n'era uno e la domanda "di chi?" non
+// aveva senso. Buffer e non std::string perche' i chiamanti stanno dentro
+// gabbie SEH, dove un temporaneo con distruttore non compila (C2712).
+static bool ghost_peer_for_body(void* body, char* out,
+                                std::size_t out_size) noexcept {
+    if (!body || !out || out_size == 0) return false;
+    std::lock_guard<std::mutex> lk(g_ghosts_mtx);
+    for (const auto& [peer, rec] : g_ghosts) {
+        if (rec.body != body) continue;
+        std::size_t n = 0;
+        while (n + 1 < out_size && n < peer.size()) { out[n] = peer[n]; ++n; }
+        out[n] = 0;
+        return true;
+    }
+    out[0] = 0;
+    return false;
+}
+
+// --- power armor -------------------------------------------------------
+//
+// Tutti e quattro prendono il lock e lo mollano SUBITO. Nessuno di loro
+// cammina il grafo di scena mentre lo tiene: chi innesta e chi retargeta
+// raccoglie in locale, poi deposita. Tenere il lock del record durante lavoro
+// sul grafo e' il modo di trasformare un difetto grafico in uno stallo, ed e'
+// la stessa ragione per cui ghost_snapshot restituisce una fotografia.
+static bool ghost_pa_grafted(const char* peer_id) noexcept {
+    if (!peer_id || !*peer_id) return false;
+    std::lock_guard<std::mutex> lk(g_ghosts_mtx);
+    auto it = g_ghosts.find(peer_id);
+    return it != g_ghosts.end() && it->second.pa_grafted;
+}
+
+static void ghost_set_pa_grafted(const char* peer_id, bool on) {
+    if (!peer_id || !*peer_id) return;
+    std::lock_guard<std::mutex> lk(g_ghosts_mtx);
+    g_ghosts[peer_id].pa_grafted = on;
+}
+
+static bool ghost_pa_bind_empty(const char* peer_id) noexcept {
+    if (!peer_id || !*peer_id) return true;
+    std::lock_guard<std::mutex> lk(g_ghosts_mtx);
+    auto it = g_ghosts.find(peer_id);
+    return it == g_ghosts.end() || it->second.pa_bind.empty();
+}
+
+static void ghost_pa_bind_store(const char* peer_id,
+                                std::unordered_map<void*, PaBindSave> saved) {
+    if (!peer_id || !*peer_id) return;
+    std::lock_guard<std::mutex> lk(g_ghosts_mtx);
+    g_ghosts[peer_id].pa_bind = std::move(saved);
+}
+
+// Prende e SVUOTA: chi ripristina i bind umani non deve poterli ripristinare
+// due volte, e chi smonta non deve doversi ricordare di pulire.
+static std::unordered_map<void*, PaBindSave> ghost_pa_bind_take(
+    const char* peer_id) {
+    std::unordered_map<void*, PaBindSave> out;
+    if (!peer_id || !*peer_id) return out;
+    std::lock_guard<std::mutex> lk(g_ghosts_mtx);
+    auto it = g_ghosts.find(peer_id);
+    if (it != g_ghosts.end()) out.swap(it->second.pa_bind);
+    return out;
+}
+
+static void ghost_record_bones(const char* peer_id, std::vector<void*> ptrs) {
+    if (!peer_id || !*peer_id) {
+        FW_WRN("[ghost-rec] %zu ossa senza peer — NON registrate", ptrs.size());
+        return;
+    }
+    std::lock_guard<std::mutex> lk(g_ghosts_mtx);
+    g_ghosts[peer_id].bones = std::move(ptrs);
+    FW_LOG("[ghost-rec] peer=%s -> %zu ossa registrate",
+           peer_id, g_ghosts[peer_id].bones.size());
+}
+
+// Una fotografia di chi c'e' adesso: (peer, corpo). I gestori dei messaggi di
+// rete la usano per animare OGNI ghost invece dell'unico che conoscevano.
+// Fotografia e non iterazione dal vivo, di proposito: applicare una posa
+// scrive nel grafo di scena, e scrivere mentre si tiene il lock della mappa
+// e' il modo di trasformare un difetto grafico in uno stallo.
+static std::vector<std::pair<std::string, void*>> ghost_snapshot() {
+    std::vector<std::pair<std::string, void*>> out;
+    std::lock_guard<std::mutex> lk(g_ghosts_mtx);
+    out.reserve(g_ghosts.size());
+    for (const auto& [peer, rec] : g_ghosts) {
+        if (rec.body) out.emplace_back(peer, rec.body);
+    }
+    return out;
+}
+
+// La direzione opposta, e non e' un lusso: lo smontaggio primitivo ha il
+// corpo in mano e non sa di chi sia, perche' e' nato quando ce n'era uno
+// solo. Cancella per CORPO e si porta via la voce giusta.
+static std::size_t ghost_forget_body(void* body) noexcept {
+    if (!body) return 0;
+    std::lock_guard<std::mutex> lk(g_ghosts_mtx);
+    std::size_t gone = 0;
+    for (auto it = g_ghosts.begin(); it != g_ghosts.end();) {
+        if (it->second.body == body) { it = g_ghosts.erase(it); ++gone; }
+        else ++it;
+    }
+    if (gone) {
+        FW_LOG("[ghost-rec] corpo %p dimenticato (%zu ghost restanti)",
+               body, g_ghosts.size());
+    }
+    return gone;
+}
+
 
 // SEH-safe helpers (no C++ objects → no C2712 conflict). Each
 // function isolates the __try block so callers can mix C++ objects
@@ -138,21 +406,10 @@ static bool ends_with_skin_str(const std::string& s) {
         && s.compare(s.size() - 5, 5, "_skin") == 0;
 }
 
-// Cache canonical JOINT list from the GHOST skel.nif tree (NOT the
-// body's bones_fb, which contains both joints AND skin anchors but is
-// missing many intermediate joints). The skel.nif has every joint
-// in its hierarchy (LArm_ForeArm1, LLeg_Thigh, etc.) so walking it
-// gives the COMPLETE set of joints to animate.
-//
-// Architecture:
-//   - We replicate JOINT m_kLocal rotations only.
-//   - Engine UpdateWorldData propagates joint rotations to descendants
-//     (including the body's _skin anchors which inherit via parent
-//     chain in skel.nif).
-//   - This avoids the "twisted mesh" bug where writing a joint's
-//     parent-relative rotation directly to a skin anchor mismatches
-//     the anchor's bind orientation.
-static void populate_canonical_from_skel_native(void* skel_root) {
+// `peer_id` dice DI CHI sono le ossa che stiamo per registrare. I nomi no:
+// quelli sono di tutti, e restano in g_canonical_names.
+static void populate_canonical_from_skel_native(void* skel_root,
+                                                const char* peer_id) {
     if (!skel_root) {
         FW_WRN("[pose] populate_canonical: skel_root is null — skipped");
         return;
@@ -178,15 +435,69 @@ static void populate_canonical_from_skel_native(void* skel_root) {
         nms.push_back(jp.first);
         ptrs.push_back(jp.second);
     }
-    const std::size_t kept = nms.size();
+    // L'ORDINE DEI NOMI SI CONGELA AL PRIMO GIRO. I puntatori no.
+    //
+    // Questa lista NON e' una comodita' locale: e' l'ordine degli indici con
+    // cui le ossa viaggiano sul filo. Se due client la costruiscono diversa,
+    // ogni indice significa un osso diverso sul ricevente e SI ROMPONO
+    // ENTRAMBI i ghost. Il 2026-09-18 e' successo esattamente cosi':
+    //
+    //   client A, 18:06:27   canonical JOINT list: 102 joints (149 nodi)
+    //   client B, 18:06:43   canonical JOINT list:  82 joints (129 nodi)
+    //
+    // Venti nodi di differenza sono le ossa della power armor. L'innesto PA
+    // le aggiunge allo scheletro CONDIVISO e non le toglie piu', quindi un
+    // client che ha indossato una power armor prima di ricostruire il ghost
+    // si ritrova venti giunti in piu' e un ordine alfabetico diverso. Il
+    // sintomo sul filo si vedeva gia': A spediva `matched=24 missing=56`,
+    // B `matched=32 missing=48`, dove prima erano identici.
+    //
+    // Il primo corpo di una sessione nasce sempre PRIMA di qualunque
+    // innesto, perche' innestare richiede di attaccare pezzi PA e attaccarli
+    // richiede un corpo. Quindi congelare al primo giro da' 82 su ogni
+    // client, sempre, qualunque cosa succeda dopo.
+    //
+    // I PUNTATORI invece si riaggiornano a ogni giro: sono i nodi vivi da
+    // cui si legge e su cui si scrive, e un corpo ricostruito li vuole
+    // freschi. Nomi condivisi, puntatori locali — che e' anche la regola
+    // gia' scritta nel piano di fase.
+    std::size_t kept = 0;
+    bool frozen = false;
+    std::vector<void*> mine;   // le ossa di QUESTO corpo
     {
         std::lock_guard<std::mutex> lk(g_canonical_mutex);
-        g_canonical_names.swap(nms);
-        g_ghost_bone_ptrs.swap(ptrs);
+        if (g_canonical_names.empty()) {
+            g_canonical_names.swap(nms);
+            mine.swap(ptrs);
+            kept = g_canonical_names.size();
+        } else {
+            // Stesso ordine di prima, puntatori rifatti. Un nome che non
+            // esiste piu' prende nullptr: meglio un buco dichiarato che uno
+            // slittamento silenzioso di tutti gli indici.
+            frozen = true;
+            kept = g_canonical_names.size();
+            mine.assign(kept, nullptr);
+            for (std::size_t i = 0; i < kept; ++i) {
+                auto it = all_nodes.find(g_canonical_names[i]);
+                if (it != all_nodes.end()) mine[i] = it->second;
+            }
+        }
     }
-    FW_LOG("[pose] canonical JOINT list cached from skel: %zu joints "
-           "(skel total nodes=%zu, _skin anchors excluded)",
-           kept, all_nodes.size());
+    std::size_t missing_now = 0;
+    for (void* p : mine) if (!p) ++missing_now;
+    ghost_record_bones(peer_id, std::move(mine));
+    if (frozen) {
+        const std::size_t missing = missing_now;
+        FW_LOG("[pose] canonical JOINT list kept FROZEN at %zu joints "
+               "(this skel walk saw %zu joints, %zu total nodes) — the wire's "
+               "bone order must not change mid-session, PA bones included; "
+               "%zu name(s) had no node this time",
+               kept, joints.size(), all_nodes.size(), missing);
+    } else {
+        FW_LOG("[pose] canonical JOINT list cached from skel: %zu joints "
+               "(skel total nodes=%zu, _skin anchors excluded)",
+               kept, all_nodes.size());
+    }
 }
 
 // M9.5 — Forward declaration for clone_nif_subtree. Definition lives much
@@ -201,7 +512,8 @@ void* clone_skin_instance(void* source);
 // Defined much further down, next to the clone machinery it uses; declared
 // here because the injector above calls it. Same reason clone_nif_subtree
 // carries a forward declaration.
-static bool ghost_dress_face(void* face_source, void* head, const char* why);
+static bool ghost_dress_face(void* face_source, void* head,
+                             void* body, const char* why);
 
 // 2026-05-06 LATE evening (M9 closure, PLAN B — NiStream serialization) —
 // engine-native serialize/deserialize of any NiObject subtree to/from a
@@ -473,14 +785,19 @@ std::atomic<unsigned>   g_attach_count{0};
 // NiNode canary so that a crash in the cube path doesn't take the
 // canary down, and vice versa. Both are attached to World SceneGraph
 // as siblings.
-std::atomic<void*>      g_injected_cube{nullptr};
+// g_injected_cube NON ESISTE PIU' (2026-09-18). Era la radice del corpo del
+// ghost, UNA per sessione, letta da trenta punti: finche' e' esistito, "il
+// ghost di quel peer" non era una cosa indirizzabile e il secondo giocatore
+// non aveva dove stare. Il corpo e' in GhostRecord::body, uno per peer.
 
 // M6.3 / v12: head is a separate BSFadeNode (BaseMaleHead.nif + rear
 // as child). Attached as child of the body, but we store its ptr so
 // pos_update can apply an INDEPENDENT rotation — body gets yaw only,
 // head gets pitch only. Without this decoupling, remote looking up
 // rotates the entire body like a tree trunk (user report).
-std::atomic<void*>      g_injected_head{nullptr};
+// g_injected_head NON ESISTE PIU' (2026-09-18). E' in GhostRecord::head.
+
+
 
 // M9 wedge 3 (2026-05-02 / refined 2026-05-03): cached LIST of ghost body
 // BSSubIndexTriShape pointers — one per BSSITF found in the body NIF tree.
@@ -494,12 +811,14 @@ std::atomic<void*>      g_injected_head{nullptr};
 //
 // Populated ONCE at body inject time (before any armor attaches) by walking
 // the body NIF tree for ALL nodes whose vtable RVA == BSSUBINDEXTRISHAPE_VTABLE_RVA.
-// Cleared at detach_debug_cube together with g_injected_cube.
+// Si invalidano insieme al corpo che le contiene: il record se ne va tutto
+// intero in ghost_forget_body.
 //
 // Protected by g_body_cull_mtx (declared just below) — same lock that already
 // guards the body-cull contributor set. Not atomic because we read/write the
 // whole vector together.
-std::vector<void*>      g_ghost_body_geoms;
+// g_ghost_body_geoms NON ESISTE PIU' (2026-09-18). E' in
+// GhostRecord::body_geoms, uno per peer.
 
 // M9 wedge 3 — body-cull contributor tracking ===============================
 // Per-peer set of form_ids of currently-attached "slot 3 BODY" armors (Vault
@@ -1470,7 +1789,7 @@ static const char* try_read_ni_name(void* obj) {
 static void dump_hex_block(void* obj, std::size_t n, int depth,
                            const char* label) {
     if (!obj) {
-        FW_LOG("[diag] %*shex[%s] = <null>", depth * 2, "", label);
+        FW_DBG("[diag] %*shex[%s] = <null>", depth * 2, "", label);
         return;
     }
     __try {
@@ -1492,7 +1811,7 @@ static void dump_hex_block(void* obj, std::size_t n, int depth,
             }
             line[pos++] = '|';
             line[pos] = 0;
-            FW_LOG("[diag] %*shex[%s+0x%02zX] %s",
+            FW_DBG("[diag] %*shex[%s+0x%02zX] %s",
                    depth * 2, "", label, off, line);
         }
     }
@@ -1516,7 +1835,7 @@ static void dump_trishape_materials(void* tri, int depth) {
                - g_r.base)
             : 0ull;
 
-        FW_LOG("[diag] %*sBSTriShape=%p name='%s' shader=%p "
+        FW_DBG("[diag] %*sBSTriShape=%p name='%s' shader=%p "
                "(vt_rva=0x%llX) alpha=%p",
                depth * 2, "", tri, name, shader,
                static_cast<unsigned long long>(shader_vt_rva), alpha);
@@ -1543,11 +1862,11 @@ static void dump_trishape_materials(void* tri, int depth) {
                 // BSFixedString pool entry: c_str at +0x18 per FO4 layout
                 bgsmPath = poolEntry + 0x18;
             }
-            FW_LOG("[diag] %*s  shader+0x10 bgsm='%s'",
+            FW_DBG("[diag] %*s  shader+0x10 bgsm='%s'",
                    depth * 2, "", bgsmPath);
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
-            FW_LOG("[diag] %*s  shader+0x10 read AV", depth * 2, "");
+            FW_DBG("[diag] %*s  shader+0x10 read AV", depth * 2, "");
         }
         if (false) {  // keep below code reachable structurally
             return;
@@ -1564,7 +1883,7 @@ static void dump_trishape_materials(void* tri, int depth) {
                - g_r.base)
             : 0ull;
 
-        FW_LOG("[diag] %*s  material@shader+0x58=%p (vt_rva=0x%llX)",
+        FW_DBG("[diag] %*s  material@shader+0x58=%p (vt_rva=0x%llX)",
                depth * 2, "", material,
                static_cast<unsigned long long>(mat_vt_rva));
 
@@ -1586,7 +1905,7 @@ static void dump_trishape_materials(void* tri, int depth) {
         for (int i = 0; i < 4; ++i) {
             void* tex = *reinterpret_cast<void**>(mb + 0x48 + 8 * i);
             if (!tex) {
-                FW_LOG("[diag] %*s    tex[%d]@+0x%X = null",
+                FW_DBG("[diag] %*s    tex[%d]@+0x%X = null",
                        depth * 2, "", i, 0x48 + 8 * i);
                 continue;
             }
@@ -1595,7 +1914,7 @@ static void dump_trishape_materials(void* tri, int depth) {
                 reinterpret_cast<std::uintptr_t>(*reinterpret_cast<void**>(tex))
                 - g_r.base;
             const char* tex_name = try_read_ni_name(tex);
-            FW_LOG("[diag] %*s    tex[%d]@+0x%X = %p (vt_rva=0x%llX) name='%s'",
+            FW_DBG("[diag] %*s    tex[%d]@+0x%X = %p (vt_rva=0x%llX) name='%s'",
                    depth * 2, "", i, 0x48 + 8 * i, tex,
                    static_cast<unsigned long long>(tex_vt_rva), tex_name);
         }
@@ -1606,20 +1925,20 @@ static void dump_trishape_materials(void* tri, int depth) {
         // FIRST tex handle's first 0x80 bytes — if NiSourceTexture
         // stores its source DDS path in a field past +0x10, we'll
         // see it.
-        FW_LOG("[diag] %*s  material hex dump (0xC0 bytes):",
+        FW_DBG("[diag] %*s  material hex dump (0xC0 bytes):",
                depth * 2, "");
         dump_hex_block(material, 0xC0, depth + 1, "mat");
 
         void* tex0 = *reinterpret_cast<void**>(mb + 0x48);
         if (tex0) {
-            FW_LOG("[diag] %*s  tex[0] hex dump (0x80 bytes):",
+            FW_DBG("[diag] %*s  tex[0] hex dump (0x80 bytes):",
                    depth * 2, "");
             dump_hex_block(tex0, 0x80, depth + 1, "tex0");
         }
 
         // Also dump the shader — might hold a reference to the
         // BSShaderTextureSet or a bgsm path at some offset.
-        FW_LOG("[diag] %*s  shader hex dump (0xE8 bytes):",
+        FW_DBG("[diag] %*s  shader hex dump (0xE8 bytes):",
                depth * 2, "");
         dump_hex_block(shader, 0xE8, depth + 1, "shdr");
     }
@@ -1763,7 +2082,7 @@ static void dump_body_tree(void* node, int depth, int max_depth) {
         }
 
         // NiNode-like: log + recurse into children.
-        FW_LOG("[diag] %*sNode=%p vt_rva=0x%llX name='%s'",
+        FW_DBG("[diag] %*sNode=%p vt_rva=0x%llX name='%s'",
                depth * 2, "", node,
                static_cast<unsigned long long>(vt_rva), name);
 
@@ -1778,7 +2097,7 @@ static void dump_body_tree(void* node, int depth, int max_depth) {
             void* fs_ptr = *reinterpret_cast<void**>(nb + 0x10);
             const float* t = reinterpret_cast<const float*>(
                 nb + NIAV_LOCAL_TRANSLATE_OFF);
-            FW_LOG("[diag] %*s  +0x10=%p  local.t=(%.1f, %.1f, %.1f)",
+            FW_DBG("[diag] %*s  +0x10=%p  local.t=(%.1f, %.1f, %.1f)",
                    depth * 2, "", fs_ptr, t[0], t[1], t[2]);
             if (fs_ptr) {
                 // Dump 32 bytes AT fs_ptr — to see BSFixedString pool
@@ -1788,7 +2107,7 @@ static void dump_body_tree(void* node, int depth, int max_depth) {
             }
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
-            FW_LOG("[diag] %*s  fs_deref SEH", depth * 2, "");
+            FW_DBG("[diag] %*s  fs_deref SEH", depth * 2, "");
         }
 
         void** children_ptr = *reinterpret_cast<void***>(
@@ -1797,7 +2116,7 @@ static void dump_body_tree(void* node, int depth, int max_depth) {
             nb + NINODE_CHILDREN_CNT_OFF);
         std::uint16_t cap = *reinterpret_cast<std::uint16_t*>(
             nb + NINODE_CHILDREN_CAP_OFF);
-        FW_LOG("[diag] %*s  children=%u/%u ptr=%p",
+        FW_DBG("[diag] %*s  children=%u/%u ptr=%p",
                depth * 2, "", count, cap, static_cast<void*>(children_ptr));
 
         if (!children_ptr || count == 0) return;
@@ -1863,7 +2182,8 @@ static void dump_body_tree(void* node, int depth, int max_depth) {
 // Tracking (M3.1/M3.2): pos_update_seh and rotation code operate on
 // NiAVObject offsets (+0x60 translate, +0x30 rotate) which BSFadeNode
 // inherits. No changes to tracking code required.
-bool try_inject_body_nif(float x, float y, float z, void** out_body) {
+bool try_inject_body_nif(float x, float y, float z, void** out_body,
+                         const char* peer_id) {
     *out_body = nullptr;
 
     __try {
@@ -2134,12 +2454,90 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
         // Driving skel bone transforms now drives the body mesh.
         FW_LOG("[native] inject_body_nif: M8P3 Step 2+3 skel cache + swap START");
         {
-            void* skel = fw::native::skin_rebind::get_cached_skeleton();
+            // OGNI corpo si carica le SUE ossa, e se le CLONA.
+            //
+            // Stamattina qui c'era scritto "costa ~63 ms ed e' il prezzo di
+            // un ghost che nasce pulito". Era falso, e i puntatori lo hanno
+            // dimostrato la sera stessa sul client A:
+            //
+            //   23:29:36  skeleton_for: body 0x1EC2EC7E380 -> skel 0x1EC2D826000
+            //   23:30:34  skeleton_for: forgot body 0x1EC2EC7E380
+            //   23:31:07  skeleton_for: body 0x1EC2F4601C0 -> skel 0x1EC2D826000
+            //
+            // Corpo nuovo, STESSO scheletro. Togliere la NOSTRA cache non
+            // serviva a niente, perche' la cache che conta e' quella del
+            // MOTORE: nif_load_by_path riconsegna l'istanza che ha gia'.
+            //
+            // Su uno scheletro condiviso noi facciamo due mutazioni che non
+            // sono reversibili da sole:
+            //   * l'innesto delle ossa della power armor ci aggiunge venti
+            //     nodi (prova: dopo un innesto la ricostruzione cammina 149
+            //     nodi invece di 129);
+            //   * il retarget riscrive le trasformate locali di 147 ossa.
+            // E lo smontaggio BUTTA i bind umani salvati, con la motivazione
+            // "descrivono ossa che muoiono con questo corpo". Non muoiono:
+            // sopravvivono nello scheletro condiviso, proporzionate alla
+            // power armor, e il modo di rimetterle a posto l'abbiamo appena
+            // cancellato. Da li' il ghost stirato e la scheggia nella faccia
+            // dopo il ciclo power armor -> esci -> rientra.
+            //
+            // La cura e' la stessa che il corpo, la testa, le mani e ogni
+            // armatura usano gia': il deep-clone del motore. Lo scheletro era
+            // l'unica cosa del ghost che non ci passava.
+            void* skel = nullptr;
             if (!skel) {
                 constexpr const char* kSkelPath =
                     "Actors\\Character\\CharacterAssets\\skeleton.nif";
+
+                // ESPERIMENTO 2026-09-19 — reversibile con questa riga sola.
+                //
+                // Lo scheletro UMANO si e' sempre caricato con 0x10 e
+                // model_kind 0. Quello della POWER ARMOR usa le opzioni del
+                // motore, kind 3 / 0x3D, e non e' una scelta estetica: e' la
+                // cura della Build 71e, scritta dopo che il secondo giocatore
+                // a entrare in una power armor dipinta perdeva la vernice.
+                //
+                // 0x3D CONTIENE 0x10. L'umano quindi non usa "altre"
+                // opzioni: ne usa una su cinque. Manca soprattutto 0x20, e
+                // ni_offsets.h dice cosa comporta: "a load WITHOUT this bit
+                // actively CLEARS bit 23", e il bit 23 e' cio' che il walker
+                // di chiusura di TESObjectREFR::Load3D controlla prima di
+                // riapplicare i materiali di default a TUTTO l'albero
+                // dell'attore.
+                //
+                // Ipotesi che questo prova: ogni volta che il ghost carica lo
+                // scheletro umano spegne il bit 23 sull'entry condivisa di
+                // OGNI umano, giocatore locale compreso. Finche' nessuno
+                // ricostruisce un umano non si vede; entrare e uscire da una
+                // power armor lo ricostruisce due volte, e da li' la faccia
+                // del ghost che si sbriciola al rientro successivo.
+                //
+                // Spiega anche perche' il ghost SENZA power armor non si
+                // rompe: niente costringe il motore a ricostruire un umano.
+                //
+                // Il verso opposto (allineare la PA all'umano) e' stato
+                // provato per primo ed e' stato bocciato: vedi
+                // kPaSkelOptsAlignedToHuman.
+                // ESITO 2026-09-19: NON CURA, E FORSE FA MALE.
+                //   * la faccia decade lo stesso (65 -> 25 al rientro), quindi
+                //     l'ipotesi del bit 23 non spiega il difetto;
+                //   * nella stessa sessione e' comparso il PRIMO crash di
+                //     gioco vero del client che guarda: tre AV su tre thread,
+                //     stesso oggetto liberato (rcx=0x1DB0D876FD0), dentro la
+                //     ricarica di sedici attori che il MOTORE fa quando il
+                //     giocatore esce dalla power armor.
+                // Il nesso causale non e' dimostrato — e' una correlazione in
+                // una sessione sola — ma davanti a un crash si torna allo
+                // stato noto e si dimostra dopo, non prima.
+                static constexpr bool kHumanSkelOptsAlignedToEngine = false;
+
                 NifLoadOpts skel_opts{};
-                skel_opts.flags = NIF_OPT_FADE_WRAP;
+                if (kHumanSkelOptsAlignedToEngine) {
+                    skel_opts.model_kind = NIF_MODEL_KIND_ACTOR;   // 3
+                    skel_opts.flags      = NIF_OPT_ACTOR_SKELETON; // 0x3D
+                } else {
+                    skel_opts.flags = NIF_OPT_FADE_WRAP;           // com'era
+                }
                 void* fresh_skel = nullptr;
                 std::uint32_t skel_rc = 0xDEADBEEF;
                 __try {
@@ -2159,11 +2557,42 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
                     } __except (EXCEPTION_EXECUTE_HANDLER) {
                         FW_ERR("[native] inject_body_nif: SEH in skel dump");
                     }
-                    fw::native::skin_rebind::cache_or_release_skeleton(fresh_skel);
-                    skel = fw::native::skin_rebind::get_cached_skeleton();
+                    // Il clone, con lo stesso schema del corpo poco sopra:
+                    // clone_nif_subtree torna un'istanza con un riferimento
+                    // nostro, e il +1 che il caricatore ci ha dato sull'
+                    // istanza CONDIVISA si lascia andare subito. Da li' in
+                    // poi l'unico riferimento vivo al clone e' lo slot figlio
+                    // del corpo, quindi quando il corpo muore le ossa vanno a
+                    // zero davvero.
+                    void* skel_clone = clone_nif_subtree(fresh_skel);
+                    if (skel_clone && skel_clone != fresh_skel) {
+                        __try {
+                            auto* rcp = reinterpret_cast<long*>(
+                                reinterpret_cast<char*>(fresh_skel)
+                                + NIAV_REFCOUNT_OFF);
+                            _InterlockedDecrement(rcp);
+                        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+                        skel = skel_clone;
+                        FW_LOG("[native] inject_body_nif: deep-cloned skeleton "
+                               "shared=%p clone=%p — innesti e retarget della "
+                               "power armor restano su QUESTO ghost e muoiono "
+                               "con lui", fresh_skel, skel_clone);
+                    } else {
+                        // Il clone ha restituito la sorgente: e' una
+                        // CONDIVISIONE, non una copia, e il chiamante deve
+                        // trattarla come un fallimento (lo dice il commento
+                        // sopra clone_nif_subtree). Si va avanti lo stesso
+                        // perche' un ghost condiviso e' meglio di nessun
+                        // ghost, ma va detto forte: da qui in poi una power
+                        // armor contamina i ghost successivi.
+                        skel = fresh_skel;
+                        FW_WRN("[native] inject_body_nif: deep-clone dello "
+                               "scheletro FALLITO (torna %p) — si usa "
+                               "l'istanza condivisa: un innesto power armor "
+                               "sopravvivera' a questo ghost", fresh_skel);
+                    }
+                    fw::native::skin_rebind::set_skeleton_for(body, skel);
                 }
-            } else {
-                FW_LOG("[native] inject_body_nif: skel cache hit %p", skel);
             }
 
             if (skel) {
@@ -2226,7 +2655,7 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
                 // bones_fb is missing. Engine propagates to skin anchors.
                 // This MUST happen post-swap and post-attach so skel
                 // hierarchy is stable.
-                populate_canonical_from_skel_native(skel);
+                populate_canonical_from_skel_native(skel, peer_id);
 
                 // CRITICAL: attach skel as child of body. Without this,
                 // skel is a free-floating tree — its bones' world
@@ -2244,9 +2673,22 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
                     _InterlockedIncrement(reinterpret_cast<long*>(
                         reinterpret_cast<char*>(skel) + NIAV_REFCOUNT_OFF));
                     g_r.attach_child_direct(body, skel, /*reuseFirstEmpty=*/0);
+                    // E ADESSO si lascia andare il riferimento del
+                    // caricatore. Senza, lo scheletro resta a due
+                    // riferimenti con un solo proprietario vero — lo slot
+                    // figlio del corpo — e alla morte del corpo scende a uno
+                    // invece che a zero: un ghost, uno scheletro perso, per
+                    // sempre. Prima non si vedeva perche' quel secondo
+                    // riferimento era la cache di sessione, ed era voluto.
+                    // Stessa regola delle armature: "drop our +1
+                    // caller-owned ref".
+                    const long after = _InterlockedDecrement(
+                        reinterpret_cast<long*>(
+                            reinterpret_cast<char*>(skel) + NIAV_REFCOUNT_OFF));
                     FW_LOG("[native] inject_body_nif: attached skel=%p as "
-                           "child of body=%p (propagates world updates)",
-                           skel, body);
+                           "child of body=%p (propagates world updates); "
+                           "loader ref released, refcount now %ld",
+                           skel, body, after);
                 } __except (EXCEPTION_EXECUTE_HANDLER) {
                     FW_ERR("[native] inject_body_nif: SEH attaching skel "
                            "to body");
@@ -2392,6 +2834,48 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
                     "Actors\\Character\\CharacterAssets\\FaceParts\\"
                     "MaleHeadRear.nif",
                     "inject_headrear");
+                // 2026-09-18 — E SI CLONA, come la testa e come le mani.
+                //
+                // Era l'ULTIMA pelle condivisa rimasta nel ghost: caricata e
+                // attaccata cosi' com'era, quindi ogni ghost si prendeva lo
+                // STESSO nodo — nei log il puntatore e' identico fra una
+                // costruzione e l'altra. Con un corpo ricostruito nello
+                // stesso processo il retro era ancora figlio della testa
+                // vecchia e ancora legato allo scheletro vecchio, e lo si
+                // vedeva nel numero: la pelle della testa legava 20 ossa al
+                // primo giro e 10 al secondo. Sul client che invece
+                // riavviava il processo restava 20, ed era l'unico a stare
+                // bene.
+                //
+                // Il perche' visivo lo dice gia' il commento sopra il clone
+                // della testa, quattordici righe piu' su: una pelle a meta'
+                // lascia bones_pri[i] a 0x70, cioe' una matrice di spazzatura,
+                // e "GPU stretches vertices". La testa che sparisce e il
+                // corpo che si stira sono quella frase.
+                if (head_rear) {
+                    void* rear_clone = clone_nif_subtree(head_rear);
+                    if (rear_clone && rear_clone != head_rear) {
+                        FW_LOG("[native] inject_headrear: deep-cloned %p -> %p "
+                               "(independent skin, like the head above)",
+                               head_rear, rear_clone);
+                        __try {
+                            auto* rcp = reinterpret_cast<long*>(
+                                reinterpret_cast<char*>(head_rear)
+                                + NIAV_REFCOUNT_OFF);
+                            _InterlockedDecrement(rcp);
+                        } __except (EXCEPTION_EXECUTE_HANDLER) {
+                            FW_WRN("[native] inject_headrear: SEH releasing "
+                                   "the shared original — leaking it rather "
+                                   "than touching a node we no longer own");
+                        }
+                        head_rear = rear_clone;
+                    } else {
+                        FW_WRN("[native] inject_headrear: deep-clone returned "
+                               "the shared node — the rear stays shared, and a "
+                               "rebuilt ghost in this process will bind half "
+                               "its head bones");
+                    }
+                }
                 if (head_rear) {
                     char* rb = reinterpret_cast<char*>(head_rear);
                     std::uint64_t rear_name = 0;
@@ -2462,8 +2946,28 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
                 bool face_cloned = false;
                 if (fw::native::anatomy_mirror::clone_enabled()) {
                     char peer[24] = {};
-                    void* face = fw::native::face_cache::any_master(
-                        peer, sizeof(peer));
+                    // La maschera di QUESTO peer quando sappiamo chi e'.
+                    // "La prima disponibile" era corretta solo finche' il
+                    // ghost era uno solo: con due, vestirebbe l'uno con la
+                    // faccia dell'altro.
+                    void* face = nullptr;
+                    if (peer_id && *peer_id) {
+                        face = fw::native::face_cache::master_for_peer(peer_id);
+                        if (face) {
+                            std::size_t n = 0;
+                            while (n + 1 < sizeof(peer) && peer_id[n]) {
+                                peer[n] = peer_id[n]; ++n;
+                            }
+                            peer[n] = 0;
+                        }
+                    }
+                    if (!face) {
+                        // Nessun peer dichiarato, o la sua maschera non c'e'
+                        // ancora: si ripiega sul vecchio comportamento, che
+                        // con un ghost solo e' la stessa cosa.
+                        face = fw::native::face_cache::any_master(
+                            peer, sizeof(peer));
+                    }
                     const char* why = "SOURCE=peer master (REPLICATED)";
                     if (!face) {
                         void* p3d = nullptr;
@@ -2479,7 +2983,7 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
                         FW_WRN("[face-clone] no face source at all — ghost "
                                "keeps its loaded head");
                     } else {
-                        face_cloned = ghost_dress_face(face, head, why);
+                        face_cloned = ghost_dress_face(face, head, body, why);
                     }
                 }
 
@@ -2549,7 +3053,7 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
                 // happens inside swap_for_geometry.
                 {
                     void* skel_for_head =
-                        fw::native::skin_rebind::get_cached_skeleton();
+                        fw::native::skin_rebind::skeleton_for(body);
                     if (skel_for_head) {
                         int head_swapped = -2;
                         __try {
@@ -2583,12 +3087,16 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
                 // independent pitch rotation (instead of applying full
                 // yaw+pitch+roll to body root which rotates the whole
                 // subtree as a rigid tronco).
-                g_injected_head.store(head, std::memory_order_release);
             }
             __except (EXCEPTION_EXECUTE_HANDLER) {
                 FW_ERR("[native] inject_head: SEH during positioning / "
                        "attach — head may be dangling");
             }
+            // Fuori dalla gabbia SEH di proposito: registrare prende un lock,
+            // e un oggetto con distruttore dentro un __try non compila
+            // (C2712). E' la stessa ragione per cui esistono i wrapper seh_*
+            // in cima al file.
+            ghost_record_head(peer_id, head);
         } else {
             FW_WRN("[native] inject_head: head load returned null — "
                    "body will render headless (neck stump)");
@@ -2676,7 +3184,7 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
                 // skel joints so our pose-rx pipeline drives them.
                 {
                     void* skel_for_hands =
-                        fw::native::skin_rebind::get_cached_skeleton();
+                        fw::native::skin_rebind::skeleton_for(body);
                     if (skel_for_hands) {
                         int hands_swapped = -2;
                         __try {
@@ -2717,7 +3225,7 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
         // material), and the FaceGen composited face textures (resolved
         // NiTexture pointers shared with refcount).
         if (fw::native::anatomy_mirror::enabled()) {
-            void* head_now = g_injected_head.load(std::memory_order_acquire);
+            void* head_now = ghost_head_for(peer_id);
             fw::native::anatomy_mirror::copy_tints(g_r.base, body, head_now);
         } else if (fw::native::anatomy_mirror::clone_enabled()) {
             // With the face cloned, only the BODY still needs telling: it is a
@@ -2879,9 +3387,9 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
         // M6.1 DIAGNOSTIC — walk the loaded tree
         // and dump material+texture state for each geometry leaf.
         // Run AFTER manual bgsm apply so we see post-apply material vtables.
-        FW_LOG("[diag] ===== BEGIN body material/texture dump =====");
+        FW_DBG("[diag] ===== BEGIN body material/texture dump =====");
         dump_body_tree(skel_root, /*depth=*/0, /*max_depth=*/8);
-        FW_LOG("[diag] ===== END body material/texture dump =====");
+        FW_DBG("[diag] ===== END body material/texture dump =====");
 
         // v4 DIFFERENTIAL DIAGNOSTIC — compare against a VANILLA
         // BSTriShape from the scene. If it has the same material vtable
@@ -2894,16 +3402,16 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body) {
         // renders fine, so its material is PROPERLY textured. Dump it
         // with the same walker to get a known-good reference state.
         void* vanilla = get_first_bstri_shape();
-        FW_LOG("[diag] ===== BEGIN VANILLA BSTriShape reference dump =====");
+        FW_DBG("[diag] ===== BEGIN VANILLA BSTriShape reference dump =====");
         if (vanilla) {
-            FW_LOG("[diag] Comparing against vanilla first_bstri_shape=%p",
+            FW_DBG("[diag] Comparing against vanilla first_bstri_shape=%p",
                    vanilla);
             dump_trishape_materials(vanilla, /*depth=*/0);
         } else {
             FW_WRN("[diag] No vanilla BSTriShape captured by walker — "
                    "cannot do differential comparison");
         }
-        FW_LOG("[diag] ===== END VANILLA dump =====");
+        FW_DBG("[diag] ===== END VANILLA dump =====");
 
         return true;
     }
@@ -2999,8 +3507,17 @@ unsigned int get_attach_count() {
 
 // B6.6w5 Build 8b — body ghost getter for the engine-native duplicate's
 // Get3D vtable hook. See scene_inject.h for full rationale.
+void* ghost_body_of_peer(const char* peer_id) noexcept {
+    return ghost_body_for(peer_id);
+}
+
 void* get_injected_body_ghost() noexcept {
-    return g_injected_cube.load(std::memory_order_acquire);
+    // 2026-09-18 — era il puntatore unico, che non esiste piu'. Resta "un
+    // ghost qualunque" perche' i tre chiamanti fuori da questo file chiedono
+    // esattamente quello: due sono cancelli di prontezza ("il motore ha
+    // finito di caricare?") e il terzo e' il gancio del proxy Actor, spento
+    // da Build c.34. Chi vuole IL corpo di UN peer usa ghost_body_of_peer.
+    return ghost_any_body();
 }
 
 // --- M9 wedge 3 — body geom cache populator ------------------------------
@@ -3339,8 +3856,25 @@ static bool seh_write_ptr_field(void* obj, std::size_t off, void* val) {
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-// Collect EVERY skinnable geometry leaf (BSSubIndexTriShape AND BSTriShape)
-// in tree order. Order is deterministic and identical for a tree and its
+// Collect EVERY skinnable geometry leaf in tree order.
+//
+// 2026-09-19 — "EVERY" era una bugia: riconosceva due tipi su cinque, e i tre
+// che mancavano sono esattamente quelli di cui e' fatta una faccia. Una faccia
+// e' BSDynamicTriShape perche' i morph vivono nei dynamic vertex buffer, e un
+// tipo non riconosciuto non veniva scartato: veniva trattato come CONTENITORE,
+// gli si cercavano dei figli, non ce n'erano, e la funzione concludeva "no
+// geometry in the clone" su un albero pieno di geometria.
+//
+// Conseguenza misurata: le pelli della maschera della faccia non sono mai
+// state privatizzate, quindi restavano condivise con la testa viva del
+// giocatore locale. Bastava che il giocatore ricostruisse il suo 3D — cioe'
+// entrare o uscire da una power armor — perche' la maschera si ritrovasse a
+// puntare a pelli che non esistono piu', pur restando intatta alla radice
+// (refcount=1, children=14, verificato su 65552 consegne).
+//
+// La lista e' ora la stessa di skin_rebind::is_geometry, che quelle geometrie
+// le ha sempre viste: e' la ragione per cui la RICUCITURA funzionava mentre la
+// PRIVATIZZAZIONE no, sullo stesso identico nodo. Order is deterministic and identical for a tree and its
 // clone, which is what makes the lockstep pairing below valid. Deliberately
 // broader than collect_all_bssitf_recursive: power-armor Frame.nif carries
 // both leaf kinds and the body-cull collector only ever wanted BSSITF.
@@ -3356,7 +3890,10 @@ static void collect_all_geometry_recursive(void* node, std::vector<void*>* out,
     if (vt_addr >= g_r.base) {
         const std::uintptr_t vt_rva = vt_addr - g_r.base;
         if (vt_rva == BSSUBINDEXTRISHAPE_VTABLE_RVA ||
-            vt_rva == BSTRISHAPE_VTABLE_RVA) {
+            vt_rva == BSTRISHAPE_VTABLE_RVA ||
+            vt_rva == BSDYNAMICTRISHAPE_VTABLE_RVA ||
+            vt_rva == BSDYNAMICTRISHAPE_VTABLE_ALT_RVA ||
+            vt_rva == BSGEOMETRY_VTABLE_RVA) {
             out->push_back(node);
             return;   // geometry leaves have no NiNode children
         }
@@ -3423,6 +3960,13 @@ static void collect_all_geometry_recursive(void* node, std::vector<void*>* out,
 // Returns the number of shared instances privatised. 0 with a non-empty
 // tree means the sharing hypothesis is WRONG for that NIF, and the log says
 // so — this function is its own experiment.
+// Ingresso pubblico per chi sta fuori da questo file. Serve al prestito della
+// faccia, che clona la testa VIVA del giocatore locale e la parcheggia: senza
+// privatizzare, quella maschera resta legata alle pelli del giocatore e muore
+// con la sua prossima ricostruzione del 3D.
+int privatise_clone_skins(void* clone_root, void* source_root,
+                          const char* label);
+
 static int privatise_shared_skins(void* clone_root, void* source_root,
                                   const char* label) {
     if (!clone_root || !source_root || g_r.base == 0) return 0;
@@ -3484,6 +4028,11 @@ static int privatise_shared_skins(void* clone_root, void* source_root,
                label, clone_geoms.size());
     }
     return fixed;
+}
+
+int privatise_clone_skins(void* clone_root, void* source_root,
+                          const char* label) {
+    return privatise_shared_skins(clone_root, source_root, label);
 }
 
 // Build 70t — the bisect state (see the header for the mode table). One
@@ -4470,10 +5019,157 @@ void* clone_nif_subtree_recursive(void* source, int depth, int max_depth) {
 // ghost with a wrong face is better than a ghost with none.
 //
 // MAIN THREAD ONLY.
-static bool ghost_dress_face(void* face_source, void* head, const char* why) {
+// Quante ossa dichiara una BSSkin::Instance (+0x20). POD-only e in gabbia
+// SEH per conto suo: il censimento che la usa maneggia std::vector, e un
+// __try non puo' stare in una funzione con oggetti da distruggere (C2712).
+static std::uint32_t seh_skin_bone_count(void* skin) {
+    if (!skin) return 0;
+    __try {
+        return *reinterpret_cast<std::uint32_t*>(
+            reinterpret_cast<char*>(skin) + 0x20);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
+// Il nodo nello slot i dell'array delle ossa di una pelle (+0x10 la testa).
+static void* seh_skin_bone_at(void* skin, std::uint32_t i) {
+    if (!skin) return nullptr;
+    __try {
+        void** head = *reinterpret_cast<void***>(
+            reinterpret_cast<char*>(skin) + 0x10);
+        if (!head) return nullptr;
+        return head[i];
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+
+// Stampa i nomi letti DAGLI SLOT delle pelli di un albero faccia.
+//
+// Il punto e' che la ricucitura non memorizza i nomi: li legge dal nodo che
+// il puntatore indica in quel momento. Se fra un ghost e il successivo questi
+// nomi cambiano mentre il conteggio resta lo stesso, i puntatori indicano
+// memoria che non e' piu' quella di prima.
+//
+// Funzione a se' perche' maneggia std::vector, e ghost_dress_face contiene un
+// __try: i due non possono convivere nella stessa funzione (C2712).
+static void dump_face_slot_names(void* root, const char* why) {
+    if (!root) return;
+    std::vector<void*> geoms;
+    collect_all_geometry_recursive(root, &geoms);
+    for (std::size_t gi = 0; gi < geoms.size() && gi < 3; ++gi) {
+        void* skin = nullptr;
+        if (!seh_read_ptr_field(geoms[gi], BSGEOMETRY_SKIN_INSTANCE_OFF, &skin)
+            || !skin) {
+            continue;
+        }
+        const std::uint32_t n = seh_skin_bone_count(skin);
+        for (std::uint32_t bi = 0; bi < n && bi < 5; ++bi) {
+            void* bone = seh_skin_bone_at(skin, bi);
+            const char* nm = bone ? try_read_ni_name(bone) : nullptr;
+            // A debug: e' il rilevatore permanente del difetto del
+            // 2026-09-19. Se lo stesso slot legge nomi diversi fra un ghost e
+            // il successivo, la maschera e' tornata a puntare a memoria che
+            // non e' nostra, e queste righe lo dicono senza doverlo dedurre.
+            FW_DBG("[face-slots] %s: geom#%zu skin=%p ossa=%u slot[%u]=%p "
+                   "nome='%s'", why, gi, skin, n, bi, bone,
+                   (nm && *nm) ? nm : "<vuoto>");
+        }
+    }
+}
+
+static bool ghost_dress_face(void* face_source, void* head,
+                             void* body, const char* why) {
     if (!face_source || !head || !g_r.base) return false;
 
+    // MISURA 2026-09-19 — la clonazione danneggia la sorgente?
+    //
+    // Sei ipotesi morte, e quello che resta in piedi e' che la maschera
+    // decade per CLONAZIONE: 65, 22, 14 su tre cloni della stessa sorgente,
+    // con il clone reso immortale (quindi non e' la sua morte) e la radice
+    // della maschera intatta per tutto il tempo (refcount=1, children=14).
+    //
+    // Il deep-clone del motore tiene due NiTPointerHashMap di deduplica per i
+    // sotto-oggetti CONDIVISI e, dopo aver clonato, ripassa a ricucire i
+    // legami (vt[32], "controller fix-ups, child->parent backlinks via the
+    // maps"). Se quella ricucitura sposta verso il clone qualcosa che era
+    // della sorgente, ogni clone si porta via un pezzo della maschera.
+    //
+    // Questo censimento sta a cavallo della SINGOLA chiamata: geometrie e
+    // slot d'osso della sorgente, prima e dopo. Se il numero cala li' dentro,
+    // il colpevole e' la clonazione e non serve altro per saperlo.
+    const auto census = [](void* root, std::size_t* geoms) -> std::size_t {
+        std::vector<void*> g;
+        collect_all_geometry_recursive(root, &g);
+        *geoms = g.size();
+        std::size_t bones = 0;
+        for (void* geo : g) {
+            void* skin = nullptr;
+            if (!seh_read_ptr_field(geo, BSGEOMETRY_SKIN_INSTANCE_OFF, &skin)
+                || !skin) {
+                continue;
+            }
+            const std::uint32_t n = seh_skin_bone_count(skin);
+            if (n < 1024) bones += n;
+        }
+        return bones;
+    };
+    std::size_t geoms_before = 0, geoms_after = 0;
+    const std::size_t bones_before = census(face_source, &geoms_before);
+
     void* fc = clone_nif_subtree(face_source);
+
+    const std::size_t bones_after = census(face_source, &geoms_after);
+
+    // 2026-09-19, secondo giro. Il primo censimento ha risposto: la sorgente
+    // NON decade (14 geometrie / 65 ossa, identica prima e dopo ogni
+    // clonazione). Eppure la ricucitura ne lega 65 al primo ghost e 46 al
+    // secondo. Quindi la perdita sta nel CLONE, e va contata li'.
+    //
+    // Se il clone esce gia' piu' povero della sorgente, il colpevole e' il
+    // deep-clone del motore. Se esce identico e la ricucitura ne lega meno,
+    // il colpevole e' il bersaglio della ricucitura, cioe' lo scheletro del
+    // ghost — e allora il difetto non e' nella faccia ma in cosa lo scheletro
+    // del secondo ghost non contiene piu'.
+    std::size_t geoms_clone = 0;
+    const std::size_t bones_clone =
+        (fc && fc != face_source) ? census(fc, &geoms_clone) : 0;
+
+    // 2026-09-19, terzo giro. I due censimenti precedenti hanno escluso che
+    // la sorgente perda roba e che il clone sia infedele: 14 geometrie e 65
+    // ossa, sempre, dovunque. Eppure la ricucitura ne lega 65 al primo ghost
+    // e 62 al secondo, e quella che fallisce si chiama 'Wheel' — un osso
+    // della POWER ARMOR, su un client dove [pa-graft] non compare mai e lo
+    // scheletro bersaglio ha sempre 129 nodi.
+    //
+    // Il nome, nella ricucitura, NON e' memorizzato: viene letto dal nodo che
+    // il puntatore indica in quel momento. Quindi non sono cambiati i nomi,
+    // sono cambiati i NODI sotto i puntatori.
+    //
+    // La maschera e' un clone della testa VIVA del giocatore e il suo array
+    // di ossa punta ai nodi del giocatore. Entrare o uscire da una power
+    // armor fa ricostruire il 3D del giocatore: quei nodi vengono liberati, i
+    // puntatori restano, e la memoria viene riusata da altri nodi — fra cui
+    // quelli del telaio.
+    //
+    // Questo stampa i primi nomi letti DAGLI SLOT DELLA SORGENTE. Se fra un
+    // ghost e il successivo cambiano mentre il conteggio resta 65, la
+    // maschera tiene puntatori a memoria liberata e la diagnosi e' chiusa.
+    //
+    // Niente std::string ne' std::vector qui dentro: questa funzione contiene
+    // gia' un __try piu' sotto, e un oggetto da distruggere lo fa esplodere
+    // (C2712). Una riga per slot, nessuna concatenazione.
+    dump_face_slot_names(face_source, why);
+
+    FW_LOG("[face-census] %s: sorgente %p PRIMA geom=%zu ossa=%zu -> DOPO "
+           "geom=%zu ossa=%zu%s | CLONE %p geom=%zu ossa=%zu%s",
+           why, face_source, geoms_before, bones_before,
+           geoms_after, bones_after,
+           (geoms_after != geoms_before || bones_after != bones_before)
+               ? "  <<< CLONAZIONE HA CAMBIATO LA SORGENTE"
+               : "  (sorgente intatta)",
+           fc, geoms_clone, bones_clone,
+           (geoms_clone != geoms_after || bones_clone != bones_after)
+               ? "  <<< IL CLONE E' PIU' POVERO DELLA SORGENTE"
+               : "  (clone fedele)");
+
     if (!fc || fc == face_source) {
         FW_ERR("[face-clone] %s: clone returned %s — refusing to attach the "
                "SOURCE node itself, that would rip it out of its own tree "
@@ -4482,7 +5178,40 @@ static bool ghost_dress_face(void* face_source, void* head, const char* why) {
         return false;
     }
 
-    void* skel = fw::native::skin_rebind::get_cached_skeleton();
+    // 2026-09-19 — LA PELLE DEL CLONE DEVE ESSERE SUA, PRIMA DI RICUCIRLA.
+    //
+    // Il corpo e ogni armatura passano di qui da Build 70s; la faccia no, ed
+    // e' l'unica che clonava e ricuciva senza privatizzare. Il commento sopra
+    // privatise_shared_skins spiega perche' e' fatale: il deep-clone del
+    // motore NON copia la BSSkin::Instance quando lo scheletro non fa parte
+    // del sottoalbero clonato, quindi clone e sorgente ne condividono una
+    // sola, e swap_skin_bones_to_skeleton riscrive le ossa DENTRO LA
+    // SORGENTE.
+    //
+    // La sorgente qui e' la MASCHERA DELLA FACCIA, che vive nella cache e
+    // sopravvive al ghost. Quindi il primo ghost lasciava nella maschera i
+    // puntatori alle ossa del PROPRIO scheletro, e il ghost successivo
+    // ricuciva partendo da quelli. Misurato sul client A:
+    //
+    //   23:57:02  primo ghost   skin swap=65
+    //   23:58:22  al rientro    skin swap=46
+    //
+    // Prima che lo scheletro diventasse un clone per ghost erano 65 e 61: i
+    // puntatori vecchi restavano validi perche' lo scheletro era condiviso e
+    // non moriva mai, e fallivano solo i quattro contaminati dalla power
+    // armor. Adesso lo scheletro muore col suo corpo — come deve — e quei
+    // puntatori sono penzolanti. Il difetto non e' nuovo: era coperto.
+    //
+    // Si autoverifica: se torna 0 su un albero non vuoto, la condivisione non
+    // c'era e questa diagnosi e' sbagliata. Lo dice il log della funzione.
+    (void)privatise_clone_skins(fc, face_source, "face-clone");
+
+    // Le ossa di QUESTO corpo. Prima era la cache di sessione, e quando
+    // la cache e' sparita questo sito ha cominciato a ricevere null: la
+    // faccia non veniva piu' cucita a niente, e il ghost e' uscito calvo e
+    // con la pelle sbagliata. Un accessore che nessuno riempie non fallisce
+    // rumorosamente, restituisce zero.
+    void* skel = fw::native::skin_rebind::skeleton_for(body);
     int sw = -2;
     if (skel) {
         sw = fw::native::skin_rebind::swap_skin_bones_to_skeleton(fc, skel);
@@ -4501,6 +5230,51 @@ static bool ghost_dress_face(void* face_source, void* head, const char* why) {
         auto* fb = reinterpret_cast<char*>(fc);
         _InterlockedIncrement(
             reinterpret_cast<long*>(fb + NIAV_REFCOUNT_OFF));
+
+        // ESPERIMENTO 2026-09-19 — PERDITA VOLUTA, reversibile con la riga
+        // qui sotto. NON e' una cura: e' la misura che decide quale cura
+        // costruire.
+        //
+        // Il fatto da spiegare: una sola maschera parcheggiata, clonata una
+        // volta per ghost, e ogni clone lega meno ossa del precedente.
+        // 65 al primo, poi 38, 22, 25 alle ricostruzioni — su cinque
+        // sessioni il PRIMO clone e' sempre 65 e non sbaglia mai. La radice
+        // della maschera resta intatta per tutto il tempo (refcount=1,
+        // children=14, verificato su 65552 consegne), quindi il danno e'
+        // sotto la radice.
+        //
+        // Fra un clone buono e il successivo guasto succede una cosa sola:
+        // MUORE IL CLONE PRECEDENTE. E clone_nif_subtree usa il deep-clone
+        // del motore, che DEDUPLICA i sotto-oggetti condivisi (le due
+        // NiTPointerHashMap della NiCloneProcess): il clone non copia tutto,
+        // certe cose se le divide con la sorgente. Se la maschera non ne
+        // tiene un riferimento proprio, ogni clone che muore se ne porta via
+        // un pezzo.
+        //
+        // Un riferimento in piu' qui significa che il clone non muore mai.
+        // Se il clone SUCCESSIVO esce a 65, l'ipotesi e' confermata e le
+        // cure possibili sono tre: la maschera si prende riferimenti propri
+        // su cio' che condivide, oppure una copia profonda vera invece di
+        // quella del motore, oppure la maschera si ricostruisce a ogni ghost
+        // come fa gia' il client che non si rompe mai.
+        // Se esce ancora guasto, l'ipotesi cade e il bersaglio diventa lo
+        // smontaggio della testa, che finora nessuno ha guardato.
+        //
+        // COSTO MENTRE E' ACCESO: un sottoalbero faccia perso per ogni ghost
+        // costruito. Qualche centinaio di KB a ricostruzione, nessun effetto
+        // visivo atteso. Da spegnere appena il numero e' letto.
+        // ESITO: NON era la morte del clone. Con il clone reso immortale il
+        // decadimento e' rimasto identico (65 -> 22 -> 14), ed e' cosi' che
+        // questa strada e' stata esclusa. La causa vera era che la maschera
+        // conservava puntatori al rig del giocatore locale; vedi
+        // face_reference_skeleton. Spento: teneva in vita un sottoalbero
+        // faccia per ogni ghost costruito.
+        static constexpr bool kLeakFaceCloneForTest = false;
+        if (kLeakFaceCloneForTest) {
+            _InterlockedIncrement(
+                reinterpret_cast<long*>(fb + NIAV_REFCOUNT_OFF));
+        }
+
         g_r.attach_child_direct(head, fc, 0);
 
         // Cull every OTHER child of head. This is what hides the loaded
@@ -4560,11 +5334,13 @@ static bool ghost_dress_face(void* face_source, void* head, const char* why) {
 
 // --- M2.2 API --------------------------------------------------------------
 
-bool inject_debug_cube(float x, float y, float z) {
+bool inject_debug_cube(float x, float y, float z,
+                       const char* peer_id) {
     if (!resolve_once()) return false;
 
-    if (g_injected_cube.load(std::memory_order_acquire)) {
-        FW_LOG("[native] inject_cube: already injected — skipping");
+    if (ghost_body_for(peer_id)) {
+        FW_LOG("[native] inject_cube: peer=%s already has a body — skipping",
+               peer_id ? peer_id : "<nessuno>");
         return true;
     }
 
@@ -4580,9 +5356,9 @@ bool inject_debug_cube(float x, float y, float z) {
     // (void)try_inject_cube; // kept in source for fallback during bring-up;
     //                        // flip this comment + the call site to revert.
     void* body = nullptr;
-    const bool ok = try_inject_body_nif(x, y, z, &body);
+    const bool ok = try_inject_body_nif(x, y, z, &body, peer_id);
     if (ok && body) {
-        g_injected_cube.store(body, std::memory_order_release);
+        ghost_record_body(peer_id, body);
         FW_LOG("[native] inject_cube (M5 body): SUCCESS body=%p "
                "pos=(%.1f, %.1f, %.1f)", body, x, y, z);
 
@@ -4608,10 +5384,7 @@ bool inject_debug_cube(float x, float y, float z) {
         const int total_bssitf = collect_all_bssitf_recursive(body, &body_geoms);
         FW_LOG("[body-tree-dump] DONE — total BSSITF in tree: %d", total_bssitf);
 
-        {
-            std::lock_guard lk(g_body_cull_mtx);
-            g_ghost_body_geoms = std::move(body_geoms);
-        }
+        ghost_record_geoms(peer_id, std::move(body_geoms));
         if (total_bssitf == 0) {
             FW_WRN("[native] inject_cube: NO BSSubIndexTriShape found in body "
                    "tree — M9.w3 body cull will no-op (verify "
@@ -4640,16 +5413,22 @@ bool inject_debug_cube(float x, float y, float z) {
     return ok;
 }
 
-// TODO (ghost lifecycle — this is what PEER_LEAVE must call, in the right
-// order). Today PEER_LEAVE only logs a line (net/client.cpp), so a peer that
-// disconnects leaves its ghost standing in the world forever, frozen at its
-// last position: nothing hides it, detaches it, or frees the slot for reuse.
+// QUESTA NON E' LO SMONTAGGIO. E' l'ULTIMO PASSO dello smontaggio.
 //
-// This function is already the correct teardown, and it is more than "remove
-// the body": it invalidates the body-geom cache and the cull contributor set
-// in lockstep, so the NEXT inject starts from empty and the first BODY-armor
-// attach performs the empty->non-empty transition that applies the cull flag.
-// Skipping that leaves the next ghost with stale culling.
+// Qui c'era scritto "this function is already the correct teardown", e non
+// era vero: tocca corpo, cache delle geometrie e contributori al culling, e
+// NON rilascia testa, armature, armi, slot, code e cache. Un audit in re/ lo
+// diceva gia'; la Fase 2 l'ha confermato scrivendo lo smontaggio vero,
+// ghost_teardown_for_peer, che chiama questa funzione per ultima. Il vecchio
+// testo diceva anche che PEER_LEAVE "only logs a line" — chiuso il
+// 2026-09-18.
+//
+// Quello che questa funzione fa, ed e' il motivo per cui non si salta:
+// invalida la cache delle geometrie del corpo e l'insieme dei contributori
+// al culling IN MODO SOLIDALE, cosi' la prossima iniezione riparte da vuoto
+// e il primo attacco di un'armatura sul corpo esegue la transizione da vuoto
+// a pieno che applica il flag di culling. Saltarla lascia il ghost
+// successivo con il culling stantio.
 //
 // ORDERING (from shutdown(), which is the only correct caller today):
 // synthetic_refr::shutdown() MUST run first — pending assembly callbacks would
@@ -4658,17 +5437,34 @@ bool inject_debug_cube(float x, float y, float z) {
 // detaching, and it must run on the main thread like every other scene-graph
 // mutation. Per-peer teardown also needs the pose/crouch/equip caches keyed by
 // that peer dropped, or the next player to occupy the slot inherits them.
-void detach_debug_cube() {
-    void* cube = g_injected_cube.exchange(nullptr, std::memory_order_acq_rel);
-    // M9 wedge 3: invalidate body geom cache + contributor set in lockstep
-    // with cube destruction. The next inject_debug_cube will repopulate the
-    // body geoms list from the fresh body NIF tree; contributor set must
-    // start empty so the first replayed BODY-armor attach correctly
-    // transitions empty→non-empty and applies the cull flag.
+void detach_debug_cube(const char* peer_id) {
+    // `peer_id` = il ghost da staccare; nullptr = tutti, che e' cio' che
+    // serve allo spegnimento. Prima non c'era scelta perche' il corpo era
+    // uno: si staccava "il" corpo.
+    void* cube = peer_id ? ghost_body_for(peer_id) : ghost_any_body();
+    // Il record se ne va INSIEME al puntatore unico, e per corpo: questa
+    // funzione non sa di chi sia il ghost che sta smontando, perche' e' nata
+    // quando ce n'era uno solo. Se le due verita' non si cancellassero
+    // insieme, ghost_body_for continuerebbe a consegnare un corpo morto —
+    // che e' peggio di consegnare nullptr.
+    (void)ghost_forget_body(cube);
+    // M9 wedge 3: le geometrie del corpo e l'insieme dei contributori al
+    // culling si invalidano INSIEME alla distruzione del corpo. La prossima
+    // iniezione ripopola le geometrie dal NIF fresco, e i contributori devono
+    // ripartire vuoti perche' il primo attacco di un'armatura da slot BODY
+    // faccia la transizione vuoto->pieno che applica il flag.
+    //
+    // 2026-09-18 — solo quelli DI QUESTO peer. Prima si svuotava tutto: con
+    // due ghost, smontarne uno avrebbe fatto ricomparire il torso dell'altro
+    // sotto i vestiti. Le geometrie se ne vanno da sole con il record, qui
+    // sotto; i contributori no, perche' la loro mappa e' separata.
     {
-        std::lock_guard lk(g_body_cull_mtx);
-        g_ghost_body_geoms.clear();
-        g_body_cull_contributors.clear();
+        char dying_peer[64] = {};
+        if (ghost_peer_for_body(cube, dying_peer, sizeof(dying_peer))
+            && dying_peer[0]) {
+            std::lock_guard lk(g_body_cull_mtx);
+            g_body_cull_contributors.erase(dying_peer);
+        }
     }
     if (!cube) return;
     if (!g_resolved.load(std::memory_order_acquire)) return;
@@ -4749,6 +5545,7 @@ long seh_refcount_dec_armor(void* node) {
         return _InterlockedDecrement(rc);
     } __except (EXCEPTION_EXECUTE_HANDLER) { return -999; }
 }
+
 // SEH-protected lookup_by_form_id call (POD: takes a fn ptr + u32, returns ptr).
 void* seh_lookup_form(void* (__fastcall* fn)(std::uint32_t),
                        std::uint32_t form_id) {
@@ -4985,11 +5782,133 @@ int armor_path_score(const char* path, std::size_t len) {
 }
 } // anon namespace (SEH POD wrappers)
 
+// ===== LO SCHELETRO DI RIFERIMENTO DELLA MASCHERA =========================
+//
+// 2026-09-19 — la cura del difetto che ha resistito a sette ipotesi.
+//
+// IL DIFETTO. La maschera della faccia e' un clone della testa VIVA del
+// giocatore locale, parcheggiata in face_cache e riusata per ogni ghost. Le
+// pelli di quel clone conservano PUNTATORI NUDI ai nodi-osso del rig del
+// giocatore: puntatori che non possediamo e che nessuno referenzia.
+//
+// Quando il giocatore entra o esce da una power armor il motore ricostruisce
+// il suo 3D ("MODEL RELOAD A ... the PA skeleton rebuild" nel pa-trace), quei
+// nodi muoiono, e il pool riassegna i loro indirizzi ai nodi del telaio.
+//
+// La ricucitura non memorizza i nomi: li LEGGE dal nodo che il puntatore
+// indica in quel momento. Quindi dopo una power armor legge il nome
+// dell'inquilino nuovo. Misurato sul client A, stessa maschera, stessi slot,
+// stessi indirizzi, tre rinascite:
+//
+//   000002BB0D887B80 : 'Chest'      -> 'Wheel'         -> 'Neck_Low_skin'
+//   000002BB0E457CC0 : 'Chest_skin' -> 'SPINE2'        -> 'LArm_UpperTwist2_skin'
+//   000002BB0E183680 : 'Head'       -> 'Head'          -> 'R_RibHelper'
+//
+// 'Wheel' non e' un osso della power armor rimasto attaccato alla maschera:
+// e' cio' che si legge a quell'indirizzo dopo il riciclo. Su quel client
+// [pa-graft] non e' mai girato e lo scheletro del ghost ha sempre 129 nodi.
+//
+// Il seguito e' peggio del NO MATCH: sul fallimento la ricucitura lascia il
+// puntatore com'e', e poco dopo ri-cachea bones_pri[i] = bones_fb[i] + 0x70,
+// che e' l'indirizzo da cui la GPU legge la matrice di mondo a ogni frame.
+// Da li' il "telo" con un capo fisso ancorato alla power armor del giocatore
+// locale. E al terzo giro i puntatori riciclati cadono DENTRO l'albero del
+// ghost nuovo: il nome si risolve, lo swap "riesce", e le geometrie a un osso
+// solo (occhi, ciglia, bocca) finiscono su 'R_RibHelper' — la testa sparisce
+// e restano occhi e denti appesi.
+//
+// LA CURA. La maschera smette di puntare al rig del giocatore. Appena
+// costruita, le sue ossa vengono ri-puntate a QUESTO scheletro: un clone di
+// skeleton.nif che carichiamo una volta, teniamo per tutta la sessione, e non
+// attacchiamo a niente. Non e' animato, non e' disegnato, non ha genitore:
+// serve solo a essere una tabella di nomi VIVA, con nodi che possediamo e che
+// nessun Reset3D del giocatore puo' portare via.
+//
+// Perche' non un +1 sulle ossa del giocatore: terrebbe vivi nodi di uno
+// scheletro smontato e la maschera continuerebbe a descrivere il passato.
+// Perche' non una tabella di stringhe: sarebbe piu' ortodossa (i commenti di
+// questo file la chiamano "nomi condivisi, puntatori locali") ma vuole una
+// firma nuova in skin_rebind e il passaggio della tabella lungo tutta la
+// catena. Questa fa la stessa cosa con la primitiva che gia' esiste ed e'
+// gia' provata su corpo, armature e faccia.
+// NON dipende da g_r, e non e' un dettaglio: g_r lo riempie resolve_once(),
+// che si raggiunge SOLO dai due punti di iniezione del ghost. Il prestito
+// della faccia gira prima — misurato il 2026-09-19: maschera alle 17:12:50,
+// primo ghost alle 17:13:11, venti secondi dopo. La prima versione di questa
+// funzione usciva sul guardiano `if (!g_r.base)` IN SILENZIO e la cura non e'
+// mai girata.
+//
+// E' la stessa trappola che il commento sopra clone_module_base descrive per
+// esteso ("with no log line, because that early return predates the two logged
+// failure paths below it... That is what killed client B on its first live
+// two-client test"). Per questo qui si risolve la base da soli, come fa lui, e
+// per questo ogni uscita ha la sua riga di log.
+//
+// resolve_once() NON si chiama di proposito: latcherebbe per VALORE la handle
+// della texture degli effetti venti secondi prima del dovuto, e il suo stesso
+// commento avverte che quel valore non e' inizializzato presto.
+void* face_reference_skeleton() {
+    static std::atomic<void*> s_ref{nullptr};
+    if (void* cached = s_ref.load(std::memory_order_acquire)) return cached;
+
+    const std::uintptr_t base = clone_module_base();
+    if (base == 0) {
+        FW_ERR("[face-ref] Fallout4.exe non risolvibile — nessuno scheletro "
+               "di riferimento");
+        return nullptr;
+    }
+    auto loader = reinterpret_cast<NifLoadByPathFn>(base + NIF_LOAD_BY_PATH_RVA);
+
+    constexpr const char* kSkelPath =
+        "Actors\\Character\\CharacterAssets\\skeleton.nif";
+    NifLoadOpts opts{};
+    opts.flags = NIF_OPT_FADE_WRAP;   // le stesse del corpo del ghost
+
+    auto* ks = reinterpret_cast<std::uint8_t*>(
+        base + BSLSP_BIND_KILLSWITCH_BYTE_RVA);
+    const std::uint8_t saved_ks = *ks;
+    *ks = 1;
+    void* fresh = nullptr;
+    const std::uint32_t rc =
+        seh_nif_load_armor(loader, kSkelPath, &fresh, &opts);
+    *ks = saved_ks;
+
+    if (rc != 0 || !fresh) {
+        FW_ERR("[face-ref] caricamento dello scheletro di riferimento fallito "
+               "rc=%u node=%p — la maschera restera' agganciata al rig del "
+               "giocatore e marcira' alla prossima power armor", rc, fresh);
+        return nullptr;
+    }
+
+    void* ref = clone_nif_subtree(fresh);
+    if (ref && ref != fresh) {
+        // Il clone e' nostro (refcount 1, nessun genitore): vive finche' vive
+        // il processo, ed e' esattamente cio' che vogliamo. Il +1 del
+        // caricatore sull'istanza condivisa si lascia andare.
+        (void)seh_refcount_dec_armor(fresh);
+    } else {
+        // Il clone ha restituito la sorgente: e' l'istanza del model DB, non
+        // nostra. Si tiene lo stesso, ma NON si lascia andare il +1 del
+        // caricatore, o il motore potrebbe portarcela via.
+        FW_WRN("[face-ref] clone dello scheletro di riferimento fallito — si "
+               "usa l'istanza condivisa e si TIENE il riferimento del "
+               "caricatore");
+        ref = fresh;
+    }
+
+    s_ref.store(ref, std::memory_order_release);
+    FW_LOG("[face-ref] scheletro di riferimento pronto %p (clone di '%s', mai "
+           "attaccato, mai animato) — da qui in poi le ossa della maschera "
+           "puntano a nodi NOSTRI", ref, kSkelPath);
+    return ref;
+}
+
 namespace {
 
 // Tracking map: peer_id (str) → form_id → loaded NiNode*
 //
 // Per-peer scoping is for forward-compat with multi-peer ghost wedge.
+// (storico, superato il 2026-09-18: i ghost sono indicizzati per peer)
 // Today we only have ONE g_injected_cube ghost, so the per-peer key is
 // informational — physically the armor goes onto that single ghost
 // regardless of peer_id. When the multi-peer ghost lands, this map's
@@ -5019,13 +5938,43 @@ std::unordered_map<void*, bool> g_armor_was_cloned;
 // drains correctly (UNEQUIP is no-op since nothing's attached, then
 // EQUIP attaches). Reverse would also work via the idempotent skip
 // in ghost_attach_armor.
+//
+// 2026-09-18 — LA CODA DEVE ESSERE UNA COPIA FEDELE DELLA CHIAMATA.
+//
+// Fino a oggi teneva due campi soli, e tutto il resto di un equip veniva
+// buttato nell'istante in cui il ghost non c'era ancora: la lista OMOD, la
+// priorita' dell'ARMA e il percorso forzato.
+//
+// Per i vestiti si vedeva poco — la geometria sta sull'ARMA, quindi si
+// perdevano solo i mod e il tier. Per la power armor si vedeva tutto: la
+// mesh sta INTERAMENTE sull'OMOD del modello (vedi il commento sopra
+// ghost_attach_pa_piece_mods), quindi il ghost attaccava sei segnaposto
+// vuoti e restava il telaio nudo. Misurato il 2026-09-18 sul client B:
+// sei righe 'armor-attach ... 0 geometry leaf(ves)', 'pa-piece-mod' zero
+// volte, e gli OMOD regolarmente arrivati sul filo poche righe sopra.
+//
+// Il difetto non era COSA la coda tiene ma DOVE la si riempie: dentro
+// ghost_attach_armor, che gli OMOD non li riceveva nemmeno. Ora li riceve
+// — solo per poterli accodare, vedi la sua firma.
+//
+// Regola che ne esce, e vale per qualunque coda futura: se una coda tiene
+// meno campi della chiamata che rimpiazza, la differenza non e' un
+// risparmio, e' una perdita silenziosa che si manifesta solo nel percorso
+// meno esercitato.
 struct PendingArmorOp {
     std::uint32_t form_id;
-    std::uint8_t  kind;   // EquipOpKind: 1=EQUIP, 2=UNEQUIP
+    std::uint8_t  kind;                // EquipOpKind: 1=EQUIP, 2=UNEQUIP
+    std::uint16_t effective_priority;  // 0 = default della form
+    std::uint8_t  omod_count;          // capacita' 32 = MAX_EQUIP_MODS
+    std::uint32_t omod_form_ids[32];
+    // Copia, non puntatore: il percorso arriva da una BSFixedString del
+    // motore e la coda gli sopravvive. Vuoto = nessuna forzatura.
+    std::string   nif_path_override;
 };
 std::mutex g_pending_armor_mtx;
 std::unordered_map<std::string, std::deque<PendingArmorOp>>
     g_pending_armor_ops;
+
 
 // Walk TESObjectARMO → TESObjectARMA[i] → TESModel(male3rd) → BSFixedString
 // → c_str. Returns the first valid path found in the armor's addon list,
@@ -5772,11 +6721,13 @@ static bool seh_niav_set_flag(void* node, std::uint64_t mask, bool set) {
 // worth something — but do not expect it to close the bug on its own.
 std::atomic<bool> g_body_cull_enabled{true};
 
-static int apply_body_cull(bool culled) {
+static int apply_body_cull(const char* peer_id, bool culled) {
+    // Il corpo da nascondere e' quello DI QUESTO peer. Prima era "il corpo",
+    // e con due ghost vestire l'uno avrebbe fatto sparire il torso dell'altro.
     void* primary = nullptr;
     {
-        std::lock_guard lk(g_body_cull_mtx);
-        if (!g_ghost_body_geoms.empty()) primary = g_ghost_body_geoms[0];
+        const auto geoms = ghost_geoms_for(peer_id);
+        if (!geoms.empty()) primary = geoms[0];
     }
     if (!primary) return 0;
     if (!g_body_cull_enabled.load(std::memory_order_relaxed)) {
@@ -6206,8 +7157,40 @@ static std::uint16_t seh_child_count(void* node) {
 // graft and the retarget read bones by name, so the wrapper root is
 // invisible to them. The report after each load prints the template
 // root's vtable and flags: expected vt_rva 0x28FA3E8 with bit 23 set.
+// ESPERIMENTO 2026-09-19 — reversibile con questa riga sola.
+//
+// Lo scheletro della power armor si carica con le opzioni del motore
+// (kind 3 / 0x3D, Build 71e); quello UMANO del ghost con 0x10 soltanto, e
+// 0x3D contiene 0x10 — quindi l'umano ne usa uno su cinque. Il bit che manta
+// di piu' e' 0x20: un caricamento senza quel bit AZZERA il bit 23 del model
+// DB, e il bit 23 e' cio' che il walker di chiusura di Load3D controlla
+// prima di riapplicare i materiali di default a tutto l'albero dell'attore.
+//
+// La mia lettura dice che il difetto sta nel caricamento UMANO. L'utente
+// vuole provare il verso opposto — allineare la PA all'umano — perche' e'
+// l'unico dei due che non tocca una cura gia' documentata e perche' le mie
+// ultime quattro ipotesi sono state smentite dalla misura.
+//
+// L'esperimento e' onesto: se il ghost in power armor guarisce togliendo
+// quei quattro bit, la mia lettura e' sbagliata. Se non guarisce, resta in
+// piedi e si prova l'altro verso.
+//
+// COSTO SE RESTA ACCESO: si riapre la perdita della vernice per il secondo
+// giocatore che entra in una power armor dipinta (misurata il 2026-09-15,
+// vedi il commento qui sopra). Rimettere `false` la richiude.
+// ESITO 2026-09-19: PROVATO E BOCCIATO. Con la PA caricata a 0x10 il ghost
+// non viene piu' ricreato affatto al rientro del peer — peggio del difetto
+// che cercavamo. Rimesso a false; la riga resta perche' il risultato
+// negativo vale quanto uno positivo e non va riprovato per dimenticanza.
+static constexpr bool kPaSkelOptsAlignedToHuman = false;
+
 static void pa_skeleton_load_opts(NifLoadOpts* opts) {
     *opts = NifLoadOpts{};
+    if (kPaSkelOptsAlignedToHuman) {
+        // Le stesse opzioni dello scheletro umano del ghost.
+        opts->flags = NIF_OPT_FADE_WRAP;   // 0x10, model_kind resta 0
+        return;
+    }
     opts->model_kind = NIF_MODEL_KIND_ACTOR;
     opts->flags      = NIF_OPT_ACTOR_SKELETON;
 }
@@ -6232,12 +7215,20 @@ static void report_pa_skeleton_template(void* pa_skel, const char* who) {
            (flags & 0x800000ull) ? "SET" : "CLEAR");
 }
 
-static bool graft_pa_bones_into_skeleton(void* skel) {
+// 2026-09-18 — era una `static` dentro la funzione, quindi viva quanto il
+// processo. Adesso che ogni corpo ha le SUE ossa quel flag va azzerato con
+// loro: uno scheletro nuovo non ha nessun osso PA, e lasciarlo a true
+// significa non innestarglieli mai piu' e attaccare le piastre a ossa che
+// non esistono.
+// g_pa_graft_all_present e' in GhostRecord::pa_grafted.
+
+static bool graft_pa_bones_into_skeleton(void* skel,
+                                         const char* peer_id) {
     if (!skel) return false;
-    // Per-node idempotence below; this flag only skips the PA skeleton
-    // load once every entry has been seen present.
-    static bool s_all_present = false;
-    if (s_all_present) return true;
+    // L'idempotenza per nodo e' qui sotto; questo flag salta solo il
+    // caricamento dello scheletro PA quando si e' gia' visto che ci sono
+    // tutte le ossa.
+    if (ghost_pa_grafted(peer_id)) return true;
 
     constexpr const char* kPaSkelPath =
         "Actors\\PowerArmor\\CharacterAssets\\skeleton.nif";
@@ -6339,7 +7330,7 @@ static bool graft_pa_bones_into_skeleton(void* skel) {
                grew ? ", array PRE-GROWN" : "");
         ++grafted;
     }
-    if (grafted + present == kGraftCount) s_all_present = true;
+    if (grafted + present == kGraftCount) ghost_set_pa_grafted(peer_id, true);
     (void)seh_refcount_dec_armor(pa_skel);
     FW_LOG("[pa-graft] %d grafted + %d already present of %d PA-only nodes"
            "%s", grafted, present, kGraftCount,
@@ -6375,11 +7366,11 @@ static bool graft_pa_bones_into_skeleton(void* skel) {
 // live data sampled from a peer who is in PA, i.e. PA-proportioned, so the
 // mix stays consistent. Bones it does not drive stay at PA bind, which is
 // exactly where the frame mesh expects them.
-namespace {
-struct PaBindSave { float xf[16]; };
-std::mutex g_pa_bind_mtx;
-std::unordered_map<void*, PaBindSave> g_pa_bind_saved;  // bone -> human bind
-}  // namespace
+// PaBindSave e la mappa dei bind vivono in GhostRecord (cerca "IL GHOST DI
+// CHI?"): erano una mappa UNICA per sessione, e la guardia "se non e' vuota
+// esci" qui sotto significava che il secondo ghost in power armor non veniva
+// retargetato mai — restava umano sotto le piastre, con le mani dentro
+// l'avambraccio, esattamente il difetto che il retarget esiste per curare.
 
 // SEH-safe read of the 16-float NiTransform at node+NIAV_LOCAL_ROTATE_OFF
 // (mirror of seh_write_local_transform).
@@ -6415,12 +7406,13 @@ static void collect_named_nodes_w4(void* root,
     }
 }
 
-static void pa_bind_retarget_enable(void* skel) {
+static void pa_bind_retarget_enable(void* skel, const char* peer_id) {
     if (!skel) return;
-    {
-        std::lock_guard<std::mutex> lk(g_pa_bind_mtx);
-        if (!g_pa_bind_saved.empty()) return;  // already retargeted
-    }
+    // Gia' retargetato QUESTO ghost. Prima la domanda era "e' gia' stato
+    // retargetato QUALCUNO", e con due peer in power armor il secondo non lo
+    // era mai.
+    if (!ghost_pa_bind_empty(peer_id)) return;
+    std::unordered_map<void*, PaBindSave> saved;
 
     constexpr const char* kPaSkelPath =
         "Actors\\PowerArmor\\CharacterAssets\\skeleton.nif";
@@ -6474,7 +7466,10 @@ static void pa_bind_retarget_enable(void* skel) {
 
     int retargeted = 0;
     {
-        std::lock_guard<std::mutex> lk(g_pa_bind_mtx);
+        // Nessun lock qui: `saved` e' una mappa locale e questa camminata
+        // legge e scrive nodi del grafo di scena. Prima il lock della mappa
+        // globale restava preso per tutto il giro — centinaia di letture e
+        // scritture in gabbia SEH con un mutex in mano.
         for (const auto& [name, gnode] : ghost_nodes) {
             auto pit = pa_nodes.find(name);
             if (pit == pa_nodes.end()) continue;
@@ -6491,27 +7486,29 @@ static void pa_bind_retarget_enable(void* skel) {
                 }
             }
             if (!seh_write_local_transform(gnode, pa_xf)) continue;
-            g_pa_bind_saved.emplace(gnode, save);
+            saved.emplace(gnode, save);
             ++retargeted;
         }
     }
     (void)seh_refcount_dec_armor(pa_skel);
+    // Deposito alla fine, non durante: la camminata qui sopra tocca il grafo.
+    ghost_pa_bind_store(peer_id, std::move(saved));
     FW_LOG("[pa-retarget] %d bones set to PA bind locals (ghost skel %zu "
            "named, PA skel %zu named) — human bind saved for restore at "
            "frame detach", retargeted, ghost_nodes.size(), pa_nodes.size());
 }
 
-static void pa_bind_retarget_disable() {
-    std::lock_guard<std::mutex> lk(g_pa_bind_mtx);
-    if (g_pa_bind_saved.empty()) return;
+static void pa_bind_retarget_disable(const char* peer_id) {
+    // Presi e svuotati in un colpo: da qui in giu' si scrive nel grafo senza
+    // tenere nessun lock.
+    const auto saved = ghost_pa_bind_take(peer_id);
+    if (saved.empty()) return;
     int restored = 0;
-    for (const auto& [node, save] : g_pa_bind_saved) {
+    for (const auto& [node, save] : saved) {
         if (seh_write_local_transform(node, save.xf)) ++restored;
     }
-    const std::size_t total = g_pa_bind_saved.size();
-    g_pa_bind_saved.clear();
-    FW_LOG("[pa-retarget] restored %d/%zu bones to human bind locals",
-           restored, total);
+    FW_LOG("[pa-retarget] peer=%s restored %d/%zu bones to human bind locals",
+           peer_id ? peer_id : "?", restored, saved.size());
 }
 
 // === v24 E4 — PA piece model mods ==========================================
@@ -6865,7 +7862,17 @@ int ghost_attach_pa_piece_mods(const char* peer_id, std::uint32_t piece_form_id,
         if (ghost_attach_armor(peer_id, mod, 0, mpath)) {
             ++attached;
             std::lock_guard<std::mutex> lk(g_pa_piece_mods_mtx);
-            g_pa_piece_mods[peer_id][piece_form_id].push_back(mod);
+            // 2026-09-18 — cercare prima di inserire. `ghost_attach_armor`
+            // risponde di si' anche quando salta perche' era gia' attaccato
+            // (la sua scorciatoia idempotente), quindi su un bootstrap
+            // rigiocato questo registro raccoglieva un duplicato per ogni
+            // mod, a ogni riconnessione, e il distacco poi ci ripassava
+            // sopra due volte.
+            auto& mods_here = g_pa_piece_mods[peer_id][piece_form_id];
+            if (std::find(mods_here.begin(), mods_here.end(), mod)
+                    == mods_here.end()) {
+                mods_here.push_back(mod);
+            }
         }
     }
     FW_LOG("[pa-piece-mod] peer=%s piece=0x%X: %d model mod(s) attached",
@@ -6987,25 +7994,46 @@ static int strip_addon_value_nodes(void* clone, std::uint32_t form_id, const cha
 
 bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
                         std::uint16_t effective_priority,
-                        const char* nif_path_override) {
+                        const char* nif_path_override,
+                        const std::uint32_t* omod_form_ids,
+                        std::size_t omod_count) {
     if (!peer_id || item_form_id == 0) return false;
 
-    void* ghost = g_injected_cube.load(std::memory_order_acquire);
+    void* ghost = ghost_body_for(peer_id);
     if (!ghost) {
         // Ghost not yet spawned — queue for replay on next ghost spawn.
         // This is the boot-time race: peer's B8 force-equip-cycle fires
         // before our ghost is injected; without queue we'd permanently
         // miss the initial equipment state of that peer.
+        PendingArmorOp op{};
+        op.form_id            = item_form_id;
+        op.kind               = /*EQUIP=*/1;
+        op.effective_priority = effective_priority;
+        if (omod_form_ids && omod_count > 0) {
+            const std::size_t n = omod_count > 32 ? 32 : omod_count;
+            for (std::size_t i = 0; i < n; ++i) {
+                op.omod_form_ids[i] = omod_form_ids[i];
+            }
+            op.omod_count = static_cast<std::uint8_t>(n);
+        }
+        if (nif_path_override) op.nif_path_override = nif_path_override;
+
         std::size_t qsize;
         {
             std::lock_guard lk(g_pending_armor_mtx);
-            g_pending_armor_ops[peer_id].push_back(
-                PendingArmorOp{item_form_id, /*EQUIP=*/1});
+            g_pending_armor_ops[peer_id].push_back(std::move(op));
             qsize = g_pending_armor_ops[peer_id].size();
         }
-        FW_LOG("[armor-attach] no ghost yet (peer=%s form=0x%X) — queued "
-               "EQUIP for replay on ghost spawn (pending size=%zu)",
-               peer_id, item_form_id, qsize);
+        // Il conteggio degli OMOD sta nella riga apposta: e' il numero che
+        // sarebbe bastato a vedere questo difetto un mese fa.
+        FW_LOG("[armor-attach] no ghost yet (peer=%s form=0x%X prio=%u "
+               "omods=%u path='%s') — queued EQUIP for replay on ghost "
+               "spawn (pending size=%zu)",
+               peer_id, item_form_id,
+               static_cast<unsigned>(effective_priority),
+               static_cast<unsigned>(omod_count),
+               nif_path_override ? nif_path_override : "",
+               qsize);
         return false;
     }
     if (!g_resolved.load(std::memory_order_acquire) ||
@@ -7390,7 +8418,7 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
     // matching name, and bones_pri[i] = bones_fb[i]+0x70 → the same
     // animated joint world matrices the body skin reads from. Armor
     // skinning becomes synchronized with body animation automatically.
-    void* cached_skel = fw::native::skin_rebind::get_cached_skeleton();
+    void* cached_skel = fw::native::skin_rebind::skeleton_for(ghost);
     if (skip_swap) {
         FW_LOG("[pa-bisect] skin swap SKIPPED on the clone (mode %d) — the "
                "ghost's armor will sit in T-pose; that is expected");
@@ -7403,8 +8431,8 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
     // the frame is worn, or hands and feet render inside the limbs (see
     // pa_bind_retarget_enable). Undone at frame detach.
     if (is_power_armor_path && cached_skel) {
-        graft_pa_bones_into_skeleton(cached_skel);
-        pa_bind_retarget_enable(cached_skel);
+        graft_pa_bones_into_skeleton(cached_skel, peer_id);
+        pa_bind_retarget_enable(cached_skel, peer_id);
     }
     if (cached_skel) {
         // M9.w2 snapshot/restore — only for SHARED path. Clone has its
@@ -7498,7 +8526,7 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
             && (mask & offsets::BIPED_SLOT_BODY_MASK) != 0)
         {
             if (body_cull_register(peer_id, item_form_id)) {
-                const int n = apply_body_cull(true);
+                const int n = apply_body_cull(peer_id, true);
                 if (n > 0) {
                     FW_LOG("[body-cull] peer=%s form=0x%X mask=0x%08X ACQUIRED "
                            "— %d body geom(s) hidden under BODY-slot armor",
@@ -7545,7 +8573,7 @@ bool ghost_detach_armor(const char* peer_id, std::uint32_t item_form_id) {
         }
     }
 
-    void* ghost = g_injected_cube.load(std::memory_order_acquire);
+    void* ghost = ghost_body_for(peer_id);
     if (!ghost) {
         // Ghost not yet spawned (boot race) OR destroyed (cell change).
         // Queue UNEQUIP for replay too: when ghost spawns and pending
@@ -7554,9 +8582,15 @@ bool ghost_detach_armor(const char* peer_id, std::uint32_t item_form_id) {
         // armor" cleanly. Also clean up tracking map (if there's a
         // racy stale entry).
         {
+            // Uno stacco non porta con se' ne' OMOD ne' priorita': lo
+            // stacco dei modelli lo fa gia' il blocco qui sopra, per form
+            // dell'OMOD. Campi a zero ESPLICITAMENTE, per non far sembrare
+            // una scelta cio' che prima era una perdita.
+            PendingArmorOp op{};
+            op.form_id = item_form_id;
+            op.kind    = /*UNEQUIP=*/2;
             std::lock_guard lk(g_pending_armor_mtx);
-            g_pending_armor_ops[peer_id].push_back(
-                PendingArmorOp{item_form_id, /*UNEQUIP=*/2});
+            g_pending_armor_ops[peer_id].push_back(std::move(op));
         }
         {
             std::lock_guard lk(g_armor_map_mtx);
@@ -7644,7 +8678,7 @@ bool ghost_detach_armor(const char* peer_id, std::uint32_t item_form_id) {
                                     : resolve_armor_nif_path(item_form_id, 0);
         if (dpath && seh_path_contains_ci(dpath, std::strlen(dpath),
                                           "characterassets\\frame.nif")) {
-            pa_bind_retarget_disable();
+            pa_bind_retarget_disable(peer_id);
         }
     }
 
@@ -7692,7 +8726,7 @@ bool ghost_detach_armor(const char* peer_id, std::uint32_t item_form_id) {
     // armor still attached but body restored (z-fight). One frame of "armor
     // gone, body still hidden" is preferable to one frame of overlap.
     if (body_cull_unregister(peer_id, item_form_id)) {
-        const int n = apply_body_cull(false);
+        const int n = apply_body_cull(peer_id, false);
         if (n > 0) {
             FW_LOG("[body-cull] peer=%s form=0x%X RELEASED — %d body geom(s) "
                    "visible again (last BODY contributor removed)",
@@ -7729,18 +8763,45 @@ void flush_pending_armor_ops() {
 
     std::size_t total = 0;
     std::size_t ok = 0;
+    std::size_t mods = 0;
     for (auto& kv : local) {
         const std::string& peer = kv.first;
         for (const auto& op : kv.second) {
             ++total;
+            // Gli OMOD si ripassano anche qui: se il ghost e' sparito di
+            // nuovo fra l'accodamento e adesso, questa chiamata ri-accoda,
+            // e deve ri-accodare TUTTO — altrimenti il buco si riapre al
+            // secondo giro invece che al primo.
             const bool success = (op.kind == 1)
-                ? ghost_attach_armor(peer.c_str(), op.form_id)
+                ? ghost_attach_armor(peer.c_str(), op.form_id,
+                                     op.effective_priority,
+                                     op.nif_path_override.empty()
+                                         ? nullptr
+                                         : op.nif_path_override.c_str(),
+                                     op.omod_count ? op.omod_form_ids
+                                                   : nullptr,
+                                     op.omod_count)
                 : ghost_detach_armor(peer.c_str(), op.form_id);
             if (success) ++ok;
+
+            // La meta' che mancava. Il dispatcher lo fa da sempre subito
+            // dopo un attach riuscito (v24 E4); la coda non l'ha mai
+            // fatto, ed e' per questo che la power armor annunciata a un
+            // nuovo arrivato compariva come telaio senza pezzi.
+            // Idempotente: ogni modello si attacca come armatura propria
+            // chiavata sulla form dell'OMOD, e ghost_attach_armor salta in
+            // silenzio cio' che e' gia' attaccato.
+            if (success && op.kind == 1 && op.omod_count > 0) {
+                const int n = ghost_attach_pa_piece_mods(
+                    peer.c_str(), op.form_id, op.omod_form_ids,
+                    op.omod_count);
+                if (n > 0) mods += static_cast<std::size_t>(n);
+            }
         }
     }
-    FW_LOG("[armor-pending] flush: replayed %zu/%zu ops across %zu peers",
-           ok, total, local.size());
+    FW_LOG("[armor-pending] flush: replayed %zu/%zu ops across %zu peers, "
+           "%zu PA model mod(s) attached",
+           ok, total, local.size(), mods);
 }
 
 // M9.5 — re-apply skin swap on every currently-attached ghost armor.
@@ -7780,16 +8841,18 @@ void reapply_ghost_skin_swaps(const char* trigger_label) {
         return;
     }
 
-    void* cached_skel = fw::native::skin_rebind::get_cached_skeleton();
-    if (!cached_skel) {
-        FW_WRN("[skin-reapply] trigger=%s: no cached skel — skipping "
-               "%zu ghost armor(s)", trigger_label, snapshot.size());
-        return;
-    }
-
+    // 2026-09-18 — lo scheletro si chiede DENTRO il ciclo, uno per peer. Il
+    // commento che stava qui prometteva esattamente questo ("quando il record
+    // mappera' peer -> corpo"): il record c'e', e con due ghost ricucire le
+    // armature dell'uno sulle ossa dell'altro le avrebbe fatte muovere col
+    // corpo sbagliato.
     std::size_t reapplied = 0;
     int total_swapped = 0;
+    std::size_t no_skel = 0;
     for (const auto& kv : snapshot) {
+        void* cached_skel = fw::native::skin_rebind::skeleton_for(
+            ghost_body_for(kv.first.c_str()));
+        if (!cached_skel) { ++no_skel; continue; }
         const int swapped =
             fw::native::skin_rebind::swap_skin_bones_to_skeleton(
                 kv.second, cached_skel);
@@ -7801,9 +8864,10 @@ void reapply_ghost_skin_swaps(const char* trigger_label) {
         }
     }
     FW_LOG("[skin-reapply] trigger=%s: re-bound %zu/%zu ghost armor(s) "
-           "(%d total bone slots restored to ghost skel) — counters engine "
-           "EquipObject post-attach skin re-bind on shared NIF instances",
-           trigger_label, reapplied, snapshot.size(), total_swapped);
+           "(%d total bone slots restored to ghost skel, %zu skipped for a "
+           "missing skeleton) — counters engine EquipObject post-attach skin "
+           "re-bind on shared NIF instances",
+           trigger_label, reapplied, snapshot.size(), total_swapped, no_skel);
 }
 
 // === M9 wedge 7 — public weapon attach/detach/flush ========================
@@ -7826,7 +8890,7 @@ bool ghost_attach_weapon(const char* peer_id, std::uint32_t item_form_id,
         nif_count = fw::net::MAX_NIF_DESCRIPTORS;
     }
 
-    void* ghost = g_injected_cube.load(std::memory_order_acquire);
+    void* ghost = ghost_body_for(peer_id);
     if (!ghost) {
         // Boot race: ghost not yet spawned. Queue for replay on next ghost
         // spawn (mirror armor). Note that the dispatcher tries armor first —
@@ -8023,7 +9087,7 @@ bool ghost_attach_weapon(const char* peer_id, std::uint32_t item_form_id,
 bool ghost_detach_weapon(const char* peer_id, std::uint32_t item_form_id) {
     if (!peer_id || item_form_id == 0) return false;
 
-    void* ghost = g_injected_cube.load(std::memory_order_acquire);
+    void* ghost = ghost_body_for(peer_id);
     if (!ghost) {
         // Queue UNEQUIP for replay too (mirror armor — preserves cancellation
         // ordering when a peer rapidly EQUIP→UNEQUIP before our ghost spawns).
@@ -8424,7 +9488,7 @@ int ghost_attach_mesh_blob(const char* peer_id, std::uint32_t item_form_id,
         return 0;
     }
 
-    void* ghost = g_injected_cube.load(std::memory_order_acquire);
+    void* ghost = ghost_body_for(peer_id);
     if (!ghost) {
         FW_WRN("[mesh-attach] peer=%s no ghost spawned yet — drop blob "
                "(equip_seq=%u, %zu meshes)",
@@ -8879,7 +9943,7 @@ int ghost_attach_mesh_blob(const char* peer_id, std::uint32_t item_form_id,
 bool ghost_detach_mesh_blob(const char* peer_id) {
     if (!peer_id) return false;
 
-    void* ghost = g_injected_cube.load(std::memory_order_acquire);
+    void* ghost = ghost_body_for(peer_id);
     if (!ghost) {
         FW_DBG("[mesh-detach] peer=%s no ghost — no-op", peer_id);
         return true;  // idempotent
@@ -8957,6 +10021,14 @@ struct GhostWeaponSlot {
     // Stored as opaque void* (NiAVObject*); refbump is balanced 1-to-1
     // with attach (we refbump pre-attach, refdec on detach below).
     std::vector<void*> extra_mods;
+    // 2026-09-18 — the OMOD set this weapon was assembled from.
+    //
+    // Needed to tell a REPLAY from a real change. A reconnecting client is
+    // replayed the whole join bootstrap, equipment included, and the
+    // assembled-weapon path below has no dedup of its own: every delivery
+    // frees the old node and re-clones the NIF. Same form and same mods
+    // means there is nothing to rebuild.
+    std::vector<std::uint32_t> omods;
     // Whether we've already run cull_geometry_leaves on this base node.
     // The cull walker recurses into all BSGeometry-derived leaves in
     // the subtree — if we ran it on every equip, after the first one
@@ -9177,7 +10249,7 @@ bool ghost_set_weapon(const char* peer_id,
     // children — not just our refbump.
     clear_ghost_extra_mods(peer_id);
 
-    void* ghost = g_injected_cube.load(std::memory_order_acquire);
+    void* ghost = ghost_body_for(peer_id);
     if (!ghost) {
         FW_DBG("[set-weapon] peer=%s no ghost yet — skip", peer_id);
         return false;
@@ -10149,7 +11221,7 @@ bool seh_looks_like_cstring(const void* addr, char* dst, std::size_t cap) {
 
 void dump_resmgr_first_entries(int count_max) {
     if (!g_r.base) {
-        FW_LOG("[resmgr-probe] g_r.base not resolved — skip");
+        FW_DBG("[resmgr-probe] g_r.base not resolved — skip");
         return;
     }
 
@@ -10164,7 +11236,7 @@ void dump_resmgr_first_entries(int count_max) {
         return;
     }
     if (!singleton) {
-        FW_LOG("[resmgr-probe] singleton ptr null — engine not initialized");
+        FW_DBG("[resmgr-probe] singleton ptr null — engine not initialized");
         return;
     }
 
@@ -10193,7 +11265,7 @@ void dump_resmgr_first_entries(int count_max) {
         return;
     }
 
-    FW_LOG("[resmgr-probe] singleton=%p vtable_rva=0x%llX (expected "
+    FW_DBG("[resmgr-probe] singleton=%p vtable_rva=0x%llX (expected "
            "0x%llX BSResource::EntryDB<BSModelDB>) buckets=%p cap=%u "
            "live=%u",
            singleton,
@@ -10235,9 +11307,9 @@ void dump_resmgr_first_entries(int count_max) {
             if (ext[k] != 0 && (ext[k] < 0x20 || ext[k] >= 0x7F)) ext[k] = '.';
         }
 
-        FW_LOG("[resmgr-probe] === Entry #%d (bucket[%u] @ %p) ext='%s' ===",
+        FW_DBG("[resmgr-probe] === Entry #%d (bucket[%u] @ %p) ext='%s' ===",
                dumped, i, entry, ext);
-        FW_LOG("[resmgr-probe]   +0x00 = 0x%016llX (12B hash key candidate; "
+        FW_DBG("[resmgr-probe]   +0x00 = 0x%016llX (12B hash key candidate; "
                "low12: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X)",
                static_cast<unsigned long long>(q[0]),
                static_cast<unsigned>(q[0] & 0xFF),
@@ -10252,9 +11324,9 @@ void dump_resmgr_first_entries(int count_max) {
                static_cast<unsigned>((q[1] >> 8) & 0xFF),
                static_cast<unsigned>((q[1] >> 16) & 0xFF),
                static_cast<unsigned>((q[1] >> 24) & 0xFF));
-        FW_LOG("[resmgr-probe]   +0x08 = 0x%016llX",
+        FW_DBG("[resmgr-probe]   +0x08 = 0x%016llX",
                static_cast<unsigned long long>(q[1]));
-        FW_LOG("[resmgr-probe]   +0x10 = 0x%016llX (DISAGREEMENT POINT)",
+        FW_DBG("[resmgr-probe]   +0x10 = 0x%016llX (DISAGREEMENT POINT)",
                static_cast<unsigned long long>(q[2]));
 
         // Test if +0x10 is a BSFixedString-ish handle (ptr to ptr-to-cstring).
@@ -10270,14 +11342,14 @@ void dump_resmgr_first_entries(int count_max) {
             if (n0 == 1 && deref0 != 0) {
                 const void* cs = reinterpret_cast<const void*>(deref0);
                 if (seh_looks_like_cstring(cs, buf, sizeof(buf))) {
-                    FW_LOG("[resmgr-probe]     → +0x10 deref → cstring "
+                    FW_DBG("[resmgr-probe]     → +0x10 deref → cstring "
                            "='%s' (BSFixedString-like 1-level)", buf);
                 }
             }
 
             // Test 2: treat +0x10 itself as ptr-to-cstring directly.
             if (seh_looks_like_cstring(p, buf, sizeof(buf))) {
-                FW_LOG("[resmgr-probe]     → +0x10 raw → cstring "
+                FW_DBG("[resmgr-probe]     → +0x10 raw → cstring "
                        "='%s' (raw char* path)", buf);
             }
 
@@ -10286,14 +11358,14 @@ void dump_resmgr_first_entries(int count_max) {
             char buf18[256] = {0};
             const void* p18 = reinterpret_cast<const char*>(p) + 0x18;
             if (seh_looks_like_cstring(p18, buf18, sizeof(buf18))) {
-                FW_LOG("[resmgr-probe]     → +0x10 + 0x18 → cstring "
+                FW_DBG("[resmgr-probe]     → +0x10 + 0x18 → cstring "
                        "='%s' (BSFixedString +0x18 layout)", buf18);
             }
         }
 
-        FW_LOG("[resmgr-probe]   +0x18 = 0x%016llX",
+        FW_DBG("[resmgr-probe]   +0x18 = 0x%016llX",
                static_cast<unsigned long long>(q[3]));
-        FW_LOG("[resmgr-probe]   +0x20 = 0x%016llX (NODE candidate)",
+        FW_DBG("[resmgr-probe]   +0x20 = 0x%016llX (NODE candidate)",
                static_cast<unsigned long long>(q[4]));
 
         // Verify +0x20 is a NiAVObject by reading its vtable + m_name.
@@ -10303,7 +11375,7 @@ void dump_resmgr_first_entries(int count_max) {
             int nn = seh_read_qwords(node, &node_vt, 1);
             if (nn == 1 && node_vt >= g_r.base) {
                 const auto node_vt_rva = node_vt - g_r.base;
-                FW_LOG("[resmgr-probe]     → +0x20 node vtable_rva=0x%llX "
+                FW_DBG("[resmgr-probe]     → +0x20 node vtable_rva=0x%llX "
                        "(BSFadeNode=0x28FA3E8, NiNode=0x267C888, "
                        "BSTriShape=0x267E948)",
                        static_cast<unsigned long long>(node_vt_rva));
@@ -10317,20 +11389,20 @@ void dump_resmgr_first_entries(int count_max) {
                 // Bounded copy via string-test helper to avoid AV on garbage ptr.
                 char nbuf[128] = {0};
                 if (seh_looks_like_cstring(nm, nbuf, sizeof(nbuf))) {
-                    FW_LOG("[resmgr-probe]     → +0x20 node m_name='%s' "
+                    FW_DBG("[resmgr-probe]     → +0x20 node m_name='%s' "
                            "(MATCHING KEY for sender's parent_placeholder)",
                            nbuf);
                 }
             }
         }
 
-        FW_LOG("[resmgr-probe]   +0x28 = 0x%016llX",
+        FW_DBG("[resmgr-probe]   +0x28 = 0x%016llX",
                static_cast<unsigned long long>(q[5]));
 
         ++dumped;
     }
 
-    FW_LOG("[resmgr-probe] done — dumped %d / %d requested entries "
+    FW_DBG("[resmgr-probe] done — dumped %d / %d requested entries "
            "(scanned %u buckets)",
            dumped, count_max, capacity);
 }
@@ -10348,7 +11420,7 @@ void resmgr_probe_worker(unsigned int delay_ms) {
 
 void arm_resmgr_probe(unsigned int delay_ms) {
     std::thread(&resmgr_probe_worker, delay_ms).detach();
-    FW_LOG("[resmgr-probe] armed: will dump in %u ms", delay_ms);
+    FW_DBG("[resmgr-probe] armed: will dump in %u ms", delay_ms);
 }
 
 // === M9.w4 PROPER (v0.4.2+, RESMGR-LOOKUP) — find cached NIF by name =====
@@ -11527,6 +12599,36 @@ bool ghost_attach_assembled_weapon(const char* peer_id,
     if (!g_resolved.load(std::memory_order_acquire)) return false;
     if (!g_r.nif_load_by_path || !g_r.attach_child_direct) return false;
 
+    // 2026-09-18 — IDEMPOTENZA, come ce l'ha gia' l'armatura.
+    //
+    // Senza questa, ogni consegna ripetuta dello stesso equip smonta l'arma
+    // del peer e la ricostruisce: ricarica il NIF, lo riclona, libera il
+    // nodo vecchio e rifa' il giro degli OMOD. Finche' gli equip arrivavano
+    // solo dal vivo la cosa non si vedeva; da quando un client che rientra
+    // si rigioca l'intero bootstrap, si vedrebbe a ogni riconnessione.
+    //
+    // Si salta solo se combaciano peer, arma E insieme di mod, e solo se il
+    // nodo e' ancora li': se il ghost e' stato smontato nel frattempo lo
+    // slot punta al vuoto e l'arma va rifatta davvero.
+    {
+        std::vector<std::uint32_t> incoming;
+        incoming.reserve(num_omods);
+        for (std::size_t i = 0; i < num_omods && omod_form_ids; ++i) {
+            incoming.push_back(omod_form_ids[i]);
+        }
+        std::lock_guard lk(g_ghost_weapon_slot_mtx);
+        auto it = g_ghost_weapon_slot.find(peer_id);
+        if (it != g_ghost_weapon_slot.end()
+            && it->second.nif_node != nullptr
+            && it->second.form_id == weapon_form_id
+            && it->second.omods == incoming) {
+            FW_DBG("[bsconnect] peer=%s form=0x%X with %zu mod(s) already "
+                   "assembled (node=%p) — replay ignored",
+                   peer_id, weapon_form_id, num_omods, it->second.nif_node);
+            return true;
+        }
+    }
+
     // ----- 1. Resolve + load the BASE weapon NIF ---------------------------
     const char* probed_path = resolve_weapon_nif_path(weapon_form_id);
     if (!probed_path || !*probed_path) {
@@ -11623,6 +12725,7 @@ bool ghost_attach_assembled_weapon(const char* peer_id,
         slot.nif_node     = base_clone;
         slot.nif_path     = base_path;
         slot.base_culled  = false;
+        slot.omods.assign(omod_form_ids, omod_form_ids + num_omods);
     }
     if (old_node) release_weapon_node(old_node);
 
@@ -11786,160 +12889,10 @@ void flush_pending_weapon_ops() {
 // (with fresh BSPositionData, not shared from source). Kept here #if 0'd
 // as historical reference for a few commits, will be deleted once M2
 // proves stable.
-bool clone_shader_into_cube_LEGACY() {
-    if (!g_resolved.load(std::memory_order_acquire)) {
-        FW_WRN("[native] clone_shader: not resolved yet — skipping");
-        return false;
-    }
-    void* cube = g_injected_cube.load(std::memory_order_acquire);
-    if (!cube) {
-        FW_WRN("[native] clone_shader: no cube injected — skipping");
-        return false;
-    }
-    void* src = get_first_bstri_shape();
-    if (!src) {
-        FW_WRN("[native] clone_shader: no first_bstri_shape captured — "
-               "walker found no BSTriShape on this run; skipping");
-        return false;
-    }
-
-    __try {
-        char* cb  = reinterpret_cast<char*>(cube);
-        char* sb  = reinterpret_cast<char*>(src);
-
-        // Step 1: zero-init +0x130/+0x138 on the cube. The BSDynamicTriShape
-        // ctor (sub_1416E4090) does NOT zero these slots (observed live:
-        // they contained 0x3F800000_3F800000 = two 1.0f floats, garbage
-        // from pool reuse). If we leave garbage in there, vt[42] will try
-        // to release it as if it were a NiObject and AV on the deref.
-        auto** p_alpha  = reinterpret_cast<void**>(cb + BSGEOM_ALPHAPROP_OFF);
-        auto** p_shader = reinterpret_cast<void**>(cb + BSGEOM_SHADERPROP_OFF);
-        FW_LOG("[native] clone_shader: pre-zero  alpha=%p shader=%p",
-               *p_alpha, *p_shader);
-        *p_alpha  = nullptr;
-        *p_shader = nullptr;
-        FW_LOG("[native] clone_shader: post-zero alpha=%p shader=%p",
-               *p_alpha, *p_shader);
-
-        // Step 2: read source properties from the vanilla BSTriShape.
-        void* src_alpha  = *reinterpret_cast<void**>(sb + BSGEOM_ALPHAPROP_OFF);
-        void* src_shader = *reinterpret_cast<void**>(sb + BSGEOM_SHADERPROP_OFF);
-        FW_LOG("[native] clone_shader: src=%p  src_alpha=%p  src_shader=%p",
-               src, src_alpha, src_shader);
-
-        // Step 3: alpha via direct BSGeometry::SetAlphaProperty call.
-        //         The function is refcount-safe: bumps new, direct-writes
-        //         to +0x130, releases old. Old is now null (zeroed above)
-        //         so release is a no-op. Safe.
-        if (src_alpha) {
-            g_r.set_alpha_prop_direct(cube, src_alpha);
-            FW_LOG("[native] clone_shader: SetAlphaProperty called, "
-                   "post-call alpha@+0x130=%p", *p_alpha);
-        } else {
-            FW_LOG("[native] clone_shader: src has no alpha property — "
-                   "leaving cube alpha null");
-        }
-
-        // Step 4: shader via direct write + InterlockedIncrement.
-        //         No public setter; the engine's installer sites in
-        //         sub_140372CC0 / sub_1406B60C0 do this inline too.
-        if (src_shader) {
-            _InterlockedIncrement(reinterpret_cast<long*>(
-                reinterpret_cast<char*>(src_shader) + NIAV_REFCOUNT_OFF));
-            *p_shader = src_shader;
-            FW_LOG("[native] clone_shader: shader installed via direct write, "
-                   "src_shader refcount now=%ld",
-                   *reinterpret_cast<long*>(
-                       reinterpret_cast<char*>(src_shader) + NIAV_REFCOUNT_OFF));
-        } else {
-            FW_LOG("[native] clone_shader: src has no shader property — "
-                   "leaving cube shader null");
-        }
-
-        // Step 5: also copy over the packed BSVertexDesc at +0x150 and
-        //         material type at +0x158. The cube needs the same vertex
-        //         format as the source so the renderer's stream setup
-        //         works. Harmless copy — just 16 bytes. Not a refcount
-        //         slot.
-        std::uint64_t* cube_desc = reinterpret_cast<std::uint64_t*>(
-            cb + 0x150);
-        std::uint64_t* src_desc  = reinterpret_cast<std::uint64_t*>(
-            sb + 0x150);
-        cube_desc[0] = src_desc[0];  // packed vertex desc
-        cube_desc[1] = src_desc[1];  // material type word + padding
-        FW_LOG("[native] clone_shader: copied vertex desc "
-               "+0x150=0x%llX +0x158=0x%llX",
-               static_cast<unsigned long long>(cube_desc[0]),
-               static_cast<unsigned long long>(cube_desc[1]));
-
-        // ------------------------------------------------------------------
-        // M2.4 (A-path — clone full geometry from source).
-        //
-        // Instead of building a vertex/index buffer ourselves (which would
-        // require decoding BSVertexDesc packing — deferred to M2.4 B-path
-        // via the RE agent running in background), we CLONE the pointers
-        // +0x148 (vertex/geometry data) and +0x160/+0x168 (packed counts)
-        // directly from the source BSTriShape.
-        //
-        // Effect: our cube renders the SAME mesh as the source. In a normal
-        // outdoor scene, source is typically a random rock / terrain LOD
-        // piece — so we'll see a copy of that floating at cube position
-        // (50,50,50). Not literally a cube, but proof that the end-to-end
-        // render path works.
-        //
-        // Safety caveats:
-        //   - +0x148 probably contains a pointer to a struct with raw GPU
-        //     buffer ptrs. We do NOT refcount-bump (not known if the field
-        //     holds a NiObject-derived type; the BSGeometry ctor zero-inits
-        //     it but does NOT refcount-release like it does for +0x130/
-        //     +0x138 — suggests it's not a standard NiPointer). Raw copy
-        //     means we share the buffer without a ref. If the source is
-        //     freed, we UAF. For M2 test purposes (single session), low
-        //     probability — vanilla scene geometry is engine-owned and
-        //     sticky.
-        //   - +0x140 (possibly BSSkinInstance) left null. If source is
-        //     non-skinned (most world geometry isn't), this is correct.
-        //     If source IS skinned, cube renders un-skinned version —
-        //     may look warped but shouldn't crash.
-        //
-        // Log values before + after so we can diff against the live hex
-        // dump the walker already produces.
-        auto** p_geom148 = reinterpret_cast<void**>(cb + 0x148);
-        std::uint64_t* p_count160 = reinterpret_cast<std::uint64_t*>(cb + 0x160);
-
-        FW_LOG("[native] clone_geom: pre-clone +0x148=%p +0x160=0x%llX",
-               *p_geom148,
-               static_cast<unsigned long long>(*p_count160));
-
-        void* src_geom148 = *reinterpret_cast<void**>(sb + 0x148);
-        std::uint64_t src_count160 = *reinterpret_cast<std::uint64_t*>(sb + 0x160);
-
-        FW_LOG("[native] clone_geom: src +0x148=%p +0x160=0x%llX",
-               src_geom148,
-               static_cast<unsigned long long>(src_count160));
-
-        *p_geom148  = src_geom148;
-        *p_count160 = src_count160;
-
-        FW_LOG("[native] clone_geom: post-clone +0x148=%p +0x160=0x%llX "
-               "(low32=%u verts, hi32=%u indices per dossier convention)",
-               *p_geom148,
-               static_cast<unsigned long long>(*p_count160),
-               static_cast<unsigned int>(src_count160 & 0xFFFFFFFFu),
-               static_cast<unsigned int>(src_count160 >> 32));
-
-        FW_LOG("[native] M2.3+M2.4 CLONE: SUCCESS — cube has shader+alpha"
-               " + geometry pointer clone from source. If the render walk"
-               " dispatches the draw, you'll see a copy of source mesh at"
-               " cube position. If you see nothing, check player pos and"
-               " teleport near (50,50,50). Watch for crash first.");
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        FW_ERR("[native] clone_shader: SEH caught exception");
-        return false;
-    }
-}
+// clone_shader_into_cube_LEGACY e' stata cancellata il 2026-09-18. Il
+// suo stesso commento diceva "will be deleted once M2 proves stable";
+// M2 e' stabile da mesi, la funzione non aveva chiamanti, e leggeva il
+// puntatore unico del corpo tenendo in vita un residuo per niente.
 #endif  // --- end legacy M2.3 clone_shader_into_cube ---
 
 // ---------------------------------------------------------------- dispatch
@@ -12055,7 +13008,11 @@ bool local_player_in_world() {
 //      pattern already exists for equipment (flush_pending_armor_ops /
 //      flush_pending_weapon_ops, drained at the end of inject); pose and pos
 //      need the same treatment instead of a fresh mechanism.
-// Blocking prerequisite for more than 2 players: g_injected_cube is a SINGLE
+// RISOLTO il 2026-09-18. Quello che segue era il prerequisito bloccante, e
+// si e' sciolto: il corpo del ghost non e' piu' un puntatore unico ma
+// GhostRecord::body, indicizzato per peer_id. Il testo resta perche' spiega
+// PERCHE' era bloccante.
+// (storico) Blocking prerequisite for more than 2 players: g_injected_cube is a SINGLE
 // pointer, so exactly one remote peer can ever be rendered. Ghost identity is
 // also still static (ghost_map in fw_config.ini), which cannot work once peers
 // are dynamic — the server has to assign it at join.
@@ -12782,30 +13739,20 @@ static void pos_update_seh(void* body, void* head,
     }
 }
 
-void on_pos_update_message() {
-    // Build 69f/69i — DEATH STAND-DOWN covers the ghost APPLY path.
-    //
-    // The 2026-08-02 17:41 crash faulted at `call qword ptr [rax+148h]`
-    // (sub_1404CC240+0x404): a virtual call whose vtable slot held garbage on
-    // one run (READ addr=-1) and NULL on the next (EXEC at 0) — the same
-    // instruction and the same object, two stages of one free.
-    //
-    // This handler WRITES into the ghost NiNode we attached to the world scene
-    // graph (bone transforms, crouch translations, position). Writing into a
-    // node the engine is concurrently unlinking is exactly the race that
-    // leaves a half-freed vtable behind. The player is dead and looking at a
-    // load screen: there is nothing to render.
-    //
-    // NOTE the asymmetry with on_bone_tick_message, which is deliberately NOT
-    // gated: that one only SENDS our pose, and gating it froze the remote
-    // ghost standing upright instead of letting it ragdoll (Build 69f
-    // regression). Suppress writes, never sends.
-    if (fw::hooks::in_local_death_standdown()) return;
-
-    void* body = g_injected_cube.load(std::memory_order_acquire);
-    if (!body) return;
-    void* head = g_injected_head.load(std::memory_order_acquire);
-    const auto snap = fw::net::client().get_remote_snapshot();
+// Fase 2 — il lavoro di posizionamento su UN ghost.
+//
+// Era il corpo di on_pos_update_message, scritto quando i ghost erano uno e
+// "il corpo" non aveva bisogno di aggettivi. Estratto invece che annidato
+// dentro un ciclo di proposito: annidare avrebbe lasciato cento righe con
+// l'indentazione sbagliata, e questo file si legge dai commenti.
+//
+// NOTA sulla diagnostica del movimento, poco piu' sotto: tiene lo stato in
+// variabili statiche, quindi appena i ghost sono piu' d'uno confronta la
+// direzione di uno con l'imbardata del successivo. E' nata a peer singolo;
+// quando servira' con due ghost va indicizzata per peer come tutto il resto.
+static void apply_position_to_ghost(const std::string& peer, void* body) {
+    void* head = ghost_head_for(peer.c_str());
+    const auto snap = fw::net::client().get_remote_snapshot(peer);
     if (!snap.has_state) return;
 
     // c.41e DIAG — settle the "ghost runs backward-diagonal" with DATA. Compares
@@ -12884,6 +13831,34 @@ void on_pos_update_message() {
     // be unblocked by M8 full pipeline RE later.
 }
 
+void on_pos_update_message() {
+    // Build 69f/69i — DEATH STAND-DOWN covers the ghost APPLY path.
+    //
+    // The 2026-08-02 17:41 crash faulted at `call qword ptr [rax+148h]`
+    // (sub_1404CC240+0x404): a virtual call whose vtable slot held garbage on
+    // one run (READ addr=-1) and NULL on the next (EXEC at 0) — the same
+    // instruction and the same object, two stages of one free.
+    //
+    // This handler WRITES into the ghost NiNode we attached to the world scene
+    // graph (bone transforms, crouch translations, position). Writing into a
+    // node the engine is concurrently unlinking is exactly the race that
+    // leaves a half-freed vtable behind. The player is dead and looking at a
+    // load screen: there is nothing to render.
+    //
+    // NOTE the asymmetry with on_bone_tick_message, which is deliberately NOT
+    // gated: that one only SENDS our pose, and gating it froze the remote
+    // ghost standing upright instead of letting it ragdoll (Build 69f
+    // regression). Suppress writes, never sends.
+    if (fw::hooks::in_local_death_standdown()) return;
+
+    // OGNI ghost registrato, non "l'unico". Fotografia e non iterazione dal
+    // vivo: posizionare scrive nel grafo di scena, e scrivere tenendo il lock
+    // della mappa e' il modo di trasformare un difetto grafico in uno stallo.
+    for (const auto& [peer, body] : ghost_snapshot()) {
+        apply_position_to_ghost(peer, body);
+    }
+}
+
 // M3.1 event-driven. Called on the NET THREAD from client.cpp right
 // after the remote snapshot has been updated with a fresh POS_BROADCAST.
 // We just post the main-thread message. The main handler will re-read
@@ -12897,7 +13872,7 @@ void on_pos_update_message() {
 // saves nothing. The main thread writes 3 floats — also cheap. Skipping
 // updates adds visual stutter; applying them all gives smooth motion.
 void notify_remote_pos_changed() {
-    if (!g_injected_cube.load(std::memory_order_acquire)) return;  // no cube yet
+    if (ghost_count() == 0) return;   // nessun ghost da muovere
     const HWND h = fw::dispatch::get_target_hwnd();
     if (!h) return;  // WndProc not yet subclassed
     PostMessageW(h, FW_MSG_STRADAB_POS_UPDATE, 0, 0);
@@ -13112,7 +14087,14 @@ struct RemotePoseSlot {
     fw::net::PoseBoneEntry       quats[fw::net::MAX_POSE_BONES] = {};
 };
 std::mutex      g_remote_pose_mutex;
-RemotePoseSlot  g_remote_pose;
+// 2026-09-18 — lo slot "ultimo arrivato" NON ESISTE PIU'. Teneva la posa di
+// chiunque avesse parlato per ultimo, ed era corretto solo finche' il ghost
+// era uno: il gestore che la applicava non sapeva di CHI fosse il corpo che
+// stava muovendo, quindi non poteva chiedere di meglio. Ora il gestore itera
+// i ghost registrati e per ognuno pesca la SUA posa qui sotto, quindi
+// l'ultimo arrivato non serve a nessuno.
+// La posa di ogni peer, che e' la risposta giusta.
+std::unordered_map<std::string, RemotePoseSlot> g_remote_pose_by_peer;
 
 // Canonical bone list globals are defined at file scope (above) so
 // inject_body_nif (different anon ns) can populate them.
@@ -13179,149 +14161,38 @@ void* find_local_player_3d(std::uintptr_t base) {
 }  // anonymous namespace
 // ----- end M8P3.15 helpers --------------------------------------------
 
-void on_bone_tick_message() {
-    // Build 69i — NO stand-down gate here, and that is deliberate.
-    //
-    // Build 69f added one, and it caused a visible regression the user spotted:
-    // when a player died, their ghost stayed STANDING on the other client
-    // instead of ragdolling. Reason: there is no player-death message on the
-    // wire at all (kill_hook.cpp skips form 0x14 by design, and the session
-    // logs confirm kills_sent=0), so the ONLY thing that ever made a remote
-    // ghost fall over was this pose stream carrying the dying skeleton. Gate
-    // it and the ghost freezes mid-stride.
-    //
-    // It is also the wrong place for the gate: this handler READS our own
-    // player's bones and ENQUEUES them on the network (enqueue_pose_state /
-    // enqueue_pose_crouch_state). It writes nothing into the local scene
-    // graph — g_injected_cube is only loaded to check the ghost exists. The
-    // post-death crash comes from WRITING into engine objects being torn
-    // down, which is what the apply-side handlers do; sending bytes cannot
-    // fault on a freed vtable.
-
-    // Force-disable the legacy diag log path. Without this, walk_player_nested
-    // dumps ~500 lines per call × 20Hz = 10k lines/sec on FILE I/O. That
-    // starves the FO4 main thread and freezes both clients.
-    bone_copy::g_verbose_player_walk = false;
-
-    static int s_decim = 0;
-    const bool log_now = (++s_decim >= 60);  // ~3-second log decimation
-    if (log_now) s_decim = 0;
-
+// === La NOSTRA posa sul filo, che non dipende da nessun ghost ============
+//
+// Estratta da on_bone_tick_message il 2026-09-18, dopo un test coi log
+// pieni. Stava DOPO il controllo `if (!body) return`, e quel controllo la
+// spegneva: un client senza ghost non trasmetteva la propria posa. I numeri,
+// da due sessioni indipendenti, sono senza appello — la prima [pose-tx] di
+// un client cade 56-57 ms dopo che quel client ha costruito il PROPRIO
+// corpo, e nel mezzo di uno smontaggio il client A e' rimasto muto per
+// dodici secondi, cioe' esattamente la finestra di riconnessione del peer.
+//
+// Non era un requisito, era un controllo di comodo, e il commento sopra
+// on_bone_tick_message lo diceva gia': "questo gestore LEGGE le ossa del
+// nostro giocatore e le ACCODA sulla rete; non scrive niente nel grafo di
+// scena, g_injected_cube viene letto solo per controllare che il ghost
+// esista". Verificato: in queste trecento righe `body` non compare mai.
+//
+// Resta un legame, ed e' onesto dirlo: la lista canonica dei giunti viene
+// raccolta dallo scheletro del ghost al momento dell'iniezione, quindi un
+// client che non ha MAI avuto un ghost in questa sessione esce ancora
+// subito, qui sotto, su `canonical.empty()`. La lista pero' non viene mai
+// svuotata, quindi basta un ghost una volta sola: lo smontaggio e il
+// rientro, che sono il caso che conta, adesso sono coperti. Sciogliere
+// anche l'ultimo pezzo vuol dire produrre i nomi dei giunti senza un ghost,
+// e quello va fatto insieme allo scheletro per peer.
+//
+// MAIN THREAD, dal tick delle ossa.
+static void broadcast_local_pose(bool log_now) {
     // M8P3.20 — broadcast every tick (20Hz). At 80 bones × 16B = 1280B
     // payload + 12B frame header = 1292B per packet × 20Hz = 25.8 KB/s
     // upload per peer. With 9 peers max = 232 KB/s downstream per
     // client. Acceptable for LAN; for internet may want adaptive rate.
     const bool broadcast_now = true;
-
-    void* body = g_injected_cube.load(std::memory_order_acquire);
-    if (!body) {
-        if (log_now) FW_LOG("[bone-test] no ghost body");
-        return;
-    }
-
-    // M9.5 — periodic ghost armor skin re-bind. The engine's per-frame
-    // pipeline rewrites BSGeometry skin GPU palette state from the skin
-    // instance's bones[] array. For SHARED-mesh armors (combat armor,
-    // weapon mods, hairstyles, atomic armor pieces ...) the local actor's
-    // engine-side binding overwrites bones[] back to the local skel each
-    // time the local actor renders, so the ghost armor loses its ghost-
-    // skel binding between attach and the next render → ghost armor
-    // renders bound to the local skel, off-position, effectively invisible
-    // at the ghost's location.
-    //
-    // Universal fix: every N ticks, walk our attached-armor map and re-
-    // run swap_skin_bones_to_skeleton on each. niptr_swap is idempotent
-    // (skips writes that would be no-ops), so this is cheap when nothing
-    // changed. Decimated to ~4Hz to balance correctness with cost; engine's
-    // bind operations happen on equip events (not every frame), so 4Hz
-    // catches them with minimal worst-case latency. Silent flag suppresses
-    // the otherwise-flooding per-bone FW_LOG.
-    //
-    // For CLONE-path armors (VS today), the skin is independent — the re-
-    // apply is an idempotent no-op every tick. Same code path covers both.
-    // Future weapon mods / hairstyles / atomic armor get this protection
-    // for free as long as they go through ghost_attach_armor's tracking.
-    {
-        static int s_armor_decim = 0;
-        if (++s_armor_decim >= 5) {
-            s_armor_decim = 0;
-            void* skel = fw::native::skin_rebind::get_cached_skeleton();
-            if (skel) {
-                std::vector<void*> armors_snapshot;
-                {
-                    std::lock_guard<std::mutex> lk(g_armor_map_mtx);
-                    for (const auto& peer_kv : g_attached_armor) {
-                        for (const auto& form_kv : peer_kv.second) {
-                            if (form_kv.second) {
-                                armors_snapshot.push_back(form_kv.second);
-                            }
-                        }
-                    }
-                }
-                for (void* armor : armors_snapshot) {
-                    (void)fw::native::skin_rebind::swap_skin_bones_to_skeleton(
-                        armor, skel, /*silent=*/true);
-                }
-                // 2026-05-10 — TTD-confirmed: engine cell-load + local-actor
-                // re-bind cycles can NULL bones_fb slots on the body's own
-                // BSSubIndexTriShape (BaseMaleBody:0), not just on attached
-                // armor BSSITFs. Without this body-level re-apply, a sparse
-                // body bones_fb hits sub_1416C7510 + 0x29 AV when the engine
-                // iterates it on entering interior cells (recurring crash
-                // first observed on Sanctuary terminal-house entry).
-                //
-                // walk_for_swap recurses into children, so this single body
-                // walk redundantly covers the attached armors above too —
-                // kept the per-armor loop for explicit semantics + because
-                // niptr_swap is idempotent on no-op (cheap when nothing
-                // changed). Combined with skin_rebind.cpp's NULL→skel_root
-                // shield in swap_for_geometry, the body's flat-tree
-                // iteration is now safe across cell transitions.
-                (void)fw::native::skin_rebind::swap_skin_bones_to_skeleton(
-                    body, skel, /*silent=*/true);
-
-                // 2026-05-10 — diagnostic: emit a single line every
-                // 4Hz tick (not silent) reporting how many shield
-                // operations fired in the last interval. Zero-skip:
-                // suppress when both counters are 0 to avoid noise.
-                const std::uint64_t swap_fires =
-                    fw::native::skin_rebind::get_and_reset_swap_shield_stats();
-                const std::uint64_t iter_skips =
-                    fw::native::skin_rebind::get_and_reset_iter_shield_stats();
-                if (swap_fires > 0 || iter_skips > 0) {
-                    FW_LOG("[skin-shield] last-tick: swap_NULL_fills=%llu "
-                           "iter_AV_skips=%llu",
-                           static_cast<unsigned long long>(swap_fires),
-                           static_cast<unsigned long long>(iter_skips));
-                }
-            }
-        }
-    }
-
-    // === LEGACY test cycle (DISABLED in M8P3.15 — replaced by net pose) ==
-    // The sin oscillation on LArm_ForeArm1_skin used the world-override
-    // hook. With M8P3.15 we drive ALL bones from the remote peer's
-    // m_kLocal via direct write (engine recomputes m_kWorld). The two
-    // mechanisms would fight on this single bone. Re-enable only if
-    // diagnosing the world-override hook in isolation.
-    //
-    // {
-    //     void* body_skin_for_test = fw::native::skin_rebind::find_body_skin_instance(body);
-    //     void* test_bone = body_skin_for_test
-    //         ? fw::native::skin_rebind::find_bone_in_bones_pri(body_skin_for_test,
-    //                                                           "LArm_ForeArm1_skin")
-    //         : nullptr;
-    //     if (test_bone) {
-    //         static const ULONGLONG t0 = GetTickCount64();
-    //         const float t = static_cast<float>(GetTickCount64() - t0) * 0.001f;
-    //         const float ay = std::sin(t * 2.0f) * 0.5f;
-    //         const float cy = std::cos(ay), sy = std::sin(ay);
-    //         float mat[16] = {
-    //             cy, 0, sy, 0,  0, 1, 0, 0,  -sy, 0, cy, 0,  0, 0, 0, 1
-    //         };
-    //         fw::native::skin_rebind::set_bone_world(test_bone, mat);
-    //     }
-    // }
 
     // === M8P3.15 broadcast LOCAL PC bones to peers =======================
     if (!broadcast_now) return;  // skip 3 of every 4 ticks → ~5Hz
@@ -13393,6 +14264,42 @@ void on_bone_tick_message() {
                player_map_a.size(), player_map_b.size(),
                (&player_map == &player_map_a) ? "A" : "B");
     }
+
+    //                              +
+    //                              |
+    //                        +-----+-----+
+    //                              |
+    //                              |
+    //
+    //          QUI GIACE DEL CODICE CHE NON HA MAI SCATTATO,
+    //        CHE NON RICORDAVO DI AVER MESSO, E CHE NON SERVE
+    //                       AD UN CAZZO.
+    //
+    //                      2026-09-18 - 2026-09-18
+    //
+    // Il fermo della posa in power armor. Quando il giocatore locale saliva
+    // su un telaio, questo blocco smetteva di spedire la posa, perche' la
+    // cattura aggancia 27 nomi su 82 invece di 32 e le rotazioni sono prese
+    // da ossa al bind della power armor.
+    //
+    // Non e' mai partito. Il rilevatore cercava 'L_Pauldron' nell'albero
+    // animato del GIOCATORE, ma la misura da cui veniva quel nome era stata
+    // fatta sullo scheletro del GHOST. Due alberi diversi, e in tre test la
+    // riga '[pose-tx] power armour ON' non e' comparsa una volta.
+    //
+    // E MENO MALE, ed e' questa la ragione per cui la lapide resta invece di
+    // una cancellazione silenziosa: se avesse funzionato avrebbe congelato
+    // un ghost che si anima benissimo da solo. Mentre il mittente manda pose
+    // in spazio PA, il ricevente sta gia' retargetando il ghost al bind
+    // della PA — le due cose si accordano da sole, e il ghost si muove
+    // giusto. Misurato il 2026-09-18 sul client B, in andata e in ritorno:
+    //
+    //     21:57:28  [pa-retarget] 147 bones set to PA bind locals
+    //     21:58:52  [pa-retarget] restored 147/147 bones to human bind
+    //
+    // Quindi: se un giorno qualcuno legge 'matched 32 -> 27' e pensa di
+    // aggiustare il rilevatore, sta per rompere un caso che funziona. La
+    // posa in power armor NON va fermata. Lasciarla andare e' la cura.
 
     // === 2026-08-05 — WHICH TREE, AND IS IT MOVING? =======================
     // Two failed fixes in a row were built on guesses about what the sender
@@ -13558,12 +14465,12 @@ void on_bone_tick_message() {
         if (collapsed != s_last_collapsed) {
             s_last_collapsed = collapsed;
             if (collapsed > 0) {
-                FW_LOG("[pose-tx] %d bone(s) collapsed by the engine (scale "
+                FW_DBG("[pose-tx] %d bone(s) collapsed by the engine (scale "
                        "~0, rotation unrecoverable) — sentinel sent, ghost "
                        "keeps its last value: %s",
                        collapsed, collapsed_sample.c_str());
             } else {
-                FW_LOG("[pose-tx] no collapsed bones — full skeleton "
+                FW_DBG("[pose-tx] no collapsed bones — full skeleton "
                        "streaming");
             }
         }
@@ -13592,7 +14499,7 @@ void on_bone_tick_message() {
     fw::net::client().enqueue_pose_state(now_ms, quats, n);
 
     if (log_now) {
-        FW_LOG("[pose-tx] sent %zu joints (matched=%d missing=%d)",
+        FW_DBG("[pose-tx] sent %zu joints (matched=%d missing=%d)",
                n, hits, missing);
     }
 
@@ -13631,14 +14538,169 @@ void on_bone_tick_message() {
             fw::net::client().enqueue_pose_crouch_state(crouch, crouch_n, now_ms);
         }
         if (log_now) {
-            FW_LOG("[crouch-tx] sent %zu crouch bones", crouch_n);
+            FW_DBG("[crouch-tx] sent %zu crouch bones", crouch_n);
         }
     }
 }
 
+void on_bone_tick_message() {
+    // Build 69i — NO stand-down gate here, and that is deliberate.
+    //
+    // Build 69f added one, and it caused a visible regression the user spotted:
+    // when a player died, their ghost stayed STANDING on the other client
+    // instead of ragdolling. Reason: there is no player-death message on the
+    // wire at all (kill_hook.cpp skips form 0x14 by design, and the session
+    // logs confirm kills_sent=0), so the ONLY thing that ever made a remote
+    // ghost fall over was this pose stream carrying the dying skeleton. Gate
+    // it and the ghost freezes mid-stride.
+    //
+    // It is also the wrong place for the gate: this handler READS our own
+    // player's bones and ENQUEUES them on the network (enqueue_pose_state /
+    // enqueue_pose_crouch_state). It writes nothing into the local scene
+    // graph — g_injected_cube is only loaded to check the ghost exists. The
+    // post-death crash comes from WRITING into engine objects being torn
+    // down, which is what the apply-side handlers do; sending bytes cannot
+    // fault on a freed vtable.
+
+    // Force-disable the legacy diag log path. Without this, walk_player_nested
+    // dumps ~500 lines per call × 20Hz = 10k lines/sec on FILE I/O. That
+    // starves the FO4 main thread and freezes both clients.
+    bone_copy::g_verbose_player_walk = false;
+
+    static int s_decim = 0;
+    const bool log_now = (++s_decim >= 60);  // ~3-second log decimation
+    if (log_now) s_decim = 0;
+
+
+    // La nostra posa parte PRIMA, e a prescindere: leggerla e spedirla non
+    // tocca il grafo di scena, quindi non ha niente a che fare col fatto
+    // che un ghost esista. Vedi il commento sopra broadcast_local_pose.
+    broadcast_local_pose(log_now);
+
+    // Un ghost qualunque: da qui in giu' e' diagnostica sulla meta' ghost
+    // del tick, non applicazione di posa. Quella la fa on_pose_apply_message,
+    // che i ghost li itera.
+    void* body = ghost_any_body();
+    if (!body) {
+        if (log_now) {
+            FW_LOG("[bone-test] no ghost body — the ghost half is skipped, "
+                   "our own pose went out anyway");
+        }
+        return;
+    }
+
+    // M9.5 — periodic ghost armor skin re-bind. The engine's per-frame
+    // pipeline rewrites BSGeometry skin GPU palette state from the skin
+    // instance's bones[] array. For SHARED-mesh armors (combat armor,
+    // weapon mods, hairstyles, atomic armor pieces ...) the local actor's
+    // engine-side binding overwrites bones[] back to the local skel each
+    // time the local actor renders, so the ghost armor loses its ghost-
+    // skel binding between attach and the next render → ghost armor
+    // renders bound to the local skel, off-position, effectively invisible
+    // at the ghost's location.
+    //
+    // Universal fix: every N ticks, walk our attached-armor map and re-
+    // run swap_skin_bones_to_skeleton on each. niptr_swap is idempotent
+    // (skips writes that would be no-ops), so this is cheap when nothing
+    // changed. Decimated to ~4Hz to balance correctness with cost; engine's
+    // bind operations happen on equip events (not every frame), so 4Hz
+    // catches them with minimal worst-case latency. Silent flag suppresses
+    // the otherwise-flooding per-bone FW_LOG.
+    //
+    // For CLONE-path armors (VS today), the skin is independent — the re-
+    // apply is an idempotent no-op every tick. Same code path covers both.
+    // Future weapon mods / hairstyles / atomic armor get this protection
+    // for free as long as they go through ghost_attach_armor's tracking.
+    {
+        static int s_armor_decim = 0;
+        if (++s_armor_decim >= 5) {
+            s_armor_decim = 0;
+            // Stessa nota del sito qui sopra: un corpo solo, quindi le
+            // sue ossa. Diventera' per peer col record.
+            void* skel = fw::native::skin_rebind::skeleton_for(body);
+            if (skel) {
+                std::vector<void*> armors_snapshot;
+                {
+                    std::lock_guard<std::mutex> lk(g_armor_map_mtx);
+                    for (const auto& peer_kv : g_attached_armor) {
+                        for (const auto& form_kv : peer_kv.second) {
+                            if (form_kv.second) {
+                                armors_snapshot.push_back(form_kv.second);
+                            }
+                        }
+                    }
+                }
+                for (void* armor : armors_snapshot) {
+                    (void)fw::native::skin_rebind::swap_skin_bones_to_skeleton(
+                        armor, skel, /*silent=*/true);
+                }
+                // 2026-05-10 — TTD-confirmed: engine cell-load + local-actor
+                // re-bind cycles can NULL bones_fb slots on the body's own
+                // BSSubIndexTriShape (BaseMaleBody:0), not just on attached
+                // armor BSSITFs. Without this body-level re-apply, a sparse
+                // body bones_fb hits sub_1416C7510 + 0x29 AV when the engine
+                // iterates it on entering interior cells (recurring crash
+                // first observed on Sanctuary terminal-house entry).
+                //
+                // walk_for_swap recurses into children, so this single body
+                // walk redundantly covers the attached armors above too —
+                // kept the per-armor loop for explicit semantics + because
+                // niptr_swap is idempotent on no-op (cheap when nothing
+                // changed). Combined with skin_rebind.cpp's NULL→skel_root
+                // shield in swap_for_geometry, the body's flat-tree
+                // iteration is now safe across cell transitions.
+                (void)fw::native::skin_rebind::swap_skin_bones_to_skeleton(
+                    body, skel, /*silent=*/true);
+
+                // 2026-05-10 — diagnostic: emit a single line every
+                // 4Hz tick (not silent) reporting how many shield
+                // operations fired in the last interval. Zero-skip:
+                // suppress when both counters are 0 to avoid noise.
+                const std::uint64_t swap_fires =
+                    fw::native::skin_rebind::get_and_reset_swap_shield_stats();
+                const std::uint64_t iter_skips =
+                    fw::native::skin_rebind::get_and_reset_iter_shield_stats();
+                if (swap_fires > 0 || iter_skips > 0) {
+                    FW_LOG("[skin-shield] last-tick: swap_NULL_fills=%llu "
+                           "iter_AV_skips=%llu",
+                           static_cast<unsigned long long>(swap_fires),
+                           static_cast<unsigned long long>(iter_skips));
+                }
+            }
+        }
+    }
+
+    // === LEGACY test cycle (DISABLED in M8P3.15 — replaced by net pose) ==
+    // The sin oscillation on LArm_ForeArm1_skin used the world-override
+    // hook. With M8P3.15 we drive ALL bones from the remote peer's
+    // m_kLocal via direct write (engine recomputes m_kWorld). The two
+    // mechanisms would fight on this single bone. Re-enable only if
+    // diagnosing the world-override hook in isolation.
+    //
+    // {
+    //     void* body_skin_for_test = fw::native::skin_rebind::find_body_skin_instance(body);
+    //     void* test_bone = body_skin_for_test
+    //         ? fw::native::skin_rebind::find_bone_in_bones_pri(body_skin_for_test,
+    //                                                           "LArm_ForeArm1_skin")
+    //         : nullptr;
+    //     if (test_bone) {
+    //         static const ULONGLONG t0 = GetTickCount64();
+    //         const float t = static_cast<float>(GetTickCount64() - t0) * 0.001f;
+    //         const float ay = std::sin(t * 2.0f) * 0.5f;
+    //         const float cy = std::cos(ay), sy = std::sin(ay);
+    //         float mat[16] = {
+    //             cy, 0, sy, 0,  0, 1, 0, 0,  -sy, 0, cy, 0,  0, 0, 0, 1
+    //         };
+    //         fw::native::skin_rebind::set_bone_world(test_bone, mat);
+    //     }
+    // }
+
+}
+
 // ---- M8P3.15 net→main pose handoff impl ------------------------------
 
-void store_remote_pose(std::uint64_t ts_ms,
+void store_remote_pose(const char* peer_id,
+                       std::uint64_t ts_ms,
                        const void* quats_buf,
                        std::size_t bone_count)
 {
@@ -13646,12 +14708,15 @@ void store_remote_pose(std::uint64_t ts_ms,
     if (bone_count > fw::net::MAX_POSE_BONES) bone_count = fw::net::MAX_POSE_BONES;
     {
         std::lock_guard<std::mutex> lk(g_remote_pose_mutex);
-        g_remote_pose.has_data   = true;
-        g_remote_pose.ts_ms      = ts_ms;
-        g_remote_pose.bone_count = static_cast<std::uint16_t>(bone_count);
-        if (bone_count > 0) {
-            std::memcpy(g_remote_pose.quats, quats_buf,
-                        bone_count * sizeof(fw::net::PoseBoneEntry));
+        if (peer_id && *peer_id) {
+            RemotePoseSlot& per = g_remote_pose_by_peer[peer_id];
+            per.has_data   = true;
+            per.ts_ms      = ts_ms;
+            per.bone_count = static_cast<std::uint16_t>(bone_count);
+            if (bone_count > 0) {
+                std::memcpy(per.quats, quats_buf,
+                            bone_count * sizeof(fw::net::PoseBoneEntry));
+            }
         }
     }
     // Wake main thread.
@@ -13679,60 +14744,74 @@ void on_pose_apply_message() {
     // regression). Suppress writes, never sends.
     if (fw::hooks::in_local_death_standdown()) return;
 
-    void* ghost = g_injected_cube.load(std::memory_order_acquire);
-    if (!ghost) return;
-
-    // Snapshot pose under lock.
-    fw::net::PoseBoneEntry quats[fw::net::MAX_POSE_BONES];
-    std::uint16_t n = 0;
-    {
-        std::lock_guard<std::mutex> lk(g_remote_pose_mutex);
-        if (!g_remote_pose.has_data || g_remote_pose.bone_count == 0) return;
-        n = g_remote_pose.bone_count;
-        std::memcpy(quats, g_remote_pose.quats,
-                    n * sizeof(fw::net::PoseBoneEntry));
-    }
-
-    // Snapshot ghost bone pointers (cached from skin instance at inject).
-    // These are the SAME 58 entries the GPU reads via bones_pri after
-    // our re-cache. Index i in received quats[] aligns directly with
-    // index i in g_ghost_bone_ptrs[] because both sides built the
-    // canonical list from a body-NIF skin instance with identical layout.
-    std::vector<void*> ptrs;
-    {
-        std::lock_guard<std::mutex> lk(g_canonical_mutex);
-        ptrs = g_ghost_bone_ptrs;
-    }
-    if (ptrs.empty()) return;
-
-    const std::size_t apply_n = std::min<std::size_t>(n, ptrs.size());
+    // Fase 2 — OGNI ghost, non "l'unico".
+    //
+    // Prima questo gestore leggeva un corpo solo e una posa sola: quella
+    // dell'ultimo peer che avesse parlato, perche' con un ghost in tutto le
+    // due cose coincidevano. Con due ghost quel "l'ultimo che ha parlato" e'
+    // un sorteggio, e il sorteggio scrive le rotazioni di uno nelle ossa
+    // dell'altro.
+    //
+    // La forma giusta e' un giro sui ghost registrati, e dentro il giro si
+    // usa `continue` e mai `return`: il dato che manca a un peer — la posa
+    // non ancora arrivata, le ossa non ancora camminate — non deve fermare
+    // l'animazione di tutti gli altri. E' la differenza fra un ghost fermo e
+    // una stanza intera di statue.
     int wrote = 0, skipped_sentinel = 0;
-    for (std::size_t i = 0; i < apply_n; ++i) {
-        void* bone = ptrs[i];
-        if (!bone) continue;
-        const float qx = quats[i].qx, qy = quats[i].qy,
-                    qz = quats[i].qz, qw = quats[i].qw;
-        // M8P3.23 sentinel: sender marks "not found in local PC" with
-        // qw=2.0. We skip → engine keeps the bone's bind pose.
-        if (qw > 1.5f) { ++skipped_sentinel; continue; }
-        // Defensive: skip degenerate quaternions (near zero-length).
-        const float ml = qx*qx + qy*qy + qz*qz + qw*qw;
-        if (ml < 0.5f) continue;
-        float q[4] = { qx, qy, qz, qw };
-        float m3[9];
-        quat_to_mat3(q, m3);
-        if (write_local_3x3(bone, m3)) wrote++;
-    }
+    std::size_t animated = 0;
+    for (const auto& [peer, ghost] : ghost_snapshot()) {
+        // La posa DI QUESTO peer.
+        fw::net::PoseBoneEntry quats[fw::net::MAX_POSE_BONES];
+        std::uint16_t n = 0;
+        {
+            std::lock_guard<std::mutex> lk(g_remote_pose_mutex);
+            auto it = g_remote_pose_by_peer.find(peer);
+            if (it == g_remote_pose_by_peer.end()) continue;
+            if (!it->second.has_data || it->second.bone_count == 0) continue;
+            n = it->second.bone_count;
+            std::memcpy(quats, it->second.quats,
+                        n * sizeof(fw::net::PoseBoneEntry));
+        }
 
-    // Trigger world recompute on the ghost subtree (SEH-isolated).
-    update_downward_safe(ghost);
+        // Le ossa DI QUESTO corpo. L'indice i nei quaternioni ricevuti
+        // corrisponde a canonical[i], e canonical e' uguale su ogni client
+        // perche' i nomi sono congelati al primo corpo della sessione: e'
+        // quello che rende leciti indici nudi sul filo invece dei nomi.
+        const std::vector<void*> ptrs = ghost_bones_for(peer.c_str());
+        if (ptrs.empty()) continue;
+
+        const std::size_t apply_n = std::min<std::size_t>(n, ptrs.size());
+        for (std::size_t i = 0; i < apply_n; ++i) {
+            void* bone = ptrs[i];
+            if (!bone) continue;
+            const float qx = quats[i].qx, qy = quats[i].qy,
+                        qz = quats[i].qz, qw = quats[i].qw;
+            // M8P3.23 sentinel: sender marks "not found in local PC" with
+            // qw=2.0. We skip → engine keeps the bone's bind pose.
+            if (qw > 1.5f) { ++skipped_sentinel; continue; }
+            // Defensive: skip degenerate quaternions (near zero-length).
+            const float ml = qx*qx + qy*qy + qz*qz + qw*qw;
+            if (ml < 0.5f) continue;
+            float q[4] = { qx, qy, qz, qw };
+            float m3[9];
+            quat_to_mat3(q, m3);
+            if (write_local_3x3(bone, m3)) wrote++;
+        }
+
+        // Ricalcolo del mondo sul sottoalbero DI QUESTO ghost, uno per uno:
+        // e' la chiamata che rende visibili le rotazioni appena scritte, e
+        // vale solo per l'albero che le ha ricevute.
+        update_downward_safe(ghost);
+        ++animated;
+    }
+    if (animated == 0) return;
 
     static int s_decim = 0;
     if (++s_decim >= 30) {
         s_decim = 0;
-        FW_LOG("[pose-rx] applied %d/%zu bones (skipped %d sentinels) "
-               "to ghost=%p",
-               wrote, apply_n, skipped_sentinel, ghost);
+        FW_DBG("[pose-rx] applied %d bones (skipped %d sentinels) "
+               "across %zu ghost(s)",
+               wrote, skipped_sentinel, animated);
     }
 }
 
@@ -13758,9 +14837,12 @@ struct RemoteCrouchSlot {
     fw::net::PoseCrouchEntry      entries[fw::net::MAX_POSE_CROUCH_BONES] = {};
 };
 std::mutex        g_remote_crouch_mutex;
-RemoteCrouchSlot  g_remote_crouch;
+// Il crouch di ogni peer. Vedi la posa qui sopra: l'ultimo arrivato e'
+// morto per la stessa ragione.
+std::unordered_map<std::string, RemoteCrouchSlot> g_remote_crouch_by_peer;
 
-void store_remote_crouch(std::uint64_t ts_ms,
+void store_remote_crouch(const char* peer_id,
+                         std::uint64_t ts_ms,
                          const void* entries_buf,
                          std::size_t count)
 {
@@ -13768,12 +14850,15 @@ void store_remote_crouch(std::uint64_t ts_ms,
     if (count > fw::net::MAX_POSE_CROUCH_BONES) count = fw::net::MAX_POSE_CROUCH_BONES;
     {
         std::lock_guard<std::mutex> lk(g_remote_crouch_mutex);
-        g_remote_crouch.has_data = true;
-        g_remote_crouch.ts_ms    = ts_ms;
-        g_remote_crouch.count    = static_cast<std::uint8_t>(count);
-        if (count > 0) {
-            std::memcpy(g_remote_crouch.entries, entries_buf,
-                        count * sizeof(fw::net::PoseCrouchEntry));
+        if (peer_id && *peer_id) {
+            RemoteCrouchSlot& per = g_remote_crouch_by_peer[peer_id];
+            per.has_data = true;
+            per.ts_ms    = ts_ms;
+            per.count    = static_cast<std::uint8_t>(count);
+            if (count > 0) {
+                std::memcpy(per.entries, entries_buf,
+                            count * sizeof(fw::net::PoseCrouchEntry));
+            }
         }
     }
     // Wake main thread.
@@ -13806,47 +14891,48 @@ void on_pose_crouch_apply_message() {
     static const bool kGhostCrouchEnabled = true;
     if (!kGhostCrouchEnabled) return;
 
-    void* ghost = g_injected_cube.load(std::memory_order_acquire);
-    if (!ghost) return;
-
-    // Snapshot ghost bone pointers (same array the rotation pose aligns on —
-    // index i corresponds to canonical[i]).
-    std::vector<void*> ptrs;
-    {
-        std::lock_guard<std::mutex> lk(g_canonical_mutex);
-        ptrs = g_ghost_bone_ptrs;
-    }
-    if (ptrs.empty()) return;
-
-    // Snapshot the received crouch entries under their own mutex.
-    fw::net::PoseCrouchEntry entries[fw::net::MAX_POSE_CROUCH_BONES];
-    std::uint8_t cnt = 0;
-    {
-        std::lock_guard<std::mutex> lk(g_remote_crouch_mutex);
-        if (!g_remote_crouch.has_data || g_remote_crouch.count == 0) return;
-        cnt = g_remote_crouch.count;
-        std::memcpy(entries, g_remote_crouch.entries,
-                    cnt * sizeof(fw::net::PoseCrouchEntry));
-    }
-
+    // Stessa forma del gestore delle rotazioni qui sopra, e per la stessa
+    // ragione: il crouch di un peer non ha niente a che fare col corpo di un
+    // altro. `continue` e mai `return`.
     int wrote = 0;
-    for (std::uint8_t i = 0; i < cnt; ++i) {
-        const std::size_t idx = entries[i].bone_index;
-        if (idx >= ptrs.size()) continue;
-        void* bone = ptrs[idx];
-        if (!bone) continue;
-        const float t3[3] = { entries[i].tx, entries[i].ty, entries[i].tz };
-        if (write_local_translate(bone, t3)) ++wrote;
-    }
+    std::size_t animated = 0;
+    for (const auto& [peer, ghost] : ghost_snapshot()) {
+        const std::vector<void*> ptrs = ghost_bones_for(peer.c_str());
+        if (ptrs.empty()) continue;
 
-    // Re-bake the ghost subtree (same SEH-caged helper the rotation pose uses).
-    update_downward_safe(ghost);
+        fw::net::PoseCrouchEntry entries[fw::net::MAX_POSE_CROUCH_BONES];
+        std::uint8_t cnt = 0;
+        {
+            std::lock_guard<std::mutex> lk(g_remote_crouch_mutex);
+            auto it = g_remote_crouch_by_peer.find(peer);
+            if (it == g_remote_crouch_by_peer.end()) continue;
+            if (!it->second.has_data || it->second.count == 0) continue;
+            cnt = it->second.count;
+            std::memcpy(entries, it->second.entries,
+                        cnt * sizeof(fw::net::PoseCrouchEntry));
+        }
+
+        for (std::uint8_t i = 0; i < cnt; ++i) {
+            const std::size_t idx = entries[i].bone_index;
+            if (idx >= ptrs.size()) continue;
+            void* bone = ptrs[idx];
+            if (!bone) continue;
+            const float t3[3] = { entries[i].tx, entries[i].ty, entries[i].tz };
+            if (write_local_translate(bone, t3)) ++wrote;
+        }
+
+        // Re-bake del sottoalbero DI QUESTO ghost (stesso aiutante in gabbia
+        // SEH che usa la posa delle rotazioni).
+        update_downward_safe(ghost);
+        ++animated;
+    }
+    if (animated == 0) return;
 
     static int s_decim = 0;
     if (++s_decim >= 30) {
         s_decim = 0;
-        FW_LOG("[crouch-rx] applied %d/%u crouch bones to ghost=%p",
-               wrote, static_cast<unsigned>(cnt), ghost);
+        FW_DBG("[crouch-rx] applied %d crouch bones across %zu ghost(s)",
+               wrote, animated);
     }
 }
 
@@ -14601,7 +15687,7 @@ void apply_npc_pose_to_actor(void* actor, std::uint32_t form_id) {
     static std::atomic<std::uint64_t> s_drv{0};
     const auto c = s_drv.fetch_add(1, std::memory_order_relaxed);
     if (c < 10 || (c % 600) == 0) {
-        FW_LOG("[npc-pose-drive] fid=0x%08X wrote=%d/%zu crouch=%d hold=%d age=%llums "
+        FW_DBG("[npc-pose-drive] fid=0x%08X wrote=%d/%zu crouch=%d hold=%d age=%llums "
                "(60Hz post-orig) a3d=%p",
                form_id, wrote, apply_n, crouch_wrote, hold ? 1 : 0,
                static_cast<unsigned long long>(pose_age), a3d);
@@ -14680,14 +15766,14 @@ void release_all_npc_bone_pins() {
         if (kv.second.pinned) {
             for (void* p : kv.second.ptrs) if (p) ++n;
         }
-        FW_LOG("[bone-pin]   pinned fid=0x%08X cell=0x%08X pins=%zu",
+        FW_DBG("[bone-pin]   pinned fid=0x%08X cell=0x%08X pins=%zu",
                kv.first, safe_read_actor_cell_id(kv.second.owner_actor), n);
         pins += n;
         unpin_cache_entry(kv.second);
         ++entries;
     }
     g_npc_bone_cache.clear();
-    FW_LOG("[bone-pin] LIMBO RELEASE — dropped %zu pins across %zu cache "
+    FW_DBG("[bone-pin] LIMBO RELEASE — dropped %zu pins across %zu cache "
            "entries while the cell is still intact (engine still holds its "
            "own refs, so no destructor runs here)", pins, entries);
 }
@@ -14732,7 +15818,7 @@ void sweep_npc_bone_caches() {
         static std::atomic<std::uint64_t> s_frozen{0};
         const auto n = s_frozen.fetch_add(1, std::memory_order_relaxed);
         if (n == 0 || (n % 400) == 0) {
-            FW_LOG("[bone-pin] death stand-down — sweep FROZEN, holding %zu "
+            FW_DBG("[bone-pin] death stand-down — sweep FROZEN, holding %zu "
                    "cache entries pinned (freeze #%llu)",
                    g_npc_bone_cache.size(),
                    static_cast<unsigned long long>(n + 1));
@@ -14784,7 +15870,7 @@ void sweep_npc_bone_caches() {
         const auto rel   = g_pins_released.load(std::memory_order_relaxed);
         const auto det   = g_detach_detected.load(std::memory_order_relaxed);
         if (live || taken != rel) {
-            FW_LOG("[bone-pin] entries=%zu live_pins=%llu taken=%llu released=%llu "
+            FW_DBG("[bone-pin] entries=%zu live_pins=%llu taken=%llu released=%llu "
                    "balance=%lld rebuilds=%llu detached=%llu suppressed=%llu "
                    "rel_own=%llu rel_age=%llu",
                    g_npc_bone_cache.size(),
@@ -14835,7 +15921,7 @@ void on_npc_pose_apply_message() {
             msz = g_remote_npc_pose.size(); }
           { std::lock_guard<std::mutex> lk(g_canonical_mutex);
             csz = g_canonical_names.size(); }
-          FW_LOG("[npc-pose-net] APPLY enter mapsize=%zu canonical=%zu",
+          FW_DBG("[npc-pose-net] APPLY enter mapsize=%zu canonical=%zu",
                  msz, csz);
       } }
     // Snapshot + clear all pending NPC poses under lock.
@@ -14923,7 +16009,14 @@ void bone_tick_worker() {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));  // 20Hz idle
         if (g_bone_tick_stop.load(std::memory_order_acquire)) break;
 
-        if (!g_injected_cube.load(std::memory_order_acquire)) continue;
+        // NIENTE uscita anticipata sul corpo del ghost. Il gestore fa due
+        // lavori: spedire la NOSTRA posa, che non ha bisogno di nessun
+        // ghost, e guidare quello dei peer, che ce l'ha. Saltare il giro
+        // perche' manca il secondo spegneva anche il primo, e fra uno
+        // smontaggio e la ricostruzione il client restava muto — dodici
+        // secondi, misurati il 2026-09-18, proprio mentre il peer stava
+        // rientrando. Il gestore si occupa da solo della meta' che non
+        // puo' fare.
         const HWND h = fw::dispatch::get_target_hwnd();
         if (!h) continue;
         PostMessageW(h, FW_MSG_STRADAB_BONE_TICK, 0, 0);
@@ -14940,7 +16033,7 @@ void start_bone_tick_worker_once() {
     g_bone_tick_thread = std::thread(bone_tick_worker);
 }
 
-void on_inject_message() {
+void on_inject_message(const char* peer_id) {
     FW_LOG("[native] WM_APP+0x45 (STRADAB_INJECT) received on main thread — "
            "attempting inject at (%.1f, %.1f, %.1f)",
            kTestPosX, kTestPosY, kTestPosZ);
@@ -15003,7 +16096,11 @@ void on_inject_message() {
     //   1. Remote Client snapshot (preferred — proves network→scene flow)
     //   2. Local player pos (visible from our own POV for solo testing)
     //   3. Origin (last resort — cube invisible but at least injected)
-    const auto snap = fw::net::client().get_remote_snapshot();
+    // La posizione di QUESTO peer quando sappiamo chi e'; altrimenti
+    // l'ultima arrivata, che con un solo peer remoto e' la stessa.
+    const auto snap = (peer_id && *peer_id)
+        ? fw::net::client().get_remote_snapshot(std::string(peer_id))
+        : fw::net::client().get_remote_snapshot();
     float body_x = 0.0f, body_y = 0.0f, body_z = 0.0f;
     // M5: no Z offset — the NIF-loaded body spawns at the remote's
     // feet position directly (MaleBody.nif is modeled with its origin
@@ -15079,7 +16176,7 @@ void on_inject_message() {
                "spawning body at origin");
     }
 
-    if (inject_debug_cube(body_x, body_y, body_z)) {
+    if (inject_debug_cube(body_x, body_y, body_z, peer_id)) {
         FW_LOG("[native] M5 BODY via NIF loader: success — MaleBody.nif "
                "attached to SSN at remote player position. T-pose until "
                "M4 wires up animation driver.");
@@ -15112,6 +16209,574 @@ void on_inject_message() {
 
 // Called from DLL_PROCESS_DETACH. Stops arm worker (no-op if not started
 // or already fired), detaches all injected objects. Idempotent.
+// === Fase 2 — creare il ghost quando la scena e' PROVATA stabile =========
+//
+// Sostituisce il timer da trenta secondi, e con lui la sua conseguenza:
+// "il corpo del ghost capita di pre-esistere, e la prima posizione di un
+// peer che entra dopo semplicemente lo sposta. Fortuna, non progetto."
+//
+// Il commento sopra arm_worker vieta di iniettare dal gestore di PEER_JOIN,
+// e ha ragione. La prima versione di questo cancello credeva di avergli
+// risposto misurando una striscia di tick stabili, sulla base di una frase
+// che avevo scritto io e che il primo test ha SMENTITO:
+//
+//     "fra due LoadGame la verita' dura un istante, non secondi"
+//
+// Falso, e i log del 2026-09-18 lo dimostrano riga per riga. Il WndProc NON
+// si ferma durante il caricamento: la LoadGame del motore pompa essa stessa
+// la coda dei messaggi, quindi questo tick continua a girare DENTRO di lei.
+// Su A il LoadGame e' stato invocato alle 14:26:15.243 e accettato alle
+// 14:26:21.120 — quasi sei secondi — e per tutto quel tempo
+// local_player_in_world() e' rimasto vero, perche' il giocatore del mondo
+// VECCHIO e' ancora intero, con cella e posizione valide. La striscia di
+// 120 tick (~2,6 s) ci sta dentro comoda: il corpo e' stato costruito a
+// meta' caricamento, e nove millisecondi dopo il ritorno di LoadGame il
+// motore e' morto decodificando i vertici half-float di una
+// BSSubIndexTriShape con la sorgente a NULL.
+//
+// E non era sfortuna. PEER_JOIN viene drenato da questo stesso tick, che
+// nel WndProc sta subito PRIMA del ramo FW_MSG_LOAD_GAME: se il peer e'
+// gia' sul server quando parte il nostro auto-load, la richiesta del ghost
+// nasce nello stesso millisecondo del LoadGame, sempre. Su B e' andata
+// cosi' tre volte su tre senza schiantare, su A una su una con schianto.
+// Una corsa che di solito si vince e' peggio di una che si perde sempre.
+//
+// Da qui i due cancelli.
+//   1. Quello certo: la chiamata a LoadGame la facciamo NOI, quindi la
+//      avvolgiamo (ghost_note_load_begin/end dal WndProc) e sappiamo con
+//      esattezza quando siamo dentro, invece di dedurlo.
+//   2. Quello per i caricamenti che non originiamo noi: la cella del
+//      giocatore dev'essere la STESSA per tutta la striscia, cosi'
+//      qualunque cosa cambi il mondo sotto di noi la azzera.
+// La striscia resta, perche' serve ancora a quello per cui e' nata: un peer
+// che entra al minuto quaranta ha un corpo, cosa che col timer non
+// succedeva mai.
+//
+// NB: il blocco di tick del WndProc gira durante il caricamento di
+// proposito, per altri moduli — chargen_stage dice testualmente di
+// riprovare "while the save is still loading". Quindi il cancello va messo
+// QUI e non attorno al blocco: spegnere l'intero tick durante il
+// caricamento romperebbe chi su quel comportamento ci conta.
+namespace {
+// Quanto dev'essere lunga la striscia. DUE misure, non una, e il motivo sta
+// scritto nel log del 2026-09-18: il tick non e' un tick. Gira a ogni
+// messaggio della finestra, e i messaggi non hanno niente a che fare col
+// tempo — il client A, fermo sul posto, e' rimasto QUATTORDICI SECONDI E
+// SETTE senza riceverne uno, poi ne ha presi quaranta al secondo appena
+// l'altro client ha ripreso a parlare. Il rendering non produce messaggi.
+// Quindi "120 tick" da solo non e' una durata: e' un numero che vale
+// mezzo secondo o mezzo minuto a seconda di cosa sta facendo Windows.
+// Il battito aggiunto al WndProc gli mette un pavimento, ma il soffitto
+// resta libero, percio' si chiede anche un minimo di millisecondi veri.
+constexpr unsigned      kStableTicksNeeded = 120;
+constexpr std::uint64_t kStableMinMs       = 2000;
+unsigned      g_stable_ticks   = 0;
+std::uint64_t g_streak_started_ms = 0;
+// La cella su cui e' iniziata la striscia. Se cambia, il mondo non e' piu'
+// quello su cui stavamo contando e la striscia non vale piu' niente.
+void*    g_streak_cell  = nullptr;
+// L'ultimo motivo per cui il cancello era chiuso. Serve a scriverlo UNA
+// volta per transizione invece che a ogni tick: senza, un cancello che
+// funziona e' muto, e un cancello muto non si puo' distinguere da uno che
+// non e' mai stato chiamato.
+const char* g_last_gate_why = nullptr;
+
+// L'ultimo verdetto del cancello, pubblicato per chi non puo' chiamarlo.
+//
+// ghost_scene_is_stable() CONTA, quindi chiamarla da due posti raddoppia il
+// conteggio e non si puo'. Il verdetto invece si legge quanto si vuole. Lo
+// usa il battito del WndProc per sapere quando puo' tornare a battere dopo
+// un caricamento.
+std::atomic<bool> g_scene_settled{false};
+
+// Quando il 3D del GIOCATORE LOCALE e' stato ricostruito l'ultima volta.
+//
+// Il corpo del ghost nasce da una camminata sul giocatore locale: ne legge
+// lo scheletro, le geometrie e la faccia. Quindi mentre quel 3D si sta
+// rifacendo non c'e' niente di buono da copiare.
+//
+// Actor::Reset3D e' ASINCRONA — lo dice la sua stessa riga di log, "il
+// costruttore della testa gira un frame o piu' dopo" — e face_borrow ne
+// chiama DUE di fila ogni volta che costruisce la faccia di un peer:
+// una per mettere addosso al giocatore locale l'aspetto del peer, una per
+// riprenderselo. Nel test di rientro del 2026-09-18 il client B ha
+// costruito il ghost 930 ms dopo la seconda, ed e' venuto storto; nella
+// prova riuscita di due minuti prima fra le due cose c'erano 6,2 secondi.
+//
+// Non e' una prova, e' un indiziato con un movente forte. Il trattamento
+// pero' e' lo stesso gia' scritto per la cella: se il mondo da cui copiamo
+// cambia, la striscia non vale piu'. Un Reset3D sul giocatore locale e' un
+// cambio di mondo quanto un cambio di cella.
+// CORRETTO il 2026-09-18, poche ore dopo: era un'ISTANTE confrontato con
+// `>=`, e GetTickCount64 avanza a scatti di ~15 ms mentre questo tick gira
+// molto piu' in fretta. Risultato: per tutta la durata di uno scatto il
+// timbro del Reset3D risultava uguale all'inizio della striscia, quindi la
+// striscia partiva e veniva subito azzerata, in continuazione. Nei log del
+// test delle 16:21 sono 98 righe in due raffiche, cinquanta nello stesso
+// millisecondo. Poche, ma il cancello sbatteva invece di aprirsi, e
+// l'avevo liquidata come cosa cosmetica.
+//
+// Una GENERAZIONE non ha risoluzione: cambia quando cambia. Stesso schema
+// gia' usato per la LoadGame, e per lo stesso motivo.
+std::atomic<std::uint32_t> g_local_3d_reset_gen{0};
+std::uint32_t              g_streak_3d_gen = 0;
+
+// Profondita' e generazione della LoadGame del motore.
+//
+// La profondita' e' un CONTATORE e non un bool proprio perche' il WndProc
+// gira dentro la LoadGame: un caricamento annidato non deve riaprire il
+// cancello uscendo per primo.
+//
+// La generazione copre il caso opposto: un caricamento che comincia e
+// finisce fra due tick. La profondita' sarebbe tornata a zero senza che
+// nessuno l'abbia vista salire; la generazione no, e azzera la striscia.
+std::atomic<unsigned> g_load_depth{0};
+std::atomic<unsigned> g_load_gen{0};
+unsigned g_streak_gen = 0;
+
+// MAIN THREAD. La cella del giocatore locale, o nullptr. Sotto SEH come
+// ogni lettura del singleton: durante un caricamento li' dentro puo'
+// esserci qualunque cosa.
+void* local_player_cell_or_null() {
+    const HMODULE game = GetModuleHandleW(L"Fallout4.exe");
+    if (!game) return nullptr;
+    const auto base = reinterpret_cast<std::uintptr_t>(game);
+    __try {
+        void** player_slot = reinterpret_cast<void**>(base + 0x032D2260);
+        void* player = *player_slot;
+        if (!player) return nullptr;
+        return *reinterpret_cast<void**>(
+            reinterpret_cast<char*>(player) + fw::offsets::PARENT_CELL_OFF);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+}  // namespace
+
+// Qualunque thread. Il 3D del giocatore locale e' stato appena rifatto:
+// quello che c'era da copiare adesso non c'e' piu'. Chiamata dal sito che
+// invoca Actor::Reset3D.
+// Qualunque thread, sola lettura. L'ultimo verdetto del cancello.
+bool ghost_scene_settled() {
+    return g_scene_settled.load(std::memory_order_acquire);
+}
+
+bool ghost_scene_is_stable();   // definita poco piu' sotto
+
+// MAIN THREAD. Fa avanzare il conteggio della striscia una volta per tick,
+// a prescindere dal fatto che qualcuno stia aspettando un corpo.
+//
+// Prima la striscia girava solo quando c'era un peer in attesa, e questo la
+// rendeva inutilizzabile per chiunque altro: senza peer il verdetto non si
+// aggiornava mai. Contare sempre costa due letture protette per tick.
+void ghost_scene_settle_tick() {
+    (void)ghost_scene_is_stable();
+}
+
+void ghost_note_local_3d_reset() {
+    g_local_3d_reset_gen.fetch_add(1, std::memory_order_acq_rel);
+}
+
+// MAIN THREAD ONLY. Il corpo del ghost e' stato staccato da sotto di noi?
+//
+// PRECISAZIONE dell'utente, 2026-09-18: IL SAVE E' IL SERVER. Quel
+// salvataggio e' la definizione autorevole del mondo in cui ogni client si
+// materializza — stesso posto, stessi vestiti, stesso inventario; uno spawn
+// custom si ottiene scrivendo un save con quello spawn. E un client NON
+// salva e NON ricarica mai: salvataggio e caricamento verranno tolti dal
+// codice. C'e' esattamente UN LoadGame per sessione, quello d'avvio, che e'
+// il modo stesso di entrare nel mondo.
+//
+// Quindi il caso "l'utente ricarica una partita" NON esiste, e questa
+// funzione non e' il rilevatore di quello.
+//
+// Resta perche' costa un puntatore per tick e copre una domanda piu'
+// generale che vale comunque: il corpo che teniamo nella mappa e' ancora
+// appeso a qualcosa? Se qualunque cosa — oggi solo l'auto-load d'avvio,
+// domani chissa' — porta via il nodo della scena, il corpo resterebbe nella
+// nostra mappa mentre il giocatore vede il vuoto, e l'unico rimedio
+// sarebbe riavviare il client.
+//
+// SI CHIEDE AL CORPO, NON ALLA SCENA, e il perche' e' stato imparato a caro
+// prezzo. Il primo tentativo confrontava get_shadow_scene_node() col suo
+// valore precedente: non puo' funzionare, quell'accessore torna un atomico
+// CACHED che la camminata riempie una volta sola, quindi si confrontava una
+// costante con se' stessa. Il log lo dimostro' subito: una riga all'avvio e
+// nient'altro, nemmeno quando un `coc` spostava il giocatore di cella.
+//
+// La lettura giusta costa un puntatore per tick e si appoggia a
+// un'invariante gia' documentata in questo file: entrambi i percorsi di
+// distruzione azzerano il puntatore al genitore di un figlio sopravvissuto,
+// e noi sul corpo teniamo un +1, quindi +0x28 e' valido-o-nullo, mai
+// pendente. Genitore nullo = la scena se l'e' portato via.
+//
+// Nessun aggancio sui percorsi di distruzione, che e' la regola che
+// world_spawn segue gia': "la storia dei crash alla morte dice che gli
+// agganci sui percorsi di distruzione mordono".
+bool ghost_body_is_orphaned() {
+    if (!g_resolved.load(std::memory_order_acquire)) return false;
+    // Vero se ANCHE UNO SOLO dei ghost registrati e' stato staccato dalla
+    // scena sotto di noi. Basta uno: e' una diagnostica di "qualcosa e'
+    // successo al grafo", non un inventario.
+    for (const auto& [peer, body] : ghost_snapshot()) {
+        if (fw::native::weapon_witness::read_parent_pub(body) == nullptr) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// MAIN THREAD ONLY, dal WndProc, attorno alla LoadGame del motore.
+void ghost_note_load_begin() {
+    g_load_gen.fetch_add(1, std::memory_order_acq_rel);
+    g_load_depth.fetch_add(1, std::memory_order_acq_rel);
+}
+
+void ghost_note_load_end() {
+    g_load_gen.fetch_add(1, std::memory_order_acq_rel);
+    // Mai sotto zero. Se arrivasse un end spaiato, meglio un cancello
+    // aperto che un contatore in underflow che lo tiene chiuso per sempre e
+    // lascia senza corpo ogni peer per il resto della sessione.
+    unsigned d = g_load_depth.load(std::memory_order_acquire);
+    while (d != 0 && !g_load_depth.compare_exchange_weak(
+                         d, d - 1, std::memory_order_acq_rel)) {
+    }
+}
+
+// MAIN THREAD ONLY. Torna true se la scena e' stabile abbastanza da
+// costruirci sopra. Da chiamare a ogni tick: conta da sola.
+bool ghost_scene_is_stable() {
+    const unsigned gen     = g_load_gen.load(std::memory_order_acquire);
+    const bool     in_load = g_load_depth.load(std::memory_order_acquire) != 0;
+    void* const    cell    = local_player_cell_or_null();
+
+    const char* why = nullptr;
+    if (in_load) {
+        why = "the engine is inside LoadGame";
+    } else if (gen != g_streak_gen) {
+        why = "a LoadGame started or finished";
+    } else if (!cell) {
+        why = "the player has no cell";
+    } else if (g_stable_ticks != 0 && cell != g_streak_cell) {
+        why = "the player changed cell under us";
+    } else if (g_local_3d_reset_gen.load(std::memory_order_acquire) !=
+               g_streak_3d_gen) {
+        why = "the local player's 3D was rebuilt under us";
+    } else if (!local_player_in_world()) {
+        why = "the world is not up";
+    }
+
+    if (why) {
+        if (g_stable_ticks != 0) {
+            FW_LOG("[ghost-create] stability streak reset after %u tick(s): %s",
+                   g_stable_ticks, why);
+        } else if (why != g_last_gate_why) {
+            FW_LOG("[ghost-create] gate closed: %s", why);
+        }
+        g_last_gate_why    = why;
+        g_stable_ticks     = 0;
+        g_streak_started_ms = 0;
+        g_streak_3d_gen    = g_local_3d_reset_gen.load(std::memory_order_acquire);
+        g_streak_gen       = gen;
+        g_streak_cell      = nullptr;
+        g_scene_settled.store(false, std::memory_order_release);
+        return false;
+    }
+
+    const std::uint64_t now = GetTickCount64();
+    if (g_stable_ticks == 0) {
+        g_streak_cell       = cell;
+        g_streak_started_ms = now;
+    }
+    if (g_stable_ticks < kStableTicksNeeded) {
+        ++g_stable_ticks;
+        g_scene_settled.store(false, std::memory_order_release);
+        return false;
+    }
+    if (now - g_streak_started_ms < kStableMinMs) {
+        g_scene_settled.store(false, std::memory_order_release);
+        return false;
+    }
+    g_scene_settled.store(true, std::memory_order_release);
+    if (g_last_gate_why) {
+        FW_LOG("[ghost-create] gate open after %llu ms (was closed on: %s)",
+               static_cast<unsigned long long>(now - g_streak_started_ms),
+               g_last_gate_why);
+        g_last_gate_why = nullptr;
+    }
+    return true;
+}
+
+// MAIN THREAD ONLY. Costruisce il ghost se non c'e'. Torna true se dopo
+// questa chiamata un corpo esiste.
+//
+// In questa tappa il corpo e' ancora uno solo e condiviso: si passa dal
+// percorso di iniezione esistente, che fa anche la camminata di cattura da
+// cui dipendono il nodo della scena e la prima geometria. Quella camminata
+// SEMBRA una diagnostica e non lo e': spegnerla aveva ucciso la comparsa
+// del ghost su entrambi i client.
+bool ghost_create_if_ready(const char* peer_id) {
+    if (ghost_body_for(peer_id)) return true;
+    // Il verdetto, non il contatore: la striscia la fa avanzare
+    // ghost_scene_settle_tick una volta per tick e basta.
+    if (!g_scene_settled.load(std::memory_order_acquire)) return false;
+    FW_LOG("[ghost-create] peer=%s: the world has been stable for %u tick(s) "
+           "— building the body now", peer_id ? peer_id : "?",
+           kStableTicksNeeded);
+
+    // RITIRATO il 2026-09-18, poche ore dopo averlo scritto.
+    //
+    // Qui riaccodavo l'ultimo vestito conosciuto del peer, e il ghost
+    // rientrava vestito. Ma riaccodavo SOLO i form id, e lo smontaggio nel
+    // frattempo cancella g_peer_omod: quindi dal secondo corpo in poi le
+    // armature si riattaccavano SENZA la loro lista di OMOD, mentre al
+    // primo ingresso gli OMOD arrivano dal filo insieme all'EQUIP_BCAST.
+    // "Il ghost e' corretto solo la prima volta" e' esattamente quella
+    // differenza, e il test con la power armor l'ha reso vistoso.
+    //
+    // Non si rimette finche' non porta anche gli OMOD, e finche' non e'
+    // chiaro cosa fare dell'innesto PA, che e' one-shot globale e che uno
+    // smontaggio non disfa: un corpo ricostruito dopo una sessione in power
+    // armor non riceve piu' le ossa PA, e i pezzi si attaccano a ossa che
+    // non ci sono.
+    //
+    // La cura giusta sta comunque altrove: il server deve annunciare
+    // l'equipaggiamento di chi entra a chi c'e' gia'. Copre anche il peer
+    // mai visto prima e quello che si e' cambiato mentre era via, cose che
+    // una memoria locale non puo' sapere.
+    on_inject_message(peer_id);
+    const bool ok = ghost_body_for(peer_id) != nullptr;
+    if (ok) {
+        // Il battito che copia le ossa a 20 Hz partiva in coda al vecchio
+        // worker del timer. Ora che il timer non c'e' piu', parte col primo
+        // corpo, che e' anche l'unico momento in cui serve: e' one-shot e
+        // idempotente.
+        start_bone_tick_worker_once();
+    }
+    if (!ok) {
+        // Non si azzera il contatore: il mondo e' stabile, e' l'iniezione
+        // che non e' riuscita. Il tick riprovera'.
+        FW_WRN("[ghost-create] peer=%s: the body was not built this time",
+               peer_id ? peer_id : "?");
+    }
+    return ok;
+}
+
+// === Fase 2 — smontare il ghost di UN peer ================================
+//
+// Questo e' cio' che PEER_LEAVE deve chiamare, e la legge d'ordine sta
+// scritta sopra detach_debug_cube. La si rispetta alla lettera, con una
+// correzione: quel commento afferma che detach_debug_cube "e' gia' lo
+// smontaggio corretto" e NON lo e', come documenta un audit successivo in
+// re/. Tocca soltanto corpo, cache delle geometrie e contributori al
+// culling; non rilascia testa, armature, armi, slot, code e cache. Qui si
+// rilascia tutto il resto, dal basso, e il corpo per ultimo.
+//
+// PERCHE' DAL BASSO. Il distruttore di un NiNode DECREMENTA i figli, non li
+// distrugge: si liberano solo a zero riferimenti, e noi ne teniamo uno per
+// ogni clone che abbiamo attaccato. Staccare solo il corpo lascerebbe in
+// piedi l'intero guardaroba del peer, invisibile e vivo.
+//
+// THREADING: MAIN THREAD ONLY, come ogni mutazione del grafo di scena.
+//
+// `last_ghost` dice se dopo questo peer non ne resta nessun altro: corpo,
+// testa e cache delle geometrie sono ancora condivisi fra i peer in questa
+// tappa, quindi si toccano solo quando se ne va l'ultimo. Diventeranno per
+// peer nella tappa seguente, quando entreranno nel record.
+bool ghost_teardown_for_peer(const char* peer_id, bool last_ghost) {
+    if (!peer_id || !*peer_id) return false;
+    const std::string peer(peer_id);
+    FW_LOG("[ghost-teardown] peer=%s begin (last_ghost=%d)",
+           peer.c_str(), int(last_ghost));
+
+    // 1. Le code in attesa per prima cosa. Se restassero, il prossimo
+    //    flush_pending_*_ops rivestirebbe il ghost successivo coi vestiti
+    //    di un giocatore che se n'e' andato: e' l'avvertimento testuale
+    //    della legge d'ordine, "il prossimo che occupa lo slot li eredita".
+    std::size_t dropped_armor_q = 0, dropped_weapon_q = 0;
+    {
+        std::lock_guard lk(g_pending_armor_mtx);
+        auto it = g_pending_armor_ops.find(peer);
+        if (it != g_pending_armor_ops.end()) {
+            dropped_armor_q = it->second.size();
+            g_pending_armor_ops.erase(it);
+        }
+    }
+    {
+        std::lock_guard lk(g_pending_weapon_mtx);
+        auto it = g_pending_weapon_ops.find(peer);
+        if (it != g_pending_weapon_ops.end()) {
+            dropped_weapon_q = it->second.size();
+            g_pending_weapon_ops.erase(it);
+        }
+    }
+
+    // 2. L'arma. ghost_clear_weapon con 0 forza la pulizia: stacca i mod
+    //    dal loro genitore VERO, li toglie dal tracker prima di
+    //    decrementare, rilascia il nodo base e passa la scopa sugli orfani.
+    (void)ghost_clear_weapon(peer.c_str(), 0);
+
+    // 3. Le armature, su una FOTOGRAFIA della mappa e non sulla mappa viva:
+    //    ghost_detach_armor cancella le voci mentre va, e per i pezzi di
+    //    power armor richiama se' stesso. Iterare la mappa viva sarebbe
+    //    modifica concorrente su memoria che si sta liberando.
+    std::vector<std::uint32_t> forms;
+    {
+        std::lock_guard lk(g_armor_map_mtx);
+        auto it = g_attached_armor.find(peer);
+        if (it != g_attached_armor.end()) {
+            forms.reserve(it->second.size());
+            for (const auto& [form, node] : it->second) forms.push_back(form);
+        }
+    }
+    std::size_t detached = 0;
+    for (std::uint32_t form : forms) {
+        if (ghost_detach_armor(peer.c_str(), form)) ++detached;
+    }
+    {
+        std::lock_guard lk(g_armor_map_mtx);
+        g_attached_armor.erase(peer);
+    }
+
+    // 4. Le cache di dati di quel peer. Nessun riferimento da restituire:
+    //    sono elenchi di form id e di numeri, non di nodi.
+    //
+    //    Posa e crouch inclusi, ed e' il punto che la legge d'ordine
+    //    chiedeva da sempre: "lo smontaggio per peer ha bisogno che le
+    //    cache di posa, crouch ed equip di quel peer vengano buttate, o il
+    //    prossimo giocatore che occupa lo slot se le eredita".
+    {
+        std::lock_guard<std::mutex> lk(g_remote_pose_mutex);
+        g_remote_pose_by_peer.erase(peer);
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_remote_crouch_mutex);
+        g_remote_crouch_by_peer.erase(peer);
+    }
+    {
+        std::lock_guard lk(g_pa_piece_mods_mtx);
+        g_pa_piece_mods.erase(peer);
+    }
+    {
+        std::lock_guard lk(g_peer_omod_mtx);
+        g_peer_omod.erase(peer);
+    }
+
+    // 5. La maschera della faccia NON si dimentica, e qui c'era un errore
+    //    mio, scoperto dal test di rientro del 2026-09-18.
+    //
+    //    Chiamavo face_cache::forget() con accanto un commento che diceva
+    //    "se quel peer rientra con la stessa ricetta, la maschera
+    //    parcheggiata gli fa risparmiare la ricostruzione". La chiamata fa
+    //    l'OPPOSTO di quella frase: forget() cancella il master ma TIENE la
+    //    ricetta, e il giro di face_borrow cerca esattamente quello —
+    //    "ricetta presente, master assente" — quindi ripartiva subito.
+    //
+    //    Nel log si vede nello stesso millisecondo dello smontaggio:
+    //    "[face-borrow] borrowing the local player to build 'player_B'" per
+    //    un peer uscito sette millisecondi prima. E prendere in prestito il
+    //    giocatore locale non e' gratis: gli riscrive la faccia con quella
+    //    del peer, chiama Actor::Reset3D, aspetta, riclona, rimette a posto
+    //    e chiama Reset3D un'altra volta. Due ricostruzioni complete del 3D
+    //    del giocatore locale, per un fantasma che stavamo smontando.
+    //
+    //    In piu' forget() NON libera il nodo parcheggiato, quindi buttarlo
+    //    via lo perde e basta. E non serve a niente per la correttezza:
+    //    get_master() confronta l'hash della ricetta, quindi un master
+    //    vecchio con un aspetto cambiato non viene mai riusato.
+    //
+    //    Quindi il master resta parcheggiato, che e' il compromesso scritto
+    //    nel suo header: "un pugno di sottoalberi parcheggiati per sessione
+    //    costa meno di una free sbagliata". Al rientro viene riusato.
+
+    // 6. I contributori al culling di quel peer. Le geometrie del corpo
+    //    invece sono puntatori DENTRO l'albero del corpo e si buttano solo
+    //    insieme al corpo, al punto 7.
+    {
+        std::lock_guard lk(g_body_cull_mtx);
+        g_body_cull_contributors.erase(peer);
+    }
+
+    if (!last_ghost) {
+        FW_LOG("[ghost-teardown] peer=%s done: %zu armor detached, queues "
+               "dropped (%zu armor, %zu weapon); body kept, other peers "
+               "still use it", peer.c_str(), detached, dropped_armor_q,
+               dropped_weapon_q);
+        return true;
+    }
+
+    // 7. Testa, poi corpo. In quest'ordine e mai al contrario: la testa e'
+    //    figlia del corpo, e distruggere il corpo azzera il puntatore al
+    //    genitore della testa, lasciandoci con un riferimento da restituire
+    //    a un nodo di cui non sappiamo piu' niente.
+    //
+    //    La testa ha un +1 preso all'iniezione che NESSUN percorso ha mai
+    //    restituito: dopo lo spegnimento era un puntatore pendente ancora
+    //    pubblicato. Questa e' la prima volta che viene chiuso.
+    void* head = ghost_head_for(peer.c_str());
+    if (head && g_resolved.load(std::memory_order_acquire)) {
+        // Il genitore si legge PRIMA di decrementare: e' valido-o-nullo
+        // finche' teniamo il riferimento, mai pendente.
+        void* head_parent = fw::native::weapon_witness::read_parent_pub(head);
+        void* removed = nullptr;
+        bool detached_ok = false;
+        if (head_parent) {
+            detached_ok = seh_detach_child_armor(g_r.detach_child, head_parent,
+                                                 head, &removed);
+        }
+        if (detached_ok) {
+            const long after = seh_refcount_dec_armor(head);
+            FW_LOG("[ghost-teardown] head %p detached from %p, refcount now "
+                   "%ld", head, head_parent, after);
+        } else {
+            // Se lo stacco fallisce non si decrementa. In casa vale la
+            // regola gia' scritta: perdere memoria e' meglio che schiantare.
+            FW_WRN("[ghost-teardown] head %p could not be detached "
+                   "(parent=%p) — leaking it on purpose rather than "
+                   "decrementing a node we no longer own", head, head_parent);
+        }
+    }
+
+    // 7-bis. Le ossa se ne vanno col corpo: sono un suo FIGLIO, quindi il
+    //        suo distruttore le decrementa e il motore le libera. Qui si
+    //        toglie solo la voce della mappa, che altrimenti punterebbe a
+    //        un corpo morto.
+    {
+        void* dying = ghost_body_for(peer.c_str());
+        if (dying) fw::native::skin_rebind::forget_skeleton_for(dying);
+        // E con le ossa se ne va tutto cio' che le DESCRIVE, o il prossimo
+        // scheletro eredita affermazioni su nodi morti:
+        //   * il flag "le ossa PA ci sono gia'", che altrimenti impedirebbe
+        //     l'innesto sul corpo nuovo e lascerebbe le piastre appese a
+        //     ossa inesistenti;
+        //   * la mappa dei bind umani salvati dal retarget, che e' indicizzata
+        //     per PUNTATORE di osso e la cui guardia "se non e' vuota esci"
+        //     bloccherebbe per sempre il retarget del prossimo ghost.
+        ghost_set_pa_grafted(peer.c_str(), false);
+        {
+            const auto dropped = ghost_pa_bind_take(peer.c_str());
+            if (!dropped.empty()) {
+                FW_LOG("[pa-retarget] peer=%s dropping %zu saved human "
+                       "bind(s): they describe bones that die with this body",
+                       peer.c_str(), dropped.size());
+            }
+        }
+    }
+
+    // 8. Il corpo, per ultimo. detach_debug_cube azzera anche la cache
+    //    delle geometrie e i contributori in modo solidale, che e' il
+    //    motivo per cui la legge dice di non saltarlo: la prossima
+    //    iniezione deve ripartire da vuoto perche' il primo attacco di
+    //    un'armatura sul corpo esegua la transizione che applica il culling.
+    detach_debug_cube(peer.c_str());
+
+    FW_LOG("[ghost-teardown] peer=%s done: %zu armor detached, queues "
+           "dropped (%zu armor, %zu weapon), head and body released",
+           peer.c_str(), detached, dropped_armor_q, dropped_weapon_q);
+    return true;
+}
+
 void shutdown() {
     g_arm_stop.store(true, std::memory_order_release);
     if (g_arm_thread.joinable()) {
@@ -15126,25 +16791,40 @@ void shutdown() {
     // Must precede detach_debug_cube — pending callbacks would try to
     // attach to the ghost which is about to be torn down.
     synthetic_refr::shutdown();
-    detach_debug_cube();   // M2.2 — detach cube first (no dependencies)
+    // Fase 2 — il registro per peer non possiede ancora nodi (lo fara' nei
+    // passi seguenti), ma si svuota qui per restare simmetrico con tutto
+    // il resto e non lasciare record che sopravvivono al processo.
+    fw::native::ghost_lifecycle::shutdown();
+    detach_debug_cube(nullptr);   // M2.2 — detach cube first (no dependencies)
     detach_debug_node();   // M1   — detach canary NiNode
 }
 
-bool redress_ghost_face() {
+bool redress_ghost_face(const char* peer_id) {
     if (!fw::native::anatomy_mirror::clone_enabled()) return false;
-    void* head = g_injected_head.load(std::memory_order_acquire);
+    void* head = ghost_head_for(peer_id);
     if (!head) {
         // The ghost has not been assembled yet. Not a failure: when it is, the
         // injector picks the master up itself.
         return false;
     }
     char peer[24] = {};
-    void* face = fw::native::face_cache::any_master(peer, sizeof(peer));
+    void* face = nullptr;
+    if (peer_id && *peer_id) {
+        face = fw::native::face_cache::master_for_peer(peer_id);
+        if (face) {
+            std::size_t n = 0;
+            while (n + 1 < sizeof(peer) && peer_id[n]) { peer[n] = peer_id[n]; ++n; }
+            peer[n] = 0;
+        }
+    }
+    if (!face) face = fw::native::face_cache::any_master(peer, sizeof(peer));
     if (!face) return false;
 
     FW_LOG("[face-clone] re-dressing the ghost from peer '%s' master %p "
            "(it had dressed itself before this existed)", peer, face);
-    return ghost_dress_face(face, head, "REDRESS from peer master");
+    return ghost_dress_face(face, head,
+                            ghost_body_for(peer),
+                            "REDRESS from peer master");
 }
 
 void set_body_cull_enabled(bool on) {

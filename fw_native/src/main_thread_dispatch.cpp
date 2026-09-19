@@ -1208,9 +1208,16 @@ void drain_equip_apply_queue() {
         // M9.w2 PROPER (v10): pass effective_priority from the wire so
         // resolve_armor_nif_path's PrioritySelect filter picks the right
         // ARMA tier (Lite/Mid/Heavy) when OMOD upgrade is attached.
+        // Gli OMOD viaggiano anche nell'attach, non solo nella chiamata
+        // qui sotto: se il ghost non e' ancora nato l'operazione va in
+        // coda, e la coda deve portarseli dietro o la power armor del peer
+        // si ricostruisce come telaio nudo (misurato 2026-09-18).
         bool ok = is_equip
             ? fw::native::ghost_attach_armor(op.peer_id, op.item_form_id,
-                                              op.effective_priority)
+                                              op.effective_priority,
+                                              /*nif_path_override=*/nullptr,
+                                              op.omod_form_ids,
+                                              op.omod_count)
             : fw::native::ghost_detach_armor(op.peer_id, op.item_form_id);
 
         // v24 E4 — a power-armour piece is a placeholder ARMA plus the
@@ -1914,7 +1921,7 @@ void drain_npc_owner_state_apply_queue() {
         static std::atomic<std::uint64_t> g_standdown_drops{0};
         const auto n = g_standdown_drops.fetch_add(1, std::memory_order_relaxed);
         if (n == 0 || (n % 200) == 0) {
-            FW_LOG("[pos-meas] death stand-down — dropping relayed owner-state "
+            FW_DBG("[pos-meas] death stand-down — dropping relayed owner-state "
                    "batch (%zu entries, drop #%llu)",
                    local.size(), static_cast<unsigned long long>(n + 1));
         }
@@ -1949,7 +1956,7 @@ void drain_npc_owner_state_apply_queue() {
             const auto pmm = g_posmeas_miss.fetch_add(
                 1, std::memory_order_relaxed);
             if (pmm < 40 || (pmm % 20) == 0) {
-                FW_LOG("[pos-meas] RESIDENCY-MISS fid=0x%08X — relayed "
+                FW_DBG("[pos-meas] RESIDENCY-MISS fid=0x%08X — relayed "
                        "owner-state but actor not loaded here "
                        "(apply to nothing -> desync)",
                        e.form_id);

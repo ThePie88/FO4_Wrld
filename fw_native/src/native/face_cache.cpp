@@ -1,5 +1,8 @@
 #include "face_cache.h"
 
+#include <windows.h>   // gabbia SEH + _InterlockedIncrement per il nodo parcheggiato
+#include <intrin.h>
+
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
@@ -7,6 +10,7 @@
 #include <vector>
 
 #include "../log.h"
+#include "ni_offsets.h"
 
 namespace fw::native::face_cache {
 
@@ -24,6 +28,48 @@ std::mutex                                   g_mtx;
 std::unordered_map<std::string, Entry>       g_masters;
 std::unordered_map<std::string, std::string> g_recipes;
 
+// --- il nodo parcheggiato va TENUTO, non solo indirizzato ------------------
+//
+// 2026-09-19. Questa cache ha sempre conservato un puntatore nudo. Il nodo
+// arriva da clone_nif_subtree con refcount 1 e nessun genitore: non e'
+// attaccato a nessun albero, quindi l'unica cosa che potrebbe tenerlo in vita
+// e' un riferimento nostro, e non ne prendevamo.
+//
+// Il sintomo che ha portato qui: due montaggi dello stesso ghost clonano la
+// STESSA maschera (puntatore identico) e ottengono alberi diversi — 5
+// geometrie al primo giro, 7 al rientro, con occhi e neck-gore comparsi dal
+// nulla. Un nodo che cambia contenuto senza che nessuno lo scriva e' memoria
+// che non e' piu' nostra.
+//
+// Prendere il riferimento e' corretto a prescindere da quale sia la causa: e'
+// il contratto che tutto il resto del progetto rispetta ("chi clona tiene un
+// +1"), e questa cache era l'unico posto che lo violava. Se la causa era il
+// riciclo, questo la chiude; se era una mutazione, i numeri qui sotto lo
+// diranno al primo test invece di farmi tirare a indovinare.
+std::int32_t node_refcount(void* node) noexcept {
+    if (!node) return -1;
+    __try {
+        return *reinterpret_cast<std::int32_t*>(
+            reinterpret_cast<char*>(node) + NIAV_REFCOUNT_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return -2; }
+}
+
+int node_child_count(void* node) noexcept {
+    if (!node) return -1;
+    __try {
+        return *reinterpret_cast<std::uint16_t*>(
+            reinterpret_cast<char*>(node) + NINODE_CHILDREN_CNT_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return -2; }
+}
+
+void node_addref(void* node) noexcept {
+    if (!node) return;
+    __try {
+        _InterlockedIncrement(reinterpret_cast<long*>(
+            reinterpret_cast<char*>(node) + NIAV_REFCOUNT_OFF));
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
 }  // namespace
 
 void set_master(const std::string& key, std::uint64_t recipe_hash,
@@ -40,11 +86,14 @@ void set_master(const std::string& key, std::uint64_t recipe_hash,
                static_cast<unsigned long long>(it->second.hash),
                static_cast<unsigned long long>(recipe_hash), it->second.node);
     }
+    // Il +1 che ci fa proprietari del nodo che stiamo per conservare.
+    node_addref(master_node);
     g_masters[key] = Entry{recipe_hash, master_node};
-    FW_LOG("[face-cache] master parked for '%s' hash=0x%llX node=%p (%zu "
-           "cached)", key.c_str(),
+    FW_LOG("[face-cache] master parked for '%s' hash=0x%llX node=%p "
+           "refcount=%d children=%d (%zu cached)", key.c_str(),
            static_cast<unsigned long long>(recipe_hash), master_node,
-           g_masters.size());
+           static_cast<int>(node_refcount(master_node)),
+           node_child_count(master_node), g_masters.size());
 }
 
 void* get_master(const std::string& key, std::uint64_t recipe_hash) noexcept {
@@ -59,6 +108,14 @@ void* get_master(const std::string& key, std::uint64_t recipe_hash) noexcept {
                static_cast<unsigned long long>(recipe_hash));
         return nullptr;
     }
+    // Ogni consegna dice com'e' messo il nodo. Se fra un montaggio e il
+    // successivo questi due numeri cambiano senza che nessuno abbia scritto
+    // nella maschera, la memoria non e' piu' nostra e si vede qui, senza
+    // dover dedurlo dalle geometrie a valle.
+    FW_LOG("[face-cache] handing out master for '%s' node=%p refcount=%d "
+           "children=%d", key.c_str(), it->second.node,
+           static_cast<int>(node_refcount(it->second.node)),
+           node_child_count(it->second.node));
     return it->second.node;
 }
 
@@ -82,6 +139,20 @@ void* any_master(char* peer_out, std::size_t peer_out_size) noexcept {
     }
     if (peer_out && peer_out_size) peer_out[0] = 0;
     return nullptr;
+}
+
+void* master_for_peer(const char* peer_id) noexcept {
+    if (!peer_id || !*peer_id) return nullptr;
+    std::string key(peer_id);
+    std::string recipe;
+    {
+        std::lock_guard<std::mutex> lk(g_mtx);
+        auto it = g_recipes.find(key);
+        if (it == g_recipes.end()) return nullptr;
+        recipe = it->second;
+    }
+    // hash_recipe e get_master prendono i loro lock da soli.
+    return get_master(key, hash_recipe(recipe));
 }
 
 void forget(const std::string& key) {

@@ -24,6 +24,7 @@ Total frame size: 12 + payload_len bytes.
 """
 from __future__ import annotations
 
+import hashlib
 import struct
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -32,7 +33,14 @@ from typing import ClassVar, Union
 # ------------------------------------------------------------------ constants
 
 PROTOCOL_MAGIC: int = 0xFA
-PROTOCOL_VERSION: int = 25  # v25: PA pieces carry condition / core charge (Health extra)
+PROTOCOL_VERSION: int = 26  # v26: session lifecycle phase 0 (reject reason, resume token, name in PEER_JOIN)
+# v26 (2026-09-18): the session-lifecycle foundations. WELCOME gains a
+# machine-readable reject reason and a resume token; PEER_JOIN carries the
+# display name; HELLO_RESUME (0x0008) lets a client that already logged in
+# rejoin without a fresh launcher proof. Every addition is APPENDED, so a
+# receiver that only knows the older prefix keeps working - but note that
+# the header version check (encode_header/decode_header) rejects foreign
+# versions outright, so client and server must be rebuilt together.
 # v16 (2026-05-31): ghost crouch — adds POSE_CROUCH_STATE (0x028E, C->S) and
 # POSE_CROUCH_BROADCAST (0x028F, S->peers). A SEPARATE, additive channel
 # alongside the working POSE_STATE/POSE_BROADCAST rotation pose: it replicates
@@ -175,6 +183,41 @@ def auth_sign_message(server_addr: str, challenge: bytes) -> bytes:
     return (AUTH_SIGN_DOMAIN + len(addr).to_bytes(2, "little")
             + addr + challenge)
 
+
+# The public identity string derived from the public key. Mirrored verbatim by
+# `MENU_PRINCIPALE/src-tauri/src/identity.rs::client_id` (2026-09-18): first 7
+# bytes of SHA256(pubkey), hex, truncated to 13 characters, behind a "fw"
+# prefix. Exactly MAX_CLIENT_ID_LEN characters, so it always fits the wire
+# field with room for the terminator.
+#
+# Why the server needs it: every piece of persistent state (the appearance
+# recipe, and from v26 the presence record) is keyed by the CLAIMED client_id.
+# Deriving the same string here lets the server demand that an authenticated
+# HELLO claims the id its own key produces, which turns the key into the
+# account. Anonymous sessions keep claiming whatever they like, which is what
+# the second client does on a test server.
+AUTH_CLIENT_ID_PREFIX: str = "fw"
+AUTH_CLIENT_ID_HEX_LEN: int = 13
+
+
+def derive_client_id(pubkey: bytes) -> str:
+    """Canonical client_id for an Ed25519 public key."""
+    if len(pubkey) != AUTH_PUBKEY_LEN:
+        raise ProtocolError(
+            f"pubkey must be {AUTH_PUBKEY_LEN} bytes, got {len(pubkey)}")
+    digest = hashlib.sha256(pubkey).digest()[:7].hex()
+    return AUTH_CLIENT_ID_PREFIX + digest[:AUTH_CLIENT_ID_HEX_LEN]
+
+
+# ---- v26 session lifecycle ----
+# A resume token is an opaque bearer credential the server mints inside an
+# accepted WELCOME. It exists because the launcher's login proof is SINGLE USE
+# (the challenge is consumed on the first successful join) and the game DLL
+# holds no private key, so a client that drops cannot re-prove who it is. The
+# token is bound to the identity, expires, and is rotated on every use.
+RESUME_TOKEN_LEN: int = 32
+RESUME_TOKEN_TTL_S: float = 24 * 60 * 60.0
+
 # Flag bitmask
 FLAG_RELIABLE: int = 0x01   # sender requires ACK for this frame
 FLAG_ACK_CARRIER: int = 0x02  # this frame piggybacks an ACK (future)
@@ -191,6 +234,7 @@ class MessageType(IntEnum):
     HEARTBEAT     = 0x0005   # client <-> server: keepalive
     DISCONNECT    = 0x0006   # either side: graceful close
     PEER_GHOST_REGISTER = 0x0007  # B6.6w5: client -> server: my local ghost-actor form_id (= the actor that represents the OTHER peer on my screen). Used by project_for_peer to substitute combat_target with the right local fid per-viewer.
+    HELLO_RESUME  = 0x0008   # v26: client -> server, rejoin with a resume token
 
     # Reliability
     ACK           = 0x0010   # server/client: acknowledges reliable frames
@@ -464,6 +508,27 @@ class HelloPayload:
         return cls(cid, vma, vmi, steam_id, pk, ch, sig, name)
 
 
+class RejectCode(IntEnum):
+    """Why a HELLO or HELLO_RESUME was refused (v26).
+
+    Before v26 a refusal was an `accepted=0` WELCOME and nothing else, so the
+    client could only log "rejected" and die. Every reason below already
+    existed as a string at the call site and was thrown away; this enum is
+    that string, on the wire.
+    """
+    NONE               = 0   # accepted
+    AUTH_INVALID       = 1   # signature/challenge did not verify
+    AUTH_REQUIRED      = 2   # server runs --require-auth, HELLO was anonymous
+    IDENTITY_TAKEN     = 3   # another LIVE session already holds this identity
+    PEER_ID_TAKEN      = 4   # another LIVE session already holds this client_id
+    PEER_ID_INVALID    = 5   # malformed client_id
+    VERSION_MISMATCH   = 6   # client major version != server major version
+    SERVER_FULL        = 7   # max_players reached
+    CLIENT_ID_MISMATCH = 8   # authenticated, but client_id != derive(pubkey)
+    RESUME_UNKNOWN     = 9   # resume token not recognised
+    RESUME_EXPIRED     = 10  # resume token past its TTL
+
+
 @dataclass(frozen=True, slots=True)
 class WelcomePayload:
     session_id: int          # u32, server-assigned
@@ -478,10 +543,19 @@ class WelcomePayload:
     # 0 covers both no-op reasons — an appearance is already stored, or the
     # server does not require creation at all.
     chargen_required: bool = False   # u8 (0/1)
+    # v26 — why we said no. RejectCode.NONE on an accepted WELCOME.
+    reject_code: int = RejectCode.NONE       # u8
+    # v26 — the bearer token that lets this client rejoin without a fresh
+    # launcher proof. All-zero when the server issues none (a refusal, or a
+    # server with the feature off). See RESUME_TOKEN_LEN.
+    resume_token: bytes = b""                # 32 bytes, zero-padded
 
-    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IBBBHB")
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IBBBHBB32s")
 
     def encode(self) -> bytes:
+        token = self.resume_token or b""
+        if len(token) > RESUME_TOKEN_LEN:
+            raise ProtocolError("resume token too long")
         return self._STRUCT.pack(
             self.session_id,
             1 if self.accepted else 0,
@@ -489,20 +563,32 @@ class WelcomePayload:
             self.server_version_minor,
             self.tick_rate_hz,
             1 if self.chargen_required else 0,
+            int(self.reject_code) & 0xFF,
+            token.ljust(RESUME_TOKEN_LEN, b"\x00"),
         )
 
     @classmethod
     def decode(cls, data: bytes) -> "WelcomePayload":
         if len(data) < cls._STRUCT.size:
             raise ProtocolError("WELCOME truncated")
-        sid, acc, vma, vmi, tick, chargen = cls._STRUCT.unpack_from(data, 0)
-        return cls(sid, bool(acc), vma, vmi, tick, bool(chargen))
+        (sid, acc, vma, vmi, tick, chargen, rej,
+         token) = cls._STRUCT.unpack_from(data, 0)
+        # An all-zero token means "none issued"; keep it as b"" so callers can
+        # test truthiness instead of comparing 32 zero bytes.
+        if not any(token):
+            token = b""
+        return cls(sid, bool(acc), vma, vmi, tick, bool(chargen), rej, token)
 
 
 @dataclass(frozen=True, slots=True)
 class PeerJoinPayload:
     peer_id: str             # ASCII, max 15
     session_id: int          # u32
+    # v26 — the player's chosen name. It reached the server in the HELLO and
+    # then died in the join log line: peers could not learn each other's names,
+    # which is the prerequisite for nametags and chat. Cosmetic and untrusted:
+    # the identity is still the peer_id.
+    display_name: str = ""   # ASCII, max 15
 
     _STRUCT: ClassVar[struct.Struct] = struct.Struct("<I")
 
@@ -510,6 +596,7 @@ class PeerJoinPayload:
         return (
             _encode_fixed_string(self.peer_id, MAX_CLIENT_ID_LEN)
             + self._STRUCT.pack(self.session_id)
+            + _encode_fixed_string(self.display_name, MAX_PLAYER_NAME_LEN)
         )
 
     @classmethod
@@ -519,7 +606,51 @@ class PeerJoinPayload:
             raise ProtocolError("PEER_JOIN truncated")
         pid = _decode_fixed_string(data, MAX_CLIENT_ID_LEN)
         (sid,) = cls._STRUCT.unpack_from(data, off)
-        return cls(pid, sid)
+        name_off = off + cls._STRUCT.size
+        name = ""
+        if len(data) >= name_off + MAX_PLAYER_NAME_LEN + 1:
+            name = _decode_fixed_string(data[name_off:], MAX_PLAYER_NAME_LEN)
+        return cls(pid, sid, name)
+
+
+@dataclass(frozen=True, slots=True)
+class HelloResumePayload:
+    """v26 — rejoin with the token from a previous WELCOME.
+
+    This is the whole answer to "the login proof is single use and the DLL
+    cannot mint one". The client keeps the token in memory, and on a drop it
+    sends this instead of a HELLO: same peer_id, any UDP port. The server
+    evicts whatever stale session that identity still holds and runs the full
+    join bootstrap, because a client that dropped has lost all of it.
+    """
+    peer_id: str             # ASCII, max 15
+    resume_token: bytes      # 32 bytes
+    client_version_major: int
+    client_version_minor: int
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<32sBB")
+
+    def encode(self) -> bytes:
+        token = self.resume_token or b""
+        if len(token) > RESUME_TOKEN_LEN:
+            raise ProtocolError("resume token too long")
+        return (
+            _encode_fixed_string(self.peer_id, MAX_CLIENT_ID_LEN)
+            + self._STRUCT.pack(
+                token.ljust(RESUME_TOKEN_LEN, b"\x00"),
+                self.client_version_major,
+                self.client_version_minor,
+            )
+        )
+
+    @classmethod
+    def decode(cls, data: bytes) -> "HelloResumePayload":
+        off = MAX_CLIENT_ID_LEN + 1
+        if len(data) < off + cls._STRUCT.size:
+            raise ProtocolError("HELLO_RESUME truncated")
+        pid = _decode_fixed_string(data, MAX_CLIENT_ID_LEN)
+        token, vma, vmi = cls._STRUCT.unpack_from(data, off)
+        return cls(pid, token, vma, vmi)
 
 
 @dataclass(frozen=True, slots=True)
@@ -4191,6 +4322,7 @@ _TYPE_TO_PAYLOAD_CLS: dict[int, type] = {
     MessageType.AUTH_CHALLENGE_RESPONSE: AuthChallengeResponsePayload,
 
     MessageType.HELLO:            HelloPayload,
+    MessageType.HELLO_RESUME:     HelloResumePayload,
     MessageType.WELCOME:          WelcomePayload,
     MessageType.PEER_JOIN:        PeerJoinPayload,
     MessageType.PEER_LEAVE:       PeerLeavePayload,

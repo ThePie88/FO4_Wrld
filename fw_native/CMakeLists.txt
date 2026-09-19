@@ -98,6 +98,7 @@ add_library(fw_native SHARED
     src/native/chargen_catalog.cpp
     src/native/chargen_stage.cpp
     src/native/world_spawn.cpp    # B6.14: wid registry + receive-side placement
+    src/native/ghost_lifecycle.cpp  # Fase 2: registro per peer + ciclo di vita del ghost
     src/render/present_hook.cpp
     src/render/editor_overlay.cpp
     src/render/triangle_render.cpp
@@ -150,6 +151,16 @@ set_target_properties(fw_native PROPERTIES
 # truth for what we advertise, so there's no chance of name mangling surprises.
 target_link_options(fw_native PRIVATE
     "/DEF:${CMAKE_CURRENT_SOURCE_DIR}/dxgi.def"
+    # 2026-09-18 — la mappa dei simboli, e il motivo e' concreto.
+    #
+    # Il guardiano delle stalle stampa gli indirizzi dello stack come
+    # "G+rva" per il gioco e "F+rva" per noi. Il 2026-09-18 il client B si
+    # e' piantato per sempre e nello stack c'era F+0x64350, cioe' una NOSTRA
+    # funzione chiamata dal motore, con il thread principale fermo in
+    # attesa. Non si e' potuto dire QUALE, perche' il linker non emetteva
+    # una mappa. Costa un file di testo e trasforma un indovinello in un
+    # nome.
+    "/MAP:$<TARGET_FILE_DIR:fw_native>/dxgi.map"
 )
 
 target_compile_options(fw_native PRIVATE

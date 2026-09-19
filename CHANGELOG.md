@@ -5,6 +5,317 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## Session lifecycle: the ghost belongs to a peer (2026-09-19) — v0.8.0
+
+Tag `v0.8.0`, wire proto v26: WELCOME carries a reject reason and a resume
+token, PEER_JOIN carries a display name, and `HELLO_RESUME` lets a client that
+lost its session come back without a fresh launcher proof. Client, server and
+launcher must be rebuilt together, as always.
+
+This closes phases 0, 1 and 2 of the session-lifecycle epic. Before it, a peer
+who joined at minute forty never got a body, a peer who quit stayed standing in
+the world forever, and the remote body was one global pointer born from a timer
+thirty seconds after the process started. The code called that result "luck,
+not design" and it was right.
+
+Phases 3 and 4 are not in here: the outfit is still only as complete as the
+equip events the server happened to see, and there are no nametags and no chat.
+Three reconnection holes found while auditing this work are listed at the end,
+open on purpose.
+
+### The ghost is born from a join and dies with a leave
+
+`ghost_lifecycle.{h,cpp}` is the registry that finally makes "that peer's
+ghost" an addressable thing. The shape was prescribed by a comment written
+after the crash it describes: PEER_JOIN records that a body is NEEDED and never
+touches the scene graph, a main-thread tick injects only once the scene is
+proven stable, and it must be re-armed after every load.
+
+- **Events queue, the tick acts.** `on_peer_join` and `on_peer_leave` run on
+  the network thread and only record. `tick()` runs from the WndProc next to
+  `world_spawn::tick` and is the only place allowed to touch the scene graph.
+  No new message id: that space has already produced two incidents, one that
+  held ghosts in a T-pose and one that swallowed 1257 messages.
+- **The thirty-second timer is gone.** It existed to guess the safe moment
+  once. The tick measures it every time instead, which is also the only way a
+  late joiner gets a body at all.
+- **Stability is measured, not timed.** 120 consecutive ticks AND at least two
+  real seconds, with no load in flight and no cell change across the streak.
+  A load is bracketed explicitly, because `LoadGame` blocks for seconds
+  (six, measured) and pumps the message queue while it blocks, so the tick
+  keeps running inside it.
+- **Teardown follows the order law** written above `detach_debug_cube`:
+  in-flight work first, then pending queues, weapon, armour on a snapshot of
+  the map rather than the live map, mod caches, face, cull contributors, and
+  head and body last. A node's destructor decrements its children rather than
+  destroying them, so the wardrobe has to be released from the bottom up or it
+  stays alive and invisible.
+- **Goodbye on the wire.** ALT+F4 sends three unreliable DISCONNECT frames
+  from the window thread before the process goes. The ghost of a peer who
+  closes the game now disappears at once instead of after the five-second
+  timeout.
+
+### The single pointer is gone
+
+Phase 2's real work was structural, and its success criterion was written to be
+checked by reading: the census of single-peer globals in the ghost path must
+come out empty. It does.
+
+| was | now |
+|---|---|
+| `g_injected_cube`, read from 30 places | deleted — `GhostRecord::body` |
+| `g_injected_head` | `GhostRecord::head` |
+| `g_ghost_bone_ptrs` | `GhostRecord::bones` |
+| `g_ghost_body_geoms` | `GhostRecord::body_geoms` |
+| `g_pa_graft_all_present` | `GhostRecord::pa_grafted` |
+| `g_pa_bind_saved` | `GhostRecord::pa_bind` |
+| `g_remote_pose`, `g_remote_crouch` | deleted — the handlers iterate the registry |
+| `g_canonical_names` | stays global by design: it is the wire's bone index order |
+
+- **The handlers iterate.** `on_pose_apply_message`, `on_pose_crouch_apply_message`
+  and `on_pos_update_message` walk a snapshot of the registry and use `continue`,
+  never `return`: a peer whose pose has not arrived must not freeze everyone
+  else's. A snapshot and not a live iteration, because applying a pose writes
+  into the scene graph and holding the registry lock while doing that is how a
+  graphics defect becomes a deadlock.
+- **Three things improved rather than moved.** The PA retarget no longer holds
+  a lock through hundreds of SEH-caged reads and writes; the guard
+  `if (!g_pa_bind_saved.empty()) return` meant the SECOND peer in power armor
+  was never retargeted at all; and the armour skin re-bind now asks for the
+  skeleton inside the loop, one per peer, as a comment had promised it would.
+- **The skeleton is a private clone.** `set_skeleton_for` was per body from the
+  morning, but the loader kept handing back the same instance: measured on one
+  client, two different bodies, the same skeleton pointer. The PA graft adds 20
+  nodes and the retarget rewrites 147 local transforms, so a rebuilt ghost was
+  walking a skeleton that still carried both, with the human bind already
+  dropped by the teardown as "bones that die with this body". They did not die.
+  The ghost skeleton now goes through the engine's deep clone like the body,
+  the head, the hands and every armour piece: 129 nodes again after a power
+  armor, and two distinct pointers for two bodies.
+- **A second ghost is still refused**, and the reason changed. The refusal used
+  to protect against shared state; that state is gone. It stays because the
+  two-ghost path has never been executed — testing is two clients, and each one
+  sees a single remote peer. It opens when there is a third client to prove it
+  with.
+
+### The face that rotted after a power armor
+
+Rejoining after the other player had been in power armor gave the ghost a
+stretched sheet of geometry anchored to a fixed point in the world, or no head
+at all with the eyes and teeth left hanging. It got worse every rebuild, and a
+clean rejoin cycle never reproduced it.
+
+Seven explanations were wrong, each killed by a measurement rather than by an
+argument: the clone sharing a skin instance with the master (`0/14 shared`),
+bones failing to bind (`failed=0` for whole sessions), the master being freed
+and its memory recycled (`refcount=1 children=14` over 65,552 handouts), the
+master's skins belonging to the player (`0/14` again, after widening the
+geometry collector), the skeleton load options and the bit-23 latch (identical
+decay with them aligned to the engine), the previous clone's destructor eating
+the master (identical decay with the clone made immortal), and the cloning
+itself damaging the source (the master measured intact before and after every
+single clone call).
+
+The eighth was the one nobody had looked for, because all seven had been
+looking inside the master. The master was always healthy. The damage was in
+what its pointers pointed AT.
+
+- **What it is.** The face master is a clone of the local player's LIVE head,
+  and its skins keep raw pointers to that rig's bone nodes: pointers nobody
+  owns and nothing references. Entering or leaving power armor is a
+  `MODEL RELOAD A` in the trace, a full destroy and rebuild of the player's 3D.
+  Those nodes die and the pool hands their addresses to the frame's nodes.
+- **Why it looks like a bone name problem.** The re-bind does not remember
+  names, it READS them through the pointer. After a power armor it reads the
+  new tenant. Same master, same slots, same addresses, three rebirths:
+  `'Chest'` then `'Wheel'` then `'Neck_Low_skin'`; `'Head'` then `'Head'` then
+  `'R_RibHelper'`. `Wheel` is a power-armor bone, on a client where the PA
+  graft never ran once and the ghost skeleton had 129 nodes throughout. It was
+  never attached to the face: it was what lived at that address.
+- **Why the sheet is anchored.** On a name miss the re-bind leaves the pointer
+  where it is, and re-caches `bones_pri[i] = bones_fb[i] + 0x70`, the address
+  the GPU reads a world matrix from every frame. The far end of the sheet is a
+  node of the local player's power armor. By the third rebuild the recycled
+  pointers land INSIDE the new ghost's tree, so the name resolves and the swap
+  "succeeds" onto the wrong joint: every single-bone geometry (eyes, lashes,
+  mouth) ends up on `R_RibHelper`, which is the missing head with the eyes and
+  teeth floating.
+- **The counter was the wrong thing.** The decay is counted in reloads of the
+  LOCAL player's 3D, not in peer rejoins. That is why a clean cycle never
+  reproduced it and why staying inside the frame made it worse.
+- **The fix.** A reference skeleton that belongs to this DLL: one clone of
+  `skeleton.nif`, loaded once, kept for the session, never attached, never
+  animated, never drawn. The moment the master is built, which is the only
+  moment its pointers are still valid and its names still true, its bones are
+  re-pointed there. A `Reset3D` on the player cannot take those nodes away.
+  Taking a reference on the player's bones instead was rejected: it would keep
+  nodes of a dismantled skeleton alive and the master would go on describing
+  the past.
+- **The first attempt at that fix never ran**, and fell into a trap this repo
+  documents at length: it depended on `g_r`, which `resolve_once()` fills, which
+  is reached only from the ghost injection entry points. The face borrow runs
+  first — master at 17:12:50, first ghost at 17:13:11 — so the function returned
+  on its first guard, silently. It resolves the module base itself now, and
+  every exit has its own log line.
+- **The permanent tripwire.** `[face-slots]` prints the name and address of the
+  first skin bone slots at every dressing, at debug level. If the same slot
+  reads different names between one ghost and the next, the master is pointing
+  at memory that is not ours again. This class of defect does not get to cost
+  eight hypotheses twice.
+
+### The power armor a joiner could not see
+
+A peer who was already wearing power armor when you joined appeared as a bare
+frame: the plates were there in the logs, with their OMODs, and invisible on
+screen.
+
+`PendingArmorOp` held two fields. Everything else about an equip was dropped
+the moment it arrived before the ghost existed: the OMOD list, the ARMA
+priority and the forced path. For ordinary clothes that is hard to see, because
+the geometry lives on the ARMA and only the mods and the tier are lost. For
+power armor the mesh lives ENTIRELY on the model OMOD, so six empty
+placeholders attached and the frame stayed naked.
+
+The defect was not what the queue held but where it is filled: inside
+`ghost_attach_armor`, which never received the OMODs at all. It receives them
+now, purely so it can queue them, and the flush calls
+`ghost_attach_pa_piece_mods` — the half the live dispatcher has always done and
+the queue never did. Measured after: six pieces, six model mods, paint, on both
+rejoins.
+
+### Reconnection, and a client that stops dying quietly
+
+`run_loop` used to open the socket, handshake once, and on the first problem
+set a flag and return: thread dead, game running, no signal anywhere.
+
+- **A session loop.** Each iteration is one session. `do_handshake` returns
+  Ok / Retry / Fatal instead of a bool, and the reject codes decide which:
+  an unknown or expired resume token throws the token away and retries, a full
+  server or a taken id retries, a version mismatch or an auth failure is fatal.
+- **Resume.** A token from a previous WELCOME is replayed in `HELLO_RESUME`
+  instead of the full HELLO. Single use, 24-hour TTL, reissued on every accept.
+  The server evicts the old session even if it looks alive, restores the
+  identity and display name from presence, and sends the whole bootstrap again.
+- **Backoff** on a fixed ladder of 1, 2, 4, 8, 15 seconds, waited in 50 ms
+  slices because `stop()` joins from `DLL_PROCESS_DETACH`.
+- **Session reset** clears socket, reliable channel, session id, reassembly and
+  container mirror together, and drops the unreliable snapshots from the send
+  queue while keeping the reliable events: what is reliable should wait for the
+  rejoin, not vanish.
+- **A dead server is noticed.** Five seconds without a frame ends the session.
+  The stamp is taken in two places, on the raw datagram and in dispatch,
+  because a pure ACK is never "delivered" but still proves the server is alive.
+- **The outgoing queue stopped being rejected.** Unreliable position and pose
+  snapshots are coalesced to the newest in the drain, and POS_STATE has a 25 ms
+  send brake: server rejections went from about 40 a minute to about 30, not to
+  zero. Twenty-five and not twenty so jitter cannot fall under the threshold.
+
+### Presence: what a late joiner is shown
+
+- **Both directions.** The joiner is shown where everyone is and what they are
+  wearing, replayed as ordinary POS_BROADCAST and EQUIP_BCAST so the client
+  needs no new code. The mirror of that, announcing the ARRIVING peer's outfit
+  to those already here, was missing, which is why a ghost was dressed on the
+  first join and naked on the second.
+- **Presence outlives the session** on purpose: it is what makes a rejoin look
+  like the player never left.
+- **Power armor comes back when its wearer disappears.** Entering a frame used
+  to delete the world record; it now marks it worn. On the wearer's departure
+  the frame is put back at its last known position, re-announced to everyone,
+  and the plates and the exoskeleton are taken out of the stored outfit, so a
+  rejoining peer is not wearing an empty shell. Reached from all three exits:
+  graceful leave, eviction, and the timeout sweep. The timeout path is the one
+  the first version missed, which is exactly the crash case.
+- **The bootstrap is queued** rather than fired in one burst, 16 frames in
+  flight and 8 per tick: the receiver's window is 32 frames wide and anything
+  past it was discarded on arrival and retransmitted, and the retransmit cap is
+  8.
+
+### Crashes and freezes closed on the way
+
+- **Crash at RVA 0x6F4310** — the ghost was being built inside a blocking
+  `LoadGame`. My own comment claimed that window "lasts an instant"; it is six
+  seconds. Closed with the explicit load gate.
+- **A hard freeze with `fw_wndproc` twice in the stack** — the engine pumps the
+  message queue from inside `LoadGame`, so the WndProc runs re-entrantly, and a
+  `std::mutex` is not recursive. Closed with a re-entrancy guard. The map file
+  that names my own frames is now emitted by the linker (`/MAP`), because the
+  first attempt at this could only say "a function of ours" and not which one.
+- **A crash on rejoin that bisection blamed on the heartbeat** — thirty extra
+  ticks a second on the main thread inside the load window killed client B in
+  19 seconds; with the beat off it survived past two minutes. The beat now
+  sleeps until the scene is settled.
+- **14.7 seconds to see a peer join** — the tick is driven by window messages
+  and a player standing still generates none. A 33 ms `WM_TIMER` raises the
+  floor from zero to thirty a second and leaves the ceiling alone: Windows
+  synthesises it only when the queue is empty, so it cannot add load when there
+  is traffic.
+- **A ghost that came back naked, and a build that lied.** `build.bat` printed
+  `[build] OK` after a link failure once; it deletes the output first now and
+  refuses to report success if the DLL is not there.
+
+### Diagnostics, and the logs on a diet
+
+A ten-minute two-client session was writing 52 MB per client. 116 call sites
+moved to debug level, including the whole engine tracer, the lifecycle
+tripwires and the OMOD dumps, and the ownership "THREAT held" line that was
+72% of a server log. A `FULL_LOGS` marker file in the repo root turns the
+server and both clients back to debug without rebuilding anything, read by the
+launcher and by both bats.
+
+### Not finished
+
+- **Three reconnection holes**, found auditing this work and left open on
+  purpose: they are network paths that want a live test, not a fix written at
+  midnight. A container take does not refuse immediately when the session is
+  down, it queues and the caller hangs for its whole timeout. A `HELLO_RESUME`
+  arriving on the same address within the six-second relaunch grace is dropped
+  silently, with no log and no reject. And the resume token is consumed before
+  the checks that can still refuse the resume, so a rejected resume leaves the
+  client with no way back except the launcher.
+- **A second remote ghost is refused.** The shared state that justified it is
+  gone; the refusal stays until there is a third client to test the path with.
+- **The stored outfit is only as complete as the equip events the server saw.**
+  Items already worn when the save loaded fire no engine event, so they are not
+  in presence and a peer who never changes clothes still replays undressed.
+  That is phase 3.
+- **Modded meshes degrade on a replay.** Mesh blobs are forwarded and never
+  stored, so a modded weapon comes back as its base mesh on a rejoin.
+- **`HELLO_RESUME` has no auth gate and the token is a bearer** stored in clear
+  in the snapshot. Acceptable while the server runs on my own machine, and
+  written down so it does not survive that by accident.
+- **One sighting of a real crash** on the watching client during the engine's
+  reload of sixteen actors when a player leaves power armor: three access
+  violations on three threads reading one freed object. It appeared in the same
+  session as an experiment that has since been reverted, and the causal link
+  was never proven.
+- **Only one frame model is recognised**, by two hardcoded form ids.
+- **`reapply_ghost_skin_swaps` has no callers.** Its comment says it is called
+  from the equip hook after chaining; that has not been true for a while. It
+  was converted to per-peer with the rest and is still dead.
+- **`worn_frame_wid` is written and never read.** The authority is
+  `WorldSpawnState.worn_by_peer_id`; the presence copy is a duplicate.
+- **The heartbeat gate is not independent of the symptom it cures.** The
+  settle streak only advances from inside the tick block, which is what the
+  beat exists to drive. The engine generates enough messages during and after a
+  load that it has never failed to re-arm, but a genuinely inert window would
+  not re-arm it.
+- **T4, T5, T7 and T8 of the test matrix have never been run**: client killed
+  from the task manager, server restarted under two live clients, a wearer of
+  power armor killed from the task manager, and the server on a different
+  machine from client A.
+
+### Verified live
+
+Two clients, repeatedly, across the day: join and rejoin with the ghost
+rebuilt and dressed, a peer leaving with the ghost gone in about five seconds
+and no residue in any map, a full power armor with pieces and paint on a
+joiner, both pose and crouch replicated per ghost, an NPC fight, a player
+death with the ghost surviving it, and the face intact across three rebuilds
+with the other player inside a frame the whole time. 430 pytest green.
+
+---
+
 ## Power armor closed: paint, the station, two crashes and the skeleton loan (2026-09-16) — v0.7.6
 
 Tag `v0.7.6`, wire proto v25, no protocol change: a paint job is an OMOD

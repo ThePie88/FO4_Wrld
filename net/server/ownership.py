@@ -1121,7 +1121,11 @@ class OwnershipRegistry:
                 last = self._threat_diag_last_ms.get(fid, 0.0)
                 if now_ms - last >= 1500.0:
                     self._threat_diag_last_ms[fid] = now_ms
-                    log.info(
+                    # 2026-09-18 - the no-change case. It was 1480 of
+                    # the 2104 lines of a 10-minute server log (72%);
+                    # an unchanged owner is not news. Assignments,
+                    # handoffs and releases stay at INFO.
+                    log.debug(
                         "ownership: THREAT held fid=0x%X owner=%s "
                         "challenger=%s (chal %.2f vs owner %.2f) blocked=%s",
                         fid, owner, best_peer, best_threat, owner_threat, block,
@@ -1247,6 +1251,26 @@ class OwnershipRegistry:
                 phase="release",
                 reason="peer-disconnect",
             ))
+
+        # v26 — and scrub the peer out of the records it did NOT own.
+        #
+        # The loop above only deletes records where the leaver was the owner.
+        # Its threat, damage and HP contributions inside records owned by
+        # OTHER peers survived, so for the next few seconds the election could
+        # still pick a peer that no longer exists, and the shared-HP ledger
+        # kept crediting a ghost. Nothing here changes ownership; it only
+        # forgets a peer that is gone.
+        scrubbed = 0
+        for rec in self._records.values():
+            if rec.threat_engaged.pop(peer_id, None) is not None:
+                scrubbed += 1
+            if rec.threat_damage.pop(peer_id, None) is not None:
+                scrubbed += 1
+            if rec.hp_dmg_by_peer.pop(peer_id, None) is not None:
+                scrubbed += 1
+        if scrubbed:
+            log.debug("ownership: scrubbed %d leftover entry(ies) of %s from "
+                      "records owned by others", scrubbed, peer_id)
         return changes
 
     def note_owner_engagement(

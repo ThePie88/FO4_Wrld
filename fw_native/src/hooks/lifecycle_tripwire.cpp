@@ -127,7 +127,7 @@ std::int64_t __fastcall detour_destroy_by_handle(std::uint32_t* handle_ptr) {
                     ? seh_and_u32(refr, fw::offsets::FLAGS_OFF,
                                   ~fw::offsets::REFR_FLAG_TEMPORARY)
                     : false;
-                FW_LOG("[tripwire] DESTROY of OUR replica fid=0x%08X "
+                FW_DBG("[tripwire] DESTROY of OUR replica fid=0x%08X "
                        "base=0x%08X cell=0x%08X flags=0x%X caller=+0x%llX%s%s",
                        fid, base_id, cell_id, flags,
                        static_cast<unsigned long long>(caller),
@@ -144,7 +144,7 @@ std::int64_t __fastcall detour_destroy_by_handle(std::uint32_t* handle_ptr) {
                        "caller=+0x%llX", fid, base_id, flags,
                        static_cast<unsigned long long>(caller));
                 if ((n & 0x1FF) == 0) {
-                    FW_LOG("[tripwire] DESTROY x%llu dynamic (not-ours) refs "
+                    FW_DBG("[tripwire] DESTROY x%llu dynamic (not-ours) refs "
                            "so far (last caller=+0x%llX)",
                            static_cast<unsigned long long>(n),
                            static_cast<unsigned long long>(caller));
@@ -189,7 +189,7 @@ char __fastcall detour_unpersist(void* mgr, void* refr,
     const bool loud = ours || predicted_destroy;
 
     if (loud) {
-        FW_LOG("[tripwire] UNPERSIST fid=0x%08X base=0x%08X tag=0x%llX a4=%d "
+        FW_DBG("[tripwire] UNPERSIST fid=0x%08X base=0x%08X tag=0x%llX a4=%d "
                "cell=0x%08X state=%u wantsdel=%d caller=+0x%llX%s -> "
                "predicted %s",
                fid, base_id,
@@ -207,7 +207,7 @@ char __fastcall detour_unpersist(void* mgr, void* refr,
 
     const std::uint32_t nested = t_nested_destroys - destroys_before;
     if (loud || nested > 0) {
-        FW_LOG("[tripwire] UNPERSIST fid=0x%08X done ret=%d "
+        FW_DBG("[tripwire] UNPERSIST fid=0x%08X done ret=%d "
                "nested_destroys=%u%s", fid, int(ret), nested,
                (ret != 0) && ((nested > 0) != predicted_destroy)
                    ? " (PREDICTION WRONG — read the branch again)" : "");
@@ -234,7 +234,7 @@ bool install_lifecycle_tripwire(std::uintptr_t module_base) {
         reinterpret_cast<void**>(&g_orig_unpersist));
 
     if (d_ok && u_ok) {
-        FW_LOG("[tripwire] lifecycle tripwires installed "
+        FW_DBG("[tripwire] lifecycle tripwires installed "
                "(DestroyByHandle=%p Unpersist=%p) — observe-only",
                dtarget, utarget);
     } else {

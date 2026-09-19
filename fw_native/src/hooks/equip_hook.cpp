@@ -967,10 +967,10 @@ char __fastcall detour_equip_object(
     }
 
     if (!wire_mods.empty()) {
-        FW_LOG("[w4-tx] EQUIP form=0x%X has %zu mods:",
+        FW_DBG("[w4-tx] EQUIP form=0x%X has %zu mods:",
                item_form_id, wire_mods.size());
         for (std::size_t i = 0; i < wire_mods.size(); ++i) {
-            FW_LOG("[w4-tx]   mod[%zu] form=0x%X attach=%u rank=%u",
+            FW_DBG("[w4-tx]   mod[%zu] form=0x%X attach=%u rank=%u",
                    i, wire_mods[i].form_id,
                    static_cast<unsigned>(wire_mods[i].attach_index),
                    static_cast<unsigned>(wire_mods[i].rank));
@@ -1213,10 +1213,10 @@ char __fastcall detour_unequip_object(
     const bool extracted = extract_equipped_mods(
         actor, item_form_id, g_module_base, mods);
     if (extracted) {
-        FW_LOG("[w4-tx] UNEQUIP form=0x%X had %zu mods (pre-unequip snapshot):",
+        FW_DBG("[w4-tx] UNEQUIP form=0x%X had %zu mods (pre-unequip snapshot):",
                item_form_id, mods.size());
         for (std::size_t i = 0; i < mods.size(); ++i) {
-            FW_LOG("[w4-tx]   mod[%zu] form=0x%X attach=%u rank=%u",
+            FW_DBG("[w4-tx]   mod[%zu] form=0x%X attach=%u rank=%u",
                    i,
                    mods[i].mod_form_id,
                    static_cast<unsigned>(mods[i].attach_index),
