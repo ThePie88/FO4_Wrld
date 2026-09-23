@@ -755,8 +755,8 @@ void drain_mesh_blob_apply_queue() {
             // clear skipped → silencer from first equip remained attached
             // to the cached base. Now we always clear; the per-blob
             // attach loop below re-attaches whatever mods THIS blob
-            // describes (possibly zero). User reported: "cambio arma
-            // senza silenziatore ma il silenziatore ora permane".
+            // describes (possibly zero). User report: after switching to a
+            // weapon without a silencer, the silencer stayed on.
             fw::native::clear_ghost_extra_mods(blob.peer_id);
             bool any_mod = false;
             for (const auto& m : blob.meshes) {
@@ -768,8 +768,8 @@ void drain_mesh_blob_apply_queue() {
                 // BSGeometry leaf inside the base BSFadeNode → killed
                 // not just stock-mod-default leaves but also the
                 // ALWAYS-VISIBLE body parts (receiver casting, slide,
-                // frame, hand-grip stock). User reported: "manca la
-                // base dove si attaccano, la pistola non c'è".
+                // frame, hand-grip stock). User report: the base the mods
+                // attach to was missing, the pistol itself was gone.
                 //
                 // The original intent was to hide stock defaults inside
                 // placeholder NiNodes that were going to be REPLACED by
@@ -809,7 +809,7 @@ void drain_mesh_blob_apply_queue() {
             // 2026-05-06 PM landings that make resmgr-share self-sufficient:
             //   • name-reader bug fixed (was reading wrong offset → ALL
             //     placeholder lookups silently failed → fell back to
-            //     attaching at base_root → "tutte uguali e troppo moddate").
+            //     attaching at base_root → every pistol identical and over-modded).
             //   • cull walker stops at BSFadeNode/BSLeafAnimNode for
             //     non-root nodes (was descending into mod children and
             //     culling THEIR geometry → growing-cull-count bug).
@@ -1208,10 +1208,10 @@ void drain_equip_apply_queue() {
         // M9.w2 PROPER (v10): pass effective_priority from the wire so
         // resolve_armor_nif_path's PrioritySelect filter picks the right
         // ARMA tier (Lite/Mid/Heavy) when OMOD upgrade is attached.
-        // Gli OMOD viaggiano anche nell'attach, non solo nella chiamata
-        // qui sotto: se il ghost non e' ancora nato l'operazione va in
-        // coda, e la coda deve portarseli dietro o la power armor del peer
-        // si ricostruisce come telaio nudo (misurato 2026-09-18).
+        // The OMODs travel with the attach too, not only with the call below:
+        // if the ghost is not born yet the operation is queued, and the queue
+        // has to carry them or the peer's power armor is rebuilt as a bare
+        // frame (measured 2026-09-18).
         bool ok = is_equip
             ? fw::native::ghost_attach_armor(op.peer_id, op.item_form_id,
                                               op.effective_priority,
@@ -1964,28 +1964,28 @@ void drain_npc_owner_state_apply_queue() {
             ++missed;
             continue;
         }
-        // Build 65.c.21 — ROLLBACK apply_npc_state_to_actor da drain.
+        // Build 65.c.21 — ROLLBACK of apply_npc_state_to_actor from the drain.
         //
-        // 65.c.19 introdusse `apply_npc_state_to_actor` per scrivere
-        // anim graph vars (bIsAimingGun, bsSpeedSampled, ecc.) on the
-        // non-owner side. Quel funzionava finché 65.c.20 manteneva il
-        // bail Update_PerFrame su non-owner: in quel caso solo IL
-        // NOSTRO drain toccava l'anim graph holder → single-writer.
+        // 65.c.19 introduced `apply_npc_state_to_actor` to write anim graph
+        // variables (bIsAimingGun, bsSpeedSampled, etc.) on the non-owner
+        // side. That worked as long as 65.c.20 kept the Update_PerFrame bail
+        // on non-owners: then only THIS drain touched the anim graph holder,
+        // a single writer.
         //
-        // 65.c.20 ha rimosso il bail Update_PerFrame (L1 pass-through
-        // per fix "tronchi"). Ora engine vanilla AI tickka l'NPC su
-        // non-owner E chiama internamente SetGraphVariable a 60Hz +
-        // il nostro drain chiamava SetGraphVariable a 10Hz sul medesimo
-        // holder. Mid-cell-streaming (teleport in corso) lo smart-ptr
-        // dell'holder è in init: il doppio writer race produce SEH
-        // (READ addr=0xFFFFFFFFFFFFFFFF, sentinel di pointer "torn down")
-        // a RVA 0x81B5CF — il SetGraphVariableFloat interno deref. VEH
-        // cattura ma 30 AV consecutivi corrompono graph → process muore.
+        // 65.c.20 removed the Update_PerFrame bail (L1 pass-through for the
+        // "tree trunks" fix). The vanilla engine AI now ticks the NPC on the
+        // non-owner too AND calls SetGraphVariable internally at 60 Hz, while
+        // this drain called SetGraphVariable at 10 Hz on the same holder. Mid
+        // cell-streaming (a teleport in progress) the holder's smart pointer
+        // is being initialised: the double-writer race produces an SEH (READ
+        // addr=0xFFFFFFFFFFFFFFFF, the "torn down" pointer sentinel) at RVA
+        // 0x81B5CF, the deref inside SetGraphVariableFloat. The VEH catches
+        // it, but 30 consecutive AVs corrupt the graph and the process dies.
         //
-        // Fix: ENGINE vanilla AI (ora live grazie a 65.c.20) gestisce
-        // nativamente l'anim graph. NOI ci limitiamo a pos+yaw+InCombat
-        // override post-orig. Niente più double-write sull'anim graph
-        // holder, no SEH race.
+        // Fix: the vanilla engine AI (live again thanks to 65.c.20) drives
+        // the anim graph natively. This code limits itself to the pos+yaw+
+        // InCombat override after the original. No more double write on the
+        // anim graph holder, no SEH race.
         // Build 65.c.46 — during the teleport-guard window use the DEADLOCK-
         // SAFE raw pin (no cell-grid lock) instead of vt[202]; also skip the
         // SetRotation engine call (sibling of SetPosition — avoid any engine
@@ -2022,16 +2022,17 @@ void drain_npc_owner_state_apply_queue() {
         //   c.22: anim_state per re-set bit InCombat (Actor+0x2D0 |= 0x4000)
         //   c.23: prev/cur pos+yaw per interpolation/extrapolation 60Hz
         //
-        // L'aggiornamento è "shift": cur diventa prev, nuovo entry diventa
-        // cur. Al primo drain per un fid, has_prev resta false (no
-        // interpolation possible until 2nd drain → detour usa cur as-is).
+        // The update is a "shift": cur becomes prev, the new entry becomes
+        // cur. On the first drain for a fid has_prev stays false (no
+        // interpolation possible until the 2nd drain; the detour uses cur as
+        // it is).
         {
             std::unique_lock<std::shared_mutex> lk(g_latest_owner_mtx);
             auto& s = g_latest_owner_state[e.form_id];
             const std::uint64_t now = GetTickCount64();
-            // Shift cur → prev se cur era populated (ts != 0). All'inserzione
-            // di un nuovo fid, s è value-init (tutto a 0), quindi has_prev
-            // resta false alla prima iterazione.
+            // Shift cur → prev if cur was populated (ts != 0). On the insertion
+            // of a new fid, s is value-initialised (all zero), so has_prev
+            // stays false on the first iteration.
             if (s.cur_ts_ms != 0) {
                 s.prev_pos_x  = s.cur_pos_x;
                 s.prev_pos_y  = s.cur_pos_y;
@@ -2048,15 +2049,15 @@ void drain_npc_owner_state_apply_queue() {
             s.cur_ts_ms   = now;
         }
 
-        // InCombat flag set se anim_state suggerisce combat. Quel non
-        // è anim graph — è solo Actor+0x2D0 bit 0x4000 raw write, no
-        // smart-pointer involved, no race con engine. Engine vanilla
-        // AI legge questo flag ma non lo writes su questo path
-        // (lo settta via sub_140CCF810 EnterCombat path che è separato).
+        // The InCombat flag is set when anim_state suggests combat. That is
+        // not the anim graph: it is a raw write of bit 0x4000 at Actor+0x2D0,
+        // no smart pointer involved, no race with the engine. The vanilla AI
+        // reads this flag but does not write it on this path (it sets it via
+        // the separate sub_140CCF810 EnterCombat path).
         //
-        // Build 65.c.22: questa scrittura 10Hz rimane (è "best effort"
-        // immediato), ma il detour 60Hz è quello che dà davvero la
-        // persistenza del bit contro engine clear.
+        // Build 65.c.22: this 10 Hz write stays (immediate "best effort"),
+        // but the 60 Hz detour is what really keeps the bit set against the
+        // engine's clear.
         if (e.anim_state >= 3 && e.anim_state <= 5) {
             seh_set_actor_in_combat(actor);
         }
@@ -2080,10 +2081,10 @@ void drain_npc_owner_state_apply_queue() {
     }
 }
 
-// Build 65.c.22 — getter pubblico per il detour npc_ai_suppress.
-// Chiamato 60Hz per ogni non-owner tracked NPC. Hot path: shared_lock
-// per concurrent read, no contention col drain (drain è 10Hz unique_lock,
-// detour è 60Hz shared_lock → contention rara).
+// Build 65.c.22 — public getter for the npc_ai_suppress detour. Called at
+// 60 Hz for every non-owner tracked NPC. Hot path: shared_lock for concurrent
+// reads, no contention with the drain (the drain takes a 10 Hz unique_lock,
+// the detour a 60 Hz shared_lock, so contention is rare).
 bool get_latest_owner_anim_state(std::uint32_t form_id,
                                   std::uint8_t* out_anim_state) {
     if (form_id == 0 || form_id == 0xFFFFFFFFu) return false;
@@ -2091,9 +2092,9 @@ bool get_latest_owner_anim_state(std::uint32_t form_id,
     auto it = g_latest_owner_state.find(form_id);
     if (it == g_latest_owner_state.end()) return false;
     const auto now = GetTickCount64();
-    // Staleness: >2s significa che owner ha smesso di emettere (offline,
-    // handoff, peer disconnect). Non forzare bit su entry stale → engine
-    // gestisce naturalmente (raider decay a idle se appropriato).
+    // Staleness: more than 2 s means the owner stopped emitting (offline,
+    // handoff, peer disconnect). Never force the bit on a stale entry: the
+    // engine handles it naturally (the raider decays to idle if appropriate).
     if (now < it->second.cur_ts_ms ||
         now - it->second.cur_ts_ms > 2000ULL) {
         return false;
@@ -2135,7 +2136,7 @@ bool get_interpolated_owner_state(std::uint32_t form_id,
     const std::uint64_t dt_now = now_ms - snap.cur_ts_ms;
 
     // c.40b — STALENESS HANDLING REWRITTEN. ROOT-CAUSE FIX for the #1 desync
-    // (raiders scattano/scompaiono/si ricollocano), confirmed 2026-05-31 from
+    // (raiders jerk, vanish and relocate), confirmed 2026-05-31 from
     // handoff dist=1189 + relay gaps.
     //
     // OLD behaviour: after 700 ms with no fresh owner sample, return false →

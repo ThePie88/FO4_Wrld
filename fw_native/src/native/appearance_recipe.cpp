@@ -395,8 +395,8 @@ bool rebuild_player_head(std::uintptr_t module_base) noexcept {
     FW_LOG("[reset3d] returned %d. It is ASYNCHRONOUS: the head builder runs a "
            "frame or more later, so watch for HEAD-BUILD records after this "
            "line, not on the same tick.", static_cast<int>(rc));
-    // Il ghost si costruisce copiando questo corpo: finche' si sta rifacendo
-    // non c'e' niente di buono da copiare. Vedi ghost_scene_is_stable.
+    // The ghost is built by copying this body: while it is being rebuilt
+    // there is nothing good to copy. See ghost_scene_is_stable.
     fw::native::ghost_note_local_3d_reset();
     return true;
 }
@@ -1016,15 +1016,13 @@ bool editing() noexcept { return g_editing.load(std::memory_order_acquire); }
 void adopt_authoritative(const std::string& recipe_line) {
     {
         std::lock_guard<std::mutex> lk(g_auth_mx);
-        // 2026-09-18 — se e' la stessa ricetta che abbiamo gia' adottato,
-        // non c'e' niente da adottare.
+        // 2026-09-18 — the same recipe already adopted: nothing to adopt.
         //
-        // Rialzare lo stato fa scattare al tick seguente un
-        // `rebuild_player_head`, cioe' lo smontaggio e la ricostruzione
-        // della testa del giocatore LOCALE. Dal vivo capita una volta sola
-        // all'ingresso e non si nota; ma un client che rientra si rigioca
-        // l'intero bootstrap, aspetti compresi, e quella ricostruzione
-        // diventerebbe uno scatto visibile a ogni riconnessione.
+        // Raising the state triggers a `rebuild_player_head` on the next
+        // tick, the teardown and rebuild of the LOCAL player's head. Live it
+        // happens once at join and goes unnoticed; but a client that rejoins
+        // replays the whole bootstrap, appearances included, and that rebuild
+        // would become a visible hitch at every reconnection.
         if (recipe_line == g_auth_line
             && g_auth_state.load(std::memory_order_acquire) > 1) {
             FW_LOG("[appearance] the server sent back the character we have "

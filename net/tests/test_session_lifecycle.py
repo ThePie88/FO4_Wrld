@@ -342,12 +342,12 @@ def test_a_rejoin_forgets_the_stored_outfit_and_the_announce_rebuilds_it():
 def test_leaving_gives_the_power_armour_back_to_the_world_and_takes_it_off_you():
     """La regola: indosso a qualcuno OPPURE oggetto del mondo, mai le due.
 
-    Il telaio torna gia' nel mondo all'ultima posizione di chi se n'e'
-    andato. Quello che mancava e' il rovescio: le stesse piastre devono
-    USCIRE dal vestito memorizzato, o il server le rigioca a ogni ingresso e
-    veste il ghost con una power armor che quel giocatore non ha addosso da
-    un'ora — e ogni pezzo fasullo retargeta lo scheletro condiviso al bind
-    della PA, che e' cio' che stirava il corpo.
+    The frame already returns to the world at the last position of whoever
+    left. What was missing is the reverse: the same pieces must LEAVE the
+    stored outfit, or the server replays them at every join and dresses the
+    ghost in a power armor that player has not worn for an hour, and every
+    bogus piece retargets the shared skeleton to the PA bind, which is what
+    stretched the body.
     """
     proto = _mkproto()
     a1 = ("127.0.0.1", 41041)
@@ -373,10 +373,10 @@ def test_leaving_gives_the_power_armour_back_to_the_world_and_takes_it_off_you()
     proto._remove_and_notify(st.get_by_addr(a2), reason=1, now_ms=99.0)
 
     outfit = st.presence("player_B").outfit
-    assert 0x154AC7 not in outfit, "una piastra e' rimasta addosso al peer"
-    assert 0x154AC8 not in outfit, "una piastra e' rimasta addosso al peer"
-    assert 0x3E577 not in outfit, "l'esoscheletro e' rimasto addosso al peer"
-    assert 0x1EED7 in outfit, "la tuta non c'entra col telaio e deve restare"
+    assert 0x154AC7 not in outfit, "a piece stayed on the peer"
+    assert 0x154AC8 not in outfit, "a piece stayed on the peer"
+    assert 0x3E577 not in outfit, "the exoskeleton stayed on the peer"
+    assert 0x1EED7 in outfit, "the suit has nothing to do with the frame and must stay"
     assert st.world_spawns[wid].worn_by_peer_id == ""
 
 

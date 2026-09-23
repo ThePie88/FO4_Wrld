@@ -6791,7 +6791,8 @@ void* spawn_ghost_player(std::uint32_t ghost_form_id) noexcept {
     // a FRESH AIProcess gives engine a valid empty one — its sub-buffers
     // are ghost-owned, no aliasing with real_player.
     //
-    // The user's key insight: "agro client A e agro B non possono coesistere".
+    // The user's key insight: the aggro of client A and the aggro of client B
+    // cannot coexist.
     // After sanitization, the engine can have both real_A and our duplicate
     // in known_targets[] simultaneously without crashing because all
     // duplicate field accesses now hit either fresh state or NULL-checked

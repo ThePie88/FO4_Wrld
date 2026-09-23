@@ -863,20 +863,20 @@ class ServerState:
     def drop_items_from_outfit(self, peer_id: str, form_ids) -> int:
         """Togli questi oggetti dal vestito memorizzato. Torna quanti erano li'.
 
-        Serve a una regola sola, ed e' quella che chiude il vestito fossile:
-        una power armor e' indosso a qualcuno OPPURE e' un oggetto nel mondo,
-        mai le due cose insieme. Quando il portatore se ne va e il telaio
-        viene ri-annunciato dov'era, le piastre tornano a essere roba del
-        telaio e devono sparire da cio' che quel peer "indossa".
+        Serves one rule, the one that closes the fossil outfit: a power armor
+        is worn by someone OR is an object in the world, never both. When the
+        wearer leaves and the frame is re-announced where it was, the pieces
+        become the frame's again and must disappear from what that peer
+        "wears".
 
-        Senza questo il vestito memorizzato e' un'UNIONE che non cala mai —
-        un dizionario da cui un pezzo esce solo se arriva un UNEQUIP con quel
-        form id, e uscire dal telaio non ne produce sei che il server veda.
-        Nei log del 2026-09-18 si vedeva il risultato: pezzi PA di un'ora
-        prima rigiocati a ogni ingresso, con una gamba mancante perche' per
-        quella l'unequip era arrivato. Il ghost si vestiva di un fossile, e
-        ogni fossile retargeta lo scheletro condiviso al bind della power
-        armor, che e' cio' che stirava il corpo anche senza piastre visibili.
+        Without this the stored outfit is a UNION that never shrinks: a dict
+        a piece leaves only when an UNEQUIP with its form id arrives, and
+        leaving the frame produces no six of them the server could see. The
+        logs of 2026-09-18 showed the result: PA pieces from an hour earlier
+        replayed at every join, with one leg missing because for that one
+        the unequip had arrived. The ghost dressed in a fossil, and every
+        fossil retargets the shared skeleton to the power armor bind, which
+        is what stretched the body even without visible pieces.
         """
         rec = self._presence.get(peer_id)
         if rec is None:

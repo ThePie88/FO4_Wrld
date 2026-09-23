@@ -72,40 +72,38 @@ int dump_skeleton_bones(void* skel_root);
 
 // ---- Step 3 — cache + swap ----------------------------------------
 
-// ---- RIMOSSI il 2026-09-18: cache_or_release_skeleton / get_cached_skeleton
+// ---- REMOVED on 2026-09-18: cache_or_release_skeleton / get_cached_skeleton
 //
-// Erano il singleton di sessione: UNA istanza di skeleton.nif per tutti i
-// ghost, mai rilasciata. Li tolgo invece di lasciarli deprecati perche'
-// hanno gia' fatto danno una volta in questa forma — quando ho smesso di
-// riempire la cache e ho lasciato tre siti a leggerla, quelli hanno
-// ricevuto null in silenzio e il ghost e' uscito calvo, con la pelle
-// sbagliata e la power armor senza piastre. Un accessore che nessuno
-// riempie non fallisce rumorosamente: restituisce zero.
+// They were the session singleton: ONE instance of skeleton.nif for every
+// ghost, never released. Removed rather than left deprecated because they
+// have already done damage once in that form: when the cache stopped being
+// filled and three sites kept reading it, those got null in silence and the
+// ghost came out bald, with the wrong skin and a power armor without pieces.
+// An accessor nobody fills does not fail loudly: it returns zero.
 //
-// Sostituiti da skeleton_for(body) qui sotto.
+// Replaced by skeleton_for(body) below.
 
-// ---- lo scheletro appartiene al SUO corpo, non alla sessione -----------
+// ---- the skeleton belongs to ITS body, not to the session -------------
 //
-// Fino al 2026-09-18 c'era una sola istanza di skeleton.nif per sessione:
-// ogni corpo, anche quelli ricostruiti dopo uno smontaggio, si cuciva
-// addosso le STESSE ossa. Da li' venivano i guasti peggiori della giornata:
-// l'innesto delle ossa della power armor restava sullo scheletro per sempre
-// e deformava ogni ghost costruito dopo, e la lista canonica dei giunti
-// cambiava a meta' sessione perche' si rifaceva su uno scheletro innestato.
+// Until 2026-09-18 there was one instance of skeleton.nif per session: every
+// body, including those rebuilt after a teardown, sewed itself onto the SAME
+// bones. The worst failures of that day came from there: the power armor bone
+// graft stayed on the skeleton forever and deformed every ghost built after
+// it, and the canonical joint list changed mid-session because it was rebuilt
+// on a grafted skeleton.
 //
-// Adesso ogni corpo registra le ossa che si e' caricato. Non serve nessuna
-// via di rilascio nuova, ed e' il punto dell'indagine: lo scheletro e'
-// ATTACCATO COME FIGLIO del corpo, quindi quando il corpo muore lo
-// decrementa. L'unico riferimento che lo teneva in vita oltre l'albero era
-// la cache stessa.
+// Now every body registers the bones it loaded. No new release path is
+// needed, and that is the point of the investigation: the skeleton is
+// ATTACHED AS A CHILD of the body, so when the body dies it decrements it.
+// The only reference keeping it alive beyond the tree was the cache itself.
 //
-// Chiave = la radice del corpo (GhostRecord::body; g_injected_cube, il
-// puntatore unico che c'era prima, non esiste piu' dal 2026-09-19).
+// Key = the body root (GhostRecord::body; g_injected_cube, the single
+// pointer that came before, is gone since 2026-09-19).
 void  set_skeleton_for(void* body_root, void* skel_root);
 void* skeleton_for(void* body_root) noexcept;
-// Da chiamare nello smontaggio PRIMA di lasciare andare il corpo. Non
-// rilascia niente: toglie solo la voce, perche' le ossa se ne vanno con il
-// corpo che le teneva.
+// To be called during the teardown BEFORE letting the body go. Releases
+// nothing: it only removes the entry, because the bones leave with the body
+// that held them.
 void  forget_skeleton_for(void* body_root) noexcept;
 
 // Walk `body_root` finding every BSGeometry, and for each skin

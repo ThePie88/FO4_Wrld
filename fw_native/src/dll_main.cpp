@@ -169,7 +169,7 @@ DWORD WINAPI init_thread(LPVOID) {
     //   - Nothing. Without init_present_hook + init_body_asset the
     //     custom rendering path doesn't run. Files are compile-only.
     //
-    // Cosa di Strada A siamo sicuri FUNZIONI (verified live):
+    // What is CERTAIN to work of Strada A (verified live):
     //   - MaleBody.fwn load + upload GPU
     //   - Skinned vertex shader (col-major VP, identity bones T-pose)
     //   - Head placeholder sphere generator + render
@@ -218,26 +218,25 @@ DWORD WINAPI init_thread(LPVOID) {
     // On success the log will show "[native] M1 INJECT: success" and
     // the player is free to move around — if 10+ frames pass without
     // crash, Strada B feasibility is PROVED.
-    // Fase 2 (2026-09-18) — il timer non arma piu' il ghost.
+    // Phase 2 (2026-09-18): the timer no longer arms the ghost.
     //
-    // Costruiva un corpo trenta secondi dopo l'avvio, ci fosse o no
-    // qualcuno a cui appartenesse, e chi entrava dopo un corpo non lo
-    // aveva mai: il commento sopra arm_worker chiama il risultato
-    // "fortuna, non progetto". Ora il ghost nasce dall'ingresso del peer e
-    // muore alla sua uscita, e il momento sicuro per costruirlo non si
-    // indovina una volta sola ma si misura a ogni tick (vedi
-    // ghost_scene_is_stable). La grazia fissa esisteva per un crash vero,
-    // e quella protezione non e' stata tolta: e' stata sostituita con una
-    // misura, che copre anche il peer che entra al minuto quaranta.
+    // It built a body thirty seconds after start-up whether or not anyone
+    // owned it, and whoever joined later never got one: the comment above
+    // arm_worker calls the result "luck, not design". The ghost is now born
+    // from the peer's join and dies with its leave, and the safe moment to
+    // build it is measured at every tick instead of guessed once (see
+    // ghost_scene_is_stable). The fixed grace existed for a real crash, and
+    // that protection was not removed: it was replaced with a measurement,
+    // which also covers the peer who joins at minute forty.
     //
     // fw::native::arm_injection_after_boot(30000);
     //
-    // E qui sotto c'era una riga di log che continuava ad annunciare
-    // "injection armed (30s delay)" con la chiamata commentata sopra. Un log
-    // che dichiara armato cio' che e' spento e' peggio di nessun log: manda
-    // a cercare un difetto dove non c'e' niente in esecuzione.
-    FW_LOG("[native] Strada B M1: il timer a 30 s NON arma piu' niente — il "
-           "ghost nasce dall'ingresso del peer (ghost_lifecycle::tick)");
+    // A log line here kept announcing "injection armed (30s delay)" with the
+    // call above commented out. A log that declares armed what is off is
+    // worse than no log: it sends the reader hunting for a defect in code
+    // that never runs.
+    FW_LOG("[native] Strada B M1: the 30 s timer arms nothing any more; the "
+           "ghost is born from the peer's join (ghost_lifecycle::tick)");
 
     // --- SPAI Tier 1: force-prewarm of weapon NIF resmgr (2026-05-05) ---
     //

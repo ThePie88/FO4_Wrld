@@ -135,24 +135,23 @@ std::vector<fw::net::NPCOwnershipHandoffPhase2Payload> g_deferred_claims;
 }  // namespace
 
 void reset_for_new_session() {
-    // 2026-09-18 — IL GUAIO PIU' SILENZIOSO DELLA RICONNESSIONE.
+    // 2026-09-18 — THE QUIETEST FAILURE OF THE RECONNECTION.
     //
-    // Il client deduplica NPC_OBSERVED per sessione e per sempre: una volta
-    // osservato un NPC non lo riannuncia mai piu' (vedi il commento sulla
-    // release piu' sotto, che e' l'unico caso in cui oggi il dedup viene
-    // tolto). Ha senso finche' la sessione e' una sola.
+    // The client deduplicates NPC_OBSERVED per session and forever: once an
+    // NPC has been observed it is never announced again (see the comment on
+    // the release further down, the one case where the dedup is lifted). That
+    // holds as long as there is a single session.
     //
-    // Quando il client rientra dopo una caduta, pero', il server ha buttato
-    // ogni nostro record di ownership: non sa piu' che esistiamo per quegli
-    // NPC. Se non riemettiamo l'osservazione, nessuno li rivendica mai e
-    // restano CONGELATI per il resto della partita, senza un errore, senza
-    // una riga di log, solo predoni immobili. Quindi all'apertura di una
-    // sessione nuova si butta tutto lo stato per sessione: la mappa di
-    // ownership (il server ce la ri-spedira' col bootstrap), il dedup delle
-    // osservazioni, i tempi dell'ultima osservazione in combattimento, lo
-    // specchio degli NPC posseduti e le rivendicazioni parcheggiate.
+    // When the client comes back after a drop, though, the server has thrown
+    // away every ownership record of this client: it no longer knows the
+    // client exists for those NPCs. If the observation is not re-emitted,
+    // nobody ever claims them and they stay FROZEN for the rest of the game,
+    // with no error and no log line, only motionless raiders. So opening a new
+    // session drops all per-session state: the ownership map (the server sends
+    // it again with the bootstrap), the observation dedup, the last in-combat
+    // observation times, the mirror of owned NPCs and the parked claims.
     //
-    // L'identita' locale NON si tocca: il peer_id e' lo stesso di prima.
+    // The local identity is NOT touched: the peer_id is the same as before.
     std::size_t map_n = 0, obs_n = 0, owned_n = 0, claims_n = 0;
     {
         auto& s = state();

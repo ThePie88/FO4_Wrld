@@ -164,22 +164,22 @@ constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
 //     server challenge(32) + signature(64) over "FWAUTH1"+challenge +
 //     display_name(16). The DLL does no crypto — the launcher mints the blob,
 //     fw_config.ini carries it, we forward it verbatim.
-// v26 (2026-09-18) — session lifecycle, fase 0. WELCOME porta il motivo
-// del rifiuto e un token di ripresa, PEER_JOIN porta il nome, e HELLO_RESUME
-// permette a un client caduto di rientrare senza una nuova prova del
-// launcher.
+// v26 (2026-09-18) — session lifecycle, phase 0. WELCOME carries the reject
+// reason and a resume token, PEER_JOIN carries the name, and HELLO_RESUME
+// lets a client that dropped come back without a fresh launcher proof.
 //
-// Correzione del 2026-09-19: qui c'era scritto che la DLL non usa ancora
-// nessuno di questi campi e li rispecchia soltanto. Vale per uno su tre.
-// `reject_code` lo consuma Client::on_rejected e decide fra ritentare e
-// arrendersi; `resume_token` lo consuma do_handshake e lo rispedisce in
-// HELLO_RESUME. Restava vero solo per `PeerJoinPayload::display_name`, che
-// viaggiava sul filo senza che nessuno lo leggesse; dalla Fase 4
-// (2026-09-23) lo legge net/peer_names, per la chat e i nametag.
+// Correction of 2026-09-19: this used to say the DLL does not use any of
+// these fields yet and only mirrors them. True for one of three.
+// `reject_code` is consumed by Client::on_rejected, which decides between
+// retrying and giving up; `resume_token` is consumed by do_handshake and
+// sent back in HELLO_RESUME. It stayed true only for
+// `PeerJoinPayload::display_name`, which travelled on the wire with nobody
+// reading it; since phase 4 (2026-09-23) net/peer_names reads it, for the
+// chat and the nametags.
 //
-// Quello che resta vero per tutti e tre: il controllo di versione
-// nell'intestazione rifiuta ogni frame di una build diversa, quindi client,
-// server e launcher vanno ricompilati insieme.
+// What stays true for all three: the version check in the header rejects
+// every frame from a different build, so client, server and launcher must
+// be rebuilt together.
 constexpr std::uint8_t  PROTOCOL_VERSION  = 26;  // v26: session lifecycle phase 0
 constexpr std::size_t   HEADER_SIZE       = 12;
 constexpr std::size_t   MAX_PAYLOAD_SIZE  = 1400;
@@ -191,17 +191,17 @@ constexpr std::size_t   AUTH_SIGNATURE_LEN = 64;
 constexpr std::size_t   MAX_PLAYER_NAME_LEN = 15;
 
 // ---- v26 session lifecycle ----
-// Il token di ripresa esiste perche' la prova di login del launcher e'
-// MONOUSO (il challenge viene consumato al primo join riuscito) e la DLL non
-// possiede nessuna chiave privata: un client che cade non puo' piu'
-// dimostrare chi e'. Il server ne emette uno dentro il WELCOME accettato,
-// legato all'identita', con scadenza, e lo ruota a ogni uso.
+// The resume token exists because the launcher's login proof is SINGLE USE
+// (the challenge is consumed at the first successful join) and the DLL holds
+// no private key: a client that drops can no longer prove who it is. The
+// server issues one inside the accepted WELCOME, bound to the identity, with
+// an expiry, and rotates it at every use.
 constexpr std::size_t   RESUME_TOKEN_LEN = 32;
 
-// Mirror di protocol.py::RejectCode. Ogni motivo esisteva gia' come stringa
-// nel punto di rifiuto e veniva buttato via.
+// Mirror of protocol.py::RejectCode. Every reason already existed as a
+// string at the point of refusal and was thrown away.
 enum RejectCode : std::uint8_t {
-    REJECT_NONE               = 0,   // accettato
+    REJECT_NONE               = 0,   // accepted
     REJECT_AUTH_INVALID       = 1,
     REJECT_AUTH_REQUIRED      = 2,
     REJECT_IDENTITY_TAKEN     = 3,
@@ -429,12 +429,12 @@ struct WelcomePayload {
     // at all (its `require_chargen` is off, and the player spawns with the
     // documented default — nude, bald, no eyes).
     std::uint8_t  chargen_required;
-    // v26 — perche' il server ha detto no. 0 su un WELCOME accettato.
-    // Vedi RejectCode: prima di v26 un rifiuto era solo accepted=0 e il client
-    // poteva soltanto scrivere "rejected" nel log e morire.
+    // v26 — why the server said no. 0 on an accepted WELCOME. See RejectCode:
+    // before v26 a refusal was only accepted=0 and the client could only
+    // write "rejected" in the log and die.
     std::uint8_t  reject_code;
-    // v26 — credenziale al portatore per rientrare senza una nuova prova del
-    // launcher, che e' monouso. Tutto zero quando il server non ne emette.
+    // v26 — bearer credential to come back without a fresh launcher proof,
+    // which is single use. All zero when the server issues none.
     std::uint8_t  resume_token[RESUME_TOKEN_LEN];
 };
 static_assert(sizeof(WelcomePayload) == 43, "WelcomePayload size (v26)");
@@ -443,10 +443,10 @@ static_assert(sizeof(WelcomePayload) == 43, "WelcomePayload size (v26)");
 struct PeerJoinPayload {
     FixedClientId peer_id;
     std::uint32_t session_id;
-    // v26 — il nome scelto dal giocatore. Arrivava al server nell'HELLO e
-    // moriva nella riga di log del join, quindi i peer non potevano conoscere
-    // il nome degli altri: e' il prerequisito di nametag e chat. Cosmetico e
-    // non fidato, l'identita' resta il peer_id.
+    // v26 — the name the player chose. It reached the server in HELLO and
+    // died in the join's log line, so peers could not know each other's
+    // names: the prerequisite of nametags and chat. Cosmetic and untrusted,
+    // identity stays the peer_id.
     char          display_name[MAX_PLAYER_NAME_LEN + 1];
 };
 static_assert(sizeof(PeerJoinPayload) == 36, "PeerJoinPayload size (v26)");

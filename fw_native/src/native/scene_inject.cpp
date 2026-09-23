@@ -74,90 +74,88 @@ namespace bone_copy {
 // reference the same symbols.
 static std::mutex                g_canonical_mutex;
 static std::vector<std::string>  g_canonical_names;   // size == joint count
-// 2026-09-18 — g_ghost_bone_ptrs NON ESISTE PIU'. Era la lista dei nodi vivi
-// dei giunti, una sola per sessione: due ghost che si muovono in modo
-// indipendente avrebbero scritto rotazioni l'uno nelle ossa dell'altro. I
-// puntatori ora stanno in GhostRecord::bones, uno per peer; qui restano solo
-// i NOMI, che sono l'ordine degli indici sul filo e devono essere identici su
-// ogni client (vedi il blocco sul congelamento, poco sotto).
+// 2026-09-18 — g_ghost_bone_ptrs NO LONGER EXISTS. It was the list of live
+// joint nodes, one per session: two ghosts moving independently would have
+// written rotations into each other's bones. The pointers now live in
+// GhostRecord::bones, one per peer; only the NAMES stay here, because they
+// are the index order on the wire and must be identical on every client (see
+// the block on freezing, just below).
 
-// ===== IL GHOST DI CHI? ===================================================
+// ===== WHOSE GHOST? ========================================================
 //
-// Fase 2, 2026-09-18. Il commento sopra local_player_in_world lo dice da
-// mesi: "Blocking prerequisite for more than 2 players: g_injected_cube is a
-// SINGLE pointer". Finche' il corpo del ghost e' UNA variabile, "il ghost di
-// quel peer" non e' una cosa indirizzabile: non lo si puo' costruire, non lo
-// si puo' smontare, e il secondo giocatore semplicemente non ha dove stare.
+// Phase 2, 2026-09-18. The comment above local_player_in_world had said it
+// for months: "Blocking prerequisite for more than 2 players: g_injected_cube
+// is a SINGLE pointer". As long as the ghost's body is ONE variable, "that
+// peer's ghost" is not an addressable thing: it cannot be built, it cannot be
+// torn down, and the second player simply has nowhere to be.
 //
-// Questo e' il record che lo rende indirizzabile. Nasce con un campo solo —
-// il corpo — e assorbira' gli altri singleton del censimento un passo alla
-// volta (testa, innesto delle ossa PA, bind salvati dal retarget). Si comincia
-// dal corpo perche' e' ventisette letture su ventisette.
+// This is the record that makes it addressable. It started with one field,
+// the body, and absorbed the other singletons of the census one step at a
+// time (head, PA bone graft, binds saved by the retarget). The body came
+// first because it was twenty-seven reads out of twenty-seven.
 //
-// IL PUNTATORE UNICO E' MORTO, e con lui il debito che questo commento
-// annunciava. Nella mattinata del 2026-09-18 il record conviveva con
-// g_injected_cube perche' dodici siti lo leggevano ancora senza avere un peer
-// fra le mani: i gestori dei messaggi di rete, lo smontaggio primitivo, la
-// ricucitura delle pelli. Sono stati convertiti tutti, uno alla volta, e ogni
-// passo e' stato compilato prima del successivo.
+// THE SINGLE POINTER IS DEAD, and with it the debt this comment announced.
+// On the morning of 2026-09-18 the record coexisted with g_injected_cube
+// because twelve sites still read it without a peer in hand: the network
+// message handlers, the primitive teardown, the skin re-bind. They were all
+// converted, one at a time, and every step was compiled before the next.
 //
-// Quello che resta da sapere: i gestori di rete adesso ITERANO i ghost
-// registrati e dentro il giro usano `continue` e mai `return`, perche' il
-// dato che manca a un peer non deve fermare l'animazione degli altri.
+// What remains to know: the network handlers now ITERATE the registered
+// ghosts and inside the loop use `continue`, never `return`, because the data
+// one peer lacks must not stop the animation of the others.
 //
-// NESSUN RIPIEGO NELL'ACCESSORE, ed e' una scelta. ghost_body_for torna
-// nullptr se quel peer non ha un corpo, invece di ripiegare sul puntatore
-// unico. Un accessore che ripiega in silenzio restituisce il corpo di
-// qualcun altro e non fallisce mai rumorosamente — e' la stessa trappola che
-// stamattina e' costata un ghost calvo e una power armor senza piastre. Il
-// ripiego sarebbe servito a una sola strada, l'iniezione senza peer del
-// timer a trenta secondi, e quella e' gia' morta: la sua unica accensione e'
-// commentata in dll_main.cpp ("// arm_injection_after_boot(30000);"), quindi
-// FW_MSG_STRADAB_INJECT non viene piu' postato da nessuno.
-// Il blocco di 16 float che descrive la posa di riposo di un osso. Sta qui e
-// non piu' in fondo al file perche' il record lo contiene.
+// NO FALLBACK IN THE ACCESSOR, by choice. ghost_body_for returns nullptr when
+// that peer has no body, instead of falling back on the single pointer. An
+// accessor that silently falls back hands out somebody else's body and never
+// fails loudly, the same trap that cost a bald ghost and a power armor
+// without pieces on that same morning. The fallback would have served a
+// single path, the peer-less injection of the thirty-second timer, and that
+// is already dead: its one arming is commented out in dll_main.cpp
+// ("// arm_injection_after_boot(30000);"), so FW_MSG_STRADAB_INJECT is no
+// longer posted by anyone.
+// The block of 16 floats describing a bone's rest pose. It lives here and no
+// longer at the bottom of the file because the record contains it.
 struct PaBindSave { float xf[16]; };
 
 struct GhostRecord {
-    void* body = nullptr;   // la radice del corpo: era g_injected_cube
-    // I nodi vivi dei giunti, nell'ordine della lista canonica. I NOMI
-    // restano globali perche' sono l'ordine degli indici sul filo e devono
-    // essere identici su ogni client; i PUNTATORI sono di questo corpo e di
-    // nessun altro. E' la regola che il commento sopra la lista canonica
-    // gia' scriveva — "nomi condivisi, puntatori locali" — e che finora non
-    // aveva dove essere applicata.
+    void* body = nullptr;   // the body root: formerly g_injected_cube
+    // The live joint nodes, in canonical list order. The NAMES stay global
+    // because they are the index order on the wire and must be identical on
+    // every client; the POINTERS belong to this body and to no other. It is
+    // the rule the comment above the canonical list already stated, "shared
+    // names, local pointers", which until now had nowhere to apply.
     std::vector<void*> bones;
-    // La testa e' un BSFadeNode a se' (BaseMaleHead.nif col retro come
-    // figlio), attaccata sotto il corpo ma tenuta a parte perche' la
-    // posizione le applica una rotazione INDIPENDENTE: al corpo solo
-    // l'imbardata, alla testa solo il beccheggio. Senza quel disaccoppiamento
-    // un peer che guarda in alto ruota tutto come un tronco.
+    // The head is a BSFadeNode of its own (BaseMaleHead.nif with the rear as
+    // a child), attached under the body but kept apart because the position
+    // applies an INDEPENDENT rotation to it: yaw only to the body, pitch only
+    // to the head. Without that decoupling a peer looking up rotates whole,
+    // like a tree trunk.
     void* head = nullptr;
 
-    // Le ossa della power armor sono gia' innestate in QUESTO scheletro.
-    // Era un bool di sessione: bastava che un ghost fosse passato per una
-    // power armor perche' ogni ghost successivo saltasse l'innesto e si
-    // ritrovasse le piastre appese a ossa inesistenti.
+    // The power armor bones are already grafted into THIS skeleton. It used
+    // to be a session bool: one ghost passing through a power armor was
+    // enough for every later ghost to skip the graft and end up with the
+    // pieces hanging from bones that did not exist.
     bool pa_grafted = false;
 
-    // Il bind UMANO di ogni osso, salvato prima di scrivergli sopra quello
-    // della power armor, per poterlo rimettere allo stacco del telaio.
-    // Indicizzato per nodo, e i nodi sono di questo corpo.
+    // The HUMAN bind of every bone, saved before the power armor's is written
+    // over it, so it can be put back when the frame detaches. Keyed by node,
+    // and the nodes are this body's.
     std::unordered_map<void*, PaBindSave> pa_bind;
 
-    // Le BSSubIndexTriShape del corpo nudo, raccolte alla nascita del ghost.
-    // Sono quelle che il culling nasconde quando addosso c'e' un'armatura da
-    // slot BODY. MaleBody.nif ne porta DUE, non una: nascondere solo la prima
-    // lasciava la seconda visibile e dava il ghost "testa e mani volanti".
+    // The BSSubIndexTriShapes of the naked body, collected when the ghost is
+    // born. They are what the culling hides when a BODY-slot armour is worn.
+    // MaleBody.nif carries TWO, not one: hiding only the first left the
+    // second visible and gave the "head and floating hands" ghost.
     std::vector<void*> body_geoms;
 
-    // Fase 4 — l'osso Head dello scheletro di QUESTO corpo, dove si appende
-    // il nametag. E' l'osso su cui e' cucita la faccia, quindi segue quello
-    // che si vede davvero: accovacciato, statura della power armor, cadute.
-    // Il nodo BSFadeNode `head` qui sopra NON va bene: la faccia e' pelle e
-    // si disegna dove dicono le ossa, non dove sta il suo nodo. Risolto una
-    // volta e ricordato insieme al corpo contro cui e' stato risolto, cosi'
-    // un corpo nuovo non eredita mai l'osso di uno morto.
+    // Phase 4 — the Head bone of THIS body's skeleton, where the nametag
+    // hangs. It is the bone the face is skinned to, so it follows what is
+    // actually seen: crouching, power armor stature, falls. The BSFadeNode
+    // `head` above is NOT suitable: the face is skin and is drawn where the
+    // bones say, not where its node sits. Resolved once and remembered
+    // together with the body it was resolved against, so a new body never
+    // inherits the bone of a dead one.
     void* head_bone      = nullptr;
     void* head_bone_body = nullptr;
 };
@@ -165,7 +163,7 @@ struct GhostRecord {
 std::mutex                                   g_ghosts_mtx;
 std::unordered_map<std::string, GhostRecord> g_ghosts;
 
-// Il corpo di QUESTO peer, o nullptr. Non ripiega: vedi sopra.
+// THIS peer's body, or nullptr. No fallback: see above.
 static void* ghost_body_for(const char* peer_id) noexcept {
     if (!peer_id || !*peer_id) return nullptr;
     std::lock_guard<std::mutex> lk(g_ghosts_mtx);
@@ -173,23 +171,23 @@ static void* ghost_body_for(const char* peer_id) noexcept {
     return it == g_ghosts.end() ? nullptr : it->second.body;
 }
 
-// Registra il corpo appena nato. Nacque accanto alla scrittura di
-// g_injected_cube, perche' due verita' scritte insieme non divergono; dal
-// 2026-09-19 quel puntatore unico non esiste piu' e questa e' l'unica.
+// Registers the newborn body. It was born next to the write of
+// g_injected_cube, because two truths written together do not diverge; since
+// 2026-09-19 that single pointer no longer exists and this is the only one.
 static void ghost_record_body(const char* peer_id, void* body) {
     if (!peer_id || !*peer_id || !body) {
-        FW_WRN("[ghost-rec] corpo %p senza peer — NON registrato; i siti "
-               "per peer non lo troveranno", body);
+        FW_WRN("[ghost-rec] body %p without a peer — NOT registered; the "
+               "per-peer sites will not find it", body);
         return;
     }
     std::lock_guard<std::mutex> lk(g_ghosts_mtx);
     g_ghosts[peer_id].body = body;
-    FW_LOG("[ghost-rec] peer=%s -> corpo %p (%zu ghost registrati)",
+    FW_LOG("[ghost-rec] peer=%s -> body %p (%zu ghost(s) registered)",
            peer_id, body, g_ghosts.size());
 }
 
-// Le ossa di QUESTO peer, copiate fuori dal lock. Vuoto se quel peer non ha
-// un corpo, o se il suo corpo non ha ancora camminato lo scheletro.
+// THIS peer's bones, copied outside the lock. Empty when that peer has no
+// body, or its body has not walked the skeleton yet.
 static std::vector<void*> ghost_bones_for(const char* peer_id) {
     if (!peer_id || !*peer_id) return {};
     std::lock_guard<std::mutex> lk(g_ghosts_mtx);
@@ -210,7 +208,7 @@ static void ghost_record_head(const char* peer_id, void* head) {
     g_ghosts[peer_id].head = head;
 }
 
-// Le geometrie del corpo di QUESTO peer.
+// THIS peer's body geometries.
 static std::vector<void*> ghost_geoms_for(const char* peer_id) {
     if (!peer_id || !*peer_id) return {};
     std::lock_guard<std::mutex> lk(g_ghosts_mtx);
@@ -224,29 +222,30 @@ static void ghost_record_geoms(const char* peer_id, std::vector<void*> geoms) {
     g_ghosts[peer_id].body_geoms = std::move(geoms);
 }
 
-// Quanti ghost esistono adesso. Per i siti che chiedevano "esiste un ghost?"
-// leggendo il puntatore unico: la domanda era gia' quella, mancava il modo di
-// porla senza nominare l'unico.
+// How many ghosts exist right now. For the sites that asked "is there a
+// ghost?" by reading the single pointer: the question was already that, what
+// was missing was a way to ask it without naming the single one.
 static std::size_t ghost_count() noexcept {
     std::lock_guard<std::mutex> lk(g_ghosts_mtx);
     return g_ghosts.size();
 }
 
-// Un corpo qualunque fra quelli registrati. NON e' un accessore per peer ed
-// e' l'ultimo residuo del "ce n'e' uno solo": lo usano i siti che vogliono un
-// ghost qualsiasi (una diagnostica, un cancello di prontezza del motore) e il
-// gancio del proxy Actor, che e' spento da Build c.34. Chi disegna o anima
-// deve usare ghost_body_for.
+// Any body among the registered ones. NOT a per-peer accessor, and the last
+// leftover of "there is only one": used by the sites that want any ghost at
+// all (a diagnostic, an engine readiness gate) and by the Actor proxy hook,
+// which has been off since Build c.34. Whoever draws or animates must use
+// ghost_body_for.
 static void* ghost_any_body() noexcept {
     std::lock_guard<std::mutex> lk(g_ghosts_mtx);
     for (const auto& [peer, rec] : g_ghosts) if (rec.body) return rec.body;
     return nullptr;
 }
 
-// Dal CORPO al peer. Serve allo smontaggio primitivo, che il corpo ce l'ha e
-// il peer no: e' nato quando di ghost ce n'era uno e la domanda "di chi?" non
-// aveva senso. Buffer e non std::string perche' i chiamanti stanno dentro
-// gabbie SEH, dove un temporaneo con distruttore non compila (C2712).
+// From the BODY to the peer. For the primitive teardown, which has the body
+// and not the peer: it was born when there was one ghost and the question
+// "whose?" made no sense. A buffer and not a std::string because the callers
+// sit inside SEH cages, where a temporary with a destructor does not compile
+// (C2712).
 static bool ghost_peer_for_body(void* body, char* out,
                                 std::size_t out_size) noexcept {
     if (!body || !out || out_size == 0) return false;
@@ -264,11 +263,11 @@ static bool ghost_peer_for_body(void* body, char* out,
 
 // --- power armor -------------------------------------------------------
 //
-// Tutti e quattro prendono il lock e lo mollano SUBITO. Nessuno di loro
-// cammina il grafo di scena mentre lo tiene: chi innesta e chi retargeta
-// raccoglie in locale, poi deposita. Tenere il lock del record durante lavoro
-// sul grafo e' il modo di trasformare un difetto grafico in uno stallo, ed e'
-// la stessa ragione per cui ghost_snapshot restituisce una fotografia.
+// All four take the lock and release it AT ONCE. None of them walks the
+// scene graph while holding it: the graft and the retarget collect locally,
+// then deposit. Holding the record's lock during graph work is how a visual
+// defect turns into a deadlock, and it is the same reason ghost_snapshot
+// returns a snapshot.
 static bool ghost_pa_grafted(const char* peer_id) noexcept {
     if (!peer_id || !*peer_id) return false;
     std::lock_guard<std::mutex> lk(g_ghosts_mtx);
@@ -296,8 +295,9 @@ static void ghost_pa_bind_store(const char* peer_id,
     g_ghosts[peer_id].pa_bind = std::move(saved);
 }
 
-// Prende e SVUOTA: chi ripristina i bind umani non deve poterli ripristinare
-// due volte, e chi smonta non deve doversi ricordare di pulire.
+// Takes and EMPTIES: whoever restores the human binds must not be able to
+// restore them twice, and whoever tears down must not have to remember to
+// clean up.
 static std::unordered_map<void*, PaBindSave> ghost_pa_bind_take(
     const char* peer_id) {
     std::unordered_map<void*, PaBindSave> out;
@@ -310,20 +310,21 @@ static std::unordered_map<void*, PaBindSave> ghost_pa_bind_take(
 
 static void ghost_record_bones(const char* peer_id, std::vector<void*> ptrs) {
     if (!peer_id || !*peer_id) {
-        FW_WRN("[ghost-rec] %zu ossa senza peer — NON registrate", ptrs.size());
+        FW_WRN("[ghost-rec] %zu bone(s) without a peer — NOT registered",
+               ptrs.size());
         return;
     }
     std::lock_guard<std::mutex> lk(g_ghosts_mtx);
     g_ghosts[peer_id].bones = std::move(ptrs);
-    FW_LOG("[ghost-rec] peer=%s -> %zu ossa registrate",
+    FW_LOG("[ghost-rec] peer=%s -> %zu bone(s) registered",
            peer_id, g_ghosts[peer_id].bones.size());
 }
 
-// Una fotografia di chi c'e' adesso: (peer, corpo). I gestori dei messaggi di
-// rete la usano per animare OGNI ghost invece dell'unico che conoscevano.
-// Fotografia e non iterazione dal vivo, di proposito: applicare una posa
-// scrive nel grafo di scena, e scrivere mentre si tiene il lock della mappa
-// e' il modo di trasformare un difetto grafico in uno stallo.
+// A snapshot of who is here now: (peer, body). The network message handlers
+// use it to animate EVERY ghost instead of the single one they knew.
+// A snapshot and not a live iteration, on purpose: applying a pose writes
+// into the scene graph, and writing while holding the map's lock is how a
+// visual defect turns into a deadlock.
 static std::vector<std::pair<std::string, void*>> ghost_snapshot() {
     std::vector<std::pair<std::string, void*>> out;
     std::lock_guard<std::mutex> lk(g_ghosts_mtx);
@@ -334,9 +335,9 @@ static std::vector<std::pair<std::string, void*>> ghost_snapshot() {
     return out;
 }
 
-// La direzione opposta, e non e' un lusso: lo smontaggio primitivo ha il
-// corpo in mano e non sa di chi sia, perche' e' nato quando ce n'era uno
-// solo. Cancella per CORPO e si porta via la voce giusta.
+// The opposite direction, and not a luxury: the primitive teardown has the
+// body in hand and does not know whose it is, because it was born when there
+// was only one. It erases by BODY and takes the right entry with it.
 static std::size_t ghost_forget_body(void* body) noexcept {
     if (!body) return 0;
     std::lock_guard<std::mutex> lk(g_ghosts_mtx);
@@ -346,7 +347,7 @@ static std::size_t ghost_forget_body(void* body) noexcept {
         else ++it;
     }
     if (gone) {
-        FW_LOG("[ghost-rec] corpo %p dimenticato (%zu ghost restanti)",
+        FW_LOG("[ghost-rec] body %p forgotten (%zu ghost(s) left)",
                body, g_ghosts.size());
     }
     return gone;
@@ -445,35 +446,35 @@ static void populate_canonical_from_skel_native(void* skel_root,
         nms.push_back(jp.first);
         ptrs.push_back(jp.second);
     }
-    // L'ORDINE DEI NOMI SI CONGELA AL PRIMO GIRO. I puntatori no.
+    // THE NAME ORDER FREEZES ON THE FIRST PASS. The pointers do not.
     //
-    // Questa lista NON e' una comodita' locale: e' l'ordine degli indici con
-    // cui le ossa viaggiano sul filo. Se due client la costruiscono diversa,
-    // ogni indice significa un osso diverso sul ricevente e SI ROMPONO
-    // ENTRAMBI i ghost. Il 2026-09-18 e' successo esattamente cosi':
+    // This list is NOT a local convenience: it is the index order the bones
+    // travel in on the wire. If two clients build it differently, every index
+    // means a different bone on the receiver and BOTH ghosts break. On
+    // 2026-09-18 exactly that happened:
     //
-    //   client A, 18:06:27   canonical JOINT list: 102 joints (149 nodi)
-    //   client B, 18:06:43   canonical JOINT list:  82 joints (129 nodi)
+    //   client A, 18:06:27   canonical JOINT list: 102 joints (149 nodes)
+    //   client B, 18:06:43   canonical JOINT list:  82 joints (129 nodes)
     //
-    // Venti nodi di differenza sono le ossa della power armor. L'innesto PA
-    // le aggiunge allo scheletro CONDIVISO e non le toglie piu', quindi un
-    // client che ha indossato una power armor prima di ricostruire il ghost
-    // si ritrova venti giunti in piu' e un ordine alfabetico diverso. Il
-    // sintomo sul filo si vedeva gia': A spediva `matched=24 missing=56`,
-    // B `matched=32 missing=48`, dove prima erano identici.
+    // Twenty nodes of difference are the power armor bones. The PA graft adds
+    // them to the SHARED skeleton and never removes them, so a client that
+    // wore a power armor before rebuilding the ghost ends up with twenty more
+    // joints and a different alphabetical order. The symptom on the wire was
+    // already visible: A sent `matched=24 missing=56`, B `matched=32
+    // missing=48`, where before they were identical.
     //
-    // Il primo corpo di una sessione nasce sempre PRIMA di qualunque
-    // innesto, perche' innestare richiede di attaccare pezzi PA e attaccarli
-    // richiede un corpo. Quindi congelare al primo giro da' 82 su ogni
-    // client, sempre, qualunque cosa succeda dopo.
+    // The first body of a session is always born BEFORE any graft, because
+    // grafting requires attaching PA pieces and attaching them requires a
+    // body. So freezing on the first pass gives 82 on every client, always,
+    // whatever happens later.
     //
-    // I PUNTATORI invece si riaggiornano a ogni giro: sono i nodi vivi da
-    // cui si legge e su cui si scrive, e un corpo ricostruito li vuole
-    // freschi. Nomi condivisi, puntatori locali — che e' anche la regola
-    // gia' scritta nel piano di fase.
+    // The POINTERS are refreshed at every pass instead: they are the live
+    // nodes read from and written to, and a rebuilt body wants them fresh.
+    // Shared names, local pointers, which is also the rule already written
+    // in the phase plan.
     std::size_t kept = 0;
     bool frozen = false;
-    std::vector<void*> mine;   // le ossa di QUESTO corpo
+    std::vector<void*> mine;   // THIS body's bones
     {
         std::lock_guard<std::mutex> lk(g_canonical_mutex);
         if (g_canonical_names.empty()) {
@@ -481,9 +482,9 @@ static void populate_canonical_from_skel_native(void* skel_root,
             mine.swap(ptrs);
             kept = g_canonical_names.size();
         } else {
-            // Stesso ordine di prima, puntatori rifatti. Un nome che non
-            // esiste piu' prende nullptr: meglio un buco dichiarato che uno
-            // slittamento silenzioso di tutti gli indici.
+            // Same order as before, pointers rebuilt. A name that no longer
+            // exists gets nullptr: better a declared hole than a silent shift
+            // of every index.
             frozen = true;
             kept = g_canonical_names.size();
             mine.assign(kept, nullptr);
@@ -795,17 +796,17 @@ std::atomic<unsigned>   g_attach_count{0};
 // NiNode canary so that a crash in the cube path doesn't take the
 // canary down, and vice versa. Both are attached to World SceneGraph
 // as siblings.
-// g_injected_cube NON ESISTE PIU' (2026-09-18). Era la radice del corpo del
-// ghost, UNA per sessione, letta da trenta punti: finche' e' esistito, "il
-// ghost di quel peer" non era una cosa indirizzabile e il secondo giocatore
-// non aveva dove stare. Il corpo e' in GhostRecord::body, uno per peer.
+// g_injected_cube NO LONGER EXISTS (2026-09-18). It was the ghost's body
+// root, ONE per session, read from thirty places: as long as it existed,
+// "that peer's ghost" was not an addressable thing and the second player had
+// nowhere to be. The body is in GhostRecord::body, one per peer.
 
 // M6.3 / v12: head is a separate BSFadeNode (BaseMaleHead.nif + rear
 // as child). Attached as child of the body, but we store its ptr so
 // pos_update can apply an INDEPENDENT rotation — body gets yaw only,
 // head gets pitch only. Without this decoupling, remote looking up
 // rotates the entire body like a tree trunk (user report).
-// g_injected_head NON ESISTE PIU' (2026-09-18). E' in GhostRecord::head.
+// g_injected_head NO LONGER EXISTS (2026-09-18). It is GhostRecord::head.
 
 
 
@@ -821,14 +822,14 @@ std::atomic<unsigned>   g_attach_count{0};
 //
 // Populated ONCE at body inject time (before any armor attaches) by walking
 // the body NIF tree for ALL nodes whose vtable RVA == BSSUBINDEXTRISHAPE_VTABLE_RVA.
-// Si invalidano insieme al corpo che le contiene: il record se ne va tutto
-// intero in ghost_forget_body.
+// Invalidated together with the body that contains them: the whole record
+// goes in ghost_forget_body.
 //
 // Protected by g_body_cull_mtx (declared just below) — same lock that already
 // guards the body-cull contributor set. Not atomic because we read/write the
 // whole vector together.
-// g_ghost_body_geoms NON ESISTE PIU' (2026-09-18). E' in
-// GhostRecord::body_geoms, uno per peer.
+// g_ghost_body_geoms NO LONGER EXISTS (2026-09-18). It is
+// GhostRecord::body_geoms, one per peer.
 
 // M9 wedge 3 — body-cull contributor tracking ===============================
 // Per-peer set of form_ids of currently-attached "slot 3 BODY" armors (Vault
@@ -2464,81 +2465,80 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body,
         // Driving skel bone transforms now drives the body mesh.
         FW_LOG("[native] inject_body_nif: M8P3 Step 2+3 skel cache + swap START");
         {
-            // OGNI corpo si carica le SUE ossa, e se le CLONA.
+            // EVERY body loads ITS OWN bones, and CLONES them.
             //
-            // Stamattina qui c'era scritto "costa ~63 ms ed e' il prezzo di
-            // un ghost che nasce pulito". Era falso, e i puntatori lo hanno
-            // dimostrato la sera stessa sul client A:
+            // On the morning of 2026-09-18 this said "costs ~63 ms and is the
+            // price of a ghost born clean". It was false, and the pointers
+            // proved it the same evening on client A:
             //
             //   23:29:36  skeleton_for: body 0x1EC2EC7E380 -> skel 0x1EC2D826000
             //   23:30:34  skeleton_for: forgot body 0x1EC2EC7E380
             //   23:31:07  skeleton_for: body 0x1EC2F4601C0 -> skel 0x1EC2D826000
             //
-            // Corpo nuovo, STESSO scheletro. Togliere la NOSTRA cache non
-            // serviva a niente, perche' la cache che conta e' quella del
-            // MOTORE: nif_load_by_path riconsegna l'istanza che ha gia'.
+            // New body, SAME skeleton. Removing this DLL's cache achieved
+            // nothing, because the cache that counts is the ENGINE's:
+            // nif_load_by_path hands back the instance it already has.
             //
-            // Su uno scheletro condiviso noi facciamo due mutazioni che non
-            // sono reversibili da sole:
-            //   * l'innesto delle ossa della power armor ci aggiunge venti
-            //     nodi (prova: dopo un innesto la ricostruzione cammina 149
-            //     nodi invece di 129);
-            //   * il retarget riscrive le trasformate locali di 147 ossa.
-            // E lo smontaggio BUTTA i bind umani salvati, con la motivazione
-            // "descrivono ossa che muoiono con questo corpo". Non muoiono:
-            // sopravvivono nello scheletro condiviso, proporzionate alla
-            // power armor, e il modo di rimetterle a posto l'abbiamo appena
-            // cancellato. Da li' il ghost stirato e la scheggia nella faccia
-            // dopo il ciclo power armor -> esci -> rientra.
+            // On a shared skeleton this code makes two mutations that do not
+            // reverse by themselves:
+            //   * the power armor bone graft adds twenty nodes (proof: after a
+            //     graft the rebuild walks 149 nodes instead of 129);
+            //   * the retarget rewrites the local transforms of 147 bones.
+            // And the teardown THROWS AWAY the saved human binds, with the
+            // justification "they describe bones that die with this body".
+            // They do not die: they survive in the shared skeleton,
+            // proportioned to the power armor, and the way to put them back
+            // has just been deleted. Hence the stretched ghost and the shard
+            // in the face after the power armor -> leave -> rejoin cycle.
             //
-            // La cura e' la stessa che il corpo, la testa, le mani e ogni
-            // armatura usano gia': il deep-clone del motore. Lo scheletro era
-            // l'unica cosa del ghost che non ci passava.
+            // The cure is the one the body, the head, the hands and every
+            // armour already use: the engine's deep clone. The skeleton was
+            // the only part of the ghost that did not go through it.
             void* skel = nullptr;
             if (!skel) {
                 constexpr const char* kSkelPath =
                     "Actors\\Character\\CharacterAssets\\skeleton.nif";
 
-                // ESPERIMENTO 2026-09-19 — reversibile con questa riga sola.
+                // EXPERIMENT 2026-09-19 — reversible with this one line.
                 //
-                // Lo scheletro UMANO si e' sempre caricato con 0x10 e
-                // model_kind 0. Quello della POWER ARMOR usa le opzioni del
-                // motore, kind 3 / 0x3D, e non e' una scelta estetica: e' la
-                // cura della Build 71e, scritta dopo che il secondo giocatore
-                // a entrare in una power armor dipinta perdeva la vernice.
+                // The HUMAN skeleton has always loaded with 0x10 and
+                // model_kind 0. The POWER ARMOR one uses the engine's own
+                // options, kind 3 / 0x3D, and that is no aesthetic choice: it
+                // is the Build 71e cure, written after the second player to
+                // enter a painted power armor lost the paint.
                 //
-                // 0x3D CONTIENE 0x10. L'umano quindi non usa "altre"
-                // opzioni: ne usa una su cinque. Manca soprattutto 0x20, e
-                // ni_offsets.h dice cosa comporta: "a load WITHOUT this bit
-                // actively CLEARS bit 23", e il bit 23 e' cio' che il walker
-                // di chiusura di TESObjectREFR::Load3D controlla prima di
-                // riapplicare i materiali di default a TUTTO l'albero
-                // dell'attore.
+                // 0x3D CONTAINS 0x10. So the human does not use "other"
+                // options: it uses one out of five. The one that matters most
+                // is 0x20, and ni_offsets.h says what it entails: "a load
+                // WITHOUT this bit actively CLEARS bit 23", and bit 23 is
+                // what the closing walker of TESObjectREFR::Load3D checks
+                // before reapplying the default materials to the actor's
+                // WHOLE tree.
                 //
-                // Ipotesi che questo prova: ogni volta che il ghost carica lo
-                // scheletro umano spegne il bit 23 sull'entry condivisa di
-                // OGNI umano, giocatore locale compreso. Finche' nessuno
-                // ricostruisce un umano non si vede; entrare e uscire da una
-                // power armor lo ricostruisce due volte, e da li' la faccia
-                // del ghost che si sbriciola al rientro successivo.
+                // Hypothesis this tests: every time the ghost loads the human
+                // skeleton it clears bit 23 on the shared entry of EVERY
+                // human, local player included. Nothing shows until someone
+                // rebuilds a human; entering and leaving a power armor
+                // rebuilds one twice, hence the ghost's face crumbling on the
+                // next rejoin.
                 //
-                // Spiega anche perche' il ghost SENZA power armor non si
-                // rompe: niente costringe il motore a ricostruire un umano.
+                // It would also explain why the ghost WITHOUT power armor
+                // does not break: nothing forces the engine to rebuild a
+                // human.
                 //
-                // Il verso opposto (allineare la PA all'umano) e' stato
-                // provato per primo ed e' stato bocciato: vedi
-                // kPaSkelOptsAlignedToHuman.
-                // ESITO 2026-09-19: NON CURA, E FORSE FA MALE.
-                //   * la faccia decade lo stesso (65 -> 25 al rientro), quindi
-                //     l'ipotesi del bit 23 non spiega il difetto;
-                //   * nella stessa sessione e' comparso il PRIMO crash di
-                //     gioco vero del client che guarda: tre AV su tre thread,
-                //     stesso oggetto liberato (rcx=0x1DB0D876FD0), dentro la
-                //     ricarica di sedici attori che il MOTORE fa quando il
-                //     giocatore esce dalla power armor.
-                // Il nesso causale non e' dimostrato — e' una correlazione in
-                // una sessione sola — ma davanti a un crash si torna allo
-                // stato noto e si dimostra dopo, non prima.
+                // The opposite direction (aligning the PA to the human) was
+                // tried first and rejected: see kPaSkelOptsAlignedToHuman.
+                // OUTCOME 2026-09-19: NO CURE, AND POSSIBLY HARMFUL.
+                //   * the face decays all the same (65 -> 25 on the rejoin),
+                //     so the bit 23 hypothesis does not explain the defect;
+                //   * the same session produced the FIRST real game crash of
+                //     the watching client: three AVs on three threads, the
+                //     same freed object (rcx=0x1DB0D876FD0), inside the
+                //     reload of sixteen actors the ENGINE does when the
+                //     player leaves the power armor.
+                // The causal link is not proven (a correlation in a single
+                // session), but faced with a crash the known state comes
+                // back first and the proof comes after, not before.
                 static constexpr bool kHumanSkelOptsAlignedToEngine = false;
 
                 NifLoadOpts skel_opts{};
@@ -2567,13 +2567,13 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body,
                     } __except (EXCEPTION_EXECUTE_HANDLER) {
                         FW_ERR("[native] inject_body_nif: SEH in skel dump");
                     }
-                    // Il clone, con lo stesso schema del corpo poco sopra:
-                    // clone_nif_subtree torna un'istanza con un riferimento
-                    // nostro, e il +1 che il caricatore ci ha dato sull'
-                    // istanza CONDIVISA si lascia andare subito. Da li' in
-                    // poi l'unico riferimento vivo al clone e' lo slot figlio
-                    // del corpo, quindi quando il corpo muore le ossa vanno a
-                    // zero davvero.
+                    // The clone, with the same scheme as the body just above:
+                    // clone_nif_subtree returns an instance with a reference
+                    // of this code's own, and the +1 the loader gave on the
+                    // SHARED instance is released at once. From then on the
+                    // only live reference to the clone is the body's child
+                    // slot, so when the body dies the bones really go to
+                    // zero.
                     void* skel_clone = clone_nif_subtree(fresh_skel);
                     if (skel_clone && skel_clone != fresh_skel) {
                         __try {
@@ -2584,22 +2584,21 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body,
                         } __except (EXCEPTION_EXECUTE_HANDLER) {}
                         skel = skel_clone;
                         FW_LOG("[native] inject_body_nif: deep-cloned skeleton "
-                               "shared=%p clone=%p — innesti e retarget della "
-                               "power armor restano su QUESTO ghost e muoiono "
-                               "con lui", fresh_skel, skel_clone);
+                               "shared=%p clone=%p — power armor grafts and "
+                               "retargets stay on THIS ghost and die with it",
+                               fresh_skel, skel_clone);
                     } else {
-                        // Il clone ha restituito la sorgente: e' una
-                        // CONDIVISIONE, non una copia, e il chiamante deve
-                        // trattarla come un fallimento (lo dice il commento
-                        // sopra clone_nif_subtree). Si va avanti lo stesso
-                        // perche' un ghost condiviso e' meglio di nessun
-                        // ghost, ma va detto forte: da qui in poi una power
-                        // armor contamina i ghost successivi.
+                        // The clone returned the source: that is SHARING, not
+                        // a copy, and the caller must treat it as a failure
+                        // (the comment above clone_nif_subtree says so). It
+                        // goes on anyway because a shared ghost beats no
+                        // ghost, but it has to be said loudly: from here on a
+                        // power armor contaminates the ghosts that follow.
                         skel = fresh_skel;
-                        FW_WRN("[native] inject_body_nif: deep-clone dello "
-                               "scheletro FALLITO (torna %p) — si usa "
-                               "l'istanza condivisa: un innesto power armor "
-                               "sopravvivera' a questo ghost", fresh_skel);
+                        FW_WRN("[native] inject_body_nif: skeleton deep-clone "
+                               "FAILED (returned %p) — using the shared "
+                               "instance: a power armor graft will outlive "
+                               "this ghost", fresh_skel);
                     }
                     fw::native::skin_rebind::set_skeleton_for(body, skel);
                 }
@@ -2683,14 +2682,13 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body,
                     _InterlockedIncrement(reinterpret_cast<long*>(
                         reinterpret_cast<char*>(skel) + NIAV_REFCOUNT_OFF));
                     g_r.attach_child_direct(body, skel, /*reuseFirstEmpty=*/0);
-                    // E ADESSO si lascia andare il riferimento del
-                    // caricatore. Senza, lo scheletro resta a due
-                    // riferimenti con un solo proprietario vero — lo slot
-                    // figlio del corpo — e alla morte del corpo scende a uno
-                    // invece che a zero: un ghost, uno scheletro perso, per
-                    // sempre. Prima non si vedeva perche' quel secondo
-                    // riferimento era la cache di sessione, ed era voluto.
-                    // Stessa regola delle armature: "drop our +1
+                    // And NOW the loader's reference is released. Without
+                    // this the skeleton stays at two references with a single
+                    // real owner, the body's child slot, and when the body
+                    // dies it drops to one instead of zero: one ghost, one
+                    // skeleton leaked, forever. It did not show before because
+                    // that second reference was the session cache, and it was
+                    // intended. Same rule as the armours: "drop our +1
                     // caller-owned ref".
                     const long after = _InterlockedDecrement(
                         reinterpret_cast<long*>(
@@ -2844,24 +2842,23 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body,
                     "Actors\\Character\\CharacterAssets\\FaceParts\\"
                     "MaleHeadRear.nif",
                     "inject_headrear");
-                // 2026-09-18 — E SI CLONA, come la testa e come le mani.
+                // 2026-09-18 — AND IT IS CLONED, like the head and the hands.
                 //
-                // Era l'ULTIMA pelle condivisa rimasta nel ghost: caricata e
-                // attaccata cosi' com'era, quindi ogni ghost si prendeva lo
-                // STESSO nodo — nei log il puntatore e' identico fra una
-                // costruzione e l'altra. Con un corpo ricostruito nello
-                // stesso processo il retro era ancora figlio della testa
-                // vecchia e ancora legato allo scheletro vecchio, e lo si
-                // vedeva nel numero: la pelle della testa legava 20 ossa al
-                // primo giro e 10 al secondo. Sul client che invece
-                // riavviava il processo restava 20, ed era l'unico a stare
-                // bene.
+                // It was the LAST shared skin left in the ghost: loaded and
+                // attached as it was, so every ghost took the SAME node (in
+                // the logs the pointer is identical from one build to the
+                // next). With a body rebuilt in the same process the rear was
+                // still a child of the old head and still bound to the old
+                // skeleton, and the number showed it: the head's skin bound
+                // 20 bones on the first pass and 10 on the second. On the
+                // client that restarted the process instead it stayed at 20,
+                // and that was the only one that was fine.
                 //
-                // Il perche' visivo lo dice gia' il commento sopra il clone
-                // della testa, quattordici righe piu' su: una pelle a meta'
-                // lascia bones_pri[i] a 0x70, cioe' una matrice di spazzatura,
-                // e "GPU stretches vertices". La testa che sparisce e il
-                // corpo che si stira sono quella frase.
+                // The visual why is already in the comment above the head
+                // clone, fourteen lines up: a half-done skin leaves
+                // bones_pri[i] at 0x70, a garbage matrix, and "GPU stretches
+                // vertices". The vanishing head and the stretching body are
+                // that sentence.
                 if (head_rear) {
                     void* rear_clone = clone_nif_subtree(head_rear);
                     if (rear_clone && rear_clone != head_rear) {
@@ -2956,10 +2953,9 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body,
                 bool face_cloned = false;
                 if (fw::native::anatomy_mirror::clone_enabled()) {
                     char peer[24] = {};
-                    // La maschera di QUESTO peer quando sappiamo chi e'.
-                    // "La prima disponibile" era corretta solo finche' il
-                    // ghost era uno solo: con due, vestirebbe l'uno con la
-                    // faccia dell'altro.
+                    // THIS peer's mask when the peer is known. "The first
+                    // available" was right only while there was one ghost:
+                    // with two, it would dress one with the other's face.
                     void* face = nullptr;
                     if (peer_id && *peer_id) {
                         face = fw::native::face_cache::master_for_peer(peer_id);
@@ -2972,9 +2968,9 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body,
                         }
                     }
                     if (!face) {
-                        // Nessun peer dichiarato, o la sua maschera non c'e'
-                        // ancora: si ripiega sul vecchio comportamento, che
-                        // con un ghost solo e' la stessa cosa.
+                        // No peer declared, or its mask is not there yet:
+                        // fall back on the old behaviour, which with a single
+                        // ghost is the same thing.
                         face = fw::native::face_cache::any_master(
                             peer, sizeof(peer));
                     }
@@ -3102,10 +3098,10 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body,
                 FW_ERR("[native] inject_head: SEH during positioning / "
                        "attach — head may be dangling");
             }
-            // Fuori dalla gabbia SEH di proposito: registrare prende un lock,
-            // e un oggetto con distruttore dentro un __try non compila
-            // (C2712). E' la stessa ragione per cui esistono i wrapper seh_*
-            // in cima al file.
+            // Outside the SEH cage on purpose: registering takes a lock, and
+            // an object with a destructor inside a __try does not compile
+            // (C2712). The same reason the seh_* wrappers at the top of the
+            // file exist.
             ghost_record_head(peer_id, head);
         } else {
             FW_WRN("[native] inject_head: head load returned null — "
@@ -3522,11 +3518,11 @@ void* ghost_body_of_peer(const char* peer_id) noexcept {
 }
 
 void* get_injected_body_ghost() noexcept {
-    // 2026-09-18 — era il puntatore unico, che non esiste piu'. Resta "un
-    // ghost qualunque" perche' i tre chiamanti fuori da questo file chiedono
-    // esattamente quello: due sono cancelli di prontezza ("il motore ha
-    // finito di caricare?") e il terzo e' il gancio del proxy Actor, spento
-    // da Build c.34. Chi vuole IL corpo di UN peer usa ghost_body_of_peer.
+    // 2026-09-18 — it was the single pointer, which no longer exists. It
+    // stays "any ghost" because the three callers outside this file ask for
+    // exactly that: two are readiness gates ("has the engine finished
+    // loading?") and the third is the Actor proxy hook, off since Build
+    // c.34. Whoever wants THE body of ONE peer uses ghost_body_of_peer.
     return ghost_any_body();
 }
 
@@ -3868,23 +3864,22 @@ static bool seh_write_ptr_field(void* obj, std::size_t off, void* val) {
 
 // Collect EVERY skinnable geometry leaf in tree order.
 //
-// 2026-09-19 — "EVERY" era una bugia: riconosceva due tipi su cinque, e i tre
-// che mancavano sono esattamente quelli di cui e' fatta una faccia. Una faccia
-// e' BSDynamicTriShape perche' i morph vivono nei dynamic vertex buffer, e un
-// tipo non riconosciuto non veniva scartato: veniva trattato come CONTENITORE,
-// gli si cercavano dei figli, non ce n'erano, e la funzione concludeva "no
-// geometry in the clone" su un albero pieno di geometria.
+// 2026-09-19 — "EVERY" was a lie: it recognised two types out of five, and
+// the three it missed are exactly the ones a face is made of. A face is
+// BSDynamicTriShape because the morphs live in dynamic vertex buffers, and an
+// unrecognised type was not discarded: it was treated as a CONTAINER, its
+// children were looked for, there were none, and the function concluded "no
+// geometry in the clone" on a tree full of geometry.
 //
-// Conseguenza misurata: le pelli della maschera della faccia non sono mai
-// state privatizzate, quindi restavano condivise con la testa viva del
-// giocatore locale. Bastava che il giocatore ricostruisse il suo 3D — cioe'
-// entrare o uscire da una power armor — perche' la maschera si ritrovasse a
-// puntare a pelli che non esistono piu', pur restando intatta alla radice
-// (refcount=1, children=14, verificato su 65552 consegne).
+// Measured consequence: the face mask's skins were never privatised, so they
+// stayed shared with the local player's live head. The player rebuilding
+// their 3D, that is entering or leaving a power armor, was enough for the
+// mask to end up pointing at skins that no longer exist, while staying intact
+// at the root (refcount=1, children=14, verified across 65552 handouts).
 //
-// La lista e' ora la stessa di skin_rebind::is_geometry, che quelle geometrie
-// le ha sempre viste: e' la ragione per cui la RICUCITURA funzionava mentre la
-// PRIVATIZZAZIONE no, sullo stesso identico nodo. Order is deterministic and identical for a tree and its
+// The list is now the same as skin_rebind::is_geometry, which always saw
+// those geometries: that is why the RE-BIND worked while the PRIVATISATION
+// did not, on the very same node. Order is deterministic and identical for a tree and its
 // clone, which is what makes the lockstep pairing below valid. Deliberately
 // broader than collect_all_bssitf_recursive: power-armor Frame.nif carries
 // both leaf kinds and the body-cull collector only ever wanted BSSITF.
@@ -3970,10 +3965,9 @@ static void collect_all_geometry_recursive(void* node, std::vector<void*>* out,
 // Returns the number of shared instances privatised. 0 with a non-empty
 // tree means the sharing hypothesis is WRONG for that NIF, and the log says
 // so — this function is its own experiment.
-// Ingresso pubblico per chi sta fuori da questo file. Serve al prestito della
-// faccia, che clona la testa VIVA del giocatore locale e la parcheggia: senza
-// privatizzare, quella maschera resta legata alle pelli del giocatore e muore
-// con la sua prossima ricostruzione del 3D.
+// Public entry for callers outside this file. For the face borrow, which
+// clones the local player's LIVE head and parks it: without privatising, that
+// mask stays bound to the player's skins and dies with their next 3D rebuild.
 int privatise_clone_skins(void* clone_root, void* source_root,
                           const char* label);
 
@@ -4665,7 +4659,7 @@ void* clone_nif_subtree(void* source) {
     // is called from MANY paths beyond ghost weapons (body, armor, etc.).
     // Auto-tracking caused the purge to nuke ghost body + armor whenever
     // a weapon equip event fired — both clients lost their ghost entirely
-    // ("entrambi i ghost scompaiono nel nulla"). Tracking is now opt-in
+    // (user report: both ghosts vanished into nothing). Tracking is now opt-in
     // by weapon-specific callers via explicit track_owned_clone(clone).
     return clone;
 }
@@ -5029,9 +5023,9 @@ void* clone_nif_subtree_recursive(void* source, int depth, int max_depth) {
 // ghost with a wrong face is better than a ghost with none.
 //
 // MAIN THREAD ONLY.
-// Quante ossa dichiara una BSSkin::Instance (+0x20). POD-only e in gabbia
-// SEH per conto suo: il censimento che la usa maneggia std::vector, e un
-// __try non puo' stare in una funzione con oggetti da distruggere (C2712).
+// How many bones a BSSkin::Instance declares (+0x20). POD-only and in its
+// own SEH cage: the census that uses it handles std::vector, and a __try
+// cannot sit in a function with objects to destroy (C2712).
 static std::uint32_t seh_skin_bone_count(void* skin) {
     if (!skin) return 0;
     __try {
@@ -5040,7 +5034,7 @@ static std::uint32_t seh_skin_bone_count(void* skin) {
     } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
-// Il nodo nello slot i dell'array delle ossa di una pelle (+0x10 la testa).
+// The node in slot i of a skin's bone array (+0x10 is the array head).
 static void* seh_skin_bone_at(void* skin, std::uint32_t i) {
     if (!skin) return nullptr;
     __try {
@@ -5051,15 +5045,15 @@ static void* seh_skin_bone_at(void* skin, std::uint32_t i) {
     } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
 }
 
-// Stampa i nomi letti DAGLI SLOT delle pelli di un albero faccia.
+// Prints the names read FROM THE SLOTS of a face tree's skins.
 //
-// Il punto e' che la ricucitura non memorizza i nomi: li legge dal nodo che
-// il puntatore indica in quel momento. Se fra un ghost e il successivo questi
-// nomi cambiano mentre il conteggio resta lo stesso, i puntatori indicano
-// memoria che non e' piu' quella di prima.
+// The point is that the re-bind does not store names: it reads them from the
+// node the pointer points at in that moment. If between one ghost and the
+// next these names change while the count stays the same, the pointers point
+// at memory that is no longer what it was.
 //
-// Funzione a se' perche' maneggia std::vector, e ghost_dress_face contiene un
-// __try: i due non possono convivere nella stessa funzione (C2712).
+// A function of its own because it handles std::vector, and ghost_dress_face
+// contains a __try: the two cannot share a function (C2712).
 static void dump_face_slot_names(void* root, const char* why) {
     if (!root) return;
     std::vector<void*> geoms;
@@ -5074,13 +5068,13 @@ static void dump_face_slot_names(void* root, const char* why) {
         for (std::uint32_t bi = 0; bi < n && bi < 5; ++bi) {
             void* bone = seh_skin_bone_at(skin, bi);
             const char* nm = bone ? try_read_ni_name(bone) : nullptr;
-            // A debug: e' il rilevatore permanente del difetto del
-            // 2026-09-19. Se lo stesso slot legge nomi diversi fra un ghost e
-            // il successivo, la maschera e' tornata a puntare a memoria che
-            // non e' nostra, e queste righe lo dicono senza doverlo dedurre.
-            FW_DBG("[face-slots] %s: geom#%zu skin=%p ossa=%u slot[%u]=%p "
-                   "nome='%s'", why, gi, skin, n, bi, bone,
-                   (nm && *nm) ? nm : "<vuoto>");
+            // At debug level: the permanent tripwire for the 2026-09-19
+            // defect. If the same slot reads different names from one ghost
+            // to the next, the mask is pointing at memory that is not this
+            // code's again, and these lines say so without deduction.
+            FW_DBG("[face-slots] %s: geom#%zu skin=%p bones=%u slot[%u]=%p "
+                   "name='%s'", why, gi, skin, n, bi, bone,
+                   (nm && *nm) ? nm : "<empty>");
         }
     }
 }
@@ -5089,22 +5083,22 @@ static bool ghost_dress_face(void* face_source, void* head,
                              void* body, const char* why) {
     if (!face_source || !head || !g_r.base) return false;
 
-    // MISURA 2026-09-19 — la clonazione danneggia la sorgente?
+    // MEASUREMENT 2026-09-19 — does cloning damage the source?
     //
-    // Sei ipotesi morte, e quello che resta in piedi e' che la maschera
-    // decade per CLONAZIONE: 65, 22, 14 su tre cloni della stessa sorgente,
-    // con il clone reso immortale (quindi non e' la sua morte) e la radice
-    // della maschera intatta per tutto il tempo (refcount=1, children=14).
+    // Six hypotheses dead, and what is left standing is that the mask decays
+    // by CLONING: 65, 22, 14 across three clones of the same source, with the
+    // clone made immortal (so it is not its death) and the mask's root intact
+    // the whole time (refcount=1, children=14).
     //
-    // Il deep-clone del motore tiene due NiTPointerHashMap di deduplica per i
-    // sotto-oggetti CONDIVISI e, dopo aver clonato, ripassa a ricucire i
-    // legami (vt[32], "controller fix-ups, child->parent backlinks via the
-    // maps"). Se quella ricucitura sposta verso il clone qualcosa che era
-    // della sorgente, ogni clone si porta via un pezzo della maschera.
+    // The engine's deep clone keeps two NiTPointerHashMap of deduplication
+    // for SHARED sub-objects and, after cloning, goes back to re-link
+    // (vt[32], "controller fix-ups, child->parent backlinks via the maps").
+    // If that re-link moves towards the clone something that belonged to the
+    // source, every clone takes a piece of the mask away.
     //
-    // Questo censimento sta a cavallo della SINGOLA chiamata: geometrie e
-    // slot d'osso della sorgente, prima e dopo. Se il numero cala li' dentro,
-    // il colpevole e' la clonazione e non serve altro per saperlo.
+    // This census straddles the SINGLE call: geometries and bone slots of the
+    // source, before and after. If the number drops in there, the culprit is
+    // the cloning and nothing else is needed to know it.
     const auto census = [](void* root, std::size_t* geoms) -> std::size_t {
         std::vector<void*> g;
         collect_all_geometry_recursive(root, &g);
@@ -5128,57 +5122,56 @@ static bool ghost_dress_face(void* face_source, void* head,
 
     const std::size_t bones_after = census(face_source, &geoms_after);
 
-    // 2026-09-19, secondo giro. Il primo censimento ha risposto: la sorgente
-    // NON decade (14 geometrie / 65 ossa, identica prima e dopo ogni
-    // clonazione). Eppure la ricucitura ne lega 65 al primo ghost e 46 al
-    // secondo. Quindi la perdita sta nel CLONE, e va contata li'.
+    // 2026-09-19, second pass. The first census answered: the source does
+    // NOT decay (14 geometries / 65 bones, identical before and after every
+    // clone). Yet the re-bind binds 65 on the first ghost and 46 on the
+    // second. So the loss is in the CLONE, and must be counted there.
     //
-    // Se il clone esce gia' piu' povero della sorgente, il colpevole e' il
-    // deep-clone del motore. Se esce identico e la ricucitura ne lega meno,
-    // il colpevole e' il bersaglio della ricucitura, cioe' lo scheletro del
-    // ghost — e allora il difetto non e' nella faccia ma in cosa lo scheletro
-    // del secondo ghost non contiene piu'.
+    // If the clone comes out already poorer than the source, the culprit is
+    // the engine's deep clone. If it comes out identical and the re-bind
+    // binds fewer, the culprit is the re-bind's target, the ghost's skeleton,
+    // and then the defect is not in the face but in what the second ghost's
+    // skeleton no longer contains.
     std::size_t geoms_clone = 0;
     const std::size_t bones_clone =
         (fc && fc != face_source) ? census(fc, &geoms_clone) : 0;
 
-    // 2026-09-19, terzo giro. I due censimenti precedenti hanno escluso che
-    // la sorgente perda roba e che il clone sia infedele: 14 geometrie e 65
-    // ossa, sempre, dovunque. Eppure la ricucitura ne lega 65 al primo ghost
-    // e 62 al secondo, e quella che fallisce si chiama 'Wheel' — un osso
-    // della POWER ARMOR, su un client dove [pa-graft] non compare mai e lo
-    // scheletro bersaglio ha sempre 129 nodi.
+    // 2026-09-19, third pass. The two previous censuses ruled out the source
+    // losing anything and the clone being unfaithful: 14 geometries and 65
+    // bones, always, everywhere. Yet the re-bind binds 65 on the first ghost
+    // and 62 on the second, and the one that fails is called 'Wheel', a
+    // POWER ARMOR bone, on a client where [pa-graft] never appears and the
+    // target skeleton always has 129 nodes.
     //
-    // Il nome, nella ricucitura, NON e' memorizzato: viene letto dal nodo che
-    // il puntatore indica in quel momento. Quindi non sono cambiati i nomi,
-    // sono cambiati i NODI sotto i puntatori.
+    // The name, in the re-bind, is NOT stored: it is read from the node the
+    // pointer points at in that moment. So the names did not change, the
+    // NODES under the pointers did.
     //
-    // La maschera e' un clone della testa VIVA del giocatore e il suo array
-    // di ossa punta ai nodi del giocatore. Entrare o uscire da una power
-    // armor fa ricostruire il 3D del giocatore: quei nodi vengono liberati, i
-    // puntatori restano, e la memoria viene riusata da altri nodi — fra cui
-    // quelli del telaio.
+    // The mask is a clone of the player's LIVE head and its bone array points
+    // at the player's nodes. Entering or leaving a power armor rebuilds the
+    // player's 3D: those nodes are freed, the pointers stay, and the memory
+    // is reused by other nodes, the frame's among them.
     //
-    // Questo stampa i primi nomi letti DAGLI SLOT DELLA SORGENTE. Se fra un
-    // ghost e il successivo cambiano mentre il conteggio resta 65, la
-    // maschera tiene puntatori a memoria liberata e la diagnosi e' chiusa.
+    // This prints the first names read FROM THE SOURCE'S SLOTS. If they
+    // change from one ghost to the next while the count stays 65, the mask
+    // holds pointers to freed memory and the diagnosis is closed.
     //
-    // Niente std::string ne' std::vector qui dentro: questa funzione contiene
-    // gia' un __try piu' sotto, e un oggetto da distruggere lo fa esplodere
-    // (C2712). Una riga per slot, nessuna concatenazione.
+    // No std::string and no std::vector in here: this function already
+    // contains a __try further down, and an object to destroy blows it up
+    // (C2712). One line per slot, no concatenation.
     dump_face_slot_names(face_source, why);
 
-    FW_LOG("[face-census] %s: sorgente %p PRIMA geom=%zu ossa=%zu -> DOPO "
-           "geom=%zu ossa=%zu%s | CLONE %p geom=%zu ossa=%zu%s",
+    FW_LOG("[face-census] %s: source %p BEFORE geom=%zu bones=%zu -> AFTER "
+           "geom=%zu bones=%zu%s | CLONE %p geom=%zu bones=%zu%s",
            why, face_source, geoms_before, bones_before,
            geoms_after, bones_after,
            (geoms_after != geoms_before || bones_after != bones_before)
-               ? "  <<< CLONAZIONE HA CAMBIATO LA SORGENTE"
-               : "  (sorgente intatta)",
+               ? "  <<< CLONING CHANGED THE SOURCE"
+               : "  (source intact)",
            fc, geoms_clone, bones_clone,
            (geoms_clone != geoms_after || bones_clone != bones_after)
-               ? "  <<< IL CLONE E' PIU' POVERO DELLA SORGENTE"
-               : "  (clone fedele)");
+               ? "  <<< THE CLONE IS POORER THAN THE SOURCE"
+               : "  (faithful clone)");
 
     if (!fc || fc == face_source) {
         FW_ERR("[face-clone] %s: clone returned %s — refusing to attach the "
@@ -5188,39 +5181,38 @@ static bool ghost_dress_face(void* face_source, void* head,
         return false;
     }
 
-    // 2026-09-19 — LA PELLE DEL CLONE DEVE ESSERE SUA, PRIMA DI RICUCIRLA.
+    // 2026-09-19 — THE CLONE'S SKIN MUST BE ITS OWN BEFORE THE RE-BIND.
     //
-    // Il corpo e ogni armatura passano di qui da Build 70s; la faccia no, ed
-    // e' l'unica che clonava e ricuciva senza privatizzare. Il commento sopra
-    // privatise_shared_skins spiega perche' e' fatale: il deep-clone del
-    // motore NON copia la BSSkin::Instance quando lo scheletro non fa parte
-    // del sottoalbero clonato, quindi clone e sorgente ne condividono una
-    // sola, e swap_skin_bones_to_skeleton riscrive le ossa DENTRO LA
-    // SORGENTE.
+    // The body and every armour have gone through this since Build 70s; the
+    // face had not, and it was the only one that cloned and re-bound without
+    // privatising. The comment above privatise_shared_skins explains why that
+    // is fatal: the engine's deep clone does NOT copy the BSSkin::Instance
+    // when the skeleton is not part of the cloned subtree, so clone and
+    // source share a single one, and swap_skin_bones_to_skeleton rewrites the
+    // bones INSIDE THE SOURCE.
     //
-    // La sorgente qui e' la MASCHERA DELLA FACCIA, che vive nella cache e
-    // sopravvive al ghost. Quindi il primo ghost lasciava nella maschera i
-    // puntatori alle ossa del PROPRIO scheletro, e il ghost successivo
-    // ricuciva partendo da quelli. Misurato sul client A:
+    // The source here is the FACE MASK, which lives in the cache and outlives
+    // the ghost. So the first ghost left in the mask the pointers to the
+    // bones of ITS OWN skeleton, and the next ghost re-bound starting from
+    // those. Measured on client A:
     //
-    //   23:57:02  primo ghost   skin swap=65
-    //   23:58:22  al rientro    skin swap=46
+    //   23:57:02  first ghost   skin swap=65
+    //   23:58:22  on rejoin     skin swap=46
     //
-    // Prima che lo scheletro diventasse un clone per ghost erano 65 e 61: i
-    // puntatori vecchi restavano validi perche' lo scheletro era condiviso e
-    // non moriva mai, e fallivano solo i quattro contaminati dalla power
-    // armor. Adesso lo scheletro muore col suo corpo — come deve — e quei
-    // puntatori sono penzolanti. Il difetto non e' nuovo: era coperto.
+    // Before the skeleton became a clone per ghost they were 65 and 61: the
+    // old pointers stayed valid because the skeleton was shared and never
+    // died, and only the four contaminated by the power armor failed. Now the
+    // skeleton dies with its body, as it must, and those pointers dangle. The
+    // defect is not new: it was covered.
     //
-    // Si autoverifica: se torna 0 su un albero non vuoto, la condivisione non
-    // c'era e questa diagnosi e' sbagliata. Lo dice il log della funzione.
+    // Self-checking: a 0 on a non-empty tree means there was no sharing and
+    // this diagnosis is wrong. The function's log says so.
     (void)privatise_clone_skins(fc, face_source, "face-clone");
 
-    // Le ossa di QUESTO corpo. Prima era la cache di sessione, e quando
-    // la cache e' sparita questo sito ha cominciato a ricevere null: la
-    // faccia non veniva piu' cucita a niente, e il ghost e' uscito calvo e
-    // con la pelle sbagliata. Un accessore che nessuno riempie non fallisce
-    // rumorosamente, restituisce zero.
+    // THIS body's bones. It used to be the session cache, and when the cache
+    // went away this site started receiving null: the face was no longer
+    // sewn to anything, and the ghost came out bald and with the wrong skin.
+    // An accessor nobody fills does not fail loudly: it returns zero.
     void* skel = fw::native::skin_rebind::skeleton_for(body);
     int sw = -2;
     if (skel) {
@@ -5241,44 +5233,40 @@ static bool ghost_dress_face(void* face_source, void* head,
         _InterlockedIncrement(
             reinterpret_cast<long*>(fb + NIAV_REFCOUNT_OFF));
 
-        // ESPERIMENTO 2026-09-19 — PERDITA VOLUTA, reversibile con la riga
-        // qui sotto. NON e' una cura: e' la misura che decide quale cura
-        // costruire.
+        // EXPERIMENT 2026-09-19 — DELIBERATE LEAK, reversible with the line
+        // below. NOT a cure: the measurement that decides which cure to build.
         //
-        // Il fatto da spiegare: una sola maschera parcheggiata, clonata una
-        // volta per ghost, e ogni clone lega meno ossa del precedente.
-        // 65 al primo, poi 38, 22, 25 alle ricostruzioni — su cinque
-        // sessioni il PRIMO clone e' sempre 65 e non sbaglia mai. La radice
-        // della maschera resta intatta per tutto il tempo (refcount=1,
-        // children=14, verificato su 65552 consegne), quindi il danno e'
-        // sotto la radice.
+        // The fact to explain: a single parked mask, cloned once per ghost,
+        // and every clone binds fewer bones than the previous one. 65 on the
+        // first, then 38, 22, 25 on the rebuilds; across five sessions the
+        // FIRST clone is always 65 and never wrong. The mask's root stays
+        // intact the whole time (refcount=1, children=14, verified across
+        // 65552 handouts), so the damage is below the root.
         //
-        // Fra un clone buono e il successivo guasto succede una cosa sola:
-        // MUORE IL CLONE PRECEDENTE. E clone_nif_subtree usa il deep-clone
-        // del motore, che DEDUPLICA i sotto-oggetti condivisi (le due
-        // NiTPointerHashMap della NiCloneProcess): il clone non copia tutto,
-        // certe cose se le divide con la sorgente. Se la maschera non ne
-        // tiene un riferimento proprio, ogni clone che muore se ne porta via
-        // un pezzo.
+        // Between a good clone and the next broken one a single thing
+        // happens: THE PREVIOUS CLONE DIES. And clone_nif_subtree uses the
+        // engine's deep clone, which DEDUPLICATES shared sub-objects (the two
+        // NiTPointerHashMap of the NiCloneProcess): the clone does not copy
+        // everything, some things it shares with the source. If the mask
+        // holds no reference of its own to them, every clone that dies takes
+        // a piece away.
         //
-        // Un riferimento in piu' qui significa che il clone non muore mai.
-        // Se il clone SUCCESSIVO esce a 65, l'ipotesi e' confermata e le
-        // cure possibili sono tre: la maschera si prende riferimenti propri
-        // su cio' che condivide, oppure una copia profonda vera invece di
-        // quella del motore, oppure la maschera si ricostruisce a ogni ghost
-        // come fa gia' il client che non si rompe mai.
-        // Se esce ancora guasto, l'ipotesi cade e il bersaglio diventa lo
-        // smontaggio della testa, che finora nessuno ha guardato.
+        // One extra reference here means the clone never dies. If the NEXT
+        // clone comes out at 65 the hypothesis is confirmed and the possible
+        // cures are three: the mask takes references of its own on what it
+        // shares, or a real deep copy instead of the engine's, or the mask is
+        // rebuilt for every ghost, as the client that never breaks already
+        // does. If it still comes out broken, the hypothesis falls and the
+        // target becomes the head teardown, which nobody has looked at so far.
         //
-        // COSTO MENTRE E' ACCESO: un sottoalbero faccia perso per ogni ghost
-        // costruito. Qualche centinaio di KB a ricostruzione, nessun effetto
-        // visivo atteso. Da spegnere appena il numero e' letto.
-        // ESITO: NON era la morte del clone. Con il clone reso immortale il
-        // decadimento e' rimasto identico (65 -> 22 -> 14), ed e' cosi' che
-        // questa strada e' stata esclusa. La causa vera era che la maschera
-        // conservava puntatori al rig del giocatore locale; vedi
-        // face_reference_skeleton. Spento: teneva in vita un sottoalbero
-        // faccia per ogni ghost costruito.
+        // COST WHILE ON: one face subtree lost per ghost built. A few hundred
+        // KB per rebuild, no visual effect expected. To be switched off as
+        // soon as the number has been read.
+        // OUTCOME: it was NOT the clone's death. With the clone made immortal
+        // the decay stayed identical (65 -> 22 -> 14), and that is how this
+        // path was ruled out. The real cause was that the mask kept pointers
+        // to the local player's rig; see face_reference_skeleton. Off: it
+        // kept one face subtree alive per ghost built.
         static constexpr bool kLeakFaceCloneForTest = false;
         if (kLeakFaceCloneForTest) {
             _InterlockedIncrement(
@@ -5350,7 +5338,7 @@ bool inject_debug_cube(float x, float y, float z,
 
     if (ghost_body_for(peer_id)) {
         FW_LOG("[native] inject_cube: peer=%s already has a body — skipping",
-               peer_id ? peer_id : "<nessuno>");
+               peer_id ? peer_id : "<none>");
         return true;
     }
 
@@ -5423,22 +5411,21 @@ bool inject_debug_cube(float x, float y, float z,
     return ok;
 }
 
-// QUESTA NON E' LO SMONTAGGIO. E' l'ULTIMO PASSO dello smontaggio.
+// THIS IS NOT THE TEARDOWN. It is the LAST STEP of the teardown.
 //
-// Qui c'era scritto "this function is already the correct teardown", e non
-// era vero: tocca corpo, cache delle geometrie e contributori al culling, e
-// NON rilascia testa, armature, armi, slot, code e cache. Un audit in re/ lo
-// diceva gia'; la Fase 2 l'ha confermato scrivendo lo smontaggio vero,
-// ghost_teardown_for_peer, che chiama questa funzione per ultima. Il vecchio
-// testo diceva anche che PEER_LEAVE "only logs a line" — chiuso il
-// 2026-09-18.
+// This used to say "this function is already the correct teardown", and it
+// was not true: it touches the body, the geometry cache and the cull
+// contributors, and does NOT release head, armours, weapons, slots, queues
+// and caches. An audit in re/ already said so; phase 2 confirmed it by
+// writing the real teardown, ghost_teardown_for_peer, which calls this
+// function last. The old text also said PEER_LEAVE "only logs a line";
+// closed on 2026-09-18.
 //
-// Quello che questa funzione fa, ed e' il motivo per cui non si salta:
-// invalida la cache delle geometrie del corpo e l'insieme dei contributori
-// al culling IN MODO SOLIDALE, cosi' la prossima iniezione riparte da vuoto
-// e il primo attacco di un'armatura sul corpo esegue la transizione da vuoto
-// a pieno che applica il flag di culling. Saltarla lascia il ghost
-// successivo con il culling stantio.
+// What this function does, and why it is not skipped: it invalidates the
+// body's geometry cache and the cull contributor set TOGETHER, so the next
+// injection restarts from empty and the first armour attach on the body
+// performs the empty-to-full transition that applies the culling flag.
+// Skipping it leaves the next ghost with stale culling.
 //
 // ORDERING (from shutdown(), which is the only correct caller today):
 // synthetic_refr::shutdown() MUST run first — pending assembly callbacks would
@@ -5448,26 +5435,26 @@ bool inject_debug_cube(float x, float y, float z,
 // mutation. Per-peer teardown also needs the pose/crouch/equip caches keyed by
 // that peer dropped, or the next player to occupy the slot inherits them.
 void detach_debug_cube(const char* peer_id) {
-    // `peer_id` = il ghost da staccare; nullptr = tutti, che e' cio' che
-    // serve allo spegnimento. Prima non c'era scelta perche' il corpo era
-    // uno: si staccava "il" corpo.
+    // `peer_id` = the ghost to detach; nullptr = all of them, which is what
+    // the shutdown needs. There was no choice before because the body was
+    // one: "the" body was detached.
     void* cube = peer_id ? ghost_body_for(peer_id) : ghost_any_body();
-    // Il record se ne va INSIEME al puntatore unico, e per corpo: questa
-    // funzione non sa di chi sia il ghost che sta smontando, perche' e' nata
-    // quando ce n'era uno solo. Se le due verita' non si cancellassero
-    // insieme, ghost_body_for continuerebbe a consegnare un corpo morto —
-    // che e' peggio di consegnare nullptr.
+    // The record goes TOGETHER with the pointer, and by body: this function
+    // does not know whose ghost it is tearing down, because it was born when
+    // there was only one. If the two truths were not erased together,
+    // ghost_body_for would keep handing out a dead body, which is worse than
+    // handing out nullptr.
     (void)ghost_forget_body(cube);
-    // M9 wedge 3: le geometrie del corpo e l'insieme dei contributori al
-    // culling si invalidano INSIEME alla distruzione del corpo. La prossima
-    // iniezione ripopola le geometrie dal NIF fresco, e i contributori devono
-    // ripartire vuoti perche' il primo attacco di un'armatura da slot BODY
-    // faccia la transizione vuoto->pieno che applica il flag.
+    // M9 wedge 3: the body geometries and the cull contributor set are
+    // invalidated TOGETHER with the body's destruction. The next injection
+    // repopulates the geometries from the fresh NIF, and the contributors
+    // must restart empty so the first BODY-slot armour attach performs the
+    // empty-to-full transition that applies the flag.
     //
-    // 2026-09-18 — solo quelli DI QUESTO peer. Prima si svuotava tutto: con
-    // due ghost, smontarne uno avrebbe fatto ricomparire il torso dell'altro
-    // sotto i vestiti. Le geometrie se ne vanno da sole con il record, qui
-    // sotto; i contributori no, perche' la loro mappa e' separata.
+    // 2026-09-18 — only THIS peer's. Everything used to be cleared: with two
+    // ghosts, tearing one down would have made the other's torso reappear
+    // under the clothes. The geometries leave by themselves with the record,
+    // below; the contributors do not, because their map is separate.
     {
         char dying_peer[64] = {};
         if (ghost_peer_for_body(cube, dying_peer, sizeof(dying_peer))
@@ -5792,79 +5779,78 @@ int armor_path_score(const char* path, std::size_t len) {
 }
 } // anon namespace (SEH POD wrappers)
 
-// ===== LO SCHELETRO DI RIFERIMENTO DELLA MASCHERA =========================
+// ===== THE MASK'S REFERENCE SKELETON =======================================
 //
-// 2026-09-19 — la cura del difetto che ha resistito a sette ipotesi.
+// 2026-09-19 — the cure for the defect that survived seven hypotheses.
 //
-// IL DIFETTO. La maschera della faccia e' un clone della testa VIVA del
-// giocatore locale, parcheggiata in face_cache e riusata per ogni ghost. Le
-// pelli di quel clone conservano PUNTATORI NUDI ai nodi-osso del rig del
-// giocatore: puntatori che non possediamo e che nessuno referenzia.
+// THE DEFECT. The face mask is a clone of the local player's LIVE head,
+// parked in face_cache and reused for every ghost. That clone's skins keep
+// RAW POINTERS to the bone nodes of the player's rig: pointers this code
+// does not own and nobody references.
 //
-// Quando il giocatore entra o esce da una power armor il motore ricostruisce
-// il suo 3D ("MODEL RELOAD A ... the PA skeleton rebuild" nel pa-trace), quei
-// nodi muoiono, e il pool riassegna i loro indirizzi ai nodi del telaio.
+// When the player enters or leaves a power armor the engine rebuilds their
+// 3D ("MODEL RELOAD A ... the PA skeleton rebuild" in the pa-trace), those
+// nodes die, and the pool hands their addresses to the frame's nodes.
 //
-// La ricucitura non memorizza i nomi: li LEGGE dal nodo che il puntatore
-// indica in quel momento. Quindi dopo una power armor legge il nome
-// dell'inquilino nuovo. Misurato sul client A, stessa maschera, stessi slot,
-// stessi indirizzi, tre rinascite:
+// The re-bind does not store names: it READS them from the node the pointer
+// points at in that moment. So after a power armor it reads the new tenant's
+// name. Measured on client A, same mask, same slots, same addresses, three
+// rebirths:
 //
 //   000002BB0D887B80 : 'Chest'      -> 'Wheel'         -> 'Neck_Low_skin'
 //   000002BB0E457CC0 : 'Chest_skin' -> 'SPINE2'        -> 'LArm_UpperTwist2_skin'
 //   000002BB0E183680 : 'Head'       -> 'Head'          -> 'R_RibHelper'
 //
-// 'Wheel' non e' un osso della power armor rimasto attaccato alla maschera:
-// e' cio' che si legge a quell'indirizzo dopo il riciclo. Su quel client
-// [pa-graft] non e' mai girato e lo scheletro del ghost ha sempre 129 nodi.
+// 'Wheel' is not a power armor bone left attached to the mask: it is what is
+// read at that address after the recycling. On that client [pa-graft] never
+// ran and the ghost's skeleton always has 129 nodes.
 //
-// Il seguito e' peggio del NO MATCH: sul fallimento la ricucitura lascia il
-// puntatore com'e', e poco dopo ri-cachea bones_pri[i] = bones_fb[i] + 0x70,
-// che e' l'indirizzo da cui la GPU legge la matrice di mondo a ogni frame.
-// Da li' il "telo" con un capo fisso ancorato alla power armor del giocatore
-// locale. E al terzo giro i puntatori riciclati cadono DENTRO l'albero del
-// ghost nuovo: il nome si risolve, lo swap "riesce", e le geometrie a un osso
-// solo (occhi, ciglia, bocca) finiscono su 'R_RibHelper' — la testa sparisce
-// e restano occhi e denti appesi.
+// What follows is worse than the NO MATCH: on failure the re-bind leaves the
+// pointer as it is, and shortly after re-caches bones_pri[i] = bones_fb[i] +
+// 0x70, the address the GPU reads the world matrix from every frame. Hence
+// the "sheet" with one end anchored to the local player's power armor. And
+// on the third pass the recycled pointers land INSIDE the new ghost's tree:
+// the name resolves, the swap "succeeds", and the single-bone geometries
+// (eyes, lashes, mouth) end up on 'R_RibHelper': the head vanishes and eyes
+// and teeth are left hanging.
 //
-// LA CURA. La maschera smette di puntare al rig del giocatore. Appena
-// costruita, le sue ossa vengono ri-puntate a QUESTO scheletro: un clone di
-// skeleton.nif che carichiamo una volta, teniamo per tutta la sessione, e non
-// attacchiamo a niente. Non e' animato, non e' disegnato, non ha genitore:
-// serve solo a essere una tabella di nomi VIVA, con nodi che possediamo e che
-// nessun Reset3D del giocatore puo' portare via.
+// THE CURE. The mask stops pointing at the player's rig. As soon as it is
+// built, its bones are re-pointed to THIS skeleton: a clone of skeleton.nif
+// loaded once, kept for the whole session, and attached to nothing. It is not
+// animated, not drawn, has no parent: it only serves as a LIVE name table,
+// with nodes this DLL owns and no player Reset3D can take away.
 //
-// Perche' non un +1 sulle ossa del giocatore: terrebbe vivi nodi di uno
-// scheletro smontato e la maschera continuerebbe a descrivere il passato.
-// Perche' non una tabella di stringhe: sarebbe piu' ortodossa (i commenti di
-// questo file la chiamano "nomi condivisi, puntatori locali") ma vuole una
-// firma nuova in skin_rebind e il passaggio della tabella lungo tutta la
-// catena. Questa fa la stessa cosa con la primitiva che gia' esiste ed e'
-// gia' provata su corpo, armature e faccia.
-// NON dipende da g_r, e non e' un dettaglio: g_r lo riempie resolve_once(),
-// che si raggiunge SOLO dai due punti di iniezione del ghost. Il prestito
-// della faccia gira prima — misurato il 2026-09-19: maschera alle 17:12:50,
-// primo ghost alle 17:13:11, venti secondi dopo. La prima versione di questa
-// funzione usciva sul guardiano `if (!g_r.base)` IN SILENZIO e la cura non e'
-// mai girata.
+// Why not a +1 on the player's bones: it would keep alive nodes of a torn
+// down skeleton and the mask would keep describing the past. Why not a
+// string table: it would be more orthodox (the comments in this file call it
+// "shared names, local pointers") but it wants a new signature in
+// skin_rebind and the table passed down the whole chain. This does the same
+// with the primitive that already exists and is already proven on body,
+// armours and face.
+// It does NOT depend on g_r, and that is no detail: g_r is filled by
+// resolve_once(), which is reached ONLY from the two ghost injection points.
+// The face borrow runs earlier; measured on 2026-09-19: mask at 17:12:50,
+// first ghost at 17:13:11, twenty seconds later. The first version of this
+// function left on the `if (!g_r.base)` guard IN SILENCE and the cure never
+// ran.
 //
-// E' la stessa trappola che il commento sopra clone_module_base descrive per
-// esteso ("with no log line, because that early return predates the two logged
+// It is the same trap the comment above clone_module_base describes at length
+// ("with no log line, because that early return predates the two logged
 // failure paths below it... That is what killed client B on its first live
-// two-client test"). Per questo qui si risolve la base da soli, come fa lui, e
-// per questo ogni uscita ha la sua riga di log.
+// two-client test"). That is why the base is resolved here independently,
+// as that function does, and why every exit has its own log line.
 //
-// resolve_once() NON si chiama di proposito: latcherebbe per VALORE la handle
-// della texture degli effetti venti secondi prima del dovuto, e il suo stesso
-// commento avverte che quel valore non e' inizializzato presto.
+// resolve_once() is NOT called on purpose: it would latch the effects
+// texture handle BY VALUE twenty seconds too early, and its own comment
+// warns that value is not initialised early.
 void* face_reference_skeleton() {
     static std::atomic<void*> s_ref{nullptr};
     if (void* cached = s_ref.load(std::memory_order_acquire)) return cached;
 
     const std::uintptr_t base = clone_module_base();
     if (base == 0) {
-        FW_ERR("[face-ref] Fallout4.exe non risolvibile — nessuno scheletro "
-               "di riferimento");
+        FW_ERR("[face-ref] Fallout4.exe not resolvable — no reference "
+               "skeleton");
         return nullptr;
     }
     auto loader = reinterpret_cast<NifLoadByPathFn>(base + NIF_LOAD_BY_PATH_RVA);
@@ -5872,7 +5858,7 @@ void* face_reference_skeleton() {
     constexpr const char* kSkelPath =
         "Actors\\Character\\CharacterAssets\\skeleton.nif";
     NifLoadOpts opts{};
-    opts.flags = NIF_OPT_FADE_WRAP;   // le stesse del corpo del ghost
+    opts.flags = NIF_OPT_FADE_WRAP;   // the same as the ghost's body
 
     auto* ks = reinterpret_cast<std::uint8_t*>(
         base + BSLSP_BIND_KILLSWITCH_BYTE_RVA);
@@ -5884,32 +5870,31 @@ void* face_reference_skeleton() {
     *ks = saved_ks;
 
     if (rc != 0 || !fresh) {
-        FW_ERR("[face-ref] caricamento dello scheletro di riferimento fallito "
-               "rc=%u node=%p — la maschera restera' agganciata al rig del "
-               "giocatore e marcira' alla prossima power armor", rc, fresh);
+        FW_ERR("[face-ref] loading the reference skeleton failed rc=%u "
+               "node=%p — the mask stays hooked to the player's rig and will "
+               "rot at the next power armor", rc, fresh);
         return nullptr;
     }
 
     void* ref = clone_nif_subtree(fresh);
     if (ref && ref != fresh) {
-        // Il clone e' nostro (refcount 1, nessun genitore): vive finche' vive
-        // il processo, ed e' esattamente cio' che vogliamo. Il +1 del
-        // caricatore sull'istanza condivisa si lascia andare.
+        // The clone is this DLL's (refcount 1, no parent): it lives as long
+        // as the process, which is exactly what is wanted. The loader's +1
+        // on the shared instance is released.
         (void)seh_refcount_dec_armor(fresh);
     } else {
-        // Il clone ha restituito la sorgente: e' l'istanza del model DB, non
-        // nostra. Si tiene lo stesso, ma NON si lascia andare il +1 del
-        // caricatore, o il motore potrebbe portarcela via.
-        FW_WRN("[face-ref] clone dello scheletro di riferimento fallito — si "
-               "usa l'istanza condivisa e si TIENE il riferimento del "
-               "caricatore");
+        // The clone returned the source: it is the model DB's instance, not
+        // this DLL's. Kept all the same, but the loader's +1 is NOT released,
+        // or the engine could take it away.
+        FW_WRN("[face-ref] cloning the reference skeleton failed — using the "
+               "shared instance and KEEPING the loader's reference");
         ref = fresh;
     }
 
     s_ref.store(ref, std::memory_order_release);
-    FW_LOG("[face-ref] scheletro di riferimento pronto %p (clone di '%s', mai "
-           "attaccato, mai animato) — da qui in poi le ossa della maschera "
-           "puntano a nodi NOSTRI", ref, kSkelPath);
+    FW_LOG("[face-ref] reference skeleton ready %p (clone of '%s', never "
+           "attached, never animated) — from here on the mask's bones point "
+           "at nodes this DLL owns", ref, kSkelPath);
     return ref;
 }
 
@@ -5949,36 +5934,35 @@ std::unordered_map<void*, bool> g_armor_was_cloned;
 // EQUIP attaches). Reverse would also work via the idempotent skip
 // in ghost_attach_armor.
 //
-// 2026-09-18 — LA CODA DEVE ESSERE UNA COPIA FEDELE DELLA CHIAMATA.
+// 2026-09-18 — THE QUEUE MUST BE A FAITHFUL COPY OF THE CALL.
 //
-// Fino a oggi teneva due campi soli, e tutto il resto di un equip veniva
-// buttato nell'istante in cui il ghost non c'era ancora: la lista OMOD, la
-// priorita' dell'ARMA e il percorso forzato.
+// Until that day it held two fields only, and everything else of an equip
+// was thrown away the moment the ghost did not exist yet: the OMOD list, the
+// ARMA priority and the forced path.
 //
-// Per i vestiti si vedeva poco — la geometria sta sull'ARMA, quindi si
-// perdevano solo i mod e il tier. Per la power armor si vedeva tutto: la
-// mesh sta INTERAMENTE sull'OMOD del modello (vedi il commento sopra
-// ghost_attach_pa_piece_mods), quindi il ghost attaccava sei segnaposto
-// vuoti e restava il telaio nudo. Misurato il 2026-09-18 sul client B:
-// sei righe 'armor-attach ... 0 geometry leaf(ves)', 'pa-piece-mod' zero
-// volte, e gli OMOD regolarmente arrivati sul filo poche righe sopra.
+// For clothes it barely showed: the geometry sits on the ARMA, so only the
+// mods and the tier were lost. For the power armor it showed entirely: the
+// mesh sits WHOLLY on the model OMOD (see the comment above
+// ghost_attach_pa_piece_mods), so the ghost attached six empty placeholders
+// and the frame stayed bare. Measured on 2026-09-18 on client B: six lines
+// 'armor-attach ... 0 geometry leaf(ves)', 'pa-piece-mod' zero times, and
+// the OMODs duly arrived on the wire a few lines above.
 //
-// Il difetto non era COSA la coda tiene ma DOVE la si riempie: dentro
-// ghost_attach_armor, che gli OMOD non li riceveva nemmeno. Ora li riceve
-// — solo per poterli accodare, vedi la sua firma.
+// The defect was not WHAT the queue holds but WHERE it is filled: inside
+// ghost_attach_armor, which did not even receive the OMODs. Now it does,
+// only to be able to queue them; see its signature.
 //
-// Regola che ne esce, e vale per qualunque coda futura: se una coda tiene
-// meno campi della chiamata che rimpiazza, la differenza non e' un
-// risparmio, e' una perdita silenziosa che si manifesta solo nel percorso
-// meno esercitato.
+// The rule that comes out of it, valid for any future queue: if a queue
+// holds fewer fields than the call it replaces, the difference is not a
+// saving, it is a silent loss that shows only on the least exercised path.
 struct PendingArmorOp {
     std::uint32_t form_id;
     std::uint8_t  kind;                // EquipOpKind: 1=EQUIP, 2=UNEQUIP
-    std::uint16_t effective_priority;  // 0 = default della form
-    std::uint8_t  omod_count;          // capacita' 32 = MAX_EQUIP_MODS
+    std::uint16_t effective_priority;  // 0 = the form's default
+    std::uint8_t  omod_count;          // capacity 32 = MAX_EQUIP_MODS
     std::uint32_t omod_form_ids[32];
-    // Copia, non puntatore: il percorso arriva da una BSFixedString del
-    // motore e la coda gli sopravvive. Vuoto = nessuna forzatura.
+    // A copy, not a pointer: the path comes from an engine BSFixedString and
+    // the queue outlives it. Empty = no override.
     std::string   nif_path_override;
 };
 std::mutex g_pending_armor_mtx;
@@ -6732,8 +6716,8 @@ static bool seh_niav_set_flag(void* node, std::uint64_t mask, bool set) {
 std::atomic<bool> g_body_cull_enabled{true};
 
 static int apply_body_cull(const char* peer_id, bool culled) {
-    // Il corpo da nascondere e' quello DI QUESTO peer. Prima era "il corpo",
-    // e con due ghost vestire l'uno avrebbe fatto sparire il torso dell'altro.
+    // The body to hide is THIS peer's. It used to be "the body", and with
+    // two ghosts dressing one would have made the other's torso vanish.
     void* primary = nullptr;
     {
         const auto geoms = ghost_geoms_for(peer_id);
@@ -7167,38 +7151,39 @@ static std::uint16_t seh_child_count(void* node) {
 // graft and the retarget read bones by name, so the wrapper root is
 // invisible to them. The report after each load prints the template
 // root's vtable and flags: expected vt_rva 0x28FA3E8 with bit 23 set.
-// ESPERIMENTO 2026-09-19 — reversibile con questa riga sola.
+// EXPERIMENT 2026-09-19 — reversible with this one line.
 //
-// Lo scheletro della power armor si carica con le opzioni del motore
-// (kind 3 / 0x3D, Build 71e); quello UMANO del ghost con 0x10 soltanto, e
-// 0x3D contiene 0x10 — quindi l'umano ne usa uno su cinque. Il bit che manta
-// di piu' e' 0x20: un caricamento senza quel bit AZZERA il bit 23 del model
-// DB, e il bit 23 e' cio' che il walker di chiusura di Load3D controlla
-// prima di riapplicare i materiali di default a tutto l'albero dell'attore.
+// The power armor skeleton loads with the engine's options (kind 3 / 0x3D,
+// Build 71e); the ghost's HUMAN one with 0x10 only, and 0x3D contains 0x10,
+// so the human uses one out of five. The bit that matters most is 0x20: a
+// load without it CLEARS bit 23 of the model DB, and bit 23 is what the
+// closing walker of Load3D checks before reapplying the default materials to
+// the actor's whole tree.
 //
-// La mia lettura dice che il difetto sta nel caricamento UMANO. L'utente
-// vuole provare il verso opposto — allineare la PA all'umano — perche' e'
-// l'unico dei due che non tocca una cura gia' documentata e perche' le mie
-// ultime quattro ipotesi sono state smentite dalla misura.
+// This reading says the defect is in the HUMAN load. The user wanted to try
+// the opposite direction, aligning the PA to the human, because it is the
+// only one of the two that does not touch a documented cure and because the
+// last four hypotheses had been disproved by measurement.
 //
-// L'esperimento e' onesto: se il ghost in power armor guarisce togliendo
-// quei quattro bit, la mia lettura e' sbagliata. Se non guarisce, resta in
-// piedi e si prova l'altro verso.
+// The experiment is honest: if the ghost in power armor heals by dropping
+// those four bits, this reading is wrong. If it does not heal, it stands and
+// the other direction is tried.
 //
-// COSTO SE RESTA ACCESO: si riapre la perdita della vernice per il secondo
-// giocatore che entra in una power armor dipinta (misurata il 2026-09-15,
-// vedi il commento qui sopra). Rimettere `false` la richiude.
-// ESITO 2026-09-19: PROVATO E BOCCIATO. Con la PA caricata a 0x10 il ghost
-// non viene piu' ricreato affatto al rientro del peer — peggio del difetto
-// che cercavamo. Rimesso a false; la riga resta perche' il risultato
-// negativo vale quanto uno positivo e non va riprovato per dimenticanza.
+// COST IF LEFT ON: it reopens the paint loss for the second player to enter
+// a painted power armor (measured 2026-09-15, see the comment above).
+// Setting `false` again closes it.
+// OUTCOME 2026-09-19: TRIED AND REJECTED. With the PA loaded at 0x10 the
+// ghost is not recreated at all when the peer rejoins, worse than the defect
+// under investigation. Set back to false; the line stays because a negative
+// result is worth as much as a positive one and must not be retried by
+// forgetfulness.
 static constexpr bool kPaSkelOptsAlignedToHuman = false;
 
 static void pa_skeleton_load_opts(NifLoadOpts* opts) {
     *opts = NifLoadOpts{};
     if (kPaSkelOptsAlignedToHuman) {
-        // Le stesse opzioni dello scheletro umano del ghost.
-        opts->flags = NIF_OPT_FADE_WRAP;   // 0x10, model_kind resta 0
+        // The same options as the ghost's human skeleton.
+        opts->flags = NIF_OPT_FADE_WRAP;   // 0x10, model_kind stays 0
         return;
     }
     opts->model_kind = NIF_MODEL_KIND_ACTOR;
@@ -7225,19 +7210,18 @@ static void report_pa_skeleton_template(void* pa_skel, const char* who) {
            (flags & 0x800000ull) ? "SET" : "CLEAR");
 }
 
-// 2026-09-18 — era una `static` dentro la funzione, quindi viva quanto il
-// processo. Adesso che ogni corpo ha le SUE ossa quel flag va azzerato con
-// loro: uno scheletro nuovo non ha nessun osso PA, e lasciarlo a true
-// significa non innestarglieli mai piu' e attaccare le piastre a ossa che
-// non esistono.
-// g_pa_graft_all_present e' in GhostRecord::pa_grafted.
+// 2026-09-18 — it was a `static` inside the function, so as long-lived as
+// the process. Now that every body has ITS OWN bones that flag must be
+// cleared with them: a new skeleton has no PA bone, and leaving it true
+// means never grafting them again and attaching the pieces to bones that do
+// not exist.
+// g_pa_graft_all_present is GhostRecord::pa_grafted.
 
 static bool graft_pa_bones_into_skeleton(void* skel,
                                          const char* peer_id) {
     if (!skel) return false;
-    // L'idempotenza per nodo e' qui sotto; questo flag salta solo il
-    // caricamento dello scheletro PA quando si e' gia' visto che ci sono
-    // tutte le ossa.
+    // The per-node idempotence is below; this flag only skips loading the PA
+    // skeleton once all the bones have already been seen present.
     if (ghost_pa_grafted(peer_id)) return true;
 
     constexpr const char* kPaSkelPath =
@@ -7376,11 +7360,11 @@ static bool graft_pa_bones_into_skeleton(void* skel,
 // live data sampled from a peer who is in PA, i.e. PA-proportioned, so the
 // mix stays consistent. Bones it does not drive stay at PA bind, which is
 // exactly where the frame mesh expects them.
-// PaBindSave e la mappa dei bind vivono in GhostRecord (cerca "IL GHOST DI
-// CHI?"): erano una mappa UNICA per sessione, e la guardia "se non e' vuota
-// esci" qui sotto significava che il secondo ghost in power armor non veniva
-// retargetato mai — restava umano sotto le piastre, con le mani dentro
-// l'avambraccio, esattamente il difetto che il retarget esiste per curare.
+// PaBindSave and the bind map live in GhostRecord (search "WHOSE GHOST?"):
+// they were a SINGLE map per session, and the "if not empty, leave" guard
+// below meant the second ghost in power armor was never retargeted: it
+// stayed human under the pieces, hands inside the forearm, exactly the defect
+// the retarget exists to cure.
 
 // SEH-safe read of the 16-float NiTransform at node+NIAV_LOCAL_ROTATE_OFF
 // (mirror of seh_write_local_transform).
@@ -7418,9 +7402,9 @@ static void collect_named_nodes_w4(void* root,
 
 static void pa_bind_retarget_enable(void* skel, const char* peer_id) {
     if (!skel) return;
-    // Gia' retargetato QUESTO ghost. Prima la domanda era "e' gia' stato
-    // retargetato QUALCUNO", e con due peer in power armor il secondo non lo
-    // era mai.
+    // THIS ghost already retargeted. The question used to be "has ANYONE
+    // been retargeted", and with two peers in power armor the second never
+    // was.
     if (!ghost_pa_bind_empty(peer_id)) return;
     std::unordered_map<void*, PaBindSave> saved;
 
@@ -7458,8 +7442,8 @@ static void pa_bind_retarget_enable(void* skel, const char* peer_id) {
     //
     // PA's hand offset (26.96) is measured FROM THE ELBOW; on the human
     // chain it gets applied after the two twist bones as well, so the arm
-    // came out ~10 units too long ("un po' troppo allungati", user
-    // comparison screenshot 2026-08-16). These translations are the offline
+    // came out ~10 units too long (a little too long in the user's
+    // comparison screenshot of 2026-08-16). These translations are the offline
     // model-space solve for the HUMAN chain (twist locals human, the rest
     // PA): the hand lands exactly on the PA skeleton's model-space hand.
     // Twist bind rotations deviate from identity by <0.006, so patching
@@ -7476,10 +7460,10 @@ static void pa_bind_retarget_enable(void* skel, const char* peer_id) {
 
     int retargeted = 0;
     {
-        // Nessun lock qui: `saved` e' una mappa locale e questa camminata
-        // legge e scrive nodi del grafo di scena. Prima il lock della mappa
-        // globale restava preso per tutto il giro — centinaia di letture e
-        // scritture in gabbia SEH con un mutex in mano.
+        // No lock here: `saved` is a local map and this walk reads and
+        // writes scene graph nodes. The global map's lock used to stay held
+        // for the whole loop, hundreds of reads and writes in an SEH cage
+        // with a mutex in hand.
         for (const auto& [name, gnode] : ghost_nodes) {
             auto pit = pa_nodes.find(name);
             if (pit == pa_nodes.end()) continue;
@@ -7501,7 +7485,7 @@ static void pa_bind_retarget_enable(void* skel, const char* peer_id) {
         }
     }
     (void)seh_refcount_dec_armor(pa_skel);
-    // Deposito alla fine, non durante: la camminata qui sopra tocca il grafo.
+    // Deposited at the end, not during: the walk above touches the graph.
     ghost_pa_bind_store(peer_id, std::move(saved));
     FW_LOG("[pa-retarget] %d bones set to PA bind locals (ghost skel %zu "
            "named, PA skel %zu named) — human bind saved for restore at "
@@ -7509,8 +7493,8 @@ static void pa_bind_retarget_enable(void* skel, const char* peer_id) {
 }
 
 static void pa_bind_retarget_disable(const char* peer_id) {
-    // Presi e svuotati in un colpo: da qui in giu' si scrive nel grafo senza
-    // tenere nessun lock.
+    // Taken and emptied in one go: from here down the graph is written with
+    // no lock held.
     const auto saved = ghost_pa_bind_take(peer_id);
     if (saved.empty()) return;
     int restored = 0;
@@ -7872,12 +7856,11 @@ int ghost_attach_pa_piece_mods(const char* peer_id, std::uint32_t piece_form_id,
         if (ghost_attach_armor(peer_id, mod, 0, mpath)) {
             ++attached;
             std::lock_guard<std::mutex> lk(g_pa_piece_mods_mtx);
-            // 2026-09-18 — cercare prima di inserire. `ghost_attach_armor`
-            // risponde di si' anche quando salta perche' era gia' attaccato
-            // (la sua scorciatoia idempotente), quindi su un bootstrap
-            // rigiocato questo registro raccoglieva un duplicato per ogni
-            // mod, a ogni riconnessione, e il distacco poi ci ripassava
-            // sopra due volte.
+            // 2026-09-18 — search before inserting. `ghost_attach_armor`
+            // answers yes even when it skips because it was already attached
+            // (its idempotent shortcut), so on a replayed bootstrap this
+            // registry collected a duplicate per mod at every reconnection,
+            // and the detach then went over it twice.
             auto& mods_here = g_pa_piece_mods[peer_id][piece_form_id];
             if (std::find(mods_here.begin(), mods_here.end(), mod)
                     == mods_here.end()) {
@@ -8034,8 +8017,8 @@ bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
             g_pending_armor_ops[peer_id].push_back(std::move(op));
             qsize = g_pending_armor_ops[peer_id].size();
         }
-        // Il conteggio degli OMOD sta nella riga apposta: e' il numero che
-        // sarebbe bastato a vedere questo difetto un mese fa.
+        // The OMOD count is on the line on purpose: it is the number that
+        // would have been enough to see this defect a month earlier.
         FW_LOG("[armor-attach] no ghost yet (peer=%s form=0x%X prio=%u "
                "omods=%u path='%s') — queued EQUIP for replay on ghost "
                "spawn (pending size=%zu)",
@@ -8592,10 +8575,10 @@ bool ghost_detach_armor(const char* peer_id, std::uint32_t item_form_id) {
         // armor" cleanly. Also clean up tracking map (if there's a
         // racy stale entry).
         {
-            // Uno stacco non porta con se' ne' OMOD ne' priorita': lo
-            // stacco dei modelli lo fa gia' il blocco qui sopra, per form
-            // dell'OMOD. Campi a zero ESPLICITAMENTE, per non far sembrare
-            // una scelta cio' che prima era una perdita.
+            // A detach carries neither OMODs nor priority: the block above
+            // already detaches the models, by OMOD form. Fields zeroed
+            // EXPLICITLY, so that what used to be a loss does not look like a
+            // choice.
             PendingArmorOp op{};
             op.form_id = item_form_id;
             op.kind    = /*UNEQUIP=*/2;
@@ -8778,10 +8761,10 @@ void flush_pending_armor_ops() {
         const std::string& peer = kv.first;
         for (const auto& op : kv.second) {
             ++total;
-            // Gli OMOD si ripassano anche qui: se il ghost e' sparito di
-            // nuovo fra l'accodamento e adesso, questa chiamata ri-accoda,
-            // e deve ri-accodare TUTTO — altrimenti il buco si riapre al
-            // secondo giro invece che al primo.
+            // The OMODs are passed again here too: if the ghost vanished
+            // again between the queueing and now, this call re-queues, and
+            // it must re-queue EVERYTHING, or the hole reopens on the second
+            // pass instead of the first.
             const bool success = (op.kind == 1)
                 ? ghost_attach_armor(peer.c_str(), op.form_id,
                                      op.effective_priority,
@@ -8794,13 +8777,12 @@ void flush_pending_armor_ops() {
                 : ghost_detach_armor(peer.c_str(), op.form_id);
             if (success) ++ok;
 
-            // La meta' che mancava. Il dispatcher lo fa da sempre subito
-            // dopo un attach riuscito (v24 E4); la coda non l'ha mai
-            // fatto, ed e' per questo che la power armor annunciata a un
-            // nuovo arrivato compariva come telaio senza pezzi.
-            // Idempotente: ogni modello si attacca come armatura propria
-            // chiavata sulla form dell'OMOD, e ghost_attach_armor salta in
-            // silenzio cio' che e' gia' attaccato.
+            // The missing half. The dispatcher has always done it right after
+            // a successful attach (v24 E4); the queue never did, which is why
+            // the power armor announced to a newcomer appeared as a frame
+            // without pieces. Idempotent: every model attaches as an armour
+            // of its own keyed on the OMOD's form, and ghost_attach_armor
+            // silently skips what is already attached.
             if (success && op.kind == 1 && op.omod_count > 0) {
                 const int n = ghost_attach_pa_piece_mods(
                     peer.c_str(), op.form_id, op.omod_form_ids,
@@ -8851,11 +8833,11 @@ void reapply_ghost_skin_swaps(const char* trigger_label) {
         return;
     }
 
-    // 2026-09-18 — lo scheletro si chiede DENTRO il ciclo, uno per peer. Il
-    // commento che stava qui prometteva esattamente questo ("quando il record
-    // mappera' peer -> corpo"): il record c'e', e con due ghost ricucire le
-    // armature dell'uno sulle ossa dell'altro le avrebbe fatte muovere col
-    // corpo sbagliato.
+    // 2026-09-18 — the skeleton is asked for INSIDE the loop, one per peer.
+    // The comment that stood here promised exactly this ("when the record
+    // maps peer -> body"): the record is here, and with two ghosts re-binding
+    // one's armours on the other's bones would have made them move with the
+    // wrong body.
     std::size_t reapplied = 0;
     int total_swapped = 0;
     std::size_t no_skel = 0;
@@ -10250,9 +10232,9 @@ bool ghost_set_weapon(const char* peer_id,
     // share (clone failure path), old_node == new_node, so extras
     // never got cleared, and the IDEMPOTENT branch (same form_id +
     // same path) didn't clear them either. Result: each equip
-    // accumulated mods on top of previous equip's mods. User
-    // reported: "cambio arma senza silenziatore ma il silenziatore
-    // ora permane".
+    // accumulated mods on top of previous equip's mods. User report:
+    // after switching to a weapon without a silencer, the silencer
+    // stayed on.
     //
     // clear_ghost_extra_mods now does proper detach-via-parent-ptr
     // (Agent D fix) so the cached BSFadeNode actually loses our mod
@@ -10466,8 +10448,8 @@ bool ghost_clear_weapon(const char* peer_id,
     // 2026-05-06 evening — was: just refdec'd extras. Bug: cached
     // BSFadeNode kept all attached mod children, so next equip of same
     // path (engine resmgr returns the same cached instance) re-rendered
-    // last equip's mods on top of new equip's mods. User reported:
-    // "cambio arma senza silenziatore ma il silenziatore ora permane".
+    // last equip's mods on top of new equip's mods. User report: after
+    // switching to a weapon without a silencer, the silencer stayed on.
     clear_ghost_extra_mods(peer_id);
 
     // Phase 3 (lock again): release base node + erase slot. We re-find
@@ -12252,7 +12234,7 @@ bool attach_extra_node_to_ghost_weapon(const char* peer_id,
     // `+0x28 parent` field was overwritten by whichever peer attached
     // last → first peer's children list pointed to a node whose parent
     // pointer no longer pointed back at it → render walk corruption →
-    // user reported "le pistole sono tutte uguali e troppo moddate").
+    // user report: every pistol identical and over-modded).
     // Six independent RE agents converged on the fix: invoke vt[26]
     // (NetImmerse Clone slot) on the cached node to get a per-peer
     // deep-clone with its own parent pointer + GPU buffer AddRef'd.
@@ -12609,17 +12591,17 @@ bool ghost_attach_assembled_weapon(const char* peer_id,
     if (!g_resolved.load(std::memory_order_acquire)) return false;
     if (!g_r.nif_load_by_path || !g_r.attach_child_direct) return false;
 
-    // 2026-09-18 — IDEMPOTENZA, come ce l'ha gia' l'armatura.
+    // 2026-09-18 — IDEMPOTENCE, as the armour already has it.
     //
-    // Senza questa, ogni consegna ripetuta dello stesso equip smonta l'arma
-    // del peer e la ricostruisce: ricarica il NIF, lo riclona, libera il
-    // nodo vecchio e rifa' il giro degli OMOD. Finche' gli equip arrivavano
-    // solo dal vivo la cosa non si vedeva; da quando un client che rientra
-    // si rigioca l'intero bootstrap, si vedrebbe a ogni riconnessione.
+    // Without this, every repeated delivery of the same equip tears the
+    // peer's weapon down and rebuilds it: reloads the NIF, re-clones it,
+    // frees the old node and redoes the OMOD round. While equips arrived only
+    // live it did not show; since a rejoining client replays the whole
+    // bootstrap, it would show at every reconnection.
     //
-    // Si salta solo se combaciano peer, arma E insieme di mod, e solo se il
-    // nodo e' ancora li': se il ghost e' stato smontato nel frattempo lo
-    // slot punta al vuoto e l'arma va rifatta davvero.
+    // Skipped only when peer, weapon AND mod set match, and only if the node
+    // is still there: if the ghost was torn down in the meantime the slot
+    // points at nothing and the weapon really has to be remade.
     {
         std::vector<std::uint32_t> incoming;
         incoming.reserve(num_omods);
@@ -12899,10 +12881,10 @@ void flush_pending_weapon_ops() {
 // (with fresh BSPositionData, not shared from source). Kept here #if 0'd
 // as historical reference for a few commits, will be deleted once M2
 // proves stable.
-// clone_shader_into_cube_LEGACY e' stata cancellata il 2026-09-18. Il
-// suo stesso commento diceva "will be deleted once M2 proves stable";
-// M2 e' stabile da mesi, la funzione non aveva chiamanti, e leggeva il
-// puntatore unico del corpo tenendo in vita un residuo per niente.
+// clone_shader_into_cube_LEGACY was deleted on 2026-09-18. Its own comment
+// said "will be deleted once M2 proves stable"; M2 has been stable for
+// months, the function had no callers, and it read the single body pointer,
+// keeping a leftover alive for nothing.
 #endif  // --- end legacy M2.3 clone_shader_into_cube ---
 
 // ---------------------------------------------------------------- dispatch
@@ -13018,11 +13000,11 @@ bool local_player_in_world() {
 //      pattern already exists for equipment (flush_pending_armor_ops /
 //      flush_pending_weapon_ops, drained at the end of inject); pose and pos
 //      need the same treatment instead of a fresh mechanism.
-// RISOLTO il 2026-09-18. Quello che segue era il prerequisito bloccante, e
-// si e' sciolto: il corpo del ghost non e' piu' un puntatore unico ma
-// GhostRecord::body, indicizzato per peer_id. Il testo resta perche' spiega
-// PERCHE' era bloccante.
-// (storico) Blocking prerequisite for more than 2 players: g_injected_cube is a SINGLE
+// RESOLVED on 2026-09-18. What follows was the blocking prerequisite, and
+// it dissolved: the ghost's body is no longer a single pointer but
+// GhostRecord::body, keyed by peer_id. The text stays because it explains
+// WHY it was blocking.
+// (historical) Blocking prerequisite for more than 2 players: g_injected_cube is a SINGLE
 // pointer, so exactly one remote peer can ever be rendered. Ghost identity is
 // also still static (ghost_map in fw_config.ini), which cannot work once peers
 // are dynamic — the server has to assign it at join.
@@ -13749,17 +13731,17 @@ static void pos_update_seh(void* body, void* head,
     }
 }
 
-// Fase 2 — il lavoro di posizionamento su UN ghost.
+// Phase 2: the positioning work on ONE ghost.
 //
-// Era il corpo di on_pos_update_message, scritto quando i ghost erano uno e
-// "il corpo" non aveva bisogno di aggettivi. Estratto invece che annidato
-// dentro un ciclo di proposito: annidare avrebbe lasciato cento righe con
-// l'indentazione sbagliata, e questo file si legge dai commenti.
+// It was the body of on_pos_update_message, written when there was one
+// ghost and "the body" needed no adjective. Extracted instead of nested in a
+// loop on purpose: nesting would have left a hundred lines with the wrong
+// indentation, and this file is read through its comments.
 //
-// NOTA sulla diagnostica del movimento, poco piu' sotto: tiene lo stato in
-// variabili statiche, quindi appena i ghost sono piu' d'uno confronta la
-// direzione di uno con l'imbardata del successivo. E' nata a peer singolo;
-// quando servira' con due ghost va indicizzata per peer come tutto il resto.
+// NOTE on the movement diagnostic, a little further down: it keeps its state
+// in static variables, so as soon as there is more than one ghost it compares
+// one's heading with the next one's yaw. Born single-peer; when it is needed
+// with two ghosts it has to be keyed by peer like everything else.
 static void apply_position_to_ghost(const std::string& peer, void* body) {
     void* head = ghost_head_for(peer.c_str());
     const auto snap = fw::net::client().get_remote_snapshot(peer);
@@ -13861,9 +13843,9 @@ void on_pos_update_message() {
     // regression). Suppress writes, never sends.
     if (fw::hooks::in_local_death_standdown()) return;
 
-    // OGNI ghost registrato, non "l'unico". Fotografia e non iterazione dal
-    // vivo: posizionare scrive nel grafo di scena, e scrivere tenendo il lock
-    // della mappa e' il modo di trasformare un difetto grafico in uno stallo.
+    // EVERY registered ghost, not "the only one". A snapshot and not a live
+    // iteration: positioning writes into the scene graph, and writing while
+    // holding the map's lock is how a visual defect turns into a deadlock.
     for (const auto& [peer, body] : ghost_snapshot()) {
         apply_position_to_ghost(peer, body);
     }
@@ -14097,13 +14079,12 @@ struct RemotePoseSlot {
     fw::net::PoseBoneEntry       quats[fw::net::MAX_POSE_BONES] = {};
 };
 std::mutex      g_remote_pose_mutex;
-// 2026-09-18 — lo slot "ultimo arrivato" NON ESISTE PIU'. Teneva la posa di
-// chiunque avesse parlato per ultimo, ed era corretto solo finche' il ghost
-// era uno: il gestore che la applicava non sapeva di CHI fosse il corpo che
-// stava muovendo, quindi non poteva chiedere di meglio. Ora il gestore itera
-// i ghost registrati e per ognuno pesca la SUA posa qui sotto, quindi
-// l'ultimo arrivato non serve a nessuno.
-// La posa di ogni peer, che e' la risposta giusta.
+// 2026-09-18 — the "last arrived" slot NO LONGER EXISTS. It held the pose
+// of whoever spoke last, and that was right only while there was one ghost:
+// the handler applying it did not know WHOSE body it was moving, so it could
+// not ask for better. Now the handler iterates the registered ghosts and for
+// each one picks ITS pose below, so the last arrived is of use to nobody.
+// The pose of every peer, which is the right answer.
 std::unordered_map<std::string, RemotePoseSlot> g_remote_pose_by_peer;
 
 // Canonical bone list globals are defined at file scope (above) so
@@ -14171,32 +14152,31 @@ void* find_local_player_3d(std::uintptr_t base) {
 }  // anonymous namespace
 // ----- end M8P3.15 helpers --------------------------------------------
 
-// === La NOSTRA posa sul filo, che non dipende da nessun ghost ============
+// === The LOCAL pose on the wire, which depends on no ghost ================
 //
-// Estratta da on_bone_tick_message il 2026-09-18, dopo un test coi log
-// pieni. Stava DOPO il controllo `if (!body) return`, e quel controllo la
-// spegneva: un client senza ghost non trasmetteva la propria posa. I numeri,
-// da due sessioni indipendenti, sono senza appello — la prima [pose-tx] di
-// un client cade 56-57 ms dopo che quel client ha costruito il PROPRIO
-// corpo, e nel mezzo di uno smontaggio il client A e' rimasto muto per
-// dodici secondi, cioe' esattamente la finestra di riconnessione del peer.
+// Extracted from on_bone_tick_message on 2026-09-18, after a test with full
+// logs. It sat AFTER the `if (!body) return` check, and that check switched
+// it off: a client without a ghost did not transmit its own pose. The
+// numbers, from two independent sessions, leave no appeal: a client's first
+// [pose-tx] falls 56-57 ms after that client built its OWN body, and in the
+// middle of a teardown client A stayed mute for twelve seconds, exactly the
+// peer's reconnection window.
 //
-// Non era un requisito, era un controllo di comodo, e il commento sopra
-// on_bone_tick_message lo diceva gia': "questo gestore LEGGE le ossa del
-// nostro giocatore e le ACCODA sulla rete; non scrive niente nel grafo di
-// scena, g_injected_cube viene letto solo per controllare che il ghost
-// esista". Verificato: in queste trecento righe `body` non compare mai.
+// It was not a requirement, it was a check of convenience, and the comment
+// above on_bone_tick_message already said so: "this handler READS the local
+// player's bones and QUEUES them on the network; it writes nothing into the
+// scene graph, g_injected_cube is read only to check the ghost exists".
+// Verified: `body` never appears in these three hundred lines.
 //
-// Resta un legame, ed e' onesto dirlo: la lista canonica dei giunti viene
-// raccolta dallo scheletro del ghost al momento dell'iniezione, quindi un
-// client che non ha MAI avuto un ghost in questa sessione esce ancora
-// subito, qui sotto, su `canonical.empty()`. La lista pero' non viene mai
-// svuotata, quindi basta un ghost una volta sola: lo smontaggio e il
-// rientro, che sono il caso che conta, adesso sono coperti. Sciogliere
-// anche l'ultimo pezzo vuol dire produrre i nomi dei giunti senza un ghost,
-// e quello va fatto insieme allo scheletro per peer.
+// One tie remains, and it is honest to say it: the canonical joint list is
+// collected from the ghost's skeleton at injection, so a client that has
+// NEVER had a ghost in this session still leaves at once, below, on
+// `canonical.empty()`. The list is never emptied, though, so one ghost once
+// is enough: teardown and rejoin, the case that matters, are covered now.
+// Dissolving the last piece too means producing the joint names without a
+// ghost, and that goes together with the per-peer skeleton.
 //
-// MAIN THREAD, dal tick delle ossa.
+// MAIN THREAD, from the bone tick.
 static void broadcast_local_pose(bool log_now) {
     // M8P3.20 — broadcast every tick (20Hz). At 80 bones × 16B = 1280B
     // payload + 12B frame header = 1292B per packet × 20Hz = 25.8 KB/s
@@ -14281,35 +14261,35 @@ static void broadcast_local_pose(bool log_now) {
     //                              |
     //                              |
     //
-    //          QUI GIACE DEL CODICE CHE NON HA MAI SCATTATO,
-    //        CHE NON RICORDAVO DI AVER MESSO, E CHE NON SERVE
-    //                       AD UN CAZZO.
+    //           HERE LIES CODE THAT NEVER ONCE FIRED,
+    //          THAT NOBODY REMEMBERED WRITING, AND THAT
+    //                  WAS OF NO USE WHATSOEVER.
     //
     //                      2026-09-18 - 2026-09-18
     //
-    // Il fermo della posa in power armor. Quando il giocatore locale saliva
-    // su un telaio, questo blocco smetteva di spedire la posa, perche' la
-    // cattura aggancia 27 nomi su 82 invece di 32 e le rotazioni sono prese
-    // da ossa al bind della power armor.
+    // The power armor pose hold. When the local player climbed into a
+    // frame, this block stopped sending the pose, because the capture binds
+    // 27 names out of 82 instead of 32 and the rotations are taken from
+    // bones at the power armor bind.
     //
-    // Non e' mai partito. Il rilevatore cercava 'L_Pauldron' nell'albero
-    // animato del GIOCATORE, ma la misura da cui veniva quel nome era stata
-    // fatta sullo scheletro del GHOST. Due alberi diversi, e in tre test la
-    // riga '[pose-tx] power armour ON' non e' comparsa una volta.
+    // It never fired. The detector looked for 'L_Pauldron' in the PLAYER's
+    // animated tree, but the measurement that name came from was taken on
+    // the GHOST's skeleton. Two different trees, and in three tests the
+    // '[pose-tx] power armour ON' line never appeared once.
     //
-    // E MENO MALE, ed e' questa la ragione per cui la lapide resta invece di
-    // una cancellazione silenziosa: se avesse funzionato avrebbe congelato
-    // un ghost che si anima benissimo da solo. Mentre il mittente manda pose
-    // in spazio PA, il ricevente sta gia' retargetando il ghost al bind
-    // della PA — le due cose si accordano da sole, e il ghost si muove
-    // giusto. Misurato il 2026-09-18 sul client B, in andata e in ritorno:
+    // JUST AS WELL, and that is why the tombstone stays instead of a silent
+    // deletion: had it worked it would have frozen a ghost that animates
+    // perfectly well by itself. While the sender sends poses in PA space,
+    // the receiver is already retargeting the ghost to the PA bind: the two
+    // agree on their own, and the ghost moves right. Measured on 2026-09-18
+    // on client B, both ways:
     //
     //     21:57:28  [pa-retarget] 147 bones set to PA bind locals
     //     21:58:52  [pa-retarget] restored 147/147 bones to human bind
     //
-    // Quindi: se un giorno qualcuno legge 'matched 32 -> 27' e pensa di
-    // aggiustare il rilevatore, sta per rompere un caso che funziona. La
-    // posa in power armor NON va fermata. Lasciarla andare e' la cura.
+    // So: if one day someone reads 'matched 32 -> 27' and thinks of fixing
+    // the detector, they are about to break a case that works. The power
+    // armor pose is NOT to be stopped. Letting it go is the cure.
 
     // === 2026-08-05 — WHICH TREE, AND IS IT MOVING? =======================
     // Two failed fixes in a row were built on guesses about what the sender
@@ -14582,14 +14562,14 @@ void on_bone_tick_message() {
     if (log_now) s_decim = 0;
 
 
-    // La nostra posa parte PRIMA, e a prescindere: leggerla e spedirla non
-    // tocca il grafo di scena, quindi non ha niente a che fare col fatto
-    // che un ghost esista. Vedi il commento sopra broadcast_local_pose.
+    // The local pose goes out FIRST, regardless: reading and sending it does
+    // not touch the scene graph, so it has nothing to do with whether a
+    // ghost exists. See the comment above broadcast_local_pose.
     broadcast_local_pose(log_now);
 
-    // Un ghost qualunque: da qui in giu' e' diagnostica sulla meta' ghost
-    // del tick, non applicazione di posa. Quella la fa on_pose_apply_message,
-    // che i ghost li itera.
+    // Any ghost: from here down it is diagnostics on the ghost half of the
+    // tick, not pose application. That is done by on_pose_apply_message,
+    // which iterates the ghosts.
     void* body = ghost_any_body();
     if (!body) {
         if (log_now) {
@@ -14625,8 +14605,8 @@ void on_bone_tick_message() {
         static int s_armor_decim = 0;
         if (++s_armor_decim >= 5) {
             s_armor_decim = 0;
-            // Stessa nota del sito qui sopra: un corpo solo, quindi le
-            // sue ossa. Diventera' per peer col record.
+            // Same note as the site above: one body, so its bones. It
+            // becomes per peer with the record.
             void* skel = fw::native::skin_rebind::skeleton_for(body);
             if (skel) {
                 std::vector<void*> armors_snapshot;
@@ -14754,23 +14734,22 @@ void on_pose_apply_message() {
     // regression). Suppress writes, never sends.
     if (fw::hooks::in_local_death_standdown()) return;
 
-    // Fase 2 — OGNI ghost, non "l'unico".
+    // Phase 2: EVERY ghost, not "the only one".
     //
-    // Prima questo gestore leggeva un corpo solo e una posa sola: quella
-    // dell'ultimo peer che avesse parlato, perche' con un ghost in tutto le
-    // due cose coincidevano. Con due ghost quel "l'ultimo che ha parlato" e'
-    // un sorteggio, e il sorteggio scrive le rotazioni di uno nelle ossa
-    // dell'altro.
+    // This handler used to read one body and one pose: the last peer's who
+    // had spoken, because with one ghost in total the two coincided. With
+    // two ghosts that "last one who spoke" is a coin toss, and the coin toss
+    // writes one's rotations into the other's bones.
     //
-    // La forma giusta e' un giro sui ghost registrati, e dentro il giro si
-    // usa `continue` e mai `return`: il dato che manca a un peer — la posa
-    // non ancora arrivata, le ossa non ancora camminate — non deve fermare
-    // l'animazione di tutti gli altri. E' la differenza fra un ghost fermo e
-    // una stanza intera di statue.
+    // The right shape is a loop over the registered ghosts, and inside the
+    // loop `continue` and never `return`: the data one peer lacks (the pose
+    // not arrived yet, the bones not walked yet) must not stop the animation
+    // of all the others. It is the difference between one still ghost and a
+    // whole room of statues.
     int wrote = 0, skipped_sentinel = 0;
     std::size_t animated = 0;
     for (const auto& [peer, ghost] : ghost_snapshot()) {
-        // La posa DI QUESTO peer.
+        // THIS peer's pose.
         fw::net::PoseBoneEntry quats[fw::net::MAX_POSE_BONES];
         std::uint16_t n = 0;
         {
@@ -14783,10 +14762,10 @@ void on_pose_apply_message() {
                         n * sizeof(fw::net::PoseBoneEntry));
         }
 
-        // Le ossa DI QUESTO corpo. L'indice i nei quaternioni ricevuti
-        // corrisponde a canonical[i], e canonical e' uguale su ogni client
-        // perche' i nomi sono congelati al primo corpo della sessione: e'
-        // quello che rende leciti indici nudi sul filo invece dei nomi.
+        // THIS body's bones. Index i in the received quaternions corresponds
+        // to canonical[i], and canonical is the same on every client because
+        // the names are frozen at the session's first body: that is what
+        // makes bare indices on the wire legitimate instead of names.
         const std::vector<void*> ptrs = ghost_bones_for(peer.c_str());
         if (ptrs.empty()) continue;
 
@@ -14808,9 +14787,9 @@ void on_pose_apply_message() {
             if (write_local_3x3(bone, m3)) wrote++;
         }
 
-        // Ricalcolo del mondo sul sottoalbero DI QUESTO ghost, uno per uno:
-        // e' la chiamata che rende visibili le rotazioni appena scritte, e
-        // vale solo per l'albero che le ha ricevute.
+        // World recompute on THIS ghost's subtree, one by one: it is the call
+        // that makes the rotations just written visible, and it applies only
+        // to the tree that received them.
         update_downward_safe(ghost);
         ++animated;
     }
@@ -14847,8 +14826,8 @@ struct RemoteCrouchSlot {
     fw::net::PoseCrouchEntry      entries[fw::net::MAX_POSE_CROUCH_BONES] = {};
 };
 std::mutex        g_remote_crouch_mutex;
-// Il crouch di ogni peer. Vedi la posa qui sopra: l'ultimo arrivato e'
-// morto per la stessa ragione.
+// The crouch of every peer. See the pose above: the last arrived died for
+// the same reason.
 std::unordered_map<std::string, RemoteCrouchSlot> g_remote_crouch_by_peer;
 
 void store_remote_crouch(const char* peer_id,
@@ -14901,9 +14880,9 @@ void on_pose_crouch_apply_message() {
     static const bool kGhostCrouchEnabled = true;
     if (!kGhostCrouchEnabled) return;
 
-    // Stessa forma del gestore delle rotazioni qui sopra, e per la stessa
-    // ragione: il crouch di un peer non ha niente a che fare col corpo di un
-    // altro. `continue` e mai `return`.
+    // Same shape as the rotation handler above, and for the same reason: a
+    // peer's crouch has nothing to do with another's body. `continue` and
+    // never `return`.
     int wrote = 0;
     std::size_t animated = 0;
     for (const auto& [peer, ghost] : ghost_snapshot()) {
@@ -14931,8 +14910,8 @@ void on_pose_crouch_apply_message() {
             if (write_local_translate(bone, t3)) ++wrote;
         }
 
-        // Re-bake del sottoalbero DI QUESTO ghost (stesso aiutante in gabbia
-        // SEH che usa la posa delle rotazioni).
+        // Re-bake of THIS ghost's subtree (the same SEH-caged helper the
+        // rotation pose uses).
         update_downward_safe(ghost);
         ++animated;
     }
@@ -14965,7 +14944,8 @@ namespace {
 // we self-throttle so each NPC's pose costs one tree-walk every ~33 ms. Denser
 // capture keeps the receiver nlerp chasing a FRESH target every ~2 frames so it
 // never converges-then-freezes between samples (the "slide w/ frozen anim").
-// User OK'd 30Hz explicitly ([68692] "cosa ci vuole a ridurlo a 30-20").
+// User OK'd 30Hz explicitly ([68692]: asked what it would take to bring it
+// down to 30-20).
 constexpr std::uint64_t kNpcPoseCapturePeriodMs = 33;
 
 // c.42 — quality FLOOR lowered 16→1. A near/loaded human skeleton matches
@@ -16019,14 +15999,13 @@ void bone_tick_worker() {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));  // 20Hz idle
         if (g_bone_tick_stop.load(std::memory_order_acquire)) break;
 
-        // NIENTE uscita anticipata sul corpo del ghost. Il gestore fa due
-        // lavori: spedire la NOSTRA posa, che non ha bisogno di nessun
-        // ghost, e guidare quello dei peer, che ce l'ha. Saltare il giro
-        // perche' manca il secondo spegneva anche il primo, e fra uno
-        // smontaggio e la ricostruzione il client restava muto — dodici
-        // secondi, misurati il 2026-09-18, proprio mentre il peer stava
-        // rientrando. Il gestore si occupa da solo della meta' che non
-        // puo' fare.
+        // NO early exit on the ghost's body. The handler does two jobs:
+        // sending the LOCAL pose, which needs no ghost, and driving the
+        // peers', which does. Skipping the pass because the second was
+        // missing switched the first off too, and between a teardown and the
+        // rebuild the client stayed mute: twelve seconds, measured on
+        // 2026-09-18, right while the peer was rejoining. The handler deals
+        // by itself with the half it cannot do.
         const HWND h = fw::dispatch::get_target_hwnd();
         if (!h) continue;
         PostMessageW(h, FW_MSG_STRADAB_BONE_TICK, 0, 0);
@@ -16077,8 +16056,8 @@ void on_inject_message(const char* peer_id) {
             // inject depends on: it populates g_first_bstri_shape (shader/
             // geometry donor — inject_cube bails without it, :870) and the
             // ShadowSceneNode for the M2 attach (scene_walker.cpp:205-225).
-            // Gating it off in 68.4 killed ghost spawn on BOTH clients ("i
-            // ghost non appaiono"). The 1,499 ms freeze this dump once caused
+            // Gating it off in 68.4 killed ghost spawn on BOTH clients (the
+            // ghosts did not appear). The 1,499 ms freeze this dump once caused
             // was the OLD logger's per-line fsync — with the 68.3 logger the
             // ~2,850 lines are buffered WriteFiles (few ms total), so the walk
             // can stay. If the log noise ever matters, add a quiet flag to
@@ -16106,8 +16085,8 @@ void on_inject_message(const char* peer_id) {
     //   1. Remote Client snapshot (preferred — proves network→scene flow)
     //   2. Local player pos (visible from our own POV for solo testing)
     //   3. Origin (last resort — cube invisible but at least injected)
-    // La posizione di QUESTO peer quando sappiamo chi e'; altrimenti
-    // l'ultima arrivata, che con un solo peer remoto e' la stessa.
+    // THIS peer's position when the peer is known; otherwise the last one
+    // arrived, which with a single remote peer is the same.
     const auto snap = (peer_id && *peer_id)
         ? fw::net::client().get_remote_snapshot(std::string(peer_id))
         : fw::net::client().get_remote_snapshot();
@@ -16219,134 +16198,129 @@ void on_inject_message(const char* peer_id) {
 
 // Called from DLL_PROCESS_DETACH. Stops arm worker (no-op if not started
 // or already fired), detaches all injected objects. Idempotent.
-// === Fase 2 — creare il ghost quando la scena e' PROVATA stabile =========
+// === Phase 2: build the ghost when the scene is PROVEN stable ===========
 //
-// Sostituisce il timer da trenta secondi, e con lui la sua conseguenza:
-// "il corpo del ghost capita di pre-esistere, e la prima posizione di un
-// peer che entra dopo semplicemente lo sposta. Fortuna, non progetto."
+// Replaces the thirty-second timer, and with it its consequence: "the
+// ghost's body happens to pre-exist, and the first position of a peer who
+// joins later simply moves it. Luck, not design."
 //
-// Il commento sopra arm_worker vieta di iniettare dal gestore di PEER_JOIN,
-// e ha ragione. La prima versione di questo cancello credeva di avergli
-// risposto misurando una striscia di tick stabili, sulla base di una frase
-// che avevo scritto io e che il primo test ha SMENTITO:
+// The comment above arm_worker forbids injecting from the PEER_JOIN handler,
+// and it is right. The first version of this gate believed it had answered
+// it by measuring a streak of stable ticks, on the strength of a sentence
+// written here that the first test DISPROVED:
 //
-//     "fra due LoadGame la verita' dura un istante, non secondi"
+//     "between two LoadGames the truth lasts an instant, not seconds"
 //
-// Falso, e i log del 2026-09-18 lo dimostrano riga per riga. Il WndProc NON
-// si ferma durante il caricamento: la LoadGame del motore pompa essa stessa
-// la coda dei messaggi, quindi questo tick continua a girare DENTRO di lei.
-// Su A il LoadGame e' stato invocato alle 14:26:15.243 e accettato alle
-// 14:26:21.120 — quasi sei secondi — e per tutto quel tempo
-// local_player_in_world() e' rimasto vero, perche' il giocatore del mondo
-// VECCHIO e' ancora intero, con cella e posizione valide. La striscia di
-// 120 tick (~2,6 s) ci sta dentro comoda: il corpo e' stato costruito a
-// meta' caricamento, e nove millisecondi dopo il ritorno di LoadGame il
-// motore e' morto decodificando i vertici half-float di una
-// BSSubIndexTriShape con la sorgente a NULL.
+// False, and the logs of 2026-09-18 prove it line by line. The WndProc does
+// NOT stop during the load: the engine's LoadGame pumps the message queue
+// itself, so this tick keeps running INSIDE it. On A, LoadGame was invoked
+// at 14:26:15.243 and accepted at 14:26:21.120, almost six seconds, and for
+// all that time local_player_in_world() stayed true, because the OLD world's
+// player is still intact, with a valid cell and position. The 120-tick
+// streak (~2.6 s) fits inside comfortably: the body was built halfway
+// through the load, and nine milliseconds after LoadGame returned the engine
+// died decoding the half-float vertices of a BSSubIndexTriShape with a NULL
+// source.
 //
-// E non era sfortuna. PEER_JOIN viene drenato da questo stesso tick, che
-// nel WndProc sta subito PRIMA del ramo FW_MSG_LOAD_GAME: se il peer e'
-// gia' sul server quando parte il nostro auto-load, la richiesta del ghost
-// nasce nello stesso millisecondo del LoadGame, sempre. Su B e' andata
-// cosi' tre volte su tre senza schiantare, su A una su una con schianto.
-// Una corsa che di solito si vince e' peggio di una che si perde sempre.
+// And it was no bad luck. PEER_JOIN is drained by this same tick, which in
+// the WndProc sits right BEFORE the FW_MSG_LOAD_GAME branch: if the peer is
+// already on the server when the auto-load starts, the ghost request is born
+// in the same millisecond as the LoadGame, every time. On B it went that way
+// three times out of three without crashing, on A once out of once with a
+// crash. A race usually won is worse than one always lost.
 //
-// Da qui i due cancelli.
-//   1. Quello certo: la chiamata a LoadGame la facciamo NOI, quindi la
-//      avvolgiamo (ghost_note_load_begin/end dal WndProc) e sappiamo con
-//      esattezza quando siamo dentro, invece di dedurlo.
-//   2. Quello per i caricamenti che non originiamo noi: la cella del
-//      giocatore dev'essere la STESSA per tutta la striscia, cosi'
-//      qualunque cosa cambi il mondo sotto di noi la azzera.
-// La striscia resta, perche' serve ancora a quello per cui e' nata: un peer
-// che entra al minuto quaranta ha un corpo, cosa che col timer non
-// succedeva mai.
+// Hence the two gates.
+//   1. The certain one: the LoadGame call is made by THIS DLL, so it is
+//      bracketed (ghost_note_load_begin/end from the WndProc) and the time
+//      inside it is known exactly, instead of deduced.
+//   2. The one for loads this DLL does not originate: the player's cell must
+//      be the SAME for the whole streak, so anything that changes the world
+//      underneath resets it.
+// The streak stays, because it still serves what it was born for: a peer
+// who joins at minute forty gets a body, which with the timer never
+// happened.
 //
-// NB: il blocco di tick del WndProc gira durante il caricamento di
-// proposito, per altri moduli — chargen_stage dice testualmente di
-// riprovare "while the save is still loading". Quindi il cancello va messo
-// QUI e non attorno al blocco: spegnere l'intero tick durante il
-// caricamento romperebbe chi su quel comportamento ci conta.
+// NB: the WndProc tick block runs during the load on purpose, for other
+// modules; chargen_stage literally says to retry "while the save is still
+// loading". So the gate goes HERE and not around the block: switching the
+// whole tick off during the load would break whoever counts on that
+// behaviour.
 namespace {
-// Quanto dev'essere lunga la striscia. DUE misure, non una, e il motivo sta
-// scritto nel log del 2026-09-18: il tick non e' un tick. Gira a ogni
-// messaggio della finestra, e i messaggi non hanno niente a che fare col
-// tempo — il client A, fermo sul posto, e' rimasto QUATTORDICI SECONDI E
-// SETTE senza riceverne uno, poi ne ha presi quaranta al secondo appena
-// l'altro client ha ripreso a parlare. Il rendering non produce messaggi.
-// Quindi "120 tick" da solo non e' una durata: e' un numero che vale
-// mezzo secondo o mezzo minuto a seconda di cosa sta facendo Windows.
-// Il battito aggiunto al WndProc gli mette un pavimento, ma il soffitto
-// resta libero, percio' si chiede anche un minimo di millisecondi veri.
+// How long the streak has to be. TWO measures, not one, and the reason is
+// written in the log of 2026-09-18: the tick is not a tick. It runs on every
+// window message, and messages have nothing to do with time: client A,
+// standing still, went FOURTEEN POINT SEVEN SECONDS without receiving one,
+// then took forty a second as soon as the other client started talking
+// again. Rendering produces no messages. So "120 ticks" alone is not a
+// duration: it is a number worth half a second or half a minute depending on
+// what Windows is doing. The heartbeat added to the WndProc gives it a
+// floor, but the ceiling stays free, so a minimum of real milliseconds is
+// required as well.
 constexpr unsigned      kStableTicksNeeded = 120;
 constexpr std::uint64_t kStableMinMs       = 2000;
 unsigned      g_stable_ticks   = 0;
 std::uint64_t g_streak_started_ms = 0;
-// La cella su cui e' iniziata la striscia. Se cambia, il mondo non e' piu'
-// quello su cui stavamo contando e la striscia non vale piu' niente.
+// The cell the streak started on. If it changes, the world is no longer the
+// one being counted on and the streak is worth nothing.
 void*    g_streak_cell  = nullptr;
-// L'ultimo motivo per cui il cancello era chiuso. Serve a scriverlo UNA
-// volta per transizione invece che a ogni tick: senza, un cancello che
-// funziona e' muto, e un cancello muto non si puo' distinguere da uno che
-// non e' mai stato chiamato.
+// The last reason the gate was closed. Written ONCE per transition instead
+// of every tick: without it a working gate is mute, and a mute gate cannot
+// be told from one that was never called.
 const char* g_last_gate_why = nullptr;
 
-// L'ultimo verdetto del cancello, pubblicato per chi non puo' chiamarlo.
+// The gate's last verdict, published for those who cannot call it.
 //
-// ghost_scene_is_stable() CONTA, quindi chiamarla da due posti raddoppia il
-// conteggio e non si puo'. Il verdetto invece si legge quanto si vuole. Lo
-// usa il battito del WndProc per sapere quando puo' tornare a battere dopo
-// un caricamento.
+// ghost_scene_is_stable() COUNTS, so calling it from two places doubles the
+// count and cannot be done. The verdict can be read as often as wanted. The
+// WndProc heartbeat uses it to know when it may beat again after a load.
 std::atomic<bool> g_scene_settled{false};
 
-// Quando il 3D del GIOCATORE LOCALE e' stato ricostruito l'ultima volta.
+// When the LOCAL PLAYER's 3D was last rebuilt.
 //
-// Il corpo del ghost nasce da una camminata sul giocatore locale: ne legge
-// lo scheletro, le geometrie e la faccia. Quindi mentre quel 3D si sta
-// rifacendo non c'e' niente di buono da copiare.
+// The ghost's body is born from a walk over the local player: it reads its
+// skeleton, its geometries and its face. So while that 3D is being redone
+// there is nothing good to copy.
 //
-// Actor::Reset3D e' ASINCRONA — lo dice la sua stessa riga di log, "il
-// costruttore della testa gira un frame o piu' dopo" — e face_borrow ne
-// chiama DUE di fila ogni volta che costruisce la faccia di un peer:
-// una per mettere addosso al giocatore locale l'aspetto del peer, una per
-// riprenderselo. Nel test di rientro del 2026-09-18 il client B ha
-// costruito il ghost 930 ms dopo la seconda, ed e' venuto storto; nella
-// prova riuscita di due minuti prima fra le due cose c'erano 6,2 secondi.
+// Actor::Reset3D is ASYNCHRONOUS (its own log line says so, "the head
+// constructor runs a frame or more later") and face_borrow calls it TWICE
+// in a row every time it builds a peer's face: once to put the peer's
+// appearance on the local player, once to take it back. In the rejoin test
+// of 2026-09-18 client B built the ghost 930 ms after the second one, and it
+// came out wrong; in the successful attempt two minutes earlier there were
+// 6.2 seconds between the two.
 //
-// Non e' una prova, e' un indiziato con un movente forte. Il trattamento
-// pero' e' lo stesso gia' scritto per la cella: se il mondo da cui copiamo
-// cambia, la striscia non vale piu'. Un Reset3D sul giocatore locale e' un
-// cambio di mondo quanto un cambio di cella.
-// CORRETTO il 2026-09-18, poche ore dopo: era un'ISTANTE confrontato con
-// `>=`, e GetTickCount64 avanza a scatti di ~15 ms mentre questo tick gira
-// molto piu' in fretta. Risultato: per tutta la durata di uno scatto il
-// timbro del Reset3D risultava uguale all'inizio della striscia, quindi la
-// striscia partiva e veniva subito azzerata, in continuazione. Nei log del
-// test delle 16:21 sono 98 righe in due raffiche, cinquanta nello stesso
-// millisecondo. Poche, ma il cancello sbatteva invece di aprirsi, e
-// l'avevo liquidata come cosa cosmetica.
+// Not a proof, a suspect with a strong motive. The treatment is the same
+// already written for the cell, though: if the world being copied from
+// changes, the streak is worth nothing. A Reset3D on the local player is a
+// world change as much as a cell change.
+// CORRECTED on 2026-09-18, a few hours later: it was an INSTANT compared
+// with `>=`, and GetTickCount64 advances in ~15 ms steps while this tick
+// runs much faster. Result: for the whole length of one step the Reset3D
+// stamp read equal to the streak's start, so the streak started and was
+// reset at once, continuously. In the logs of the 16:21 test that is 98
+// lines in two bursts, fifty in the same millisecond. Few, but the gate
+// slammed instead of opening, and it had been dismissed as cosmetic.
 //
-// Una GENERAZIONE non ha risoluzione: cambia quando cambia. Stesso schema
-// gia' usato per la LoadGame, e per lo stesso motivo.
+// A GENERATION has no resolution: it changes when it changes. Same scheme
+// already used for the LoadGame, and for the same reason.
 std::atomic<std::uint32_t> g_local_3d_reset_gen{0};
 std::uint32_t              g_streak_3d_gen = 0;
 
-// Profondita' e generazione della LoadGame del motore.
+// Depth and generation of the engine's LoadGame.
 //
-// La profondita' e' un CONTATORE e non un bool proprio perche' il WndProc
-// gira dentro la LoadGame: un caricamento annidato non deve riaprire il
-// cancello uscendo per primo.
+// The depth is a COUNTER and not a bool precisely because the WndProc runs
+// inside the LoadGame: a nested load must not reopen the gate by leaving
+// first.
 //
-// La generazione copre il caso opposto: un caricamento che comincia e
-// finisce fra due tick. La profondita' sarebbe tornata a zero senza che
-// nessuno l'abbia vista salire; la generazione no, e azzera la striscia.
+// The generation covers the opposite case: a load that starts and ends
+// between two ticks. The depth would be back at zero without anyone having
+// seen it rise; the generation is not, and resets the streak.
 std::atomic<unsigned> g_load_depth{0};
 std::atomic<unsigned> g_load_gen{0};
 unsigned g_streak_gen = 0;
 
-// MAIN THREAD. La cella del giocatore locale, o nullptr. Sotto SEH come
-// ogni lettura del singleton: durante un caricamento li' dentro puo'
-// esserci qualunque cosa.
+// MAIN THREAD. The local player's cell, or nullptr. Under SEH like every
+// read of the singleton: during a load there can be anything in there.
 void* local_player_cell_or_null() {
     const HMODULE game = GetModuleHandleW(L"Fallout4.exe");
     if (!game) return nullptr;
@@ -16364,22 +16338,19 @@ void* local_player_cell_or_null() {
 }
 }  // namespace
 
-// Qualunque thread. Il 3D del giocatore locale e' stato appena rifatto:
-// quello che c'era da copiare adesso non c'e' piu'. Chiamata dal sito che
-// invoca Actor::Reset3D.
-// Qualunque thread, sola lettura. L'ultimo verdetto del cancello.
+// Any thread, read only. The gate's last verdict.
 bool ghost_scene_settled() {
     return g_scene_settled.load(std::memory_order_acquire);
 }
 
-bool ghost_scene_is_stable();   // definita poco piu' sotto
+bool ghost_scene_is_stable();   // defined a little further down
 
-// MAIN THREAD. Fa avanzare il conteggio della striscia una volta per tick,
-// a prescindere dal fatto che qualcuno stia aspettando un corpo.
+// MAIN THREAD. Advances the streak count once per tick, whether or not
+// anyone is waiting for a body.
 //
-// Prima la striscia girava solo quando c'era un peer in attesa, e questo la
-// rendeva inutilizzabile per chiunque altro: senza peer il verdetto non si
-// aggiornava mai. Contare sempre costa due letture protette per tick.
+// The streak used to run only when a peer was waiting, which made it
+// unusable for anyone else: with no peer the verdict never updated. Counting
+// always costs two guarded reads per tick.
 void ghost_scene_settle_tick() {
     (void)ghost_scene_is_stable();
 }
@@ -16388,47 +16359,47 @@ void ghost_note_local_3d_reset() {
     g_local_3d_reset_gen.fetch_add(1, std::memory_order_acq_rel);
 }
 
-// MAIN THREAD ONLY. Il corpo del ghost e' stato staccato da sotto di noi?
+// MAIN THREAD ONLY. Was the ghost's body detached from under this code?
 //
-// PRECISAZIONE dell'utente, 2026-09-18: IL SAVE E' IL SERVER. Quel
-// salvataggio e' la definizione autorevole del mondo in cui ogni client si
-// materializza — stesso posto, stessi vestiti, stesso inventario; uno spawn
-// custom si ottiene scrivendo un save con quello spawn. E un client NON
-// salva e NON ricarica mai: salvataggio e caricamento verranno tolti dal
-// codice. C'e' esattamente UN LoadGame per sessione, quello d'avvio, che e'
-// il modo stesso di entrare nel mondo.
+// The user's CLARIFICATION, 2026-09-18: THE SAVE IS THE SERVER. That save is
+// the authoritative definition of the world every client materialises in:
+// same place, same clothes, same inventory; a custom spawn is obtained by
+// writing a save with that spawn. And a client NEVER saves and NEVER
+// reloads: saving and loading will be removed from the code. There is
+// exactly ONE LoadGame per session, the start-up one, which is the very way
+// of entering the world.
 //
-// Quindi il caso "l'utente ricarica una partita" NON esiste, e questa
-// funzione non e' il rilevatore di quello.
+// So the case "the user reloads a game" does NOT exist, and this function is
+// not its detector.
 //
-// Resta perche' costa un puntatore per tick e copre una domanda piu'
-// generale che vale comunque: il corpo che teniamo nella mappa e' ancora
-// appeso a qualcosa? Se qualunque cosa — oggi solo l'auto-load d'avvio,
-// domani chissa' — porta via il nodo della scena, il corpo resterebbe nella
-// nostra mappa mentre il giocatore vede il vuoto, e l'unico rimedio
-// sarebbe riavviare il client.
+// It stays because it costs one pointer per tick and covers a more general
+// question that holds anyway: is the body held in the map still hanging
+// from something? If anything (today only the start-up auto-load, tomorrow
+// who knows) takes the scene node away, the body would stay in the map while
+// the player sees nothing, and the only remedy would be restarting the
+// client.
 //
-// SI CHIEDE AL CORPO, NON ALLA SCENA, e il perche' e' stato imparato a caro
-// prezzo. Il primo tentativo confrontava get_shadow_scene_node() col suo
-// valore precedente: non puo' funzionare, quell'accessore torna un atomico
-// CACHED che la camminata riempie una volta sola, quindi si confrontava una
-// costante con se' stessa. Il log lo dimostro' subito: una riga all'avvio e
-// nient'altro, nemmeno quando un `coc` spostava il giocatore di cella.
+// THE BODY IS ASKED, NOT THE SCENE, and the why was learnt the hard way. The
+// first attempt compared get_shadow_scene_node() with its previous value: it
+// cannot work, that accessor returns a CACHED atomic the walk fills once, so
+// a constant was being compared with itself. The log proved it at once: one
+// line at start-up and nothing else, not even when a `coc` moved the player
+// to another cell.
 //
-// La lettura giusta costa un puntatore per tick e si appoggia a
-// un'invariante gia' documentata in questo file: entrambi i percorsi di
-// distruzione azzerano il puntatore al genitore di un figlio sopravvissuto,
-// e noi sul corpo teniamo un +1, quindi +0x28 e' valido-o-nullo, mai
-// pendente. Genitore nullo = la scena se l'e' portato via.
+// The right read costs one pointer per tick and rests on an invariant
+// already documented in this file: both destruction paths null the parent
+// pointer of a surviving child, and this code holds a +1 on the body, so
+// +0x28 is valid-or-null, never dangling. Null parent = the scene took it
+// away.
 //
-// Nessun aggancio sui percorsi di distruzione, che e' la regola che
-// world_spawn segue gia': "la storia dei crash alla morte dice che gli
-// agganci sui percorsi di distruzione mordono".
+// No hook on the destruction paths, which is the rule world_spawn already
+// follows: "the history of crashes at death says that hooks on destruction
+// paths bite".
 bool ghost_body_is_orphaned() {
     if (!g_resolved.load(std::memory_order_acquire)) return false;
-    // Vero se ANCHE UNO SOLO dei ghost registrati e' stato staccato dalla
-    // scena sotto di noi. Basta uno: e' una diagnostica di "qualcosa e'
-    // successo al grafo", non un inventario.
+    // True if EVEN ONE of the registered ghosts was detached from the scene
+    // underneath. One is enough: it is a diagnostic of "something happened
+    // to the graph", not an inventory.
     for (const auto& [peer, body] : ghost_snapshot()) {
         if (fw::native::weapon_witness::read_parent_pub(body) == nullptr) {
             return true;
@@ -16445,17 +16416,17 @@ void ghost_note_load_begin() {
 
 void ghost_note_load_end() {
     g_load_gen.fetch_add(1, std::memory_order_acq_rel);
-    // Mai sotto zero. Se arrivasse un end spaiato, meglio un cancello
-    // aperto che un contatore in underflow che lo tiene chiuso per sempre e
-    // lascia senza corpo ogni peer per il resto della sessione.
+    // Never below zero. Should an unpaired end arrive, better an open gate
+    // than an underflowed counter that keeps it closed forever and leaves
+    // every peer without a body for the rest of the session.
     unsigned d = g_load_depth.load(std::memory_order_acquire);
     while (d != 0 && !g_load_depth.compare_exchange_weak(
                          d, d - 1, std::memory_order_acq_rel)) {
     }
 }
 
-// MAIN THREAD ONLY. Torna true se la scena e' stabile abbastanza da
-// costruirci sopra. Da chiamare a ogni tick: conta da sola.
+// MAIN THREAD ONLY. Returns true when the scene is stable enough to build
+// on. To be called every tick: it counts by itself.
 bool ghost_scene_is_stable() {
     const unsigned gen     = g_load_gen.load(std::memory_order_acquire);
     const bool     in_load = g_load_depth.load(std::memory_order_acquire) != 0;
@@ -16518,92 +16489,90 @@ bool ghost_scene_is_stable() {
     return true;
 }
 
-// MAIN THREAD ONLY. Costruisce il ghost se non c'e'. Torna true se dopo
-// questa chiamata un corpo esiste.
+// MAIN THREAD ONLY. Builds the ghost if it is not there. Returns true when
+// a body exists after this call.
 //
-// In questa tappa il corpo e' ancora uno solo e condiviso: si passa dal
-// percorso di iniezione esistente, che fa anche la camminata di cattura da
-// cui dipendono il nodo della scena e la prima geometria. Quella camminata
-// SEMBRA una diagnostica e non lo e': spegnerla aveva ucciso la comparsa
-// del ghost su entrambi i client.
+// It goes through the existing injection path, which also does the capture
+// walk the scene node and the first geometry depend on. That walk LOOKS like
+// a diagnostic and is not: switching it off had killed the ghost's
+// appearance on both clients.
 bool ghost_create_if_ready(const char* peer_id) {
     if (ghost_body_for(peer_id)) return true;
-    // Il verdetto, non il contatore: la striscia la fa avanzare
-    // ghost_scene_settle_tick una volta per tick e basta.
+    // The verdict, not the counter: the streak is advanced by
+    // ghost_scene_settle_tick once per tick and nowhere else.
     if (!g_scene_settled.load(std::memory_order_acquire)) return false;
     FW_LOG("[ghost-create] peer=%s: the world has been stable for %u tick(s) "
            "— building the body now", peer_id ? peer_id : "?",
            kStableTicksNeeded);
 
-    // RITIRATO il 2026-09-18, poche ore dopo averlo scritto.
+    // WITHDRAWN on 2026-09-18, a few hours after it was written.
     //
-    // Qui riaccodavo l'ultimo vestito conosciuto del peer, e il ghost
-    // rientrava vestito. Ma riaccodavo SOLO i form id, e lo smontaggio nel
-    // frattempo cancella g_peer_omod: quindi dal secondo corpo in poi le
-    // armature si riattaccavano SENZA la loro lista di OMOD, mentre al
-    // primo ingresso gli OMOD arrivano dal filo insieme all'EQUIP_BCAST.
-    // "Il ghost e' corretto solo la prima volta" e' esattamente quella
-    // differenza, e il test con la power armor l'ha reso vistoso.
+    // The peer's last known outfit was re-queued here, and the ghost rejoined
+    // dressed. But ONLY the form ids were re-queued, and the teardown in the
+    // meantime erases g_peer_omod: so from the second body on the armours
+    // re-attached WITHOUT their OMOD list, while at the first join the OMODs
+    // arrive from the wire together with the EQUIP_BCAST. "The ghost is right
+    // only the first time" is exactly that difference, and the power armor
+    // test made it glaring.
     //
-    // Non si rimette finche' non porta anche gli OMOD, e finche' non e'
-    // chiaro cosa fare dell'innesto PA, che e' one-shot globale e che uno
-    // smontaggio non disfa: un corpo ricostruito dopo una sessione in power
-    // armor non riceve piu' le ossa PA, e i pezzi si attaccano a ossa che
-    // non ci sono.
+    // Not put back until it carries the OMODs too, and until it is clear
+    // what to do with the PA graft, which was a global one-shot that a
+    // teardown does not undo: a body rebuilt after a session in power armor
+    // no longer receives the PA bones, and the pieces attach to bones that
+    // are not there.
     //
-    // La cura giusta sta comunque altrove: il server deve annunciare
-    // l'equipaggiamento di chi entra a chi c'e' gia'. Copre anche il peer
-    // mai visto prima e quello che si e' cambiato mentre era via, cose che
-    // una memoria locale non puo' sapere.
+    // The right cure lies elsewhere anyway: the outfit has to be announced
+    // at every session start (phase 3). That also covers the peer never seen
+    // before and the one who changed clothes while away, things a local
+    // memory cannot know.
     on_inject_message(peer_id);
     const bool ok = ghost_body_for(peer_id) != nullptr;
     if (ok) {
-        // Il battito che copia le ossa a 20 Hz partiva in coda al vecchio
-        // worker del timer. Ora che il timer non c'e' piu', parte col primo
-        // corpo, che e' anche l'unico momento in cui serve: e' one-shot e
-        // idempotente.
+        // The heartbeat that copies the bones at 20 Hz used to start at the
+        // tail of the old timer worker. Now that the timer is gone, it
+        // starts with the first body, which is also the only moment it is
+        // needed: one-shot and idempotent.
         start_bone_tick_worker_once();
     }
     if (!ok) {
-        // Non si azzera il contatore: il mondo e' stabile, e' l'iniezione
-        // che non e' riuscita. Il tick riprovera'.
+        // The counter is not reset: the world is stable, the injection is
+        // what failed. The tick retries.
         FW_WRN("[ghost-create] peer=%s: the body was not built this time",
                peer_id ? peer_id : "?");
     }
     return ok;
 }
 
-// === Fase 2 — smontare il ghost di UN peer ================================
+// === Phase 2: tear down ONE peer's ghost ==================================
 //
-// Questo e' cio' che PEER_LEAVE deve chiamare, e la legge d'ordine sta
-// scritta sopra detach_debug_cube. La si rispetta alla lettera, con una
-// correzione: quel commento afferma che detach_debug_cube "e' gia' lo
-// smontaggio corretto" e NON lo e', come documenta un audit successivo in
-// re/. Tocca soltanto corpo, cache delle geometrie e contributori al
-// culling; non rilascia testa, armature, armi, slot, code e cache. Qui si
-// rilascia tutto il resto, dal basso, e il corpo per ultimo.
+// This is what PEER_LEAVE must call, and the order law is written above
+// detach_debug_cube. It is followed to the letter, with one correction: that
+// comment claimed detach_debug_cube "is already the correct teardown" and it
+// is NOT, as a later audit in re/ documents. It touches only the body, the
+// geometry cache and the cull contributors; it releases neither head nor
+// armours, weapons, slots, queues and caches. Everything else is released
+// here, from the bottom up, and the body last.
 //
-// PERCHE' DAL BASSO. Il distruttore di un NiNode DECREMENTA i figli, non li
-// distrugge: si liberano solo a zero riferimenti, e noi ne teniamo uno per
-// ogni clone che abbiamo attaccato. Staccare solo il corpo lascerebbe in
-// piedi l'intero guardaroba del peer, invisibile e vivo.
+// WHY FROM THE BOTTOM. A NiNode's destructor DECREMENTS its children, it
+// does not destroy them: they are freed only at zero references, and this
+// code holds one for every clone it attached. Detaching the body alone would
+// leave the peer's whole wardrobe standing, invisible and alive.
 //
-// THREADING: MAIN THREAD ONLY, come ogni mutazione del grafo di scena.
+// THREADING: MAIN THREAD ONLY, like every scene graph mutation.
 //
-// `last_ghost` dice se dopo questo peer non ne resta nessun altro: corpo,
-// testa e cache delle geometrie sono ancora condivisi fra i peer in questa
-// tappa, quindi si toccano solo quando se ne va l'ultimo. Diventeranno per
-// peer nella tappa seguente, quando entreranno nel record.
+// `last_ghost` says whether no other peer is left after this one: the face
+// cache and the reference skeleton are per session and are released once,
+// so they are touched only when the last one leaves.
 bool ghost_teardown_for_peer(const char* peer_id, bool last_ghost) {
     if (!peer_id || !*peer_id) return false;
     const std::string peer(peer_id);
     FW_LOG("[ghost-teardown] peer=%s begin (last_ghost=%d)",
            peer.c_str(), int(last_ghost));
 
-    // 1. Le code in attesa per prima cosa. Se restassero, il prossimo
-    //    flush_pending_*_ops rivestirebbe il ghost successivo coi vestiti
-    //    di un giocatore che se n'e' andato: e' l'avvertimento testuale
-    //    della legge d'ordine, "il prossimo che occupa lo slot li eredita".
+    // 1. The pending queues first of all. Were they left, the next
+    //    flush_pending_*_ops would dress the next ghost in the clothes of a
+    //    player who left: the order law's literal warning, "the next player
+    //    to occupy the slot inherits them".
     std::size_t dropped_armor_q = 0, dropped_weapon_q = 0;
     {
         std::lock_guard lk(g_pending_armor_mtx);
@@ -16622,15 +16591,15 @@ bool ghost_teardown_for_peer(const char* peer_id, bool last_ghost) {
         }
     }
 
-    // 2. L'arma. ghost_clear_weapon con 0 forza la pulizia: stacca i mod
-    //    dal loro genitore VERO, li toglie dal tracker prima di
-    //    decrementare, rilascia il nodo base e passa la scopa sugli orfani.
+    // 2. The weapon. ghost_clear_weapon with 0 forces the clean-up: detaches
+    //    the mods from their REAL parent, removes them from the tracker before
+    //    decrementing, releases the base node and sweeps the orphans.
     (void)ghost_clear_weapon(peer.c_str(), 0);
 
-    // 3. Le armature, su una FOTOGRAFIA della mappa e non sulla mappa viva:
-    //    ghost_detach_armor cancella le voci mentre va, e per i pezzi di
-    //    power armor richiama se' stesso. Iterare la mappa viva sarebbe
-    //    modifica concorrente su memoria che si sta liberando.
+    // 3. The armours, on a SNAPSHOT of the map and not on the live map:
+    //    ghost_detach_armor erases entries as it goes, and for power armor
+    //    pieces calls itself. Iterating the live map would be concurrent
+    //    modification of memory being freed.
     std::vector<std::uint32_t> forms;
     {
         std::lock_guard lk(g_armor_map_mtx);
@@ -16649,13 +16618,13 @@ bool ghost_teardown_for_peer(const char* peer_id, bool last_ghost) {
         g_attached_armor.erase(peer);
     }
 
-    // 4. Le cache di dati di quel peer. Nessun riferimento da restituire:
-    //    sono elenchi di form id e di numeri, non di nodi.
+    // 4. That peer's data caches. No reference to give back: they are lists
+    //    of form ids and numbers, not of nodes.
     //
-    //    Posa e crouch inclusi, ed e' il punto che la legge d'ordine
-    //    chiedeva da sempre: "lo smontaggio per peer ha bisogno che le
-    //    cache di posa, crouch ed equip di quel peer vengano buttate, o il
-    //    prossimo giocatore che occupa lo slot se le eredita".
+    //    Pose and crouch included, which is the point the order law always
+    //    asked for: "per-peer teardown needs the pose/crouch/equip caches
+    //    keyed by that peer dropped, or the next player to occupy the slot
+    //    inherits them".
     {
         std::lock_guard<std::mutex> lk(g_remote_pose_mutex);
         g_remote_pose_by_peer.erase(peer);
@@ -16673,36 +16642,36 @@ bool ghost_teardown_for_peer(const char* peer_id, bool last_ghost) {
         g_peer_omod.erase(peer);
     }
 
-    // 5. La maschera della faccia NON si dimentica, e qui c'era un errore
-    //    mio, scoperto dal test di rientro del 2026-09-18.
+    // 5. The face mask is NOT forgotten, and there was a mistake here, found
+    //    by the rejoin test of 2026-09-18.
     //
-    //    Chiamavo face_cache::forget() con accanto un commento che diceva
-    //    "se quel peer rientra con la stessa ricetta, la maschera
-    //    parcheggiata gli fa risparmiare la ricostruzione". La chiamata fa
-    //    l'OPPOSTO di quella frase: forget() cancella il master ma TIENE la
-    //    ricetta, e il giro di face_borrow cerca esattamente quello —
-    //    "ricetta presente, master assente" — quindi ripartiva subito.
+    //    face_cache::forget() was called with a comment beside it saying "if
+    //    that peer rejoins with the same recipe, the parked mask saves them
+    //    the rebuild". The call does the OPPOSITE of that sentence: forget()
+    //    erases the master but KEEPS the recipe, and the face_borrow pass
+    //    looks for exactly that, "recipe present, master absent", so it
+    //    started over at once.
     //
-    //    Nel log si vede nello stesso millisecondo dello smontaggio:
-    //    "[face-borrow] borrowing the local player to build 'player_B'" per
-    //    un peer uscito sette millisecondi prima. E prendere in prestito il
-    //    giocatore locale non e' gratis: gli riscrive la faccia con quella
-    //    del peer, chiama Actor::Reset3D, aspetta, riclona, rimette a posto
-    //    e chiama Reset3D un'altra volta. Due ricostruzioni complete del 3D
-    //    del giocatore locale, per un fantasma che stavamo smontando.
+    //    The log shows it in the same millisecond as the teardown:
+    //    "[face-borrow] borrowing the local player to build 'player_B'" for
+    //    a peer gone seven milliseconds earlier. And borrowing the local
+    //    player is not free: it rewrites their face with the peer's, calls
+    //    Actor::Reset3D, waits, re-clones, puts things back and calls
+    //    Reset3D once more. Two full rebuilds of the local player's 3D, for
+    //    a ghost being torn down.
     //
-    //    In piu' forget() NON libera il nodo parcheggiato, quindi buttarlo
-    //    via lo perde e basta. E non serve a niente per la correttezza:
-    //    get_master() confronta l'hash della ricetta, quindi un master
-    //    vecchio con un aspetto cambiato non viene mai riusato.
+    //    On top of that forget() does NOT free the parked node, so throwing
+    //    it away only leaks it. And it does nothing for correctness:
+    //    get_master() compares the recipe hash, so an old master with a
+    //    changed appearance is never reused.
     //
-    //    Quindi il master resta parcheggiato, che e' il compromesso scritto
-    //    nel suo header: "un pugno di sottoalberi parcheggiati per sessione
-    //    costa meno di una free sbagliata". Al rientro viene riusato.
+    //    So the master stays parked, which is the compromise written in its
+    //    header: "a handful of parked subtrees per session costs less than
+    //    one wrong free". On the rejoin it is reused.
 
-    // 6. I contributori al culling di quel peer. Le geometrie del corpo
-    //    invece sono puntatori DENTRO l'albero del corpo e si buttano solo
-    //    insieme al corpo, al punto 7.
+    // 6. That peer's cull contributors. The body geometries instead are
+    //    pointers INSIDE the body's tree and go only with the body, at
+    //    step 7.
     {
         std::lock_guard lk(g_body_cull_mtx);
         g_body_cull_contributors.erase(peer);
@@ -16716,18 +16685,18 @@ bool ghost_teardown_for_peer(const char* peer_id, bool last_ghost) {
         return true;
     }
 
-    // 7. Testa, poi corpo. In quest'ordine e mai al contrario: la testa e'
-    //    figlia del corpo, e distruggere il corpo azzera il puntatore al
-    //    genitore della testa, lasciandoci con un riferimento da restituire
-    //    a un nodo di cui non sappiamo piu' niente.
+    // 7. Head, then body. In this order and never the reverse: the head is a
+    //    child of the body, and destroying the body nulls the head's parent
+    //    pointer, leaving a reference to give back on a node nothing is
+    //    known about any more.
     //
-    //    La testa ha un +1 preso all'iniezione che NESSUN percorso ha mai
-    //    restituito: dopo lo spegnimento era un puntatore pendente ancora
-    //    pubblicato. Questa e' la prima volta che viene chiuso.
+    //    The head holds a +1 taken at injection that NO path ever gave
+    //    back: after the shutdown it was a dangling pointer still published.
+    //    This is the first time it is closed.
     void* head = ghost_head_for(peer.c_str());
     if (head && g_resolved.load(std::memory_order_acquire)) {
-        // Il genitore si legge PRIMA di decrementare: e' valido-o-nullo
-        // finche' teniamo il riferimento, mai pendente.
+        // The parent is read BEFORE decrementing: it is valid-or-null as
+        // long as the reference is held, never dangling.
         void* head_parent = fw::native::weapon_witness::read_parent_pub(head);
         void* removed = nullptr;
         bool detached_ok = false;
@@ -16740,29 +16709,29 @@ bool ghost_teardown_for_peer(const char* peer_id, bool last_ghost) {
             FW_LOG("[ghost-teardown] head %p detached from %p, refcount now "
                    "%ld", head, head_parent, after);
         } else {
-            // Se lo stacco fallisce non si decrementa. In casa vale la
-            // regola gia' scritta: perdere memoria e' meglio che schiantare.
+            // If the detach fails there is no decrement. The house rule
+            // already written applies: leaking memory beats crashing.
             FW_WRN("[ghost-teardown] head %p could not be detached "
                    "(parent=%p) — leaking it on purpose rather than "
                    "decrementing a node we no longer own", head, head_parent);
         }
     }
 
-    // 7-bis. Le ossa se ne vanno col corpo: sono un suo FIGLIO, quindi il
-    //        suo distruttore le decrementa e il motore le libera. Qui si
-    //        toglie solo la voce della mappa, che altrimenti punterebbe a
-    //        un corpo morto.
+    // 7-bis. The bones go with the body: they are its CHILD, so its
+    //        destructor decrements them and the engine frees them. Only the
+    //        map entry is removed here, which would otherwise point at a
+    //        dead body.
     {
         void* dying = ghost_body_for(peer.c_str());
         if (dying) fw::native::skin_rebind::forget_skeleton_for(dying);
-        // E con le ossa se ne va tutto cio' che le DESCRIVE, o il prossimo
-        // scheletro eredita affermazioni su nodi morti:
-        //   * il flag "le ossa PA ci sono gia'", che altrimenti impedirebbe
-        //     l'innesto sul corpo nuovo e lascerebbe le piastre appese a
-        //     ossa inesistenti;
-        //   * la mappa dei bind umani salvati dal retarget, che e' indicizzata
-        //     per PUNTATORE di osso e la cui guardia "se non e' vuota esci"
-        //     bloccherebbe per sempre il retarget del prossimo ghost.
+        // And with the bones goes everything that DESCRIBES them, or the
+        // next skeleton inherits claims about dead nodes:
+        //   * the "PA bones are already there" flag, which would otherwise
+        //     prevent the graft on the new body and leave the pieces hanging
+        //     from bones that do not exist;
+        //   * the map of human binds saved by the retarget, which is keyed
+        //     by bone POINTER and whose "if not empty, leave" guard would
+        //     block the next ghost's retarget forever.
         ghost_set_pa_grafted(peer.c_str(), false);
         {
             const auto dropped = ghost_pa_bind_take(peer.c_str());
@@ -16774,11 +16743,11 @@ bool ghost_teardown_for_peer(const char* peer_id, bool last_ghost) {
         }
     }
 
-    // 8. Il corpo, per ultimo. detach_debug_cube azzera anche la cache
-    //    delle geometrie e i contributori in modo solidale, che e' il
-    //    motivo per cui la legge dice di non saltarlo: la prossima
-    //    iniezione deve ripartire da vuoto perche' il primo attacco di
-    //    un'armatura sul corpo esegua la transizione che applica il culling.
+    // 8. The body, last. detach_debug_cube also clears the geometry cache
+    //    and the contributors together, which is why the law says not to
+    //    skip it: the next injection must restart from empty so the first
+    //    armour attach on the body performs the transition that applies the
+    //    culling.
     detach_debug_cube(peer.c_str());
 
     FW_LOG("[ghost-teardown] peer=%s done: %zu armor detached, queues "
@@ -16801,9 +16770,9 @@ void shutdown() {
     // Must precede detach_debug_cube — pending callbacks would try to
     // attach to the ghost which is about to be torn down.
     synthetic_refr::shutdown();
-    // Fase 2 — il registro per peer non possiede ancora nodi (lo fara' nei
-    // passi seguenti), ma si svuota qui per restare simmetrico con tutto
-    // il resto e non lasciare record che sopravvivono al processo.
+    // Phase 2: the per-peer registry owns no nodes itself, but it is emptied
+    // here to stay symmetrical with everything else and leave no record
+    // outliving the process.
     fw::native::ghost_lifecycle::shutdown();
     detach_debug_cube(nullptr);   // M2.2 — detach cube first (no dependencies)
     detach_debug_node();   // M1   — detach canary NiNode
@@ -16848,7 +16817,7 @@ void set_body_cull_enabled(bool on) {
 }
 
 namespace {
-// POD-only: SEH and std::string non convivono nella stessa funzione (C2712).
+// POD-only: SEH and std::string cannot share a function (C2712).
 bool seh_read_world_translate(void* node, float out[3]) noexcept {
     if (!node) return false;
     __try {
@@ -16860,9 +16829,9 @@ bool seh_read_world_translate(void* node, float out[3]) noexcept {
 }
 }  // namespace
 
-// Fase 4 — vedi l'header. La fotografia si prende fuori dal lock e la
-// ricerca dell'osso gira fuori dal lock, per la stessa regola di
-// ghost_snapshot: niente cammino del grafo di scena con la mappa bloccata.
+// Phase 4: see the header. The snapshot is taken outside the lock and the
+// bone search runs outside the lock, by the same rule as ghost_snapshot: no
+// scene graph walk with the map locked.
 std::vector<GhostHeadAnchor> ghost_head_anchors() {
     std::vector<GhostHeadAnchor> out;
     for (const auto& [peer, body] : ghost_snapshot()) {
@@ -16874,8 +16843,8 @@ std::vector<GhostHeadAnchor> ghost_head_anchors() {
             if (it->second.head_bone_body == body) bone = it->second.head_bone;
         }
         if (!bone) {
-            // Nessun log sul fallimento: uno scheletro non ancora registrato
-            // e' normale nei primi frame del ghost, e si riprova al prossimo.
+            // No log on failure: a skeleton not registered yet is normal in
+            // the ghost's first frames, and the next frame retries.
             void* skel = fw::native::skin_rebind::skeleton_for(body);
             bone = skel ? find_node_by_name_w4(skel, "Head") : nullptr;
             if (!bone) continue;
@@ -16884,7 +16853,7 @@ std::vector<GhostHeadAnchor> ghost_head_anchors() {
             if (it == g_ghosts.end() || it->second.body != body) continue;
             it->second.head_bone      = bone;
             it->second.head_bone_body = body;
-            FW_LOG("[nametag] peer=%s: osso Head %p, scheletro %p, corpo %p",
+            FW_LOG("[nametag] peer=%s: Head bone %p, skeleton %p, body %p",
                    peer.c_str(), bone, skel, body);
         }
         GhostHeadAnchor a;

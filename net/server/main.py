@@ -2046,11 +2046,11 @@ class ServerProtocol(asyncio.DatagramProtocol):
     # reaches us as an ordinary death; only for THIS base does a disable mean
     # "somebody climbed inside" rather than "it is gone".
     _PA_FRAME_BASE: int = 0x0002079E
-    # L'indossabile che disegna l'esoscheletro. Non e' la base del REFR qui
-    # sopra: e' il pezzo che il client equipaggia entrando, e che quindi
-    # finisce nel vestito memorizzato insieme alle piastre. Torna al telaio
-    # con loro, o il ghost di chi rientra si ritrova addosso un esoscheletro
-    # vuoto — sintomo osservato dal vivo il 2026-09-18.
+    # The wearable that draws the exoskeleton. Not the base of the REFR
+    # above: it is the piece the client equips on entering, which therefore
+    # ends up in the stored outfit with the pieces. It returns to the frame
+    # with them, or the ghost of whoever rejoins wears an empty exoskeleton,
+    # a symptom seen live on 2026-09-18.
     _PA_FRAME_WEARABLE: int = 0x0003E577
     # v26 — how many bootstrap frames may be in flight to one peer at once.
     # Comfortably inside the 32-frame receive window, leaving room for the
@@ -2550,7 +2550,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
         # FIX (resurrection) — mark the fid dead in the registry's STICKY set
         # BEFORE on_unload deletes the record. Otherwise a still-in-combat client
         # re-observes the corpse → fresh live record → reeval re-elects → the new
-        # owner's handoff MoveTo revives it = the "MORTO MA NON MORTO" zombie +
+        # owner's handoff MoveTo revives it = the "DEAD BUT NOT DEAD" zombie +
         # the 0xC0F510 crash feeder. See ownership.OwnershipRegistry.note_dead.
         self.ownership.note_dead(
             fid, now_ms,
@@ -3320,19 +3320,19 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 st.cell_id = presence.last_pos.cell_id
             st.worn_by_peer_id = ""
             st.worn_since_ms = 0.0
-            # La power armor torna a essere un oggetto del mondo, PER INTERO.
+            # The power armor becomes a world object again, ENTIRELY.
             #
-            # Il telaio riappare qui sotto all'ultima posizione del portatore
-            # con il suo registro di piastre, che e' autorevole. Le stesse
-            # piastre devono percio' USCIRE da cio' che quel peer risulta
-            # indossare: e' indosso a lui o e' nel mondo, mai tutte e due.
+            # The frame reappears below at the wearer's last position with
+            # its piece ledger, which is authoritative. The same pieces must
+            # therefore LEAVE what that peer is recorded as wearing: they are
+            # on the peer or in the world, never both.
             #
-            # Non farlo era la radice di tutti i guasti visivi del
-            # 2026-09-18: il vestito memorizzato non cala mai da solo, il
-            # server lo rigiocava a ogni ingresso, e ogni pezzo PA fasullo
-            # retargeta lo scheletro condiviso al bind della power armor.
-            # Le voci del registro non sono coppie: portano anche i mod e
-            # un timbro. Serve solo il form id, che e' sempre il primo campo.
+            # Not doing so was the root of every visual failure of
+            # 2026-09-18: the stored outfit never shrinks by itself, the
+            # server replayed it at every join, and every bogus PA piece
+            # retargets the shared skeleton to the power armor bind. Ledger
+            # entries are not pairs: they carry the mods and a timestamp too.
+            # Only the form id is needed, and it is always the first field.
             returned = {
                 (p[0] if isinstance(p, (tuple, list)) else p)
                 for p in st.pieces

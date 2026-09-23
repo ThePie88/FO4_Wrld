@@ -1,7 +1,7 @@
 #include "client.h"
-#include "peer_names.h"                // Fase 4: nomi per chat e nametag
-#include "../hooks/equip_announce.h"   // Fase 3
-#include "../render/chat_overlay.h"    // Fase 4: le righe della chat
+#include "peer_names.h"                // phase 4: names for chat and nametags
+#include "../hooks/equip_announce.h"   // phase 3
+#include "../render/chat_overlay.h"    // phase 4: the chat lines
 
 #include <cstddef>   // offsetof
 
@@ -89,10 +89,10 @@ bool Client::start(const config::Settings& cfg) {
 }
 
 void Client::stop() {
-    // Un addio anche qui, per la chiusura ordinata della DLL. Costa tre
-    // datagrammi e chiude la sessione sul server invece di lasciarla morire
-    // di timeout. Se la finestra l'ha gia' mandato, questo e' un doppione
-    // innocuo: il server ha gia' chiuso e lo ignora.
+    // A goodbye here too, for the orderly shutdown of the DLL. It costs three
+    // datagrams and closes the session on the server instead of letting it
+    // die of timeout. If the window already sent one, this is a harmless
+    // duplicate: the server has already closed and ignores it.
     send_goodbye_now(/*reason=*/0);
     if (!thread_.joinable()) return;
     stopping_.store(true);
@@ -103,10 +103,10 @@ void Client::send_goodbye_now(std::uint8_t reason) {
     if (!connected_.load(std::memory_order_acquire)) return;
     DisconnectPayload d{};
     d.reason = reason;
-    // NON affidabile: vedi il commento nell'header. Tre copie perche' e'
-    // UDP e non ci sara' nessuna ritrasmissione — costa tre pacchetti da
-    // una manciata di byte e ci risparmia cinque secondi di ghost fantasma
-    // sullo schermo degli altri.
+    // NOT reliable: see the comment in the header. Three copies because this
+    // is UDP and there will be no retransmission; it costs three packets of
+    // a handful of bytes and saves five seconds of phantom ghost on the
+    // others' screens.
     int sent = 0;
     for (int i = 0; i < 3; ++i) {
         auto frame = channel_.send_unreliable(
@@ -1124,23 +1124,24 @@ void Client::enqueue_container_seed(std::uint32_t base_id, std::uint32_t cell_id
 std::optional<ContainerOpAckPayload> Client::submit_container_op_blocking(
     ContainerOpPayload op, std::uint32_t timeout_ms)
 {
-    // 2026-09-23 — CHIUSO il primo buco dell'audit di v0.8.0.
+    // 2026-09-23 — the first hole of the v0.8.0 audit, CLOSED.
     //
-    // Chi prende un oggetto da una cassa aspetta un verdetto, e senza una
-    // sessione il verdetto e' no, SUBITO. Qui si guardava soltanto
-    // accepting_enqueue, che e' !stopping_ e non connected_: a sessione caduta
-    // l'operazione veniva accodata come affidabile, l'attesa scadeva dopo
-    // 100 ms, il chiamante bloccava la mutazione in locale — e l'operazione
-    // restava in coda. reset_session_state tiene gli affidabili attraverso la
-    // caduta, quindi al rientro il server la applicava per una presa che il
-    // client aveva gia' rifiutato: un TAKE faceva sparire l'oggetto dalla
-    // cassa senza che entrasse in nessun inventario, un PUT lo DUPLICAVA.
-    // E' la classe di difetto che B1 esiste per chiudere, riaperta dalla v26
-    // quando la coda ha smesso di rifiutare a sessione caduta.
+    // Whoever takes an item from a container waits for a verdict, and with
+    // no session the verdict is no, AT ONCE. This only looked at
+    // accepting_enqueue, which is !stopping_ and not connected_: with the
+    // session down the operation was queued as reliable, the wait expired
+    // after 100 ms, the caller blocked the local mutation, and the operation
+    // stayed in the queue. reset_session_state keeps reliables across the
+    // drop, so on the rejoin the server applied it for a take the client had
+    // already refused: a TAKE made the item vanish from the container without
+    // entering any inventory, a PUT DUPLICATED it. The defect class B1 exists
+    // to close, reopened by v26 when the queue stopped refusing with the
+    // session down.
     //
-    // Due difese, perche' una sola lascia una finestra: questo rifiuto per
-    // l'operazione tentata da scollegati, e il ritiro dalla coda allo scadere
-    // dell'attesa (sotto) per quella accodata un attimo prima della caduta.
+    // Two defences, because one alone leaves a window: this refusal for the
+    // operation attempted while disconnected, and the withdrawal from the
+    // queue when the wait expires (below) for the one queued a moment before
+    // the drop.
     if (!accepting_enqueue() || !connected_.load()) {
         FW_DBG("net: container op refused — no session right now");
         return std::nullopt;
@@ -1228,14 +1229,14 @@ bool Client::withdraw_queued_container_op(std::uint32_t op_id) {
 // ---------------------------------------------------------------- main loop
 
 Client::HandshakeOutcome Client::do_handshake(bool use_resume) {
-    // v26 — RIENTRO COL TOKEN.
+    // v26 — RESUME WITH THE TOKEN.
     //
-    // La prova di login che il launcher mette in fw_config.ini e' MONOUSO:
-    // il server consuma il challenge al primo ingresso riuscito. Quindi un
-    // client caduto non puo' ripresentarsi con lo stesso HELLO, e la DLL non
-    // possiede la chiave privata per firmarne uno nuovo. Il server, dentro
-    // ogni WELCOME accettato, ci lascia un token: lo rispediamo qui e lui
-    // sfratta la nostra sessione vecchia e ci rifa' tutto il bootstrap.
+    // The login proof the launcher puts in fw_config.ini is SINGLE USE: the
+    // server consumes the challenge at the first successful join. So a client
+    // that dropped cannot present the same HELLO again, and the DLL has no
+    // private key to sign a new one. The server leaves a token inside every
+    // accepted WELCOME: it is sent back here, the server evicts the old
+    // session and redoes the whole bootstrap.
     if (use_resume) {
         if (resume_token_.size() != RESUME_TOKEN_LEN) {
             FW_WRN("net: resume asked for but no token held — full HELLO");
@@ -1244,9 +1245,9 @@ Client::HandshakeOutcome Client::do_handshake(bool use_resume) {
             hr.peer_id.set(cfg_.client_id);
             std::memcpy(hr.resume_token, resume_token_.data(),
                         RESUME_TOKEN_LEN);
-            // Stessa versione applicativa dell'HELLO: il server la confronta
-            // col proprio major e un valore diverso qui prenderebbe la via
-            // del rifiuto per versione.
+            // Same application version as HELLO: the server compares it with
+            // its own major, and a different value here would take the
+            // version-reject path.
             hr.client_version_major = 1;
             hr.client_version_minor = 0;
             FW_LOG("net: HELLO_RESUME as '%s' with the token from the last "
@@ -1319,8 +1320,8 @@ Client::HandshakeOutcome Client::do_handshake(bool use_resume) {
     return await_welcome(/*was_resume=*/false);
 }
 
-// Aspetta il WELCOME (o il rifiuto) per cinque secondi, ridando fiato alle
-// ritrasmissioni. Condivisa dai due ingressi, HELLO e HELLO_RESUME.
+// Waits for the WELCOME (or the refusal) for five seconds, giving the
+// retransmissions room. Shared by the two entries, HELLO and HELLO_RESUME.
 Client::HandshakeOutcome Client::await_welcome(bool was_resume) {
     // Wait up to 5 seconds for WELCOME, re-driving retransmits via tick.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -1371,19 +1372,19 @@ Client::HandshakeOutcome Client::await_welcome(bool was_resume) {
             connected_.store(true);
             last_server_frame_ms_.store(now_ms_wall(),
                                         std::memory_order_relaxed);
-            // v26 — il token per la prossima volta. Il server ne conia uno
-            // nuovo a ogni WELCOME accettato e ritira il precedente, quindi
-            // vale un solo rientro: va sempre sovrascritto, mai accumulato.
+            // v26 — the token for next time. The server mints a new one at
+            // every accepted WELCOME and retires the previous one, so it is
+            // good for one resume: always overwritten, never accumulated.
             resume_token_.assign(w.resume_token,
                                  w.resume_token + RESUME_TOKEN_LEN);
-            // Fase 2 — siamo tornati: i ghost nascosti si rivedono, e il
-            // bootstrap della presenza li rimette dove sono davvero.
+            // Phase 2: the session is back. Hidden ghosts show again, and the
+            // presence bootstrap puts them back where they really are.
             fw::native::ghost_lifecycle::on_local_session_restored();
-            // Fase 3 — il server ha appena dimenticato il nostro vestito
-            // memorizzato (e' della sessione precedente, e un rilancio
-            // carica il save, che puo' vestirci diversamente). Lo
-            // ricostruiamo noi: il tick legge cio' che indossiamo davvero e
-            // lo annuncia appena la scena e' assestata.
+            // Phase 3: the server has just forgotten this client's stored
+            // outfit (it belongs to the previous session, and a relaunch
+            // loads the save, which may dress the player differently). The
+            // client rebuilds it: the tick reads what is actually worn and
+            // announces it as soon as the scene has settled.
             fw::hooks::equip_announce_on_session_start();
             // Build 65 — once the server has accepted us, hand our
             // canonical peer_id to the ownership manager so PHASE_2
@@ -1432,18 +1433,18 @@ Client::HandshakeOutcome Client::await_welcome(bool was_resume) {
     return HandshakeOutcome::Retry;
 }
 
-// Traduce il motivo del rifiuto in una decisione. Prima della v26 il motivo
-// non viaggiava affatto e il client poteva solo scrivere "rejected" e morire.
+// Turns the reject reason into a decision. Before v26 the reason did not
+// travel at all and the client could only write "rejected" and die.
 Client::HandshakeOutcome Client::on_rejected(std::uint8_t code, bool was_resume,
                                              std::uint8_t smaj,
                                              std::uint8_t smin) {
     switch (code) {
     case REJECT_RESUME_UNKNOWN:
     case REJECT_RESUME_EXPIRED:
-        // Il server e' ripartito senza il nostro token, o sono passate piu'
-        // di ventiquattro ore. Si butta e si ripresenta un HELLO normale:
-        // su un server che non esige autenticazione funziona, e il
-        // personaggio resta il nostro perche' lo stato e' indicizzato per id.
+        // The server restarted without this token, or more than twenty-four
+        // hours passed. Drop it and present a plain HELLO: on a server that
+        // does not require authentication it works, and the character stays
+        // the same because the state is keyed by id.
         FW_WRN("net: the server does not know our resume token (%s) — "
                "dropping it and coming back with a plain HELLO",
                code == REJECT_RESUME_EXPIRED ? "expired" : "unknown");
@@ -1454,8 +1455,8 @@ Client::HandshakeOutcome Client::on_rejected(std::uint8_t code, bool was_resume,
         return HandshakeOutcome::Retry;
     case REJECT_PEER_ID_TAKEN:
     case REJECT_IDENTITY_TAKEN:
-        // Quasi sempre siamo noi stessi: la sessione precedente non e'
-        // ancora scaduta lato server. Basta aspettare.
+        // Almost always this same client: the previous session has not
+        // expired on the server yet. Waiting is enough.
         FW_WRN("net: the server still holds a live session for us — "
                "retrying while it times out");
         return HandshakeOutcome::Retry;
@@ -1478,12 +1479,11 @@ Client::HandshakeOutcome Client::on_rejected(std::uint8_t code, bool was_resume,
     }
 }
 
-// Quanto silenzio dal server prima di dichiarare caduta la sessione.
-// Il nostro battito parte ogni 1500 ms e il server risponde: cinque secondi
-// sono tre echi persi. Serve perche' un client che manda solo posizioni non
-// ha niente di affidabile in volo, quindi il canale non si dichiara MAI
-// morto e senza questo controllo si continuerebbe a parlare nel vuoto per
-// sempre.
+// How much silence from the server before the session is declared down.
+// The heartbeat goes out every 1500 ms and the server answers: five seconds
+// is three lost echoes. Needed because a client that only sends positions
+// has nothing reliable in flight, so the channel NEVER declares itself dead,
+// and without this check it would keep talking into the void forever.
 static constexpr std::uint64_t kServerSilenceMs = 5000;
 
 void Client::run_loop() {
@@ -1495,12 +1495,12 @@ void Client::run_loop() {
     std::uint8_t rxbuf[MAX_FRAME_SIZE];
     unsigned attempt = 0;
 
-    // ===================== ciclo delle SESSIONI ==========================
+    // ===================== the SESSION loop ==============================
     //
-    // Prima della Fase 1 qui c'era una sola sessione: aperta una volta, al
-    // primo intoppo il thread usciva e il gioco restava acceso con un ghost
-    // congelato e nessun segnale. Ora ogni giro di questo while e' una
-    // sessione, e la sua fine e' solo l'inizio della prossima.
+    // Before phase 1 there was a single session here: opened once, and at
+    // the first hitch the thread exited and the game stayed up with a frozen
+    // ghost and no signal. Now every pass of this while is a session, and
+    // its end is only the start of the next.
     while (!stopping_.load()) {
         reset_session_state();
         if (!socket_.open(server_host_, server_port_)) {
@@ -1537,23 +1537,23 @@ void Client::run_loop() {
             drained.swap(queue_);
         }
 
-        // 2026-09-18 — DELLE FOTOGRAFIE TIENI SOLO L'ULTIMA.
+        // 2026-09-18 — OF THE SNAPSHOTS, KEEP ONLY THE LAST.
         //
-        // Posizione, posa e crouch descrivono un istante: se nella coda ne
-        // sono finite due, la piu' vecchia non serve a nessuno. E non e'
-        // solo spreco. Il drenaggio spedisce tutto quello che trova una
-        // riga dietro l'altra, mentre il validatore del server misura
-        // l'intervallo di ARRIVO e rifiuta come TOO_FAST_REPEAT qualunque
-        // posizione giunta meno di 20 ms dopo la precedente: circa 40
-        // rifiuti al minuto misurati il 2026-09-18, banda e CPU buttate su
-        // pacchetti che il server scarta. Il produttore gira a 20 Hz ma il
-        // ciclo di rete non e' cadenzato: ogni volta che rallenta (decodifica
-        // di un blob, un log, un'attesa di ACK) due campioni si accodano.
+        // Position, pose and crouch describe an instant: if two of them ended
+        // up in the queue, the older one is useless to anyone. And it is not
+        // only waste. The drain sends everything it finds one line after the
+        // other, while the server's validator measures the ARRIVAL interval
+        // and rejects as TOO_FAST_REPEAT any position arriving less than
+        // 20 ms after the previous one: about 40 rejects a minute measured on
+        // 2026-09-18, bandwidth and CPU spent on packets the server discards.
+        // The producer runs at 20 Hz but the network loop is not paced: every
+        // time it slows down (a blob decode, a log, an ACK wait) two samples
+        // queue up.
         //
-        // Si accorpa solo qui, sulla copia gia' drenata: farlo dentro
-        // l'enqueue significherebbe scorrere la coda sul thread del gioco a
-        // ogni spinta. E non si tocca MAI niente di affidabile: quelli sono
-        // eventi, non stati, e perderne uno cambia il mondo.
+        // Collapsed only here, on the drained copy: doing it inside the
+        // enqueue would mean scanning the queue on the game thread at every
+        // push. And nothing reliable is EVER touched: those are events, not
+        // states, and losing one changes the world.
         {
             auto is_snapshot = [](MessageType t) {
                 return t == MessageType::POS_STATE
@@ -1592,21 +1592,21 @@ void Client::run_loop() {
         }
 
         for (auto& q : drained) {
-            // 2026-09-18 — FRENO ALL'INVIO DELLE POSIZIONI.
+            // 2026-09-18 — A BRAKE ON POSITION SENDS.
             //
-            // Tenere solo la piu' recente di ogni gruppo drenato non basta,
-            // e la misura lo dice: i rifiuti del server sono scesi da ~40 a
-            // ~30 al minuto, non a zero. Il motivo e' che il residuo non
-            // sono due posizioni nello stesso drenaggio, sono due giri
-            // CONSECUTIVI del ciclo troppo vicini: la recv torna subito ogni
-            // volta che c'e' un datagramma in attesa, quindi il periodo del
-            // ciclo non e' 50 ms, e' "quanto parla il server". Il validatore
-            // misura l'intervallo di arrivo e rifiuta sotto i 20 ms.
+            // Keeping only the most recent of each drained group is not
+            // enough, and the measurement says so: the server's rejects went
+            // from ~40 to ~30 a minute, not to zero. The residue is not two
+            // positions in the same drain, it is two CONSECUTIVE passes of
+            // the loop too close together: recv returns at once whenever a
+            // datagram is waiting, so the loop's period is not 50 ms, it is
+            // "however often the server talks". The validator measures the
+            // arrival interval and rejects under 20 ms.
             //
-            // Venticinque e non venti, cosi' il jitter non puo' finire
-            // sotto la soglia. La posizione scartata non si riaccoda: il
-            // campione successivo arriva comunque entro 50 ms
-            // (player_pos_hook, POLL_INTERVAL_MS).
+            // Twenty-five and not twenty, so jitter cannot land under the
+            // threshold. The discarded position is not re-queued: the next
+            // sample arrives within 50 ms anyway (player_pos_hook,
+            // POLL_INTERVAL_MS).
             if (q.msg_type == MessageType::POS_STATE && !q.reliable) {
                 const auto since = std::chrono::duration_cast<
                     std::chrono::milliseconds>(now - last_pos_sent_at_).count();
@@ -1648,8 +1648,8 @@ void Client::run_loop() {
             break;
         }
 
-        // Silenzio del server: vedi kServerSilenceMs. Qualunque frame in
-        // arrivo rinfresca il contatore, non solo l'eco del battito.
+        // Server silence: see kServerSilenceMs. Any incoming frame refreshes
+        // the counter, not only the heartbeat echo.
         {
             const std::uint64_t last =
                 last_server_frame_ms_.load(std::memory_order_relaxed);
@@ -1667,12 +1667,11 @@ void Client::run_loop() {
         // -------- 3. Recv one datagram if available (50ms max wait) --------
         const int n = socket_.recv(rxbuf, sizeof(rxbuf), 50);
         if (n > 0) {
-            // v26 — il timbro di vita va messo QUI, sul datagramma grezzo,
-            // non dentro dispatch. Un ACK puro non viene mai "consegnato"
-            // (il canale lo consuma e restituisce vuoto) ma dimostra che il
-            // server e' vivo esattamente come qualunque altro frame:
-            // marcarlo solo in dispatch farebbe dichiarare morta una
-            // sessione tranquilla in cui l'unico traffico sono gli ACK.
+            // v26 — the liveness stamp goes HERE, on the raw datagram, not
+            // inside dispatch. A pure ACK is never "delivered" (the channel
+            // consumes it and returns nothing) but proves the server is alive
+            // exactly like any other frame: stamping only in dispatch would
+            // declare dead a quiet session whose only traffic is ACKs.
             last_server_frame_ms_.store(now_ms_wall(),
                                         std::memory_order_relaxed);
             std::vector<std::uint8_t> ack_bytes;
@@ -1743,39 +1742,39 @@ void Client::run_loop() {
                        fw::hooks::get_npc_ai_seh_failures()));
             next_stats = now + STATS_INTERVAL;
         }
-    }   // ---------------- fine del ciclo di UNA sessione ----------------
+    }   // ---------------- end of ONE session's loop ----------------
 
-        // Uscita pulita: si saluta il server, cosi' gli altri client sanno
-        // subito che siamo andati invece di aspettare il timeout.
+        // Clean exit: the server is told, so the other clients know at once
+        // that this one left instead of waiting for the timeout.
         if (stopping_.load() && connected_.load()) {
             DisconnectPayload d{};
             d.reason = 0;
             auto frame = channel_.send_reliable(
                 MessageType::DISCONNECT, &d, sizeof(d));
             socket_.send(frame.data(), frame.size());
-            Sleep(100);   // breve drenaggio perche' l'UDP esca davvero
+            Sleep(100);   // a short drain so the UDP actually leaves
         }
         connected_.store(false);
         socket_.close();
 
         if (stopping_.load()) break;
         if (session_lost) {
-            // Chi sta aspettando il verdetto su una cassa non deve restare
-            // appeso al proprio timeout: gli si risponde subito di no, e il
-            // motore non muta niente. Prima della Fase 1 questa sveglia
-            // stava solo sull'uscita del thread, quindi durante una caduta
-            // ogni presa o deposito mangiava cento millisecondi a vuoto.
+            // Whoever is waiting for a verdict on a container must not hang
+            // until its own timeout: it is answered no at once, and the
+            // engine mutates nothing. Before phase 1 this wake-up sat only on
+            // the thread's exit, so during a drop every take or put ate a
+            // hundred milliseconds for nothing.
             wake_pending_ops();
-            // Fase 2 — gli altri stanno ancora giocando, noi non li
-            // vediamo piu': i loro corpi si nascondono invece di restare
-            // statue immobili a mentire.
+            // Phase 2: the others are still playing, this client just cannot
+            // see them any more: their bodies are hidden instead of standing
+            // as motionless statues that lie.
             fw::native::ghost_lifecycle::on_local_session_lost();
             FW_WRN("net: session lost — reconnecting%s",
                    (resume_token_.size() == RESUME_TOKEN_LEN)
                        ? " with the resume token" : "");
             if (!backoff_wait(++attempt)) break;
         }
-    }   // =============== fine del ciclo delle SESSIONI ===================
+    }   // =============== end of the SESSION loop ===================
 
     connected_.store(false);
 
@@ -1790,17 +1789,17 @@ void Client::run_loop() {
 // "wait_for returned false" but here we set ready=true so it doesn't
 // stall for the full timeout. Status=0 (ACCEPTED) would be wrong, so we use
 // REJ_RATE as a harmless reject sentinel.
-// Unico punto di inserimento in coda.
+// The insertion point with the ceiling (not the only one: see the header).
 //
-// Prima della Fase 1 la coda non aveva alcun tetto: l'unica cosa che la
-// teneva corta era che da disconnessi ogni enqueue usciva subito. Ora che
-// gli eventi di stato attraversano una caduta il limite serve davvero, coi
-// produttori che vanno a 20 Hz.
+// Before phase 1 the queue had no ceiling: the only thing keeping it short
+// was that every enqueue returned at once while disconnected. Now that state
+// events survive a drop the limit is really needed, with producers running
+// at 20 Hz.
 //
-// Quando si e' al tetto si sacrifica sempre la cosa piu' vecchia fra quelle
-// sacrificabili, cioe' una fotografia: e' gia' stata superata da una piu'
-// recente. Se in coda ci sono solo eventi, l'ultimo arrivato viene rifiutato
-// e lo si dice, perche' a quel punto stiamo perdendo qualcosa che conta.
+// At the ceiling the oldest sacrificeable thing is always sacrificed, that
+// is a snapshot: a more recent one has already superseded it. If the queue
+// holds only events, the newcomer is refused and said so, because at that
+// point something that matters is being lost.
 bool Client::push_queued(QueuedSend&& q) {
     std::lock_guard lk(queue_mutex_);
     if (queue_.size() >= kSendQueueMax) {
@@ -1852,8 +1851,8 @@ void Client::wake_pending_ops() {
     }
 }
 
-// Tutto quello che appartiene a UNA sessione e non deve sopravvivere alla
-// successiva. Solo dal thread del worker, fra una sessione e l'altra.
+// Everything that belongs to ONE session and must not survive the next.
+// Only from the worker thread, between one session and the next.
 void Client::reset_session_state() {
     // Socket e canale vanno azzerati INSIEME e in quest'ordine. Il server
     // indicizza le sessioni per indirizzo UDP e riparte da capo coi numeri
@@ -1866,23 +1865,22 @@ void Client::reset_session_state() {
     connected_.store(false);
     last_server_frame_ms_.store(0, std::memory_order_relaxed);
 
-    // Le chiavi sono (peer, equip_seq) e il numero di sequenza riparte da
-    // capo a ogni sessione del peer: una voce vecchia mezza piena
-    // corromperebbe in silenzio il primo blob della sessione nuova.
-    // Nessun lock: questa mappa la tocca solo il thread del worker, in
-    // dispatch, e questa funzione gira sullo stesso thread.
+    // The keys are (peer, equip_seq) and the sequence number restarts at
+    // every session of the peer: an old half-filled entry would silently
+    // corrupt the first blob of the new session. No lock: only the worker
+    // thread touches this map, in dispatch, and this function runs on the
+    // same thread.
     mesh_blob_reasm_.clear();
-    // Il bootstrap dei contenitori FONDE invece di sostituire, quindi senza
-    // svuotare resterebbero accanto le voci di una cassa cambiata mentre
-    // eravamo via e quelle nuove.
+    // The container bootstrap MERGES instead of replacing, so without
+    // clearing, the entries of a container changed while this client was
+    // away would sit next to the new ones.
     {
         std::lock_guard lk(container_mirror_mutex_);
         container_mirror_.clear();
     }
-    // Le fotografie accodate mentre si era giu' sono vecchie di secondi e
-    // non servono a nessuno. Gli eventi di stato invece restano: perderne
-    // uno (un equip, uno spawn, una morte) lascia i due client disallineati
-    // finche' non lo si rifa' a mano.
+    // The snapshots queued while down are seconds old and useless to
+    // anyone. State events stay instead: losing one (an equip, a spawn, a
+    // death) leaves the two clients misaligned until it is redone by hand.
     {
         std::lock_guard lk(queue_mutex_);
         std::deque<QueuedSend> keep;
@@ -1897,16 +1895,16 @@ void Client::reset_session_state() {
                    "dropped %zu stale snapshot(s)", queue_.size(), dropped);
         }
     }
-    // E il pezzo che nessuno vedrebbe mancare finche' non e' troppo tardi:
-    // senza questo gli NPC gia' osservati non verrebbero mai riannunciati e
-    // resterebbero congelati per il resto della partita.
+    // And the piece nobody would see missing until too late: without this
+    // the NPCs already observed would never be announced again and would
+    // stay frozen for the rest of the game.
     fw::ownership::reset_for_new_session();
 }
 
-// Attesa fra due tentativi. A fette da 50 ms perche' `stop()` fa un join
-// incondizionato da DLL_PROCESS_DETACH, cioe' sotto il loader lock: una
-// attesa lunga e indivisibile qui bloccherebbe la chiusura del gioco per
-// tutta la sua durata. Torna false se ci hanno chiesto di fermarci.
+// The wait between two attempts. In 50 ms slices because `stop()` does an
+// unconditional join from DLL_PROCESS_DETACH, that is under the loader lock:
+// a long indivisible wait here would block the game's shutdown for its whole
+// duration. Returns false when asked to stop.
 bool Client::backoff_wait(unsigned attempt) {
     static constexpr unsigned kLadderMs[] = {1000, 2000, 4000, 8000, 15000};
     const unsigned idx = (attempt == 0) ? 0 : (attempt - 1);
@@ -1923,9 +1921,9 @@ bool Client::backoff_wait(unsigned attempt) {
 // ---------------------------------------------------------------- dispatch
 
 void Client::dispatch(const Delivered& d) {
-    // v26 — QUALUNQUE frame dal server dimostra che e' vivo, non solo l'eco
-    // del battito. Questo timbro e' l'unico rilevatore di silenzio che
-    // abbiamo (vedi kServerSilenceMs).
+    // v26 — ANY frame from the server proves it is alive, not only the
+    // heartbeat echo. This stamp is the only silence detector there is (see
+    // kServerSilenceMs).
     last_server_frame_ms_.store(now_ms_wall(), std::memory_order_relaxed);
     switch (d.header.msg_type) {
     case static_cast<std::uint16_t>(MessageType::POSE_BROADCAST): {
@@ -2023,8 +2021,8 @@ void Client::dispatch(const Delivered& d) {
         std::memcpy(&p, d.payload.data(), sizeof(p));
 
         const std::string peer = p.peer_id.get();
-        // Fase 2 — la data dell'ultima posizione, per la rete di sicurezza
-        // sul PEER_LEAVE perduto. Solo una data, nessun lavoro di scena.
+        // Phase 2: the time of the last position, for the safety net on a
+        // lost PEER_LEAVE. Only a time, no scene work.
         fw::native::ghost_lifecycle::on_peer_position(peer.c_str());
 
         // Legacy ghost_map path (B1) — DISABLED 2026-04-29.
@@ -2046,9 +2044,9 @@ void Client::dispatch(const Delivered& d) {
         //         p.x, p.y, p.z, p.rx, p.ry, p.rz);
         // }
 
-        // L'istantanea di QUESTO peer, piu' la copia "ultimo che ha
-        // parlato" per i consumatori che non sanno ancora di chi parlano.
-        // Le due coincidono finche' i peer remoti sono uno solo.
+        // THIS peer's snapshot, plus the "last one heard from" copy for the
+        // consumers that do not yet know whom they are talking about. The
+        // two coincide as long as there is a single remote peer.
         {
             RemotePlayerSnapshot snap;
             snap.has_state      = true;
@@ -3389,49 +3387,45 @@ void Client::dispatch(const Delivered& d) {
         break;
     }
 
-    // PEER_JOIN CHIEDE un ghost, non lo inietta. Fatto nella Fase 2.
+    // PEER_JOIN ASKS for a ghost, it does not inject one. Done in phase 2.
     //
-    // Qui si registra soltanto che a quel peer serve un corpo: il grafo di
-    // scena non si tocca dal thread di rete, mai. Iniettare da qui
-    // riproduceva un crash noto — il caricamento di un salvataggio spara
-    // piu' eventi di LoadGame di fila e smonta il nodo della scena ogni
-    // volta, e un peer puo' entrare esattamente li' dentro.
+    // Only the fact that this peer needs a body is recorded here: the scene
+    // graph is never touched from the network thread. Injecting from here
+    // reproduced a known crash: loading a save fires several LoadGame events
+    // in a row and tears the scene node down each time, and a peer can join
+    // exactly in there.
     //
-    // E quella finestra dura molto piu' di quanto chiunque immaginasse:
-    // misurata il 2026-09-18, SEI SECONDI, durante i quali
-    // local_player_in_world() resta vero perche' il giocatore del mondo
-    // vecchio e' ancora intero. Il cancello che decide QUANDO sta sopra
-    // ghost_scene_is_stable in scene_inject.cpp, e non e' un predicato: e'
-    // una striscia di tick consecutivi piu' un caricamento dichiarato.
+    // And that window lasts far longer than anyone imagined: measured on
+    // 2026-09-18, SIX SECONDS, during which local_player_in_world() stays
+    // true because the old world's player is still intact. The gate that
+    // decides WHEN sits above ghost_scene_is_stable in scene_inject.cpp, and
+    // it is not a predicate: it is a streak of consecutive ticks plus a
+    // declared load.
     //
-    // Lo stato degli altri per chi entra NON e' piu' un buco: la Fase 0 ha
-    // aggiunto il bootstrap della presenza (posizione, cella e vestito
-    // memorizzato di ogni peer, rigiocati come broadcast normali) e il
-    // 2026-09-18 anche lo specchio, cioe' il vestito di CHI ENTRA annunciato
-    // a chi c'era gia'. Resta il fatto che il vestito memorizzato e'
-    // completo quanto gli eventi di equip che il server ha visto passare: un
-    // capo gia' indosso quando il salvataggio e' stato caricato non ha
-    // prodotto nessun evento, quindi non c'e'. Quella e' la Fase 3.
-    //
-    // Chiuso dalla Fase 3 (2026-09-23). Il vestito memorizzato non dipende
-    // piu' dagli eventi di equip che il server ha visto passare: a ogni
-    // inizio di sessione il client legge dall'inventario cio' che indossa
-    // davvero, con gli OMOD, e lo annuncia (hooks/equip_announce). Il server
-    // dimentica il vestito della sessione precedente a ogni (ri)ingresso,
-    // e ha smesso di rigiocare il vestito di chi entra a chi c'era gia':
-    // ci pensa l'annuncio, che dice il vero invece di ricordare.
+    // What a joiner is shown of the others is no longer a hole: phase 0
+    // added the presence bootstrap (position, cell and stored outfit of every
+    // peer, replayed as ordinary broadcasts). The stored outfit itself used
+    // to be only as complete as the equip events the server had seen, since
+    // an item already worn when the save loaded fired no event. Closed by
+    // phase 3 (2026-09-23): at every session start the client reads what it
+    // really wears from its inventory, with the OMODs, and announces it
+    // (hooks/equip_announce); the server forgets the previous session's
+    // outfit at every (re)join and no longer replays the joiner's outfit to
+    // those already there, because the announce tells the truth instead of
+    // remembering.
     case static_cast<std::uint16_t>(MessageType::PEER_JOIN): {
-        // Fase 2 — l'evento decide COSA, il tick decide QUANDO. Qui si
-        // registra soltanto che a quel peer serve un corpo: il grafo di
-        // scena non si tocca dal thread di rete, mai.
+        // Phase 2: the event decides WHAT, the tick decides WHEN. Only the
+        // fact that this peer needs a body is recorded here; the scene graph
+        // is never touched from the network thread.
 
         if (d.payload.size() < sizeof(PeerJoinPayload)) break;
         PeerJoinPayload p{};
         std::memcpy(&p, d.payload.data(), sizeof(p));
-        // Fino al 2026-09-23 questa riga diceva "re-arming equip cycle to
-        // re-broadcast our current equipment state": falso dal 2026-05-08,
-        // quando quel riarmo e' stato spento (vedi sotto). Il nome, invece,
-        // e' vero da v26 e da oggi qualcuno lo legge: chat e nametag.
+        // Until 2026-09-23 this line claimed "re-arming equip cycle to
+        // re-broadcast our current equipment state": false since 2026-05-08,
+        // when that re-arm was switched off (see below). The name, instead,
+        // has been real since v26 and is read since phase 4: chat and
+        // nametags.
         const std::string name(p.display_name,
                                ::strnlen(p.display_name, MAX_PLAYER_NAME_LEN));
         FW_LOG("net: peer joined: %s (sid=%u) name='%s'",
@@ -3469,54 +3463,52 @@ void Client::dispatch(const Delivered& d) {
         break;
     }
 
-    // FATTO nella Fase 2 (2026-09-18). Qui c'era un TODO che diceva
-    // "PEER_LEAVE currently does NOTHING but log" e che il corpo del ghost
-    // "stays in the world forever": non e' piu' vero, e un commento che
-    // descrive un comportamento gia' chiuso fa ripartire da zero chi lo
-    // legge fra un mese. Cosa e' vero adesso:
+    // DONE in phase 2 (2026-09-18). A TODO here said "PEER_LEAVE currently
+    // does NOTHING but log" and that the ghost's body "stays in the world
+    // forever": no longer true, and a comment describing behaviour already
+    // closed sends whoever reads it in a month back to square one. What is
+    // true now:
     //
-    //   * questo gestore ACCODA soltanto. Gira sul thread di rete, e ogni
-    //     mutazione del grafo di scena e' solo main-thread: lo smontaggio
-    //     lo fa ghost_lifecycle::tick, dal WndProc.
-    //   * lo smontaggio rispetta la legge d'ordine scritta sopra
-    //     detach_debug_cube — code in attesa, arma, armature su una
-    //     fotografia della mappa, cache dei mod, faccia, contributori al
-    //     culling, e solo alla fine testa e corpo.
+    //   * this handler only QUEUES. It runs on the network thread, and every
+    //     scene graph mutation is main-thread only: the teardown is done by
+    //     ghost_lifecycle::tick, from the WndProc.
+    //   * the teardown follows the order law written above
+    //     detach_debug_cube: pending queues, weapon, armour on a snapshot of
+    //     the map, mod caches, face, cull contributors, and head and body
+    //     last.
     //
-    // Aggiornamento del 2026-09-19: anche l'ultimo pezzo del vecchio TODO e'
-    // caduto. Il corpo non e' piu' un puntatore singolo — g_injected_cube non
-    // esiste piu' — e corpo, testa, ossa, geometrie, contributori al culling,
-    // innesto e bind della power armor vivono tutti in GhostRecord, indicizzati
-    // per peer. Il parametro last_ghost resta perche' la cache delle facce e
-    // lo scheletro di riferimento sono di sessione e si liberano una volta
-    // sola.
+    // Update of 2026-09-19: the last piece of the old TODO fell too. The body
+    // is no longer a single pointer (g_injected_cube is gone) and body, head,
+    // bones, geometries, cull contributors, power armor graft and bind all
+    // live in GhostRecord, keyed by peer. The last_ghost parameter stays
+    // because the face cache and the reference skeleton are per session and
+    // are released once.
     //
-    // Un secondo ghost resta comunque rifiutato, ma per un motivo diverso e
-    // scritto dove il rifiuto avviene (ghost_lifecycle.cpp): il percorso a due
-    // peer remoti non e' mai stato eseguito, perche' il collaudo e' a due
-    // client e ognuno vede un peer solo.
+    // A second ghost is still refused, but for a different reason, written
+    // where the refusal happens (ghost_lifecycle.cpp): the path with two
+    // remote peers has never been executed, because testing is done with two
+    // clients and each sees a single peer.
     case static_cast<std::uint16_t>(MessageType::PEER_LEAVE): {
         if (d.payload.size() < sizeof(PeerLeavePayload)) break;
         PeerLeavePayload p{};
         std::memcpy(&p, d.payload.data(), sizeof(p));
         FW_LOG("net: peer left: %s (reason=%u)", p.peer_id.get().c_str(), p.reason);
-        // Fase 2 — da qui in poi il ghost di quel peer non resta piu' in
-        // piedi per sempre: il tick sul thread principale lo smonta
-        // nell'ordine che la legge sopra detach_debug_cube impone.
+        // Phase 2: from here on that peer's ghost no longer stands forever:
+        // the main-thread tick tears it down in the order the law above
+        // detach_debug_cube imposes.
         fw::native::ghost_lifecycle::on_peer_leave(p.peer_id.get().c_str());
-        // Le righe di chat gia' arrivate hanno il nome risolto dentro; una
-        // riga ancora in volo da chi e' uscito si mostra col suo id.
+        // Chat lines already received carry their resolved name; a line
+        // still in flight from a peer who left shows with its id.
         fw::net::peer_names::on_leave(p.peer_id.get());
         break;
     }
 
     case static_cast<std::uint16_t>(MessageType::HEARTBEAT): {
-        // v26 — l'eco del server. Prima della Fase 1 finiva qui e moriva,
-        // e il client non aveva NESSUN modo di accorgersi che il server era
-        // morto: ritrasmette solo cio' che e' affidabile, e un client che
-        // manda posizioni non ha niente in volo. Il tempo di andata e
-        // ritorno viene gratis, perche' il server rimanda indietro il nostro
-        // stesso timestamp.
+        // v26 — the server's echo. Before phase 1 it ended here and died,
+        // and the client had NO way to notice a dead server: it retransmits
+        // only what is reliable, and a client that sends positions has
+        // nothing in flight. The round trip comes for free, because the
+        // server sends back this client's own timestamp.
         if (d.payload.size() >= sizeof(HeartbeatPayload)) {
             HeartbeatPayload hb{};
             std::memcpy(&hb, d.payload.data(), sizeof(hb));
@@ -3534,11 +3526,11 @@ void Client::dispatch(const Delivered& d) {
         break;
     }
     case static_cast<std::uint16_t>(MessageType::CHAT): {
-        // Fase 4 — una riga della chat globale. Qui fino al 2026-09-23 c'era
-        // "not meaningful in B0.5; future blocks handle these": il server la
-        // inoltrava dalla prima versione del protocollo, e il client la
-        // buttava. Il mittente e' il peer_id timbrato dal server, mai quello
-        // che il client aveva scritto (vedi _handle_chat).
+        // Phase 4: one line of the global chat. Until 2026-09-23 this said
+        // "not meaningful in B0.5; future blocks handle these": the server
+        // relayed it since the first protocol version and the client threw
+        // it away. The sender is the peer_id the server stamped, never the
+        // one the client wrote (see _handle_chat).
         constexpr std::size_t kHead = MAX_CLIENT_ID_LEN + 1 + 2;
         if (d.payload.size() < kHead) break;
         FixedClientId sender{};

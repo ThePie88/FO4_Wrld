@@ -30,9 +30,9 @@ struct Record {
     void*         ssn_at_build = nullptr;
     // Hidden because OUR session is down, not because the peer left.
     bool          hidden_for_local_outage = false;
-    // L'avviso "ne rendiamo uno solo" si scrive una volta, non a ogni tick.
+    // The "only one is rendered" warning is written once, not every tick.
     bool          second_peer_logged = false;
-    // Idem per il silenzio: una riga quando comincia, una quando finisce.
+    // Same for the silence: one line when it starts, one when it ends.
     bool          silence_logged = false;
     std::uint64_t requested_at_ms = 0;
 };
@@ -53,14 +53,14 @@ bool                                           g_local_outage = false;
 
 std::uint64_t now_ms() { return GetTickCount64(); }
 
-// Quanto silenzio da un peer prima di considerarlo andato, quando il
-// PEER_LEAVE non e' arrivato. Dieci secondi sono il doppio abbondante del
-// timeout del server (cinque): se il server l'ha buttato fuori, il suo
-// PEER_LEAVE ha tutto il tempo di arrivare per primo, e questa rete prende
-// solo il caso in cui quel messaggio si e' perso davvero.
+// How much silence from a peer before it counts as gone, when no PEER_LEAVE
+// arrived. Ten seconds is twice the server's timeout (five) with margin: if
+// the server evicted the peer, its PEER_LEAVE has all the time to arrive
+// first, and this net only catches the case where that message truly got
+// lost.
 constexpr std::uint64_t kSilenceBeforeGoneMs = 10000;
 
-// Data dell'ultima posizione vista, per peer. Mutex SUO: vedi l'header.
+// Time of the last position seen, per peer. Its OWN mutex: see the header.
 std::mutex                                     g_pos_mtx;
 std::unordered_map<std::string, std::uint64_t> g_last_pos_ms;
 
@@ -115,10 +115,10 @@ void tick(std::uintptr_t /*module_base*/) {
     // the scene. This step does no scene work at all: it establishes the
     // registry and proves the plumbing, so the first landing cannot break
     // anything that already works.
-    // La striscia di stabilita' avanza UNA volta per tick, qui, e non piu'
-    // dentro la creazione del ghost: il suo verdetto serve anche al battito
-    // del WndProc, che deve sapere quando il caricamento e' finito, e un
-    // contatore chiamato da due posti conta il doppio.
+    // The stability streak advances ONCE per tick, here, and no longer
+    // inside the ghost's creation: its verdict also serves the WndProc
+    // heartbeat, which must know when the load is over, and a counter called
+    // from two places counts double.
     fw::native::ghost_scene_settle_tick();
 
     std::deque<Event> events;
@@ -145,8 +145,8 @@ void tick(std::uintptr_t /*module_base*/) {
             r.state           = State::Requested;
             r.requested_at_ms = now_ms();
             {
-                // La data parte da adesso: un peer appena entrato non ha
-                // ancora mandato niente e scadrebbe prima di esistere.
+                // The clock starts now: a peer that has just joined has sent
+                // nothing yet and would expire before existing.
                 std::lock_guard pl(g_pos_mtx);
                 g_last_pos_ms[e.peer_id] = r.requested_at_ms;
             }
@@ -166,8 +166,8 @@ void tick(std::uintptr_t /*module_base*/) {
                 std::lock_guard pl(g_pos_mtx);
                 g_last_pos_ms.erase(e.peer_id);
             }
-            // Corpo, testa e geometrie sono ancora condivisi in questa
-            // tappa: si toccano solo quando se ne va l'ULTIMO peer.
+            // Body, head and geometries are still shared at this stage: they
+            // are touched only when the LAST peer leaves.
             const bool last = g_ghosts.empty();
             FW_LOG("[ghost-life] peer %s left (was state=%u) — tearing its "
                    "ghost down (%zu still tracked)", e.peer_id.c_str(),
@@ -176,22 +176,21 @@ void tick(std::uintptr_t /*module_base*/) {
         }
     }
 
-    // Costruire quello che manca.
+    // Build what is missing.
     //
-    // Un corpo solo, ancora, ma la ragione e' cambiata il 2026-09-19 e va
-    // detta giusta. Fino a quel giorno il rifiuto proteggeva da uno stato
-    // condiviso: scheletro unico, slot di posa e crouch unici, due ghost che
-    // si sarebbero mossi l'uno come l'altro. Quello stato non c'e' piu' — lo
-    // scheletro e' un clone privato che muore col suo corpo, gli slot per
-    // peer hanno sostituito quelli unici, e il censimento dei globali del
-    // percorso ghost e' vuoto.
+    // Still one body only, but the reason changed on 2026-09-19 and has to
+    // be stated right. Until that day the refusal protected shared state: a
+    // single skeleton, single pose and crouch slots, two ghosts that would
+    // have moved as one. That state is gone: the skeleton is a private clone
+    // that dies with its body, per-peer slots replaced the single ones, and
+    // the census of globals in the ghost path is empty.
     //
-    // Il cancello resta per una ragione piu' onesta e piu' debole: il percorso
-    // a due ghost non e' MAI STATO ESEGUITO. Il collaudo e' a due client, e
-    // ognuno dei due vede un peer remoto solo. Spedire un percorso mai girato
-    // equivale a non averlo, e qui si preferisce una riga di rifiuto a un
-    // difetto che si manifesta la prima volta che entra un terzo giocatore.
-    // Si apre quando ci sara' un terzo client con cui provarlo.
+    // The gate stays for a more honest and weaker reason: the two-ghost path
+    // has NEVER BEEN EXECUTED. Testing is done with two clients, and each of
+    // them sees a single remote peer. Shipping a path that never ran is the
+    // same as not having it, and a refusal line is preferred here to a defect
+    // that shows up the first time a third player joins. It opens when there
+    // is a third client to test it with.
     {
         std::lock_guard lk(g_mtx);
         bool someone_alive = false;
@@ -218,31 +217,31 @@ void tick(std::uintptr_t /*module_base*/) {
         }
     }
 
-    // SILENZIO — si OSSERVA e basta. Non si smonta niente.
+    // SILENCE: OBSERVED and nothing more. Nothing is torn down.
     //
-    // RITIRATO il 2026-09-18, il giorno stesso, dopo un test dal vivo.
-    // Qui c'era una "rete di sicurezza": dieci secondi senza posizione da un
-    // peer e il suo ghost veniva smontato come se se ne fosse andato.
+    // WITHDRAWN on 2026-09-18, the same day, after a live test. There was a
+    // "safety net" here: ten seconds without a position from a peer and its
+    // ghost was torn down as if it had left.
     //
-    // Ha fatto esattamente il danno da cui doveva proteggere. Il client A e'
-    // morto dai raider a Concord; durante la sequenza di morte e respawn ha
-    // smesso di mandare posizioni per piu' di dieci secondi, e B gli ha
-    // smontato il ghost. Il record spariva con lo smontaggio, quindi a
-    // ricostruirlo non c'era piu' nessuno: A e' tornato a Sanctuary e B non
-    // l'ha piu' visto per il resto della sessione.
+    // It did exactly the damage it was meant to prevent. Client A was killed
+    // by the raiders at Concord; through the death and respawn sequence it
+    // stopped sending positions for more than ten seconds, and B tore its
+    // ghost down. The record went with the teardown, so nobody was left to
+    // rebuild it: A came back to Sanctuary and B never saw it again for the
+    // rest of the session.
     //
-    // E la premessa era sbagliata in partenza. La rete doveva coprire "il
-    // PEER_LEAVE si e' perso", ma quel messaggio il server lo manda con
-    // send_reliable, cioe' registrato e RITRASMESSO fino all'ack: non si
-    // perde, al massimo arriva tardi. Proteggevo da una cosa che non puo'
-    // succedere e rompevo una cosa che succede eccome.
+    // And the premise was wrong from the start. The net was meant to cover
+    // "the PEER_LEAVE got lost", but the server sends that message with
+    // send_reliable, recorded and RETRANSMITTED until acked: it does not get
+    // lost, at most it arrives late. It protected against something that
+    // cannot happen and broke something that does.
     //
-    // Chi e' presente lo decide il SERVER. Un client non ha nessuna
-    // informazione migliore della sua, e il silenzio di dieci secondi non e'
-    // un'assenza: e' un caricamento, una morte, un respawn, o un menu.
+    // Who is present is the SERVER's decision. A client has no better
+    // information than its own, and ten seconds of silence is not an
+    // absence: it is a load, a death, a respawn, or a menu.
     //
-    // La riga resta perche' era diagnostica utile — e' cosi' che abbiamo
-    // capito quanto dura un respawn — ma non tocca piu' niente.
+    // The line stays because it was useful diagnostics (it is how the length
+    // of a respawn was learnt), but it no longer touches anything.
     if (fw::native::ghost_scene_settled()) {
         const std::uint64_t now = now_ms();
         std::lock_guard lk(g_mtx);
@@ -257,9 +256,9 @@ void tick(std::uintptr_t /*module_base*/) {
             const bool quiet = (last != 0 && now - last > kSilenceBeforeGoneMs);
             if (quiet && !r.silence_logged) {
                 r.silence_logged = true;
-                FW_LOG("[ghost-life] peer %s: no position for %llu ms. Non "
-                       "si tocca niente — chi e' presente lo dice il server, "
-                       "e un silenzio cosi' e' un caricamento o un respawn.",
+                FW_LOG("[ghost-life] peer %s: no position for %llu ms. Nothing "
+                       "is touched: who is present is the server's word, and "
+                       "a silence like this is a load or a respawn.",
                        id.c_str(),
                        static_cast<unsigned long long>(now - last));
             } else if (!quiet && r.silence_logged) {
@@ -269,20 +268,18 @@ void tick(std::uintptr_t /*module_base*/) {
         }
     }
 
-    // SCENA STANTIA — il ghost che un caricamento si e' portato via.
+    // STALE SCENE: the ghost a load took away.
     //
-    // Si chiede al CORPO, non alla scena: vedi ghost_body_is_orphaned. Un
-    // genitore nullo vuol dire che il nodo della scena e' stato distrutto e
-    // che quel corpo non e' piu' nel mondo, per quanto la nostra mappa
-    // continui a contenerlo.
+    // The BODY is asked, not the scene: see ghost_body_is_orphaned. A null
+    // parent means the scene node was destroyed and that body is no longer in
+    // the world, however long the registry keeps holding it.
     //
-    // Cosa si fa: lo stesso smontaggio di un PEER_LEAVE, e poi i record
-    // tornano in attesa. Non si ricostruisce qui: il cancello di
-    // ghost_create_if_ready deve rifare il suo lavoro, e dopo un
-    // caricamento ha parecchio da dire — la striscia riparte da zero, la
-    // cella e' cambiata, e il corpo non nascera' prima che la scena sia di
-    // nuovo assestata. Ricostruire di slancio qui dentro rimetterebbe il
-    // ghost esattamente nella finestra che ci e' costata la giornata.
+    // What is done: the same teardown as a PEER_LEAVE, then the records go
+    // back to waiting. No rebuild here: the ghost_create_if_ready gate has to
+    // do its job again, and after a load it has a lot to say: the streak
+    // restarts from zero, the cell changed, and the body will not be born
+    // before the scene has settled again. Rebuilding on the spot in here
+    // would put the ghost right back into the window that cost a whole day.
     {
         std::lock_guard lk(g_mtx);
         bool any_alive = false;
@@ -293,8 +290,8 @@ void tick(std::uintptr_t /*module_base*/) {
             FW_WRN("[ghost-life] the body's parent went null — a LoadGame "
                    "took the scene node with it. Tearing the ghost(s) down "
                    "and asking for them again; the gate decides when.");
-            // Lo smontaggio va fatto una volta sola sulle parti condivise,
-            // quindi l'ULTIMO della lista porta last_ghost.
+            // The teardown is done once on the shared parts, so the LAST of
+            // the list carries last_ghost.
             std::size_t left = g_ghosts.size();
             for (auto& [id, r] : g_ghosts) {
                 --left;

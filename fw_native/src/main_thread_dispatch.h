@@ -57,8 +57,6 @@ namespace fw::dispatch {
 //   0x51 = FW_MSG_LOCK_APPLY (B6.3 v0.5.3)     — owned here
 //   0x52 = (free) was FW_MSG_EQUIP_ANNOUNCE_FIRE, the never-invoked May 2026
 //          scaffold; equip_announce runs from the tick since phase 3
-//                                                (NON TESTATO 2026-05-08,
-//                                                 not dispatched yet)
 //
 // PRE-FIX BUG (commit landed 2026-04-27 evening): DOOR_APPLY was set
 // to 0x47 in the initial Phase 2 ship, colliding with STRADAB_BONE_TICK.
@@ -329,23 +327,24 @@ std::uint32_t main_thread_id() noexcept;
 
 // Build 65.c.22 — InCombat-flag propagation cache for non-owner side.
 //
-// Diagnosi (Agent 2 forensics): pos+yaw apply 100% riuscito, MA bit 0x4000
-// (Actor+0x2D0) cleared dall'engine perception walker su receiver ogni
-// Update_PerFrame (60Hz, no enemy perceived locally → InCombat cleared).
-// Drain setta il bit 10Hz → engine clear 60Hz → bit raramente set quando
-// behavior tree legge → raider vede "patrol/idle" pose → user vede
-// "animazioni come avrebbe contro client B" (= il locale engine sceglie
-// idle anim invece di combat anim).
+// Diagnosis (Agent 2 forensics): the pos+yaw apply succeeded 100%, BUT bit
+// 0x4000 (Actor+0x2D0) is cleared by the engine's perception walker on the
+// receiver at every Update_PerFrame (60 Hz, no enemy perceived locally, so
+// InCombat is cleared). The drain sets the bit at 10 Hz, the engine clears it
+// at 60 Hz, so the bit is rarely set when the behavior tree reads it: the
+// raider shows the patrol/idle pose, and the user sees the animations the
+// raider would have against client B alone (the local engine picks the idle
+// animation instead of combat).
 //
-// Fix: drain aggiorna questa cache per ogni STATE_FROM_OWNER applicato.
-// npc_ai_suppress detour legge DOPO orig (= dopo che engine ha cleared)
-// e re-setta bit 0x4000 60Hz. Bit ora persiste tra orig consecutivi →
-// behavior tree drives combat anims.
+// Fix: the drain refreshes this cache for every STATE_FROM_OWNER applied. The
+// npc_ai_suppress detour reads it AFTER the original (after the engine has
+// cleared) and sets bit 0x4000 again at 60 Hz. The bit now persists between
+// consecutive originals and the behavior tree drives the combat animations.
 //
-// Staleness: entry scaduta se più vecchia di 2s (= ~20 cicli drain mancati
-// = owner offline / disconnesso / handoff).
+// Staleness: an entry expires when older than 2 s (about 20 missed drain
+// cycles: owner offline, disconnected or handed off).
 //
-// Returns true + writes *out se non-stale entry presente.
+// Returns true and writes *out when a non-stale entry is present.
 bool get_latest_owner_anim_state(std::uint32_t form_id,
                                   std::uint8_t* out_anim_state);
 

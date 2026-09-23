@@ -948,16 +948,17 @@ void probe_hp_churn(void* actor, std::uint32_t fid) noexcept {
 }
 // ==========================================================================
 
-// Build 65.c.22 — SEH-safe OR del bit 0x4000 a Actor+0x2D0. Helper a
-// scope file perché il detour body ha shared_lock locals che vietano
-// __try (MSVC C2712). Chiamato 60Hz DOPO orig call su non-owner tracked
-// NPCs quando l'owner riporta combat (anim_state >= 3).
+// Build 65.c.22 — SEH-safe OR of bit 0x4000 into Actor+0x2D0. A file-scope
+// helper because the detour body has shared_lock locals, which forbid __try
+// (MSVC C2712). Called at 60 Hz AFTER the original call on non-owner tracked
+// NPCs while the owner reports combat (anim_state >= 3).
 //
-// Razionale: l'engine perception walker INSIDE orig clear questo bit
-// perché non perceive enemy locale (player_B su B vede solo player_B,
-// non player_A). Senza il bit, behavior tree drives idle/patrol anim.
-// Forzare 60Hz da QUI (dopo orig) → il bit persiste tra orig consecutivi
-// → behavior tree drives combat anim → user vede raider in combat stance.
+// Rationale: the engine's perception walker INSIDE the original clears this
+// bit because it perceives no local enemy (on B, player_B only sees player_B,
+// never player_A). Without the bit the behavior tree drives the idle/patrol
+// animation. Forcing it at 60 Hz from HERE (after the original) keeps the bit
+// set between consecutive originals, so the behavior tree drives the combat
+// animation and the user sees the raider in a combat stance.
 static void safe_or_in_combat_bit(void* actor) noexcept {
     if (!actor) return;
     __try {
@@ -1198,7 +1199,7 @@ void __fastcall detour_actor_update_perframe(void* actor, float sim_time) {
     //   - Leaves the proxy's pos/rot fields fully readable
     //   - Engine's per-frame combat-target reads on raiders STILL run
     //
-    // This is the cleanest "tocchiamo le radici" — instead of patching
+    // This is the cleanest root-level fix — instead of patching
     // each downstream walker, kill the per-frame entry point for our
     // proxy.
     if (fid == fw::offsets::GHOST_FORMID_BASE) {
@@ -1417,8 +1418,8 @@ void __fastcall detour_actor_update_perframe(void* actor, float sim_time) {
         //     ghost_ai_fire (non-owner bails CombatBehaviorGunFire so
         //     the engine doesn't spawn duplicate projectiles).
         //
-        // Track non-owner ticks for diagnostics. Counter cresce normally
-        // (non più "suppress" perché abbiamo smesso di sopprimere).
+        // Track non-owner ticks for diagnostics. The counter grows normally
+        // (no longer "suppress", because suppression stopped).
         if (fw::ownership::is_non_owner_tracked(fid)) {
             g_passthrough_fires.fetch_add(
                 1, std::memory_order_relaxed);
@@ -1499,9 +1500,9 @@ void __fastcall detour_actor_update_perframe(void* actor, float sim_time) {
 
             // Fall through. Vanilla Update_PerFrame runs below.
             // Server-relay STATE_FROM_OWNER apply (drain_npc_owner_
-            // state_apply_queue) sovrascrive pos/yaw/anim_state al
-            // suo cadence di 10Hz; non-owner engine state e nostro
-            // override convergono.
+            // state_apply_queue) overwrites pos/yaw/anim_state at its own
+            // 10 Hz cadence; the non-owner engine state and this override
+            // converge.
         }
         // (3) Owner: state capture MOVED to POST-orig (see end of detour
         //     for Build 65.c.24 multi-signal anim_state). Capturing
@@ -1647,8 +1648,8 @@ void __fastcall detour_actor_update_perframe(void* actor, float sim_time) {
     //
     // Excludes player always.
     //
-    // B6.6w3 (2026-05-12 night) — RE-ARCHITECTURE per user feedback:
-    // "i primi hook sono il problema, gli npc ostili sono FRIENDLY".
+    // B6.6w3 (2026-05-12 night) — RE-ARCHITECTURE per user feedback: the
+    // first hooks are the problem, the hostile NPCs come out FRIENDLY.
     //
     // Previous behavior: any InCombat flag (Path 2) auto-tracked the
     // actor → all 5 hooks bailed → raider became a statue → vanilla AI
@@ -2536,8 +2537,8 @@ void __fastcall detour_actor_update_perframe(void* actor, float sim_time) {
                         fid, &cx, &cy, &cz, &cyaw)) {
                     // FIX (resurrection) — NEVER MoveTo-revive a dying raider.
                     // The c.44 MoveTo(do_process_update=1) reattaches AI+cell+
-                    // Havok = brings the corpse back to life → the "MORTO MA NON
-                    // MORTO" zombie + the 0xC0F510 form-deserialize crash feeder.
+                    // Havok = brings the corpse back to life → the "DEAD BUT NOT
+                    // DEAD" zombie + the 0xC0F510 form-deserialize crash feeder.
                     // We already consumed the armed entry above; for a dying fid
                     // just skip the teleport (is_dying is set by the death-apply
                     // drain). 2-agent RCA: re/shareddmg_zombie_AGENT.md.
@@ -2599,31 +2600,32 @@ void __fastcall detour_actor_update_perframe(void* actor, float sim_time) {
         }
     }
 
-    // Build 65.c.22 — Force InCombat bit (0x4000 a Actor+0x2D0) 60Hz su
-    // non-owner tracked NPCs quando l'owner riporta combat.
+    // Build 65.c.22 — force the InCombat bit (0x4000 at Actor+0x2D0) at 60 Hz
+    // on non-owner tracked NPCs while the owner reports combat.
     //
-    // Root cause Agent 2 forensics: drain setta il bit 10Hz, ma engine
-    // perception walker INSIDE orig (questo Update_PerFrame appena
-    // chiamato) clear il bit perché su B's view non c'è enemy perceived
-    // (player_A è remote, rappresentato dal ghost ma non come "enemy
-    // in perception list" del raider). Senza il bit, behavior tree
-    // legge "raider in patrol state" → idle anim → user vede "animazioni
-    // come avrebbe contro client B" (engine drive idle).
+    // Root cause (Agent 2 forensics): the drain sets the bit at 10 Hz, but the
+    // engine's perception walker INSIDE the original (the Update_PerFrame just
+    // called) clears it, because in B's view there is no perceived enemy
+    // (player_A is remote, represented by the ghost but not as an "enemy in
+    // the perception list" of the raider). Without the bit the behavior tree
+    // reads "raider in patrol state", plays idle, and the user sees the
+    // animations the raider would have against client B alone.
     //
-    // Fix: re-set il bit DOPO orig, 60Hz. Bit ora persiste fino al
-    // prossimo Update_PerFrame quando il ciclo si ripete. Behavior tree
-    // sample del bit (durante anim graph eval, che è dopo Update_PerFrame
-    // nello stesso frame) vede 0x4000 set → drives combat anim.
+    // Fix: set the bit again AFTER the original, at 60 Hz. It now persists
+    // until the next Update_PerFrame, when the cycle repeats. The behavior
+    // tree samples the bit during the animation graph evaluation, which comes
+    // after Update_PerFrame in the same frame, sees 0x4000 set and drives the
+    // combat animation.
     //
-    // Gate: solo per non-owner tracked NPCs (non sovrascrivere autonomy
-    // del owner-side engine AI) E solo se owner sta riportando anim_state
-    // >= 3 (AIMING/FIRING/STAGGERED, vedi enum apply_npc_state_to_actor).
-    // Cache get_latest_owner_anim_state aggiornata dal drain 10Hz; entry
-    // stale >2s → return false → no force (lasciamo engine decay
-    // naturalmente).
+    // Gate: only for non-owner tracked NPCs (never override the owner-side
+    // engine AI's autonomy) AND only while the owner reports anim_state >= 3
+    // (AIMING/FIRING/STAGGERED, see the enum in apply_npc_state_to_actor).
+    // The get_latest_owner_anim_state cache is refreshed by the 10 Hz drain;
+    // an entry stale for more than 2 s returns false, so nothing is forced and
+    // the engine decays naturally.
     //
-    // Diagnostic counter: throttled per non spammare il log (60Hz × N
-    // tracked raiders è hot path).
+    // Diagnostic counter: throttled so as not to spam the log (60 Hz × N
+    // tracked raiders is a hot path).
     if (fid != 0 && fid != 0xFFFFFFFFu) {
         if (fw::ownership::is_non_owner_tracked(fid)) {
             std::uint8_t latest_anim = 0;

@@ -86,23 +86,23 @@ void* peek_master(const std::string& key) noexcept;
 // a style choice here, it is the only shape that compiles at the call site.
 void* any_master(char* peer_out, std::size_t peer_out_size) noexcept;
 
-// La maschera di QUESTO peer, costruita dalla ricetta che ha ADESSO.
+// The mask of THIS peer, built from the recipe it has NOW.
 //
-// E' la risposta che any_master non poteva dare, e il suo commento lo diceva:
-// "when multi-peer ghosts land, this becomes a per-peer lookup". Ci siamo.
+// The answer any_master could not give, and its comment said so: "when
+// multi-peer ghosts land, this becomes a per-peer lookup". This is it.
 //
-// Fa da sola il giro giusto: prende la ricetta corrente del peer, ne calcola
-// l'hash e chiede get_master con quello. Quindi un aspetto cambiato invalida
-// la maschera vecchia invece di resuscitarla, che e' esattamente cio' che
-// peek_master non garantisce (per quello il suo commento dice "diagnostics
-// and teardown", non "rendering").
+// It does the right round trip by itself: takes the peer's current recipe,
+// hashes it and asks get_master with that. So a changed appearance
+// invalidates the old mask instead of resurrecting it, which is exactly what
+// peek_master does not guarantee (its comment says "diagnostics and
+// teardown", not "rendering").
 //
-// `const char*` e non std::string di proposito: il chiamante vive dentro la
-// gabbia SEH dell'iniettore, dove un temporaneo con distruttore e' un errore
-// di compilazione (C2712). Stessa ragione del buffer di any_master.
+// `const char*` and not std::string on purpose: the caller lives inside the
+// injector's SEH cage, where a temporary with a destructor is a compile error
+// (C2712). Same reason as any_master's buffer.
 //
-// Torna null se quel peer non ha ricetta, o non ha una maschera costruita da
-// quella ricetta.
+// Returns null when that peer has no recipe, or no mask built from that
+// recipe.
 void* master_for_peer(const char* peer_id) noexcept;
 
 // Drop one peer's master (they left), or all of them (session ended).

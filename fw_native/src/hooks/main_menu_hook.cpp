@@ -20,7 +20,7 @@
 #include "../log.h"
 #include "../native/world_spawn.h"
 #include "../native/ghost_lifecycle.h"
-#include "../net/client.h"   // l'addio alla chiusura della finestra
+#include "../net/client.h"   // the goodbye when the window closes
 #include "../main_thread_dispatch.h"
 #include "../native/scene_inject.h"
 #include "../native/chargen_dump.h"    // character-creation catalogue capture
@@ -28,7 +28,7 @@
 #include "../native/chargen_selftest.h" // one-shot appearance apply from our code
 #include "../native/appearance_recipe.h" // v20: publish my appearance on change
 #include "../render/editor_overlay.h"  // the panel, and its input capture
-#include "../render/chat_overlay.h"    // Fase 4: Enter apre la chat, e la chat prende la tastiera
+#include "../render/chat_overlay.h"    // phase 4: Enter opens the chat, the chat takes the keyboard
 #include "../native/chargen_stage.h"     // 2026-08-08: stage the player for creation
 #include "../native/face_borrow.h"       // v20: build peers' faces locally
 #include "../offsets.h"
@@ -100,56 +100,53 @@ HWND find_fo4_hwnd() {
     return ctx.found;
 }
 
-// Il battito del WndProc.
+// The WndProc heartbeat.
 //
-// Il blocco di tick qui sotto e' l'unico posto in cui questo progetto
-// tocca il grafo di scena, e gira a ogni MESSAGGIO della finestra. Il
-// 2026-09-18 si e' scoperto cosa vuol dire davvero: il client A, entrato
-// per primo e fermo sul posto, ha ricevuto l'ingresso di B dalla rete alle
-// 15:03:14.462 e il thread principale l'ha guardato alle 15:03:29.166.
-// Quattordici secondi e sette in coda, perche' un giocatore immobile non
-// genera messaggi e il rendering non ne genera affatto. Il ghost di B e'
-// arrivato tre secondi DOPO quello di A sull'altro client, che nel
-// frattempo aveva fatto un caricamento intero.
+// The tick block below is the only place in this project that touches the
+// scene graph, and it runs once per window MESSAGE. What that means was
+// measured on 2026-09-18: client A, first in and standing still, received B's
+// join from the network at 15:03:14.462 and the main thread looked at it at
+// 15:03:29.166. Fourteen seconds, seven of them in the queue, because a player
+// who does not move generates no messages and rendering generates none at
+// all. B's ghost appeared three seconds AFTER A's on the other client, which
+// had done a whole load in the meantime.
 //
-// WM_TIMER e' la risposta giusta proprio per come Windows lo tratta: e'
-// sintetizzato solo quando la coda e' vuota, quindi non puo' aggiungere
-// carico quando c'e' gia' traffico. Alza il PAVIMENTO — da zero a trenta
-// al secondo — e lascia il soffitto dov'era. I moduli del blocco sono
-// tutti scritti come sondaggi (autolimitati, idempotenti, uno dice
-// testualmente di riprovare "while the save is still loading") e gia'
-// vedevano 26-40 messaggi al secondo quando qualcosa si muoveva: questo
-// fa somigliare l'inattivita' al movimento, non il contrario.
+// WM_TIMER is the right answer precisely because of how Windows treats it: it
+// is synthesised only when the queue is empty, so it cannot add load when
+// there is traffic already. It raises the FLOOR, from zero to thirty a second,
+// and leaves the ceiling where it was. The modules in the block are all
+// written as polls (self-throttled, idempotent, one of them literally says to
+// retry "while the save is still loading") and already saw 26 to 40 messages a
+// second whenever something moved: this makes idleness look like movement,
+// not the other way round.
 constexpr UINT_PTR kHeartbeatTimerId = 0xFA11;
 constexpr UINT     kHeartbeatMs      = 33;
 
-// IL BATTITO C'E', MA STA ZITTO MENTRE IL MOTORE CARICA.
+// THE HEARTBEAT IS THERE, BUT IT KEEPS QUIET WHILE THE ENGINE LOADS.
 //
-// La bisezione del 2026-09-18 ha dato una risposta netta: col battito
-// acceso il client B moriva 19 secondi dopo il rientro, spento e' rimasto
-// vivo oltre due minuti. Trenta tick al secondo in piu' sul thread
-// principale, DENTRO la finestra del caricamento, sono quello che
-// ammazzava — e quella finestra il progetto originale la teneva vuota con
-// una grazia di 15-30 secondi, per la ragione scritta dall'utente:
-// caricare roba durante il caricamento iniziale faceva crashare.
+// The bisection of 2026-09-18 gave a clean answer: with the heartbeat on,
+// client B died 19 seconds after rejoining; with it off it stayed alive past
+// two minutes. Thirty extra ticks a second on the main thread, INSIDE the
+// loading window, were what killed it, and that window the original design
+// kept empty with a 15 to 30 second grace, for the reason the user had
+// written down: loading things during the initial load crashed.
 //
-// Quindi il battito torna dov'e' utile e sparisce dov'e' letale: si spegne
-// quando invochiamo LoadGame e si riaccende quando il cancello dichiara la
-// scena assestata — 120 tick consecutivi E almeno due secondi veri, senza
-// caricamenti in volo e senza cambi di cella. E' la grazia dell'utente,
-// misurata invece che a tempo.
+// So the heartbeat comes back where it is useful and goes away where it is
+// lethal: off when LoadGame is invoked, on again when the gate declares the
+// scene settled, which is 120 consecutive ticks AND at least two real seconds
+// with no load in flight and no cell change. The user's grace, measured
+// instead of timed.
 //
-// Fuori dal caricamento serve eccome: senza, il blocco di tick gira solo
-// sui messaggi veri e un giocatore fermo puo' restare 14,7 secondi senza
-// un tick — misurati — con l'ingresso di un peer fermo in coda per tutto
-// quel tempo.
+// Outside a load it is needed: without it the tick block runs only on real
+// messages, and a player standing still can go 14.7 seconds without a tick
+// (measured), with a standing peer's join queued for all of that time.
 
 LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    // Armato da qui e non da install_wndproc_subclass perche' qui siamo
-    // certi di essere sul thread che possiede la finestra, che e' l'unico
-    // posto da cui un timer di finestra si arma senza domande.
-    // Lo stato del battito vive qui perche' SetTimer e KillTimer vogliono il
-    // thread che possiede la finestra, e questo e' quello.
+    // Armed from here and not from install_wndproc_subclass, because here it
+    // is certain that this is the thread that owns the window, the only place
+    // a window timer can be armed without questions. The heartbeat state lives
+    // here for the same reason: SetTimer and KillTimer want the thread that
+    // owns the window, and this is it.
     static bool s_heartbeat_on = false;
     {
         const bool want = fw::native::ghost_scene_settled();
@@ -257,11 +254,11 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                "logged after this line is process-teardown fallout, NOT a "
                "gameplay crash");
         fw::diag::note_user_shutdown();
-        // E lo diciamo al server MENTRE possiamo ancora parlare. Da qui in
-        // poi il processo scende, e il thread di rete potrebbe non girare
-        // piu': l'addio si spedisce subito, su questo thread. Senza, gli
-        // altri ci vedono in piedi per altri cinque secondi e la nostra
-        // power armor non torna nel mondo fino al timeout.
+        // The server is told WHILE this process can still speak. From here on
+        // the process is going down and the network thread may never run
+        // again, so the goodbye is sent at once, on this thread. Without it
+        // the others see this player standing for another five seconds, and a
+        // worn power armor does not return to the world until the timeout.
         fw::net::client().send_goodbye_now(/*reason=*/0);
     }
     // Build 68.4 — bone-cache lifetime sweep. Hosted here because this is the
@@ -283,35 +280,33 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     //
     // The repeat-count guard matters — holding the key down otherwise flips the
     // flag every auto-repeat.
-    // IL BLOCCO DI TICK NON GIRA DENTRO SE STESSO.
+    // THE TICK BLOCK DOES NOT RUN INSIDE ITSELF.
     //
-    // Trovato il 2026-09-18 con la mappa dei simboli appena aggiunta. Il
-    // client B si e' piantato per sempre subito dopo la schermata di
-    // caricamento, col thread principale fermo in un'attesa dentro ntdll, e
-    // nello stack c'era `fw_wndproc` DUE VOLTE. Questa e' l'unica lettura
-    // possibile: qualcosa qui dentro chiama il motore, il motore pompa la
-    // coda dei messaggi, e il nostro WndProc rientra mentre il giro
-    // precedente e' ancora a meta'. Se quel giro tiene un lucchetto — e qui
-    // dentro se ne prendono parecchi, dalla mappa delle armature alla lista
-    // canonica — il giro annidato lo richiede, e uno std::mutex non e'
-    // rientrante. Fine.
+    // Found on 2026-09-18 with the symbol map that had just been added:
+    // client B hung for good right after the loading screen, its main thread
+    // parked in a wait inside ntdll, and `fw_wndproc` was on the stack TWICE.
+    // Only one reading fits: something in here calls the engine, the engine
+    // pumps the message queue, and this WndProc re-enters while the previous
+    // pass is still halfway through. If that pass holds a lock, and several
+    // are taken in here, from the armour map to the canonical list, the
+    // nested pass asks for it again, and a std::mutex is not reentrant. That
+    // is the whole hang.
     //
-    // Chi pompa, qui dentro: face_borrow chiama Actor::Reset3D,
-    // chargen_stage teletrasporta, world_spawn piazza oggetti. Tutte cose
-    // che durante un caricamento ci mettono parecchio.
+    // Who pumps, in here: face_borrow calls Actor::Reset3D, chargen_stage
+    // teleports, world_spawn places objects. All of them take a while during
+    // a load.
     //
-    // E il motivo per cui e' esploso ADESSO e' altrettanto documentato:
-    // questo blocco girava solo sui messaggi veri, e con un ghost assente
-    // il battito delle ossa non ne mandava. Da oggi arrivano un WM_TIMER
-    // ogni 33 ms e un tick delle ossa ogni 50, quindi il blocco gira ANCHE
-    // durante il caricamento, che e' esattamente la finestra che la vecchia
-    // grazia da trenta secondi teneva sgombra "per sicurezza, perche'
-    // caricare durante il caricamento iniziale faceva crashare".
+    // Why it blew up THEN is documented just as well: this block used to run
+    // only on real messages, and with no ghost present the bone heartbeat
+    // sent none. Since that day a WM_TIMER arrives every 33 ms and a bone tick
+    // every 50, so the block runs DURING the load too, which is exactly the
+    // window the old thirty-second grace kept clear "for safety, because
+    // loading during the initial load crashed".
     //
-    // La guardia e' una variabile del thread principale e basta: un giro
-    // annidato salta il blocco e basta. Non si perde niente, perche' qui
-    // dentro e' tutto un sondaggio: quello che non fa questo giro lo fa il
-    // prossimo, trentatre millisecondi dopo.
+    // The guard is a main-thread variable and nothing more: a nested pass
+    // skips the block. Nothing is lost, because everything in here is a poll:
+    // what this pass does not do, the next one does, thirty-three
+    // milliseconds later.
     struct TickReentryGuard {
         static bool& flag() { static bool in_tick = false; return in_tick; }
         bool taken;
@@ -361,18 +356,17 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // work, so it lives on this tick like everything else that touches
         // the scene.
         fw::native::world_spawn::tick(s_base);
-        // Fase 2 - il ghost dei peer nasce e muore col ciclo di vita
-        // della sessione invece che con un timer. Vive qui per lo
-        // stesso motivo di tutto il resto: ogni mutazione del grafo
-        // di scena e' solo main-thread, e questo e' l'unico tick
-        // incondizionato che abbiamo.
+        // Phase 2: the peers' ghosts are born and die with the session
+        // lifecycle instead of with a timer. It lives here for the same reason
+        // as everything else: every scene graph mutation is main-thread only,
+        // and this is the one unconditional tick there is.
         fw::native::ghost_lifecycle::tick(s_base);
-        // Fase 3 — il vestito indossato, annunciato a ogni inizio di
-        // sessione appena la scena e' assestata. Vedi equip_announce.h.
+        // Phase 3: the worn outfit, announced at every session start as soon
+        // as the scene has settled. See equip_announce.h.
         fw::hooks::equip_announce_tick();
     }
-    // Il nostro battito si ferma qui: il blocco di tick qui sopra l'ha gia'
-    // consumato, e il gioco non sa niente di questo timer.
+    // The heartbeat stops here: the tick block above has already consumed
+    // it, and the game knows nothing about this timer.
     if (msg == WM_TIMER && wp == kHeartbeatTimerId) return 0;
 
     if (msg == FW_MSG_LOAD_GAME) {
@@ -386,11 +380,10 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         FW_LOG("[main_menu] WM_APP+0x42 received on WndProc main thread — "
                "invoking engine LoadGame('%s')", g_save_name.c_str());
-        // Il ghost non va costruito mentre siamo qui dentro. Questa
-        // chiamata BLOCCA per secondi (sei, misurati) e nel frattempo il
-        // motore pompa la coda dei messaggi, quindi il blocco di tick qui
-        // sopra continua a girare — PEER_JOIN compreso, che viene drenato
-        // proprio da li'. Vedi il cancello sopra ghost_scene_is_stable.
+        // No ghost may be built while inside this call. It BLOCKS for seconds
+        // (six, measured) and the engine pumps the message queue meanwhile, so
+        // the tick block above keeps running, PEER_JOIN included, which is
+        // drained from exactly there. See the gate above ghost_scene_is_stable.
         fw::native::ghost_note_load_begin();
         const bool ok = fw::engine::load_game_by_name(g_save_name.c_str());
         fw::native::ghost_note_load_end();

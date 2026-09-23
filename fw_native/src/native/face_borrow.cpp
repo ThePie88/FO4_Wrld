@@ -11,7 +11,7 @@
 #include "anatomy_mirror.h"
 #include "face_cache.h"
 #include "scene_inject.h"
-#include "skin_rebind.h"   // ancoraggio della maschera allo scheletro di riferimento
+#include "skin_rebind.h"   // anchoring the mask to the reference skeleton
 
 namespace fw::native::face_borrow {
 
@@ -367,61 +367,59 @@ void tick(std::uintptr_t module_base) {
                              master ? "clone returned the source"
                                     : "clone returned null");
             } else {
-                // 2026-09-19 — LE PELLI DELLA MASCHERA DEVONO ESSERE SUE.
+                // 2026-09-19 — THE MASK'S SKINS MUST BE ITS OWN.
                 //
-                // Il deep-clone del motore non copia le BSSkin::Instance
-                // quando lo scheletro non fa parte del sottoalbero clonato, e
-                // qui non ne fa mai parte: la maschera esce condividendo le
-                // pelli con la testa VIVA del giocatore locale, che e' la
-                // cosa che abbiamo appena clonato.
+                // The engine's deep clone does not copy the BSSkin::Instance
+                // when the skeleton is not part of the cloned subtree, and
+                // here it never is: the mask comes out sharing its skins with
+                // the LIVE head of the local player, the thing just cloned.
                 //
-                // Finche' il giocatore non ricostruisce il suo 3D non si
-                // vede. Poi entra in una power armor, il motore ricostruisce,
-                // e la maschera parcheggiata resta con la radice intatta e le
-                // pelli sotto di lei sparite. Da li' il ghost senza testa al
-                // rientro successivo, con occhi e denti appesi a mezz'aria.
+                // Nothing shows until the player rebuilds their 3D. Then they
+                // enter a power armor, the engine rebuilds, and the parked
+                // mask is left with its root intact and the skins under it
+                // gone. Hence the headless ghost on the next rejoin, with
+                // eyes and teeth hanging in mid-air.
                 //
-                // Verificato che NON fosse un problema di vita del nodo: la
-                // maschera restava a refcount=1 e children=14 su 65552
-                // consegne, prima e dopo la power armor.
+                // Verified NOT to be a node lifetime problem: the mask stayed
+                // at refcount=1 and children=14 across 65552 handouts, before
+                // and after the power armor.
                 (void)fw::native::privatise_clone_skins(master, face_now,
                                                         "face-master");
-                // 2026-09-19 — SI STACCA LA MASCHERA DAL RIG DEL GIOCATORE.
+                // 2026-09-19 — THE MASK IS DETACHED FROM THE PLAYER'S RIG.
                 //
-                // Fin qui la maschera e' un clone della testa VIVA del
-                // giocatore locale, e le sue pelli conservano puntatori nudi
-                // ai nodi-osso di quel rig. Noi la parcheggiamo e la riusiamo
-                // per ogni ghost; il rig invece muore e rinasce a ogni
-                // entrata e uscita dalla power armor, e il pool riassegna
-                // quegli indirizzi ai nodi del telaio.
+                // Up to here the mask is a clone of the LIVE head of the local
+                // player, and its skins keep raw pointers to the bone nodes of
+                // that rig. The mask is parked and reused for every ghost; the
+                // rig instead dies and is reborn at every power armor enter
+                // and exit, and the pool hands those addresses to the frame's
+                // nodes.
                 //
-                // La ricucitura non memorizza i nomi: li legge dal nodo che
-                // il puntatore indica ADESSO. Dopo una power armor legge
-                // l'inquilino nuovo. Misurato: lo stesso slot della stessa
-                // maschera ha letto 'Chest', poi 'Wheel', poi
-                // 'Neck_Low_skin', allo stesso indirizzo.
+                // The re-bind does not store names: it reads them from the
+                // node the pointer points at NOW. After a power armor it reads
+                // the new tenant. Measured: the same slot of the same mask
+                // read 'Chest', then 'Wheel', then 'Neck_Low_skin', at the
+                // same address.
                 //
-                // Questa riga ri-punta le ossa della maschera a uno scheletro
-                // che e' NOSTRO e non muore mai. Da qui in poi i nomi che la
-                // ricucitura legge sono veri per tutta la sessione.
+                // This line re-points the mask's bones to a skeleton this DLL
+                // owns and that never dies. From here on the names the re-bind
+                // reads stay true for the whole session.
                 //
-                // E' l'UNICO istante in cui si puo' fare: il giocatore e'
-                // vivo e appena clonato, quindi i puntatori sono ancora
-                // validi e i nomi ancora quelli giusti.
+                // It is the ONLY moment it can be done: the player is alive
+                // and just cloned, so the pointers are still valid and the
+                // names still the right ones.
                 {
                     void* ref = fw::native::face_reference_skeleton();
                     if (ref) {
                         const int n =
                             fw::native::skin_rebind::swap_skin_bones_to_skeleton(
                                 master, ref);
-                        FW_LOG("[face-borrow] maschera ancorata allo scheletro "
-                               "di riferimento: %d osso/a ora puntano a nodi "
-                               "NOSTRI invece che al rig del giocatore", n);
+                        FW_LOG("[face-borrow] mask anchored to the reference "
+                               "skeleton: %d bone(s) now point at nodes this "
+                               "DLL owns instead of the player's rig", n);
                     } else {
-                        FW_WRN("[face-borrow] nessuno scheletro di "
-                               "riferimento: la maschera resta agganciata al "
-                               "rig del giocatore e marcira' alla prossima "
-                               "power armor");
+                        FW_WRN("[face-borrow] no reference skeleton: the mask "
+                               "stays hooked to the player's rig and will rot "
+                               "at the next power armor");
                     }
                 }
                 face_cache::set_master(g_peer, g_peer_hash, master);
@@ -464,7 +462,7 @@ void tick(std::uintptr_t module_base) {
                             fw::native::appearance::player_npc(module_base),
                             col)) {
                         fw::native::anatomy_mirror::stash_ghost_skin(col);
-                        // Il corpo del peer che stiamo vestendo, non "un ghost".
+                        // The body of the peer being dressed, not "some ghost".
                         void* body =
                             fw::native::ghost_body_of_peer(g_peer.c_str());
                         if (body) {

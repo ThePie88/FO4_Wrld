@@ -72,7 +72,7 @@ ULONGLONG g_next_dbg_ms = 0;
 // first build of this file took Gamebryo's convention — camera axes are the
 // COLUMNS of the world rotation — and the tag moved with the camera: a
 // transposed rotation is an error that rotates with the view, which is the
-// symptom the user reported (2026-09-23, "bindato alla visuale del player").
+// symptom the user reported on 2026-09-23: the tag followed the player's view.
 //
 // NiCamera::WindowPointToRay in this binary (sub_1416D0CA0, RVA 0x16D0CA0)
 // builds the ray through a pixel as

@@ -1,4 +1,4 @@
-// Fase 2 — il ghost nasce e muore col ciclo di vita della sessione.
+// Phase 2: the ghost is born and dies with the session lifecycle.
 //
 // WHAT THIS IS. The registry that finally makes "that peer's ghost" an
 // addressable thing. Until now the remote body was a single global pointer
@@ -71,19 +71,18 @@ void on_peer_join(const char* peer_id);
 // in the order the ordering law above detach_debug_cube prescribes.
 void on_peer_leave(const char* peer_id);
 
-// NETWORK THREAD. E' arrivata una posizione da quel peer. Tiene solo una
-// data, e quella data serve soltanto a OSSERVARE il silenzio, non ad
-// agire.
+// NETWORK THREAD. A position arrived from that peer. Keeps only a time, and
+// that time serves only to OBSERVE the silence, not to act.
 //
-// Nata come rete di sicurezza per "il PEER_LEAVE si e' perso" e ritirata da
-// quel ruolo il giorno stesso: quel messaggio il server lo manda
-// ritrasmesso fino all'ack, quindi non si perde, e la rete ha smontato il
-// ghost di un giocatore che stava solo respawnando. Chi e' presente lo
-// decide il server. Vedi il blocco SILENZIO nel tick.
+// Born as a safety net for "the PEER_LEAVE got lost" and withdrawn from that
+// role the same day: the server sends that message retransmitted until
+// acked, so it does not get lost, and the net tore down the ghost of a
+// player who was only respawning. Who is present is the server's decision.
+// See the SILENCE block in the tick.
 //
-// Mutex suo, NON quello del registro: questa la chiama il thread di rete a
-// ~20 Hz per peer, e il mutex del registro resta preso per tutta la durata
-// di uno smontaggio, che e' lavoro di scena.
+// Its own mutex, NOT the registry's: the network thread calls this at
+// ~20 Hz per peer, and the registry's mutex stays held for the whole of a
+// teardown, which is scene work.
 void on_peer_position(const char* peer_id);
 
 // NETWORK THREAD. Our own session dropped or came back. While we are down

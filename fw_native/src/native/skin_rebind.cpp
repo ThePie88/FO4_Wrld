@@ -1028,12 +1028,12 @@ int restore_skin_from_snapshot(void* body_root) {
 namespace {
 std::mutex                          g_skel_by_body_mtx;
 std::unordered_map<void*, void*>    g_skel_by_body;
-// L'ULTIMO scheletro registrato. Non e' un ritorno del singleton: e' il
-// ripiego DICHIARATO per get_bone_by_name(), che cerca un osso per nome e
-// non ha nessun corpo in mano — i suoi chiamanti (l'aggancio dell'arma, il
-// PipboyBone) arrivano al ghost per altre strade. Con un corpo solo e'
-// esatto; con due sarebbe un sorteggio, ed e' per questo che muore col
-// record, insieme ai due siti che iterano i peer.
+// The LAST skeleton registered. Not the singleton coming back: it is the
+// DECLARED fallback for get_bone_by_name(), which looks a bone up by name
+// with no body in hand, because its callers (the weapon attach, the
+// PipboyBone) reach the ghost by other routes. With one body it is exact;
+// with two it would be a coin toss, which is why it dies with the record,
+// together with the two sites that iterate the peers.
 void*                               g_last_skel = nullptr;
 }  // namespace
 

@@ -28,24 +28,24 @@ std::mutex                                   g_mtx;
 std::unordered_map<std::string, Entry>       g_masters;
 std::unordered_map<std::string, std::string> g_recipes;
 
-// --- il nodo parcheggiato va TENUTO, non solo indirizzato ------------------
+// --- the parked node must be HELD, not just pointed at ---------------------
 //
-// 2026-09-19. Questa cache ha sempre conservato un puntatore nudo. Il nodo
-// arriva da clone_nif_subtree con refcount 1 e nessun genitore: non e'
-// attaccato a nessun albero, quindi l'unica cosa che potrebbe tenerlo in vita
-// e' un riferimento nostro, e non ne prendevamo.
+// 2026-09-19. This cache always kept a raw pointer. The node comes from
+// clone_nif_subtree with refcount 1 and no parent: it is attached to no tree,
+// so the only thing that could keep it alive is a reference taken here, and
+// none was taken.
 //
-// Il sintomo che ha portato qui: due montaggi dello stesso ghost clonano la
-// STESSA maschera (puntatore identico) e ottengono alberi diversi — 5
-// geometrie al primo giro, 7 al rientro, con occhi e neck-gore comparsi dal
-// nulla. Un nodo che cambia contenuto senza che nessuno lo scriva e' memoria
-// che non e' piu' nostra.
+// The symptom that led here: two mounts of the same ghost clone the SAME mask
+// (identical pointer) and get different trees, 5 geometries on the first
+// pass, 7 on the rejoin, with eyes and neck gore appearing from nowhere. A
+// node whose content changes without anyone writing to it is memory that is
+// no longer this cache's.
 //
-// Prendere il riferimento e' corretto a prescindere da quale sia la causa: e'
-// il contratto che tutto il resto del progetto rispetta ("chi clona tiene un
-// +1"), e questa cache era l'unico posto che lo violava. Se la causa era il
-// riciclo, questo la chiude; se era una mutazione, i numeri qui sotto lo
-// diranno al primo test invece di farmi tirare a indovinare.
+// Taking the reference is correct whatever the cause: it is the contract the
+// rest of the project honours ("whoever clones holds a +1"), and this cache
+// was the one place breaking it. If the cause was recycling this closes it;
+// if it was a mutation, the numbers below say so at the first test instead
+// of leaving it to guesswork.
 std::int32_t node_refcount(void* node) noexcept {
     if (!node) return -1;
     __try {
@@ -108,10 +108,10 @@ void* get_master(const std::string& key, std::uint64_t recipe_hash) noexcept {
                static_cast<unsigned long long>(recipe_hash));
         return nullptr;
     }
-    // Ogni consegna dice com'e' messo il nodo. Se fra un montaggio e il
-    // successivo questi due numeri cambiano senza che nessuno abbia scritto
-    // nella maschera, la memoria non e' piu' nostra e si vede qui, senza
-    // dover dedurlo dalle geometrie a valle.
+    // Every handout reports the node's state. If between one mount and the
+    // next these two numbers change with nobody writing to the mask, the
+    // memory is no longer this cache's, and it shows here without having to
+    // be deduced from the geometries downstream.
     FW_LOG("[face-cache] handing out master for '%s' node=%p refcount=%d "
            "children=%d", key.c_str(), it->second.node,
            static_cast<int>(node_refcount(it->second.node)),

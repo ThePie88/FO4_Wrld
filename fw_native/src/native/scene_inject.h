@@ -74,10 +74,9 @@ void arm_injection_after_boot(unsigned int delay_ms);
 // Attempts a one-shot inject at a fixed test position. On success the
 // node ptr is stored in the module-level singleton; on failure we log
 // and bail (no retry — M1 is pass/fail per boot).
-// `peer_id` dice PER CHI si sta costruendo: da esso vengono la
-// posizione di partenza e la maschera della faccia. nullptr = il
-// vecchio comportamento (ultima posizione arrivata, prima maschera
-// disponibile), che con un solo peer remoto e' identico.
+// `peer_id` says WHOM the body is built for: the starting position and the
+// face mask come from it. nullptr = the old behaviour (last position
+// arrived, first mask available), identical with a single remote peer.
 void on_inject_message(const char* peer_id = nullptr);
 
 // M3: per-frame positioning. Called from main_menu_hook's WndProc when
@@ -304,13 +303,13 @@ void dump_local_player_tree(const char* label);
 // (back-compat for non-ARMO or pre-v10 callers). Receiver feeds into
 // resolve_armor_nif_path's PrioritySelect filter.
 //
-// omod_form_ids / omod_count (2026-09-18): NON servono ad attaccare niente
-// qui — i modelli li attacca ghost_attach_pa_piece_mods, dopo. Servono
-// all'UNICO caso in cui questa funzione non attacca: quando il ghost non
-// esiste ancora e l'operazione va in coda. Prima la coda li buttava,
-// perche' questa firma non li aveva, e un equip arrivato prima della
-// nascita del ghost perdeva per sempre i suoi mod. Chi chiama con il ghost
-// gia' vivo puo' ometterli senza cambiare niente.
+// omod_form_ids / omod_count (2026-09-18): they attach NOTHING here; the
+// models are attached by ghost_attach_pa_piece_mods, later. They serve the
+// ONE case in which this function does not attach: when the ghost does not
+// exist yet and the operation is queued. The queue used to throw them away,
+// because this signature did not have them, and an equip arriving before the
+// ghost's birth lost its mods for good. A caller with the ghost already
+// alive may omit them without changing anything.
 bool ghost_attach_armor(const char* peer_id, std::uint32_t item_form_id,
                         std::uint16_t effective_priority = 0,
                         const char* nif_path_override = nullptr,
@@ -894,80 +893,76 @@ bool inject_debug_cube(float x, float y, float z,
                        const char* peer_id = nullptr);
 
 // Detaches + releases the cube if injected. Called from shutdown().
-// peer_id = quale ghost staccare; nullptr = tutti (spegnimento).
+// peer_id = which ghost to detach; nullptr = all of them (shutdown).
 void detach_debug_cube(const char* peer_id = nullptr);
 
-// Fase 2 — smonta il ghost di UN peer, nell'ordine che la legge sopra
-// detach_debug_cube impone: code in attesa, arma, armature su una
-// fotografia della mappa, cache di dati, maschera della faccia,
-// contributori al culling, e infine — solo se era l'ultimo ghost — testa e
-// corpo, in quest'ordine.
+// Phase 2: tears down ONE peer's ghost, in the order the law above
+// detach_debug_cube imposes: pending queues, weapon, armours on a snapshot
+// of the map, data caches, face mask, cull contributors, and finally head
+// and body, in that order.
 //
-// Da chiamare SOLO dal thread principale, dal tick del ciclo di vita.
-// `last_ghost` esiste perche' corpo, testa e geometrie sono ancora
-// condivisi fra peer in questa tappa; entrano nel record per peer nella
-// prossima.
+// MAIN THREAD ONLY, from the lifecycle tick. `last_ghost` says whether no
+// other peer is left: the face cache and the reference skeleton are per
+// session and are released once.
 bool ghost_teardown_for_peer(const char* peer_id, bool last_ghost);
 
-// Fase 2 — costruisce il ghost quando la scena e' PROVATA stabile, cioe'
-// quando il predicato del mondo e' vero per una striscia di tick
-// consecutivi. Sostituisce la grazia fissa da trenta secondi, che
-// indovinava quel momento una volta sola e lasciava senza corpo chiunque
-// entrasse dopo. Torna true se dopo la chiamata un corpo esiste.
+// Phase 2: builds the ghost when the scene is PROVEN stable, that is when
+// the world predicate holds for a streak of consecutive ticks. Replaces the
+// fixed thirty-second grace, which guessed that moment once and left
+// whoever joined later without a body. Returns true when a body exists after
+// the call.
 //
-// MAIN THREAD ONLY, dal tick del ciclo di vita.
+// MAIN THREAD ONLY, from the lifecycle tick.
 bool ghost_create_if_ready(const char* peer_id);
 
-// Fase 2 — il WndProc dichiara di essere dentro la LoadGame del motore.
+// Phase 2: the WndProc declares it is inside the engine's LoadGame.
 //
-// Serve perche' la LoadGame pompa essa stessa la coda dei messaggi, quindi
-// il nostro tick continua a girare mentre il mondo viene smontato e
-// rimontato, e in quella finestra local_player_in_world() resta vero: il
-// giocatore del mondo vecchio e' ancora intero. Il 2026-09-18 un ghost
-// costruito li' dentro ha ucciso il client nove millisecondi dopo il
-// ritorno di LoadGame. La chiamata la facciamo noi, quindi lo dichiariamo
-// invece di dedurlo.
+// Needed because the LoadGame pumps the message queue itself, so the tick
+// keeps running while the world is torn down and rebuilt, and in that
+// window local_player_in_world() stays true: the old world's player is still
+// intact. On 2026-09-18 a ghost built in there killed the client nine
+// milliseconds after LoadGame returned. The call is this DLL's, so it is
+// declared instead of deduced.
 //
-// MAIN THREAD ONLY, in coppia, attorno alla chiamata.
+// MAIN THREAD ONLY, as a pair, around the call.
 void ghost_note_load_begin();
 void ghost_note_load_end();
 
-// Fase 2 — il 3D del giocatore locale e' stato ricostruito (Actor::Reset3D).
+// Phase 2: the local player's 3D was rebuilt (Actor::Reset3D).
 //
-// Il corpo del ghost si costruisce copiando il giocatore locale, quindi un
-// suo Reset3D e' un cambio di mondo esattamente come un cambio di cella e
-// azzera la striscia di stabilita'. face_borrow ne fa due di fila per ogni
-// faccia di peer che costruisce, e nel test di rientro del 2026-09-18 il
-// ghost costruito 930 ms dopo il secondo e' venuto storto.
+// The ghost's body is built by copying the local player, so a Reset3D on
+// them is a world change exactly like a cell change and resets the
+// stability streak. face_borrow does two in a row for every peer face it
+// builds, and in the rejoin test of 2026-09-18 the ghost built 930 ms after
+// the second one came out wrong.
 //
-// Qualunque thread; il valore e' un istante, non un lucchetto.
+// Any thread; the value is an instant, not a lock.
 void ghost_note_local_3d_reset();
 
-// Fase 2 — il cancello, letto invece che chiamato.
+// Phase 2: the gate, read instead of called.
 //
-// ghost_scene_settle_tick() fa avanzare la striscia UNA volta per tick, dal
-// tick del ciclo di vita, e ghost_scene_settled() ne legge il verdetto
-// quante volte si vuole. Serve perche' il contatore non si puo' chiamare da
-// due posti senza falsarlo, e perche' il battito del WndProc deve sapere
-// quando il caricamento e' finito davvero.
-// Fase 2 — il corpo del ghost e' rimasto orfano di un caricamento?
+// ghost_scene_settle_tick() advances the streak ONCE per tick, from the
+// lifecycle tick, and ghost_scene_settled() reads the verdict as often as
+// wanted. Needed because the counter cannot be called from two places
+// without falsifying it, and because the WndProc heartbeat must know when
+// the load is really over.
+// Phase 2: was the ghost's body orphaned by a load?
 //
-// Torna true quando il corpo esiste ma il suo puntatore al genitore e'
-// nullo, cioe' quando il nodo della scena a cui era appeso e' stato
-// distrutto. Si legge il CORPO e non la scena: l'accessore del nodo delle
-// ombre torna un valore cached e confrontarlo con se' stesso non dice
-// niente. Un puntatore per tick, nessun aggancio sui percorsi di
-// distruzione.
+// Returns true when the body exists but its parent pointer is null, that is
+// when the scene node it hung from was destroyed. The BODY is read and not
+// the scene: the shadow scene node accessor returns a cached value and
+// comparing it with itself says nothing. One pointer per tick, no hook on
+// the destruction paths.
 bool ghost_body_is_orphaned();    // MAIN THREAD
 
 void ghost_scene_settle_tick();   // MAIN THREAD
-bool ghost_scene_settled();       // qualunque thread
+bool ghost_scene_settled();       // any thread
 
-// Fase 4 — per ogni ghost vivo, la posizione nel mondo dell'osso Head del suo
-// scheletro, cioe' dove il motore ha appena disegnato la faccia. Serve ai
-// nametag. MAIN THREAD: legge il grafo di scena, e chiamata da Present
-// (verificato main thread in-world) legge le trasformazioni dello stesso
-// frame che e' appena stato disegnato.
+// Phase 4: for every live ghost, the world position of the Head bone of its
+// skeleton, that is where the engine has just drawn the face. For the
+// nametags. MAIN THREAD: it reads the scene graph, and called from Present
+// (verified main thread in-world) it reads the transforms of the frame that
+// was just drawn.
 struct GhostHeadAnchor {
     std::string peer_id;
     float       head[3] = {0.0f, 0.0f, 0.0f};
@@ -1022,29 +1017,27 @@ unsigned int get_attach_count();
 //
 // Acquire-ordered atomic read. Safe from any thread. Returns nullptr if
 // the body has not yet been injected (arm_worker grace pre-T+30s).
-// Rende private le pelli di un clone che le condivide con la sua
-// sorgente. Da chiamare su OGNI clone che deve sopravvivere alla
-// sorgente: senza, il clone muore quando la sorgente viene
-// ricostruita. Torna quante ne ha privatizzate; 0 su un albero non
-// vuoto significa che non c'era condivisione.
+// Makes private the skins a clone shares with its source. To be called on
+// EVERY clone that must outlive its source: without it, the clone dies when
+// the source is rebuilt. Returns how many it privatised; 0 on a non-empty
+// tree means there was no sharing.
 int privatise_clone_skins(void* clone_root, void* source_root,
                           const char* label);
 
-// Lo scheletro di riferimento della maschera della faccia: un clone di
-// skeleton.nif caricato una volta e tenuto per tutta la sessione, mai
-// attaccato a niente, mai animato, mai disegnato. Serve a una cosa sola: dare
-// alla maschera parcheggiata dei nodi-osso che POSSEDIAMO, invece dei nodi del
-// rig del giocatore locale, che muoiono a ogni entrata e uscita dalla power
-// armor lasciando la maschera a leggere nomi da memoria riciclata.
-// Torna nullptr se il caricamento fallisce; in quel caso la maschera resta
-// agganciata al rig del giocatore e il difetto torna.
+// The face mask's reference skeleton: a clone of skeleton.nif loaded once
+// and kept for the whole session, never attached to anything, never
+// animated, never drawn. It serves one purpose: giving the parked mask bone
+// nodes this DLL OWNS, instead of the local player's rig nodes, which die at
+// every power armor enter and exit and leave the mask reading names from
+// recycled memory. Returns nullptr when the load fails; the mask then stays
+// hooked to the player's rig and the defect comes back.
 void* face_reference_skeleton();
 
 void* get_injected_body_ghost() noexcept;
 
-// Il corpo di UN peer preciso. Questo e' l'accessore giusto per chi
-// disegna o anima; get_injected_body_ghost torna "uno qualunque" ed e'
-// rimasto solo per i cancelli di prontezza e per il proxy Actor spento.
+// The body of ONE specific peer. This is the right accessor for whoever
+// draws or animates; get_injected_body_ghost returns "any one" and only
+// stays for the readiness gates and the disabled Actor proxy.
 void* ghost_body_of_peer(const char* peer_id) noexcept;
 
 

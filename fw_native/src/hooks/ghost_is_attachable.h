@@ -6,7 +6,7 @@
 // which is THE function that populates `actor+0x48` (and friends).
 // Result: post-spawn crash at sub_1404C4DF0 reading proxy+0x48 = NULL.
 //
-// **Build 28g pivot** (user directive "tocchiamo le radici"):
+// **Build 28g pivot** (the user's directive: go for the roots):
 // hook BOTH cell-attach root functions with TLS bypass:
 //   - sub_1403095C0 IsAttachable → return **1** (TRUE) during spawn
 //   - sub_1403097E0 AttachREFR  → **no-op** (return success) during spawn

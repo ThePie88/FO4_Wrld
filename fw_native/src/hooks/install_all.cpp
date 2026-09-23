@@ -226,8 +226,8 @@ InstallSummary install_all(std::uintptr_t module_base,
     // ========================================================================
     // B6.6w4 PHASE A v3 (2026-05-12 late night):
     // Empirical test — restore the 3 pos-bail hooks that the user
-    // reported as working ("ieri correvano sul posto e attaccavano")
-    // BEFORE the puppet body / InCombat-triple-write regressions.
+    // reported as working the day before (the raiders ran in place and
+    // attacked) BEFORE the puppet body / InCombat-triple-write regressions.
     //
     // Hooks installed:
     //   - ghost_ai_movement       (TickMovementController BAIL)
@@ -643,8 +643,8 @@ InstallSummary install_all(std::uintptr_t module_base,
     //   callback (instead of armed here at install time). Reason:
     //   the prior install-time arm with 20s delay was measured from DLL
     //   inject (T+0), which yielded "10s post in-world" — too long.
-    //   User requested earlier firing ("Prima cazzo, fai 10 secondi o 5
-    //   dopo il loading nel mondo" 2026-04-28). Solution: arm AFTER
+    //   The user asked for an earlier firing, ten or five seconds after
+    //   the load into the world (2026-04-28). Solution: arm AFTER
     //   load_game_by_name() returns, so the worker delay is measured
     //   from LoadGame call time. With 10s delay we get ~5s in-world.
     //   See main_menu_hook.cpp + offsets.h "B8" block.

@@ -395,7 +395,7 @@ class OwnershipRegistry:
         # record deletion done by _fire_npc_death. Without it, a still-in-combat
         # client re-OBSERVES the just-killed raider → a fresh record (hp_dead=
         # False) is created → reeval re-elects it → the new owner's handoff MoveTo
-        # REVIVES the corpse = the "MORTO MA NON MORTO" zombie (+ the 0xC0F510
+        # REVIVES the corpse = the "DEAD BUT NOT DEAD" zombie (+ the 0xC0F510
         # crash feeder). fid -> server-clock ms of death; entries older than
         # _DEAD_FID_TTL_MS are pruned so a legit respawn (cell reset, well after
         # the fight) can re-elect.
