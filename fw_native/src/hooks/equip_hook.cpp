@@ -1297,6 +1297,43 @@ bool install_equip_hook(std::uintptr_t module_base) {
     return ok_equip && ok_unequip;
 }
 
+// Phase 3 — see the header. Mirrors the live equip path line for line: the
+// extractor for the mods, seh_compute_effective_priority for the priority,
+// and the same conversion into wire records.
+std::uint8_t read_worn_item_for_wire(void* refr, void* item_form,
+                                     std::uint32_t item_form_id,
+                                     fw::net::EquipModRecord* out_mods,
+                                     std::uint8_t cap,
+                                     std::uint16_t* out_priority) {
+    if (out_priority) *out_priority = 0;
+    if (!refr || item_form_id == 0 || g_module_base == 0) return 0;
+    std::vector<ExtractedMod> mods;
+    void* oie = nullptr;
+    // False only means "no instance data": a stock item. The priority is
+    // still computed, and falls back to the form's default, as live does.
+    (void)extract_equipped_mods(refr, item_form_id, g_module_base, mods, &oie);
+    if (out_priority && item_form) {
+        *out_priority = seh_compute_effective_priority(item_form, oie,
+                                                       g_module_base);
+    }
+    std::uint8_t n = 0;
+    for (const ExtractedMod& m : mods) {
+        if (n >= cap) break;
+        if (m.mod_form_id == 0) continue;
+        if (out_mods) {
+            fw::net::EquipModRecord r{};
+            r.form_id      = m.mod_form_id;
+            r.attach_index = m.attach_index;
+            r.rank         = m.index2_or_rank;
+            r.flag         = 0;
+            r.pad          = 0;
+            out_mods[n] = r;
+        }
+        ++n;
+    }
+    return n;
+}
+
 // v24 — public wrapper over the w4 extractor (header-documented). The
 // extractor walks any REFR's +0xF8 inventory, so a PA frame works exactly
 // like an actor.

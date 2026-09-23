@@ -24,6 +24,8 @@
 #include <windows.h>
 #include <cstdint>
 
+#include "../net/protocol.h"   // EquipModRecord
+
 namespace fw::hooks {
 
 // v24 — read the OMOD form ids attached to the SINGULAR stack of
@@ -33,6 +35,28 @@ namespace fw::hooks {
 // equip mods since M9.w4. Main thread.
 std::uint8_t read_item_mod_forms(void* refr, std::uint32_t item_form_id,
                                  std::uint32_t* out_mods, std::uint8_t cap);
+
+// Phase 3 (2026-09-23) — the wire form of an item a REFR is already WEARING,
+// built exactly as the live equip hook builds it when the player equips
+// something: the same OMOD records (form, attach index, rank) from the same
+// w4 extractor, and the same effective priority from the same helper, fed
+// with the BGSObjectInstanceExtra the extractor finds on the stack.
+//
+// `item_form` is the TESBoundObject* of the inventory entry, `item_form_id`
+// its form id. Writes at most `cap` records to `out_mods` and the priority
+// to `*out_priority` (0 when the item has no instance data, which the
+// receiver reads as "use the form's default", exactly as for a live equip).
+// Returns the number of records written. Main thread.
+//
+// Shares the extractor's one known imprecision with the live path: with two
+// stacks of the same form, the first stack carrying instance data is read,
+// not necessarily the worn one. Unchanged here on purpose — the announce
+// has to say what a live equip would say, not something subtly different.
+std::uint8_t read_worn_item_for_wire(void* refr, void* item_form,
+                                     std::uint32_t item_form_id,
+                                     fw::net::EquipModRecord* out_mods,
+                                     std::uint8_t cap,
+                                     std::uint16_t* out_priority);
 
 // Install both detours. Returns true iff BOTH hooks succeed. Partial
 // success returns false but does not roll back the successful one

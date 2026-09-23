@@ -129,6 +129,19 @@ NPC_BROADCAST_RANGE_FT = 10000.0
 NPC_BROADCAST_RANGE_SQ = NPC_BROADCAST_RANGE_FT * NPC_BROADCAST_RANGE_FT
 
 
+# Global chat (session lifecycle, phase 4). A line longer than this is cut,
+# not dropped: the input box on the client holds at most 200 BYTES of UTF-8,
+# so a line from our client never reaches the cut; only a client that is not
+# ours does.
+CHAT_MAX_CHARS = 200
+# Flood limit: at most CHAT_BURST messages per CHAT_WINDOW_MS per peer. Every
+# accepted message becomes one reliable frame to every connected peer, so an
+# unlimited relay lets one client multiply its own traffic by the player
+# count. Five in five seconds is well above anyone typing by hand.
+CHAT_BURST = 5
+CHAT_WINDOW_MS = 5000.0
+
+
 # ---------------------------------------------------------------- config
 
 class Config:
@@ -344,10 +357,41 @@ class ServerProtocol(asyncio.DatagramProtocol):
             # accept_peer was unreachable from the wire.
             #
             # A genuine handshake retransmit only happens inside the client's
-            # own 5-second WELCOME timeout, and a client that has been given
-            # its WELCOME never sends HELLO again in that process. So a HELLO
-            # arriving on a session older than that window is a new process,
-            # and the session it landed on is a corpse.
+            # own 5-second WELCOME timeout, so a HELLO arriving on a session
+            # older than that window is not a retransmit, and the session it
+            # landed on is a corpse.
+            #
+            # Corrected 2026-09-23. This used to add that "a client that has
+            # been given its WELCOME never sends HELLO again in that process".
+            # v26 made that false: the reconnection loop sends HELLO_RESUME from
+            # the same process every time a session is lost. The grace still
+            # holds, for a different reason — every session attempt of the DLL
+            # closes its socket and opens a new one on a fresh ephemeral port,
+            # so a resume never lands on the address of the session it
+            # replaces. What landed inside the grace was dropped in SILENCE,
+            # though, and that part was a defect: if the new-port invariant
+            # ever breaks (a NAT reusing the external port, a client binding a
+            # fixed one) it must show in the log, not cost a day. See the
+            # branch just below.
+            if session is not None and (
+                    now_ms - session.joined_at_ms) <= self._HELLO_RELAUNCH_GRACE_MS:
+                if mtype == MessageType.HELLO_RESUME:
+                    # Never a retransmit of what created this session when
+                    # that was a HELLO, and never expected at all given the
+                    # new-port invariant above. Loud.
+                    log.info("HELLO_RESUME from %s landed inside the %.0f ms "
+                             "relaunch grace of a live session (%s, %.1fs old): "
+                             "dropped as a handshake duplicate. The DLL opens a "
+                             "new ephemeral port for every session attempt, so "
+                             "this should not happen — the new-port invariant "
+                             "may have broken.", addr,
+                             self._HELLO_RELAUNCH_GRACE_MS, session.peer_id,
+                             (now_ms - session.joined_at_ms) / 1000.0)
+                else:
+                    log.debug("HELLO from %s inside the relaunch grace of a "
+                              "live session (%s): handshake retransmit, "
+                              "deduplicated by the channel", addr,
+                              session.peer_id)
             if session is not None and (
                     now_ms - session.joined_at_ms) > self._HELLO_RELAUNCH_GRACE_MS:
                 log.info("HELLO from %s on a %0.1fs-old session (%s): treating "
@@ -707,7 +751,25 @@ class ServerProtocol(asyncio.DatagramProtocol):
         """
         if not isinstance(payload, HelloResumePayload):
             return
-        ticket, reason = self.state.consume_resume_token(
+
+        # 2026-09-23 — VALIDATE EVERYTHING, THEN MUTATE.
+        #
+        # This handler used to spend the token first, evict the previous
+        # session second, and only then ask accept_peer whether the resume
+        # could go through at all. When accept_peer said no — the server full,
+        # the version wrong — the player had lost the token AND the old seat,
+        # and got nothing for it. The client retries SERVER_FULL with the token
+        # it still holds; that retry was answered RESUME_UNKNOWN, the client
+        # threw the token away and fell back to a full HELLO whose launcher
+        # proof is single use and already spent. Locked out until a relaunch.
+        # And anyone holding a player's token could evict that player's live
+        # session just by presenting it with a bad version.
+        #
+        # Now nothing changes until every check has passed. Measured by
+        # test_a_resume_refused_for_capacity_keeps_the_token and
+        # test_a_refused_resume_does_not_evict_a_live_session_for_nothing,
+        # both of which failed against the old order.
+        ticket, reason = self.state.peek_resume_token(
             payload.resume_token, now_ms)
         if ticket is None:
             log.warning("rejecting resume from %s (%s): %s", addr,
@@ -715,10 +777,26 @@ class ServerProtocol(asyncio.DatagramProtocol):
             self._send_hello_reject(addr, reason)
             return
         if ticket.peer_id != payload.peer_id:
+            # A token presented under someone else's name is a credential
+            # being misused, not a transient refusal: it is spent here, on
+            # purpose, so it cannot be tried again.
+            self.state.consume_resume_token(payload.resume_token, now_ms)
             log.warning("rejecting resume from %s: token belongs to %s, "
                         "claim was %s", addr, ticket.peer_id, payload.peer_id)
             self._send_hello_reject(addr, "client_id_mismatch")
             return
+        refusal = self.state.resume_refusal(
+            addr, payload.peer_id,
+            (payload.client_version_major, payload.client_version_minor))
+        if refusal is not None:
+            log.warning("rejecting resume from %s (%s): %s — token kept for "
+                        "the retry, previous session untouched", addr,
+                        payload.peer_id, refusal)
+            self._send_hello_reject(addr, refusal)
+            return
+
+        # From here on the resume goes through, so the token is spent now.
+        self.state.consume_resume_token(payload.resume_token, now_ms)
 
         prior = self.state.get_by_peer_id(payload.peer_id)
         if prior is not None:
@@ -762,6 +840,16 @@ class ServerProtocol(asyncio.DatagramProtocol):
         dropped has lost all of it either way.
         """
         addr = session.addr
+        # Phase 3 — the joiner's stored outfit belongs to its LAST session, and
+        # a relaunch loads the save, which may dress the player differently.
+        # Forget it: the client announces what it actually wears, with the
+        # OMODs, as soon as its scene has settled. Both entry points arrive
+        # here, which is why it lives here and not in each of them.
+        dropped = self.state.clear_presence_outfit(session.peer_id, now_ms)
+        if dropped:
+            log.info("%s (re)joined: forgot %d item(s) of its last session's "
+                     "outfit — the client re-announces what it wears now",
+                     session.peer_id, dropped)
         # Bootstrap: send authoritative world state (dead/alive actors) to the new peer
         self._send_world_state_bootstrap(session, now_ms)
         # Bootstrap: container inventories (chunked)
@@ -800,8 +888,9 @@ class ServerProtocol(asyncio.DatagramProtocol):
         # are wearing. Without this a late joiner saw everyone naked at the
         # origin until they happened to move or change clothes.
         self._send_presence_bootstrap(session, now_ms)
-        # ...and the mirror, which was missing. See the docstring.
-        self._announce_joiner_outfit(session, now_ms)
+        # The mirror — the joiner's own outfit, announced to those already
+        # here — is no longer the server's job. See the tombstone where
+        # _announce_joiner_outfit used to be.
 
     def _send_presence_bootstrap(self, session: PeerSession,
                                  now_ms: float) -> None:
@@ -863,66 +952,31 @@ class ServerProtocol(asyncio.DatagramProtocol):
             log.info("presence bootstrap for %s: %d position(s), %d worn item(s)",
                      session.peer_id, sent_pos, sent_items)
 
-    def _announce_joiner_outfit(self, session: PeerSession,
-                                now_ms: float) -> None:
-        """Tell the peers already here what the ARRIVING peer is wearing.
-
-        The mirror of _send_presence_bootstrap, and the reason it had to
-        exist. That method answers "what do the others look like" for a
-        joiner; nothing answered "what does the joiner look like" for the
-        others. One direction, and the asymmetry is exactly why a ghost was
-        dressed the first time and naked ever after:
-
-          * A connects. The server replays B's stored outfit TO A, because A
-            is the joiner. A queues it and paints it on the first ghost body
-            it builds. Dressed.
-          * B quits and comes back. The server replays A's outfit TO B,
-            because B is now the joiner. A is told nothing, its queue was
-            emptied long ago, and its ghost of B comes back naked.
-
-        Before v26 there was no stored outfit at all and the first spawn was
-        naked too; the client-side workaround was to step in and out of a
-        power armour frame, which fires real equip events. Storing the
-        outfit is what made the first spawn dressed. This makes every
-        subsequent one dressed as well.
-
-        Same message a live change uses, same replay idiom, so the client
-        needs no new code and cannot tell this from someone getting dressed
-        in front of it. Server-side on purpose: it carries the OMOD list
-        with each item, which a client-side memory of "what it wore last"
-        cannot reconstruct — attaching an armour without its mods is what
-        made the ghost come back wrong.
-
-        Position is deliberately NOT mirrored: the joiner starts streaming
-        its own within a second, and a stale one would only move the ghost
-        twice.
-        """
-        rec = self.state.presence(session.peer_id)
-        if rec is None or not rec.outfit:
-            return
-        # Never reveal a peer the chargen gate is still hiding — same rule
-        # the other direction follows.
-        if not self.state.ghost_visible(session.peer_id):
-            return
-        others = self.state.other_sessions(session.addr)
-        if not others:
-            return
-        for entry in rec.outfit.values():
-            bcast = EquipBroadcastPayload(
-                peer_id=session.peer_id,
-                item_form_id=entry.item_form_id,
-                kind=EquipOpKind.EQUIP,
-                slot_form_id=entry.slot_form_id,
-                count=entry.count,
-                timestamp_ms=entry.timestamp_ms,
-                effective_priority=entry.effective_priority,
-                mods=entry.mods,
-                nif_descs=(),
-            )
-            for other in others:
-                self._queue_bootstrap(other, MessageType.EQUIP_BCAST, bcast)
-        log.info("announced %s's %d worn item(s) to %d peer(s) already here",
-                 session.peer_id, len(rec.outfit), len(others))
+    # _announce_joiner_outfit lived here, from v0.8.0 (2026-09-18) to Phase 3
+    # (2026-09-23). It replayed the ARRIVING peer's stored outfit to the peers
+    # already here, and it was the right answer to the question it was built
+    # for: a ghost dressed on the first join and naked on every rejoin,
+    # because nothing told the others what the joiner wore.
+    #
+    # It defended being server-side with one argument: the stored outfit
+    # carries the OMOD list, "which a client-side memory of what it wore last
+    # cannot reconstruct". Phase 3 dissolves that argument. The client does
+    # not remember anything: at every session start it reads the items it
+    # ACTUALLY wears from its own inventory — the engine's equipped flag,
+    # (stack flags & 7) != 0, measured on 2026-09-23 against the truth — and
+    # extracts their OMODs with the same extractor the live equip hook uses.
+    #
+    # And the replay had a defect of its own. The stored outfit belongs to the
+    # LAST session; a relaunch loads the save, and the save may dress the
+    # player differently. Replaying the memory put clothes on the rebuilt
+    # ghost that the player no longer had on, and since an equip only ever
+    # adds, they stayed. Keeping both the replay and the announce would have
+    # been the worst of the two: stale pieces first, true ones after, and the
+    # stale ones never taken off.
+    #
+    # The other direction — showing a joiner what the OTHERS wear — stays in
+    # _send_presence_bootstrap, and is more reliable than before: every
+    # stored outfit now starts life as a real announce.
 
     def _send_world_state_bootstrap(self, session: PeerSession, now_ms: float) -> None:
         """Send authoritative world-actor snapshot to a newly-joined peer, chunked."""
@@ -2780,13 +2834,39 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 payload.total_blob_size, session.peer_id)
 
     def _handle_chat(self, session: PeerSession, payload, now_ms: float) -> None:
+        """Relay one chat line to every peer, the sender included.
+
+        This relay existed from the first protocol, but no client ever sent a
+        CHAT until phase 4, so it had never run. It forwarded the payload as
+        it arrived, including the sender field, which let any client speak
+        under anyone's name. The sender is now whoever owns the session, and
+        the client resolves that id to a display name on its side.
+
+        The sender gets its own line back on purpose: every client then shows
+        the same order, and a line only appears once the server has taken it.
+        """
         if not isinstance(payload, ChatPayload):
             return
-        # Broadcast to all peers EXCEPT sender (reliable)
-        log.info("[chat] <%s> %s", session.peer_id, payload.text[:80])
-        for other in self.state.other_sessions(session.addr):
-            raw = other.channel.send_reliable(MessageType.CHAT, payload, now_ms)
-            self._send(other.addr, raw)
+        text = _clean_chat_text(payload.text)
+        if not text:
+            return
+        # Keep only the timestamps inside the current window, so the list
+        # never grows past CHAT_BURST entries.
+        recent = [t for t in session.chat_sent_ms
+                  if now_ms - t < CHAT_WINDOW_MS]
+        if len(recent) >= CHAT_BURST:
+            session.chat_sent_ms = recent
+            log.debug("[chat] %s over the flood limit (%d in %.0f ms), "
+                      "dropped", session.peer_id, len(recent), CHAT_WINDOW_MS)
+            return
+        recent.append(now_ms)
+        session.chat_sent_ms = recent
+
+        log.info("[chat] <%s> %s", session.peer_id, text)
+        line = ChatPayload(session.peer_id, text)
+        for peer in self.state.all_sessions():
+            raw = peer.channel.send_reliable(MessageType.CHAT, line, now_ms)
+            self._send(peer.addr, raw)
 
     # ----- B6.5w2: NPC state broadcast (v13)
 
@@ -3733,6 +3813,20 @@ async def run_server(cfg: Config) -> None:
 
 def _now_ms() -> float:
     return time.monotonic() * 1000.0
+
+
+def _clean_chat_text(raw: str) -> str:
+    """A chat line as it may reach another player's screen and the log.
+
+    Same reasoning as sanitize_display_name: CR/LF would let a client forge
+    log lines and 0x1B would drive the operator's terminal. Unlike a name,
+    a chat line is not limited to ASCII, because people write accents. Line
+    breaks and tabs become spaces so words do not run together; every other
+    unprintable character is removed.
+    """
+    kept = "".join(ch if ch.isprintable() else (" " if ch in "\t\r\n" else "")
+                   for ch in raw)
+    return kept.strip()[:CHAT_MAX_CHARS]
 
 
 # ---------------------------------------------------------------- cli

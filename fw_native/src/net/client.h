@@ -365,6 +365,18 @@ public:
                           const NifDescriptor* nif_descs   = nullptr,
                           std::uint8_t          nif_count  = 0);
 
+    // Phase 4 — one line of global chat, reliable. Returns false when there
+    // is no session to send it on, so the caller can say so instead of
+    // letting the line vanish. The line is NOT shown locally: the server
+    // sends it back to us like to everyone else, which is what keeps the
+    // order identical on every client. Any thread.
+    //
+    // Wire: the Python ChatPayload, unchanged since v1 — sender FixedString(15)
+    // + u16 length + UTF-8 text. The server ignores the sender field and
+    // stamps the session's own peer_id; ours goes in only because the layout
+    // has the field.
+    bool send_chat(const std::string& text);
+
     // M9.w4 v9 — chunked mesh blob for an equip event.
     //
     // Sender extracts mesh data via weapon_witness::snapshot_player_weapon_meshes(),
@@ -471,11 +483,16 @@ private:
     // mentre la sessione e' caduta: quello che e' affidabile deve aspettare
     // il rientro, non sparire.
     //
-    // La seconda meta' di questo commento diceva che chi vuole una risposta
-    // SUBITO guarda `connected_` per conto suo. Non e' vero di nessuno: vedi
-    // submit_container_op_blocking, che guarda questo predicato e quindi a
-    // sessione caduta si appende invece di rifiutare. Difetto noto, aperto.
+    // Chi invece vuole una risposta SUBITO — la presa da una cassa — guarda
+    // anche `connected_`, e dal 2026-09-23 e' vero: submit_container_op_blocking
+    // rifiuta a sessione caduta invece di accodare. Prima guardava solo questo
+    // predicato, e l'operazione accodata veniva rigiocata al rientro.
     bool accepting_enqueue() const noexcept { return !stopping_.load(); }
+
+    // Toglie dalla coda d'invio la CONTAINER_OP con quell'id, se non e' ancora
+    // partita. True se l'ha trovata: vuol dire che il server non l'ha vista.
+    // Serve a chi ha appena rinunciato ad aspettarne il verdetto.
+    bool withdraw_queued_container_op(std::uint32_t op_id);
 
     // Inserimento in coda CON il tetto. Torna false se il messaggio e' stato
     // buttato.

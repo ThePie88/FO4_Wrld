@@ -18,16 +18,16 @@
 //   screen space is on the right. That came from playing the game, not from
 //   reading it.
 //
-// WHAT IS NOT HERE YET
-//   Input. ImGui is fed nothing, so nothing is clickable — the panel draws and
-//   that is all. Feeding it is its own step, because taking input means telling
-//   the engine to stop reacting to the same keys and mouse, and that has to be
-//   done the way the engine does it for its own menus rather than by fighting
-//   raw input (CHARGEN_PLAN §24/§25).
+// WHAT USED TO BE "NOT HERE YET"
+//   This header said, until 2026-09-23, that input and real data were missing.
+//   Both landed long ago: the input capture is below, and every list is read
+//   from the game's own data through chargen_catalog.
 //
-//   Real data. Every list is a placeholder. The catalogue is extracted and the
-//   counts are known (48/39 hair, 166 colours, 20 eyes, 43 beards, 17 eyebrows,
-//   13 skin tones) but wiring it is the step after input.
+// WHO OWNS IMGUI (since 2026-09-23)
+//   Not this file any more. The chat and the nametags draw every frame in the
+//   world, while this panel draws only during character creation, so the ImGui
+//   context, its fonts and the frame itself moved to render/overlay. This file
+//   keeps what is the editor's: the style, the panel, and the input capture.
 //
 // MAIN THREAD ONLY, and only from inside a frame.
 
@@ -37,18 +37,18 @@
 
 namespace fw::render::editor {
 
-// Draw one frame of the editor. Called from the Present detour. Lazily brings
-// ImGui up on the first call that has a device to bring it up against, and is a
-// cheap no-op whenever the editor is closed.
-//
-// `module_base` is Fallout4.exe's base, for the renderer globals.
-void on_frame(std::uintptr_t module_base);
+// The editor's look — dark panel, Pip-Boy green, square corners. It is the
+// style of the whole ImGui context, so overlay applies it once at init and the
+// chat inherits it.
+void apply_style();
 
-// Release ImGui. Safe to call when it was never initialised.
-void shutdown();
+// Before the ImGui frame, while the editor is open: take the input back off
+// the game (it reclaims it every time one of its modal pumps runs) and build
+// the option lists once the game data is there.
+void prepare_frame(std::uintptr_t module_base);
 
-// True once ImGui has a context and both backends are up.
-bool ready() noexcept;
+// Inside the ImGui frame, while the editor is open: the panel.
+void draw(std::uintptr_t module_base);
 
 // ---------------------------------------------------------------------- input
 //

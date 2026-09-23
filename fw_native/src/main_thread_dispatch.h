@@ -55,7 +55,8 @@ namespace fw::dispatch {
 //   0x4F = FW_MSG_WEAPON_CAPTURE_FINALIZE      — native/weapon_capture.h
 //   0x50 = FW_MSG_SPAI_PREWARM (Tier 1)        — owned here
 //   0x51 = FW_MSG_LOCK_APPLY (B6.3 v0.5.3)     — owned here
-//   0x52 = FW_MSG_EQUIP_ANNOUNCE_FIRE          — hooks/equip_announce.cpp
+//   0x52 = (free) was FW_MSG_EQUIP_ANNOUNCE_FIRE, the never-invoked May 2026
+//          scaffold; equip_announce runs from the tick since phase 3
 //                                                (NON TESTATO 2026-05-08,
 //                                                 not dispatched yet)
 //

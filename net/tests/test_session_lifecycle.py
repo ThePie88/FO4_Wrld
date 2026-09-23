@@ -286,40 +286,58 @@ def test_late_joiner_is_shown_where_the_others_are_and_what_they_wear():
     assert equips[-1].effective_priority == 7
 
 
-def test_a_rejoining_peer_is_announced_to_those_already_here():
-    """The mirror, and the reason the ghost was dressed once and naked after.
+def test_a_rejoin_forgets_the_stored_outfit_and_the_announce_rebuilds_it():
+    """Phase 3 — the contract that replaces the server-side outfit replay.
 
-    The presence bootstrap answers "what do the others look like" for a
-    joiner. Nothing answered "what does the joiner look like" for the
-    others, so the peer already in the world kept a ghost it had dressed
-    from its OWN join bootstrap and never heard about that outfit again.
-    The OMOD list has to ride along: attaching an armour without its mods
-    is what made the rebuilt ghost come back wrong.
+    The stored outfit is a record of the LAST session. A relaunch loads the
+    save, and the save dresses the player in what the SAVE says, not in what
+    they wore when they quit. Replaying the stored outfit to the others put
+    the rebuilt ghost in clothes the player no longer had on — and because
+    an equip only ever adds, the stale pieces stayed on for good: the union
+    that never shrinks, moved from the server onto the ghost.
+
+    So a (re)join forgets the stored outfit, and the client rebuilds it from
+    its inventory at every session start: the items it actually wears, read
+    with their OMOD lists. The others see the announce, never the memory.
+
+    This replaces test_a_rejoining_peer_is_announced_to_those_already_here,
+    which pinned the replay. Its point about the OMOD list riding along still
+    holds, and is asserted below on the announce instead.
     """
     proto = _mkproto()
     a1 = ("127.0.0.1", 41031)
     _hello(proto, a1, "player_A")
 
     st = proto.state
-    st.record_presence_equip(
-        "player_B",
-        OutfitEntry(item_form_id=0x1EED7, slot_form_id=0, count=1,
-                    effective_priority=3, mods=(EquipModRecord(0x18E59C, 0, 1, 0),), timestamp_ms=42),
-        equipped=True, now_ms=5.0)
+    # the LAST session: B wore the suit, with a mod, AND a helmet
+    suit_mod = EquipModRecord(0x18E59C, 0, 1, 0)
+    for fid, mods in ((0x1EED7, (suit_mod,)), (0x12E2C4, ())):
+        st.record_presence_equip(
+            "player_B",
+            OutfitEntry(item_form_id=fid, slot_form_id=0, count=1,
+                        effective_priority=3, mods=mods, timestamp_ms=42),
+            equipped=True, now_ms=5.0)
 
     before = len(_frames(proto, a1, MessageType.EQUIP_BCAST))
     a2 = ("127.0.0.1", 41032)
     _hello(proto, a2, "player_B")
     _drain(proto)
+    assert len(_frames(proto, a1, MessageType.EQUIP_BCAST)) == before, (
+        "the outfit of the last session was replayed to the peer already here")
+    assert not st.presence("player_B").outfit, (
+        "the last session's outfit survived the rejoin")
 
+    # the relaunched client announces what it actually wears: the suit only
+    _op(proto, a2, MessageType.EQUIP_OP,
+        EquipOpPayload(0x1EED7, EquipOpKind.EQUIP, 0, 1, 99, 3, (suit_mod,)))
+    _drain(proto)
     to_a = _frames(proto, a1, MessageType.EQUIP_BCAST)[before:]
-    assert to_a, "the peer already here was told nothing about the joiner"
-    assert to_a[-1].peer_id == "player_B"
-    assert to_a[-1].item_form_id == 0x1EED7
-    assert to_a[-1].kind == EquipOpKind.EQUIP
-    assert len(to_a[-1].mods) == 1, "the OMOD list must ride along"
-    assert to_a[-1].mods[0].form_id == 0x18E59C
-
+    assert [b.item_form_id for b in to_a] == [0x1EED7], (
+        "the others must see the announce, and only the announce")
+    assert len(to_a[0].mods) == 1 and to_a[0].mods[0].form_id == 0x18E59C, (
+        "the OMOD list must ride along")
+    assert set(st.presence("player_B").outfit) == {0x1EED7}, (
+        "the helmet of the last session is still on")
 
 def test_leaving_gives_the_power_armour_back_to_the_world_and_takes_it_off_you():
     """La regola: indosso a qualcuno OPPURE oggetto del mondo, mai le due.
@@ -549,3 +567,99 @@ def test_worn_state_survives_a_server_restart():
         load_into(fresh, path)
 
     assert fresh.world_spawns[wid].worn_by_peer_id == "player_A"
+
+
+# ---------------------------------------------- the v0.8.0 audit holes
+
+def _resume(proto, addr, peer, token):
+    proto.datagram_received(
+        encode_frame(MessageType.HELLO_RESUME, 1,
+                     HelloResumePayload(peer, token, 1, 0), reliable=True),
+        addr)
+
+
+def test_a_resume_refused_for_capacity_keeps_the_token():
+    """Hole 3 of the v0.8.0 audit.
+
+    The client treats SERVER_FULL as retryable and keeps its token for the
+    retry. The server used to spend the token BEFORE the capacity check, so
+    that retry was answered RESUME_UNKNOWN; the client then threw the token
+    away and fell back to a full HELLO whose launcher proof is single use and
+    already spent. An authenticated player reconnecting while the server
+    filled up was locked out until a relaunch.
+    """
+    proto = _mkproto(max_players=1)
+    a1 = ("127.0.0.1", 41101)
+    _hello(proto, a1, "player_A")
+    token = _welcome(proto, a1).resume_token
+
+    # A's session is dropped server side and someone else takes the slot
+    proto.state.remove("player_A")
+    b = ("127.0.0.1", 41102)
+    _hello(proto, b, "player_B")
+    assert _welcome(proto, b).accepted
+
+    # A comes back while the server is full: refused, for capacity
+    a2 = ("127.0.0.1", 41103)
+    _resume(proto, a2, "player_A", token)
+    w = _welcome(proto, a2)
+    assert not w.accepted and w.reject_code == RejectCode.SERVER_FULL
+
+    # the slot frees; A retries with THE SAME token, as its client does
+    proto.state.remove("player_B")
+    a3 = ("127.0.0.1", 41104)
+    _resume(proto, a3, "player_A", token)
+    w3 = _welcome(proto, a3)
+    assert w3.accepted, (
+        "the token was spent by a resume that was refused for capacity")
+
+
+def test_a_refused_resume_does_not_evict_a_live_session_for_nothing():
+    """Companion of the capacity case. The resume evicts the previous
+    session of that peer before it knows whether it can accept the new one.
+    If it then refuses, the player has lost both the old seat and the new
+    one. The eviction must only happen for a resume that goes through."""
+    proto = _mkproto(max_players=2)
+    a1 = ("127.0.0.1", 41105)
+    _hello(proto, a1, "player_A")
+    token = _welcome(proto, a1).resume_token
+    b = ("127.0.0.1", 41106)
+    _hello(proto, b, "player_B")
+
+    # a resume that cannot succeed: a different major version
+    a2 = ("127.0.0.1", 41107)
+    proto.datagram_received(
+        encode_frame(MessageType.HELLO_RESUME, 1,
+                     HelloResumePayload("player_A", token, 99, 0),
+                     reliable=True),
+        a2)
+    w = _welcome(proto, a2)
+    assert not w.accepted and w.reject_code == RejectCode.VERSION_MISMATCH
+    assert proto.state.get_by_addr(a1) is not None, (
+        "a resume that was refused anyway threw the live session away")
+
+
+def test_a_handshake_dropped_inside_the_grace_is_not_silent(caplog):
+    """Hole 2 of the v0.8.0 audit.
+
+    Unreachable from the DLL today: every session attempt opens a fresh
+    socket on a new ephemeral port, so a resume never lands on the address of
+    the previous session. But the comment that justifies the grace rested on a
+    premise v26 made false ("a client that has been given its WELCOME never
+    sends HELLO again in that process" — the reconnect loop does exactly
+    that), and the drop was silent. If the new-port invariant ever breaks, a
+    NAT reusing the external port, a client binding a fixed one, this has to
+    show up in the log instead of costing a day.
+    """
+    import logging
+    proto = _mkproto()
+    addr = ("127.0.0.1", 41108)
+    _hello(proto, addr, "player_A")
+    token = _welcome(proto, addr).resume_token
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        _resume(proto, addr, "player_A", token)   # same address, inside the grace
+    assert any("inside the" in r.getMessage() and "grace" in r.getMessage()
+               for r in caplog.records), (
+        "a handshake frame inside the relaunch grace was dropped in silence")

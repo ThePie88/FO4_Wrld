@@ -173,8 +173,9 @@ constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
 // nessuno di questi campi e li rispecchia soltanto. Vale per uno su tre.
 // `reject_code` lo consuma Client::on_rejected e decide fra ritentare e
 // arrendersi; `resume_token` lo consuma do_handshake e lo rispedisce in
-// HELLO_RESUME. Resta vero solo per `PeerJoinPayload::display_name`: il nome
-// viaggia sul filo e nessuno lo legge, perche' i nametag sono fase 4.
+// HELLO_RESUME. Restava vero solo per `PeerJoinPayload::display_name`, che
+// viaggiava sul filo senza che nessuno lo leggesse; dalla Fase 4
+// (2026-09-23) lo legge net/peer_names, per la chat e i nametag.
 //
 // Quello che resta vero per tutti e tre: il controllo di versione
 // nell'intestazione rifiuta ogni frame di una build diversa, quindi client,

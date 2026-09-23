@@ -85,7 +85,7 @@ add_library(fw_native SHARED
     src/hooks/ghost_combat_force.cpp # Build 40: 4-hook surgical decision override (hostility, alive-count, cell-loaded, post-pick) — dossier-driven
     src/hooks/event_dispatch_guard.cpp # Build 44: sub_140DEF780 vtable-validity guard — blocks EXEC fault on stale event sinks
     src/hooks/equip_cycle.cpp       # B8  : post-LoadGame BipedAnim normalize (DISABLED 2026-05-08, see equip_announce.h)
-    src/hooks/equip_announce.cpp    # B8 successor (NON TESTATO): apparel bootstrap broadcast — Option B scaffold
+    src/hooks/equip_announce.cpp    # Phase 3: the worn outfit, announced at every session start
     src/hooks/equip_hook.cpp        # M9 w1: equipment-event sender hook
     src/hooks/engine_tracer.cpp     # M6.3: native NIF-load path observation
     src/hooks/subrefload_hook.cpp   # M9 closure: live capture of sub_1404580C0 args
@@ -93,6 +93,7 @@ add_library(fw_native SHARED
     src/net/udp_socket.cpp
     src/net/reliable.cpp
     src/net/client.cpp
+    src/net/peer_names.cpp          # Phase 4: peer id -> display name, for chat and nametags
     src/config.cpp
     src/engine/engine_calls.cpp
     src/native/chargen_catalog.cpp
@@ -100,7 +101,10 @@ add_library(fw_native SHARED
     src/native/world_spawn.cpp    # B6.14: wid registry + receive-side placement
     src/native/ghost_lifecycle.cpp  # Fase 2: registro per peer + ciclo di vita del ghost
     src/render/present_hook.cpp
+    src/render/overlay.cpp          # Phase 4: owns ImGui and the frame; editor, chat and nametags draw into it
     src/render/editor_overlay.cpp
+    src/render/chat_overlay.cpp     # Phase 4: global chat, always on, Enter to type
+    src/render/nametags.cpp         # Phase 4: peer names above the ghosts' heads
     src/render/triangle_render.cpp
     src/render/body_render.cpp      # Path A archived, compiled but not invoked
     src/render/dsv_capture.cpp      # Path A archived, compiled but not invoked

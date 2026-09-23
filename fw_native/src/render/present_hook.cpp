@@ -12,7 +12,7 @@
 
 #include "../hook_manager.h"
 #include "../log.h"
-#include "editor_overlay.h"
+#include "overlay.h"
 #include "../native/chargen_stage.h"
 #include "../main_thread_dispatch.h"   // main_thread_id() — Present has 4 call
                                        // sites and one is a worker thread
@@ -185,20 +185,21 @@ HRESULT STDMETHODCALLTYPE detour_present(
         }
     }
 
-    // THE EDITOR. Only on the main thread: one of Present's four call sites is
-    // the JobListManager serving thread that runs the loading screen, and the
-    // overlay must not draw there. A no-op when the editor is closed.
+    // THE OVERLAY — the editor, and since phase 4 the chat and the nametags.
+    // Only on the main thread: one of Present's four call sites is the
+    // JobListManager serving thread that runs the loading screen, and the
+    // overlay must not draw there. A no-op when nothing wants to draw.
     {
         const std::uint32_t mt = fw::dispatch::main_thread_id();
         if (mt != 0 && me == mt) {
             __try {
-                fw::render::editor::on_frame(
+                fw::render::overlay::on_frame(
                     g_base.load(std::memory_order_relaxed));
             } __except (EXCEPTION_EXECUTE_HANDLER) {
-                // A bug in our panel must never take the game's frame with it.
-                FW_ERR("[editor] SEH inside the overlay draw — the panel is "
-                       "disabled for the rest of this session");
-                fw::render::editor::shutdown();
+                // A bug in our overlay must never take the game's frame with it.
+                FW_ERR("[overlay] SEH inside the overlay draw — editor, chat "
+                       "and nametags are disabled for the rest of this session");
+                fw::render::overlay::shutdown();
             }
         }
     }

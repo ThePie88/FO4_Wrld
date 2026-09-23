@@ -5,6 +5,106 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## Nametags and chat, minor fixes (2026-09-23) — v0.8.1
+
+Tag `v0.8.1`, wire proto v26 unchanged: CHAT has been in the protocol since
+the first version and the display name since v26, so nothing new goes on the
+wire. This closes phases 3 and 4 of the session-lifecycle epic and the three
+reconnection holes v0.8.0 left open.
+
+### Chat
+
+A small see-through box on the left of the screen, always on in the world,
+each line "name: text". Enter opens the input with the cursor already in it,
+Enter sends, Escape closes without sending.
+
+- **The server stamps the sender.** The relay existed since the first protocol
+  and had never run, because no client sent a CHAT. It forwarded the sender
+  field as the client wrote it, so any client could speak as anyone. Now the
+  sender is the session's own peer id, the text loses its control characters,
+  is cut at 200 characters, and a peer gets five lines per five seconds. Every
+  line is echoed back to its author too, so all clients show the same order
+  and a line only appears once the server took it. Six tests, written first.
+- **How the game stops reading the keyboard.** It reads keyboard and mouse
+  only through raw input, registered with flags 0, which is also why the
+  legacy key messages still arrive for ImGui. While the box is open raw input
+  is swallowed except releases: a key held when Enter was pressed has already
+  reached the game as pressed, and eating its release would leave the
+  character walking after the box closed.
+- **Enter stays the game's in menu mode.** Pip-Boy, console, containers: the
+  byte `Main+0x1D0`, the one `Utility.IsInMenuMode()` reads.
+- **Names.** The display name from PEER_JOIN, which travelled since v26 with
+  nobody reading it, or the peer id when a player set none.
+
+### Nametags
+
+The peer's name above the ghost's head, bold white with a black outline,
+smaller and fainter with distance, drawn by ImGui at Present on the Head bone
+of the ghost's own skeleton, the bone the face is skinned to.
+
+- **The camera.** The World SceneGraph's root camera, the one the frame
+  function re-parents every frame, read at Present, which is the main thread
+  in-world. Strada A shook because it built a view-projection from the
+  first-person camera and the player's feet; this reads the camera that drew
+  the frame.
+- **The axes, from the binary.** The first build used Gamebryo's convention,
+  camera axes as the columns of the world rotation, and the tag moved with the
+  view. `NiCamera::WindowPointToRay` (`sub_1416D0CA0`) builds a pixel's ray as
+  `row0 + y*row1 + x*row2`, and `LookAt` writes forward, up and right into
+  rows 0, 1 and 2: in this engine the rows are the axes. The log now calls
+  that same engine function on the pixel where the tag is drawn and prints how
+  far its ray passes from the anchor: 0.3 units on both clients.
+
+### The outfit at session start (phase 3)
+
+Items worn when the save loaded fired no engine event, so a peer who never
+changed clothes replayed naked, and a server restart made it worse. At every
+session start the client walks its inventory, keeps the stacks the engine
+marks equipped (`flags & 7`, measured against the truth: suit, Pip-Boy and
+pistol yes, baton, stimpaks and ammo no) whose form is apparel, and sends one
+EQUIP per item with its OMODs through the ordinary equip path. The server
+forgets the stored outfit on every (re)join and no longer replays the joiner's
+old outfit to the others. This also explains why a peer sometimes saw the other
+dressed and sometimes not: the stored outfit depended on which equip events the
+server had seen. Weapons are left to their own path on purpose.
+
+### The reconnection holes
+
+Each with a test that failed on the old code. A container take is refused at
+once when there is no session, and withdrawn from the send queue when it times
+out, instead of being replayed to the server after the reconnection, which was
+a duplication on a put. The dropped `HELLO_RESUME` inside the relaunch grace
+was unreachable from this client, which opens a new port per attempt; the
+comment now says so and the path logs. The resume token is consumed after the
+checks that can refuse the resume, and a refused resume no longer evicts the
+live session it was compared against.
+
+### Minor
+
+ImGui moved from the editor to `render/overlay`, one frame for the editor, the
+chat and the nametags, brought up only when something wants to draw. The
+PEER_JOIN log line stopped claiming an equip cycle it has not re-armed since
+May, and the comments that still named `g_injected_cube` or called the outfit
+announce an untested scaffold were corrected.
+
+### Not finished
+
+The 100 ms race on a live container op still wants a server-side cancel.
+Weapons are not announced at session start, so a ghost is dressed but
+empty-handed after a rejoin until the peer draws. Names are visible through
+walls. Matrix tests T4, T6, T7 and T8 have not been run, and a second remote
+ghost stays refused until a third client exists.
+
+### Verified live
+
+Two clients: chat in both directions with the server echo in 5 ms and the
+crossing in 13 to 39 ms, Escape, four Enters inside menus left to the game;
+the nametag on the head while walking, crouching and turning the camera, with
+the engine's ray through the tag's pixel 0.3 units from the anchor. 439 pytest
+green.
+
+---
+
 ## Session lifecycle: the ghost belongs to a peer (2026-09-19) — v0.8.0
 
 Tag `v0.8.0`, wire proto v26: WELCOME carries a reject reason and a resume

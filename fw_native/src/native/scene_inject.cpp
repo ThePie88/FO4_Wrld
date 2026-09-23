@@ -150,6 +150,16 @@ struct GhostRecord {
     // slot BODY. MaleBody.nif ne porta DUE, non una: nascondere solo la prima
     // lasciava la seconda visibile e dava il ghost "testa e mani volanti".
     std::vector<void*> body_geoms;
+
+    // Fase 4 — l'osso Head dello scheletro di QUESTO corpo, dove si appende
+    // il nametag. E' l'osso su cui e' cucita la faccia, quindi segue quello
+    // che si vede davvero: accovacciato, statura della power armor, cadute.
+    // Il nodo BSFadeNode `head` qui sopra NON va bene: la faccia e' pelle e
+    // si disegna dove dicono le ossa, non dove sta il suo nodo. Risolto una
+    // volta e ricordato insieme al corpo contro cui e' stato risolto, cosi'
+    // un corpo nuovo non eredita mai l'osso di uno morto.
+    void* head_bone      = nullptr;
+    void* head_bone_body = nullptr;
 };
 
 std::mutex                                   g_ghosts_mtx;
@@ -163,9 +173,9 @@ static void* ghost_body_for(const char* peer_id) noexcept {
     return it == g_ghosts.end() ? nullptr : it->second.body;
 }
 
-// Registra il corpo appena nato. Chiamata nello stesso punto in cui si
-// scrive g_injected_cube, di proposito: due verita' scritte insieme non
-// possono divergere.
+// Registra il corpo appena nato. Nacque accanto alla scrittura di
+// g_injected_cube, perche' due verita' scritte insieme non divergono; dal
+// 2026-09-19 quel puntatore unico non esiste piu' e questa e' l'unica.
 static void ghost_record_body(const char* peer_id, void* body) {
     if (!peer_id || !*peer_id || !body) {
         FW_WRN("[ghost-rec] corpo %p senza peer — NON registrato; i siti "
@@ -16835,6 +16845,54 @@ void set_body_cull_enabled(bool on) {
                "player's-body-vanishes-on-unequip bug — see the note at "
                "apply_body_cull.");
     }
+}
+
+namespace {
+// POD-only: SEH and std::string non convivono nella stessa funzione (C2712).
+bool seh_read_world_translate(void* node, float out[3]) noexcept {
+    if (!node) return false;
+    __try {
+        const float* wt = reinterpret_cast<const float*>(
+            static_cast<const char*>(node) + NIAV_WORLD_TRANSLATE_OFF);
+        out[0] = wt[0]; out[1] = wt[1]; out[2] = wt[2];
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+}  // namespace
+
+// Fase 4 — vedi l'header. La fotografia si prende fuori dal lock e la
+// ricerca dell'osso gira fuori dal lock, per la stessa regola di
+// ghost_snapshot: niente cammino del grafo di scena con la mappa bloccata.
+std::vector<GhostHeadAnchor> ghost_head_anchors() {
+    std::vector<GhostHeadAnchor> out;
+    for (const auto& [peer, body] : ghost_snapshot()) {
+        void* bone = nullptr;
+        {
+            std::lock_guard<std::mutex> lk(g_ghosts_mtx);
+            const auto it = g_ghosts.find(peer);
+            if (it == g_ghosts.end() || it->second.body != body) continue;
+            if (it->second.head_bone_body == body) bone = it->second.head_bone;
+        }
+        if (!bone) {
+            // Nessun log sul fallimento: uno scheletro non ancora registrato
+            // e' normale nei primi frame del ghost, e si riprova al prossimo.
+            void* skel = fw::native::skin_rebind::skeleton_for(body);
+            bone = skel ? find_node_by_name_w4(skel, "Head") : nullptr;
+            if (!bone) continue;
+            std::lock_guard<std::mutex> lk(g_ghosts_mtx);
+            const auto it = g_ghosts.find(peer);
+            if (it == g_ghosts.end() || it->second.body != body) continue;
+            it->second.head_bone      = bone;
+            it->second.head_bone_body = body;
+            FW_LOG("[nametag] peer=%s: osso Head %p, scheletro %p, corpo %p",
+                   peer.c_str(), bone, skel, body);
+        }
+        GhostHeadAnchor a;
+        a.peer_id = peer;
+        if (!seh_read_world_translate(bone, a.head)) continue;
+        out.push_back(std::move(a));
+    }
+    return out;
 }
 
 

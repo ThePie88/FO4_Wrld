@@ -3,15 +3,13 @@
 #include <cstring>
 
 #include <windows.h>
-#include <d3d11.h>
 
 #include <atomic>
 
 #include "imgui.h"
-#include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
 
-#include "present_hook.h"
+#include "overlay.h"
 #include "../log.h"
 #include "../native/appearance_recipe.h"
 #include "../native/chargen_catalog.h"
@@ -30,9 +28,6 @@ namespace appear = fw::native::appearance;
 
 namespace {
 
-std::atomic<bool> g_ready{false};
-std::atomic<bool> g_failed{false};   // one attempt; do not retry every frame
-
 // The style tokens are the user's, recovered from the brief they gave the demo:
 // dark background, Pip-Boy green #2eff7b as the accent, thin borders, and no
 // rounding anywhere. Scanlines were considered and deliberately dropped.
@@ -42,7 +37,7 @@ constexpr ImVec4 kPanelBg {0.035f, 0.055f, 0.045f, 0.92f};
 constexpr ImVec4 kText    {0.82f, 0.90f, 0.85f, 1.00f};
 constexpr ImVec4 kTextDim {0.50f, 0.58f, 0.54f, 1.00f};
 
-void apply_style() {
+void apply_style_tokens() {
     ImGuiStyle& s = ImGui::GetStyle();
     // Square everything. A RobCo terminal has no rounded corners, and this is
     // most of what makes ImGui stop looking like a debug tool.
@@ -82,54 +77,8 @@ void apply_style() {
     c[ImGuiCol_ScrollbarGrab]   = kGreenDim;
 }
 
-// Bring ImGui up against the GAME's device and context rather than any of our
-// own. There is nothing to create: §28 resolves both from fixed globals and the
-// swapchain they belong to was proven to be the one Present is called on.
-bool try_init(std::uintptr_t module_base) {
-    if (g_failed.load(std::memory_order_relaxed)) return false;
-
-    const GameD3D g = game_d3d();
-    if (!g.device || !g.context || !g.hwnd) {
-        // Normal before the renderer has come up; say nothing and try next frame.
-        return false;
-    }
-
-    IMGUI_CHECKVERSION();
-    if (!ImGui::CreateContext()) {
-        FW_ERR("[editor] ImGui::CreateContext failed");
-        g_failed.store(true, std::memory_order_relaxed);
-        return false;
-    }
-    ImGuiIO& io = ImGui::GetIO();
-    // No ini and no log file. This is a game overlay: writing imgui.ini into the
-    // game directory would be litter, and it would also persist window positions
-    // that we set ourselves every frame anyway.
-    io.IniFilename = nullptr;
-    io.LogFilename = nullptr;
-    apply_style();
-
-    if (!ImGui_ImplWin32_Init(g.hwnd)) {
-        FW_ERR("[editor] ImGui_ImplWin32_Init failed (hwnd=%p)", g.hwnd);
-        ImGui::DestroyContext();
-        g_failed.store(true, std::memory_order_relaxed);
-        return false;
-    }
-    if (!ImGui_ImplDX11_Init(static_cast<ID3D11Device*>(g.device),
-                             static_cast<ID3D11DeviceContext*>(g.context))) {
-        FW_ERR("[editor] ImGui_ImplDX11_Init failed (device=%p context=%p)",
-               g.device, g.context);
-        ImGui_ImplWin32_Shutdown();
-        ImGui::DestroyContext();
-        g_failed.store(true, std::memory_order_relaxed);
-        return false;
-    }
-
-    g_ready.store(true, std::memory_order_release);
-    FW_LOG("[editor] ImGui %s up on the game's own device=%p context=%p hwnd=%p "
-           "— drawing into the game's live backbuffer RTV, owning no render "
-           "target of its own", IMGUI_VERSION, g.device, g.context, g.hwnd);
-    return true;
-}
+// (try_init lived here until 2026-09-23: bringing ImGui up is render/overlay's
+// job now, because the chat needs it outside character creation.)
 
 
 // One scrollable list of named options. The row that matches what the player is
@@ -420,7 +369,7 @@ void draw_panel(std::uintptr_t base) {
         // would drop that first publish on the floor.
         appear::set_chargen_pending(false);
         appear::set_editing(false);
-        // No explicit release: on_frame reconciles the capture with the flag, and
+        // No explicit release: overlay::on_frame reconciles the capture with the flag, and
         // one driver is the whole point.
     }
 
@@ -429,7 +378,7 @@ void draw_panel(std::uintptr_t base) {
 
 }  // namespace
 
-bool ready() noexcept { return g_ready.load(std::memory_order_acquire); }
+void apply_style() { apply_style_tokens(); }
 
 // ---------------------------------------------------------------------- input
 
@@ -593,7 +542,7 @@ void set_input_captured(std::uintptr_t module_base, bool on) {
 bool wndproc(void* hwnd, unsigned int msg, unsigned long long wparam,
              long long lparam) {
     if (!g_captured.load(std::memory_order_acquire)) return false;
-    if (!g_ready.load(std::memory_order_acquire))    return false;
+    if (!fw::render::overlay::ready())               return false;
 
     // WM_SETCURSOR is ours to answer. The engine's own handler always drives the
     // cursor to hidden over the client area — ShowCursor has exactly two call
@@ -675,39 +624,13 @@ bool wndproc(void* hwnd, unsigned int msg, unsigned long long wparam,
     }
 }
 
-void on_frame(std::uintptr_t module_base) {
-    // THE INPUT CAPTURE FOLLOWS THE FLAG, and it has to be reconciled here --
-    // before the early-out -- because releasing it is as important as taking it.
-    //
-    // It used to be taken and released by the F2 key handler and nowhere else,
-    // which meant the capture only ever happened because somebody pressed a key.
-    // When the SERVER asked for the ritual the panel appeared with the game still
-    // reading the mouse: the character turned with it and raised a weapon on a
-    // left click, and the cursor stayed hidden. Pressing F2 twice fixed it, which
-    // made it look like a timing problem and was actually a missing caller.
-    //
-    // This is the second time the same mistake has been made in this feature --
-    // the staging had it too, for the same reason -- so the rule is worth stating:
-    // anything that must be true WHILE THE EDITOR IS OPEN belongs to the flag, not
-    // to whatever happened to open it.
-    const bool want = fw::native::appearance::editing();
-    if (input_captured() != want) set_input_captured(module_base, want);
-
-    // Closed is the common case and must cost nothing. Checked before ImGui is
-    // even brought up, so a session that never opens the editor never pays for
-    // its initialisation either.
-    if (!want) return;
-
-    if (!g_ready.load(std::memory_order_acquire)) {
-        if (!try_init(module_base)) return;
-    }
-
+// The frame itself, and the reconciliation of the capture with the editing
+// flag, live in render/overlay since 2026-09-23 (on_frame was here). The
+// comment that explains why the capture follows the flag moved with it.
+void prepare_frame(std::uintptr_t module_base) {
     // Before drawing: take the input back off the game. It reclaims it on its
     // own every time one of its modal pumps runs.
     hold_capture(module_base);
-
-    const GameD3D g = game_d3d();
-    if (!g.context || !g.backbuf_rtv) return;
 
     // Build the option lists on the first frame the data handler is
     // populated. Cheap after that: one atomic read.
@@ -716,29 +639,10 @@ void on_frame(std::uintptr_t module_base) {
     // race's CharGenData is built lazily, so this can legitimately return false
     // for a while after the head parts are already there.
     cat::build_tints(module_base);
-
-    ImGui_ImplDX11_NewFrame();
-    ImGui_ImplWin32_NewFrame();
-    ImGui::NewFrame();
-    draw_panel(module_base);
-    ImGui::Render();
-
-    // Bind the GAME's render target, then let ImGui's backend draw. The backend
-    // saves and restores the pipeline state around its own draw, so the only
-    // state we perturb is this binding — and we are at Present, so the game's
-    // frame is already composited.
-    auto* ctx = static_cast<ID3D11DeviceContext*>(g.context);
-    auto* rtv = static_cast<ID3D11RenderTargetView*>(g.backbuf_rtv);
-    ctx->OMSetRenderTargets(1, &rtv, nullptr);
-    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 }
 
-void shutdown() {
-    if (!g_ready.exchange(false, std::memory_order_acq_rel)) return;
-    ImGui_ImplDX11_Shutdown();
-    ImGui_ImplWin32_Shutdown();
-    ImGui::DestroyContext();
-    FW_LOG("[editor] ImGui shut down");
+void draw(std::uintptr_t module_base) {
+    draw_panel(module_base);
 }
 
 }  // namespace fw::render::editor

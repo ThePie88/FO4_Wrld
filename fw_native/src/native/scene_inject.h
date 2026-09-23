@@ -26,6 +26,8 @@
 #include <windows.h>
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace fw::native {
 
@@ -960,6 +962,17 @@ bool ghost_body_is_orphaned();    // MAIN THREAD
 
 void ghost_scene_settle_tick();   // MAIN THREAD
 bool ghost_scene_settled();       // qualunque thread
+
+// Fase 4 — per ogni ghost vivo, la posizione nel mondo dell'osso Head del suo
+// scheletro, cioe' dove il motore ha appena disegnato la faccia. Serve ai
+// nametag. MAIN THREAD: legge il grafo di scena, e chiamata da Present
+// (verificato main thread in-world) legge le trasformazioni dello stesso
+// frame che e' appena stato disegnato.
+struct GhostHeadAnchor {
+    std::string peer_id;
+    float       head[3] = {0.0f, 0.0f, 0.0f};
+};
+std::vector<GhostHeadAnchor> ghost_head_anchors();
 
 // Called once from main thread (via WM_APP dispatcher) after the game
 // reaches a stable state (LoadGame complete, SSN singleton non-null).

@@ -1,4 +1,5 @@
 #include "main_menu_hook.h"
+#include "equip_announce.h"   // Fase 3
 
 #include <windows.h>
 #include <atomic>
@@ -27,6 +28,7 @@
 #include "../native/chargen_selftest.h" // one-shot appearance apply from our code
 #include "../native/appearance_recipe.h" // v20: publish my appearance on change
 #include "../render/editor_overlay.h"  // the panel, and its input capture
+#include "../render/chat_overlay.h"    // Fase 4: Enter apre la chat, e la chat prende la tastiera
 #include "../native/chargen_stage.h"     // 2026-08-08: stage the player for creation
 #include "../native/face_borrow.h"       // v20: build peers' faces locally
 #include "../offsets.h"
@@ -174,14 +176,17 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     // because the editor swallows WM_KEYDOWN while it is open — so handling the
     // toggle after it meant the key that CLOSES the panel could never arrive.
     // That is a trap-the-user bug and it existed for exactly one build.
-    if (msg == WM_KEYDOWN && (lp & 0x40000000) == 0) {
+    // Not while a chat line is being typed: F-keys make no WM_CHAR, so the
+    // chat would not notice, and the panel would open under the text.
+    if (msg == WM_KEYDOWN && (lp & 0x40000000) == 0 &&
+        !fw::render::chat::typing()) {
         const std::uint32_t want = g_editor_key;
         if (want != 0 && static_cast<std::uint32_t>(wp) == want) {
             const bool now_open = !fw::native::appearance::editing();
             fw::native::appearance::set_editing(now_open);
             FW_LOG("[editor] key 0x%02X -> editor %s",
                    want, now_open ? "OPEN" : "CLOSED");
-            // The key only moves the flag here too. editor::on_frame takes and
+            // The key only moves the flag here too. overlay::on_frame takes and
             // releases the input capture from the flag itself, so a ritual the
             // server asked for gets the same capture a keypress would.
             // The key only moves the FLAG. chargen_stage::sync does the teleport
@@ -225,6 +230,15 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg != WM_ACTIVATE &&
         fw::render::editor::wndproc(hwnd, msg, wp, lp)) {
         return (msg == WM_SETCURSOR) ? TRUE : 0;
+    }
+    // THE CHAT, after the editor and before the tick block. Closed, it wants
+    // one message: a fresh Enter, which opens it. Open, it feeds the keyboard
+    // to ImGui and keeps the game from reading keys and mouse, releases
+    // excepted (chat_overlay.h). Everything it does not consume falls through
+    // exactly as before, WM_ACTIVATE included.
+    if (msg != WM_ACTIVATE &&
+        fw::render::chat::wndproc(hwnd, msg, wp, lp)) {
+        return 0;
     }
     // Build 67 — main-thread liveness heartbeat (stall watchdog forensics).
     // Win32 dispatches this proc on the window-owning thread = the game main
@@ -330,7 +344,7 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // and the teleport has always run on this tick.
         fw::native::chargen_stage::sync(s_base);
         // And the input capture, for the same reason and in the same place. It is
-        // also reconciled from editor::on_frame, but that runs on Present's main
+        // also reconciled from overlay::on_frame, but that runs on Present's main
         // thread, which starts late: the log showed the capture landing ten
         // seconds after the server asked for the ritual, and the game reads the
         // mouse for every one of those seconds. This tick runs first. Both call
@@ -353,6 +367,9 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // di scena e' solo main-thread, e questo e' l'unico tick
         // incondizionato che abbiamo.
         fw::native::ghost_lifecycle::tick(s_base);
+        // Fase 3 — il vestito indossato, annunciato a ogni inizio di
+        // sessione appena la scena e' assestata. Vedi equip_announce.h.
+        fw::hooks::equip_announce_tick();
     }
     // Il nostro battito si ferma qui: il blocco di tick qui sopra l'ha gia'
     // consumato, e il gioco non sa niente di questo timer.
@@ -406,8 +423,11 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         //
         // The secondary role B8 played as a side effect — broadcasting
         // initial apparel state to peers via the engine equip events it
-        // generated — is replaced by the `equip_announce` scaffold (see
-        // `hooks/equip_announce.h`, NON TESTATO).
+        // generated — is done by `hooks/equip_announce` since the session
+        // lifecycle's phase 3 (2026-09-23): a passive read of the equipped
+        // stacks of the local player's inventory at every session start, no
+        // engine call. The May scaffold that stood in its place was never
+        // invoked; it has been replaced, not wired up.
         //
         // Files left in repo for archeological reference:
         //   - hooks/equip_cycle.{h,cpp} (still compiled but never invoked)

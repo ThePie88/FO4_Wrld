@@ -99,7 +99,8 @@ int dump_skeleton_bones(void* skel_root);
 // decrementa. L'unico riferimento che lo teneva in vita oltre l'albero era
 // la cache stessa.
 //
-// Chiave = la radice del corpo (g_injected_cube per il ghost di oggi).
+// Chiave = la radice del corpo (GhostRecord::body; g_injected_cube, il
+// puntatore unico che c'era prima, non esiste piu' dal 2026-09-19).
 void  set_skeleton_for(void* body_root, void* skel_root);
 void* skeleton_for(void* body_root) noexcept;
 // Da chiamare nello smontaggio PRIMA di lasciare andare il corpo. Non

@@ -107,6 +107,10 @@ class PeerSession:
     identity_hex: str = ""
     # v19 — cosmetic display name from the HELLO auth tail. NEVER a key.
     display_name: str = ""
+    # Phase 4 — when this peer's last chat messages were relayed, for the
+    # flood limit in ServerProtocol._handle_chat. Only the current window is
+    # kept, so it never grows past CHAT_BURST entries.
+    chat_sent_ms: list[float] = field(default_factory=list)
 
     # B6.6w5 — local form_id of the engine ghost-actor that represents
     # the OTHER peer on this client's screen. Sent by the client via
@@ -325,6 +329,15 @@ class ResumeTicket:
     expires_at_ms: float
 
 
+def _peer_id_invalid(peer_id: str) -> bool:
+    """The one place that decides whether a peer id is well formed."""
+    if not peer_id or len(peer_id) > MAX_CLIENT_ID_LEN:
+        return True
+    if not peer_id.isascii() or not all(c.isalnum() or c in "_-" for c in peer_id):
+        return True
+    return False
+
+
 @dataclass(slots=True)
 class ServerState:
     """Total server-side state. Thread-unsafe — only one asyncio task may mutate."""
@@ -430,9 +443,7 @@ class ServerState:
         were never told it had gone. The callback lets the caller run the same
         teardown a timeout runs, which is the only correct answer.
         """
-        if not peer_id or len(peer_id) > MAX_CLIENT_ID_LEN:
-            return (None, "peer_id_invalid")
-        if not peer_id.isascii() or not all(c.isalnum() or c in "_-" for c in peer_id):
+        if _peer_id_invalid(peer_id):
             return (None, "peer_id_invalid")
 
         # If same addr already has session (reconnection with same IP:port), replace it
@@ -823,6 +834,26 @@ class ServerState:
             rec.outfit.pop(entry.item_form_id, None)
         rec.updated_at_ms = now_ms
 
+    def clear_presence_outfit(self, peer_id: str, now_ms: float) -> int:
+        """Forget the stored outfit. Returns how many items it held.
+
+        Phase 3 (2026-09-23). The stored outfit is a record of the LAST
+        session, and nothing else ever makes it shrink except an explicit
+        unequip — see drop_items_from_outfit for the one case that had to be
+        handled by hand before this. A relaunch loads the save, and the save
+        dresses the player in what the SAVE says. So at every (re)join the
+        memory goes, and the client rebuilds it: at each session start it
+        reads the items it actually wears from its inventory, with their
+        OMODs, and announces them through the ordinary equip path.
+        """
+        rec = self._presence.get(peer_id)
+        if rec is None or not rec.outfit:
+            return 0
+        n = len(rec.outfit)
+        rec.outfit.clear()
+        rec.updated_at_ms = now_ms
+        return n
+
     def record_presence_worn_frame(self, peer_id: str, wid: int,
                                    now_ms: float) -> None:
         rec = self._presence_for(peer_id)
@@ -887,6 +918,67 @@ class ServerState:
         for t in dead:
             del self._resume_tokens[t]
         return len(dead)
+
+    def resume_refusal(self, addr: tuple[str, int], peer_id: str,
+                       client_version: tuple[int, int]) -> Optional[str]:
+        """What accept_peer would say to a resume, WITHOUT touching anything.
+
+        None if it would accept. Exists so the resume handler can validate
+        before it mutates: it used to spend the token and evict the previous
+        session first, and only then learn from accept_peer that the server was
+        full or the version wrong — leaving the player with neither the old
+        seat nor the new one, and with a token already gone (v0.8.0 audit,
+        holes 3 and its twin).
+
+        It mirrors accept_peer for the state a resume leaves behind. The resume
+        handler evicts this peer's own previous session unconditionally, so
+        peer_id_taken cannot fire; what can is the id format, the version, and
+        the capacity. Capacity counts the seats that will still be taken AFTER
+        the resume evicts this peer's previous session and whatever sits on
+        the address it arrives from: a player rejoining must not be told the
+        server is full because their own corpse still holds a seat, which is
+        the same rule accept_peer writes above its own capacity check.
+        """
+        if _peer_id_invalid(peer_id):
+            return "peer_id_invalid"
+        if client_version[0] != self.server_version[0]:
+            return "version_mismatch"
+        if self.max_players > 0:
+            leaving = set()
+            prior = self._sessions_by_peer_id.get(peer_id)
+            if prior is not None:
+                leaving.add(prior.session_id)
+            here = self._sessions_by_addr.get(addr)
+            if here is not None:
+                leaving.add(here.session_id)
+            staying = sum(1 for s in self._sessions_by_peer_id.values()
+                          if s.session_id not in leaving)
+            if staying >= self.max_players:
+                return "server_full"
+        return None
+
+    def peek_resume_token(self, token: bytes,
+                          now_ms: float) -> tuple[Optional[ResumeTicket], str]:
+        """Look a token up WITHOUT spending it, unless it is dead.
+
+        A live token stays where it is: the caller spends it with
+        consume_resume_token only once the resume has actually gone through.
+        That is the point of the split — a resume refused for capacity used to
+        burn the token, and the client, which retries SERVER_FULL with the
+        token it still holds, was answered RESUME_UNKNOWN, threw the token
+        away, and fell back to a full HELLO whose launcher proof is single use
+        and already spent.
+
+        An EXPIRED token is still removed on sight, for the reason
+        consume_resume_token gives: a stale one must not be retried in a loop.
+        """
+        ticket = self._resume_tokens.get(token)
+        if ticket is None:
+            return (None, "resume_unknown")
+        if now_ms > ticket.expires_at_ms:
+            del self._resume_tokens[token]
+            return (None, "resume_expired")
+        return (ticket, "ok")
 
     def consume_resume_token(self, token: bytes,
                              now_ms: float) -> tuple[Optional[ResumeTicket], str]:

@@ -1,4 +1,9 @@
 #include "client.h"
+#include "peer_names.h"                // Fase 4: nomi per chat e nametag
+#include "../hooks/equip_announce.h"   // Fase 3
+#include "../render/chat_overlay.h"    // Fase 4: le righe della chat
+
+#include <cstddef>   // offsetof
 
 #include <windows.h>
 #include <chrono>
@@ -762,6 +767,32 @@ void Client::enqueue_equip_op(std::uint32_t item_form_id,
     push_queued(std::move(q));
 }
 
+bool Client::send_chat(const std::string& text) {
+    if (!accepting_enqueue() || !connected_.load()) return false;
+    if (text.empty()) return false;
+    // The header and the length prefix leave MAX_PAYLOAD_SIZE - 18 bytes for
+    // the text. The input box holds far less; this only keeps a caller that
+    // is not the chat box from building an oversized frame.
+    constexpr std::size_t kHead = MAX_CLIENT_ID_LEN + 1 + 2;
+    const std::size_t n = (text.size() < MAX_PAYLOAD_SIZE - kHead)
+        ? text.size() : MAX_PAYLOAD_SIZE - kHead;
+
+    FixedClientId sender{};
+    sender.set(cfg_.client_id);
+    const std::uint16_t len = static_cast<std::uint16_t>(n);
+
+    QueuedSend q;
+    q.msg_type = MessageType::CHAT;
+    q.reliable = true;
+    q.payload_bytes.resize(kHead + n);
+    std::uint8_t* dst = q.payload_bytes.data();
+    std::memcpy(dst, &sender, sizeof(sender));
+    std::memcpy(dst + sizeof(sender), &len, sizeof(len));
+    std::memcpy(dst + kHead, text.data(), n);
+    push_queued(std::move(q));
+    return true;
+}
+
 // M9.w4 v9 — sender side of MESH_BLOB chunked replication.
 // Builds a single linear blob from `meshes`, splits it into 1388-byte
 // chunks, enqueues each as a reliable MESH_BLOB_OP frame.
@@ -1093,19 +1124,24 @@ void Client::enqueue_container_seed(std::uint32_t base_id, std::uint32_t cell_id
 std::optional<ContainerOpAckPayload> Client::submit_container_op_blocking(
     ContainerOpPayload op, std::uint32_t timeout_ms)
 {
-    // ATTENZIONE, il commento che stava qui mentiva e il difetto e' reale.
+    // 2026-09-23 — CHIUSO il primo buco dell'audit di v0.8.0.
     //
-    // Diceva "questo NON passa da accepting_enqueue" e la riga sotto lo
-    // chiama. Peggio: accepting_enqueue e' !stopping_, non connected_, quindi
-    // a sessione caduta questa funzione NON rifiuta subito. Accoda, e chi
-    // prende un oggetto da una cassa resta appeso per tutto il suo timeout —
-    // esattamente il comportamento che il vecchio testo dichiarava evitato.
+    // Chi prende un oggetto da una cassa aspetta un verdetto, e senza una
+    // sessione il verdetto e' no, SUBITO. Qui si guardava soltanto
+    // accepting_enqueue, che e' !stopping_ e non connected_: a sessione caduta
+    // l'operazione veniva accodata come affidabile, l'attesa scadeva dopo
+    // 100 ms, il chiamante bloccava la mutazione in locale — e l'operazione
+    // restava in coda. reset_session_state tiene gli affidabili attraverso la
+    // caduta, quindi al rientro il server la applicava per una presa che il
+    // client aveva gia' rifiutato: un TAKE faceva sparire l'oggetto dalla
+    // cassa senza che entrasse in nessun inventario, un PUT lo DUPLICAVA.
+    // E' la classe di difetto che B1 esiste per chiudere, riaperta dalla v26
+    // quando la coda ha smesso di rifiutare a sessione caduta.
     //
-    // Lasciato com'e' di proposito, e dichiarato aperto nel changelog di
-    // v0.8.0 insieme agli altri due buchi della riconnessione: sono tre
-    // percorsi di rete che vanno provati dal vivo, non corretti al buio a
-    // ridosso di un commit. Si chiude con le fasi 3 e 4.
-    if (!accepting_enqueue()) {
+    // Due difese, perche' una sola lascia una finestra: questo rifiuto per
+    // l'operazione tentata da scollegati, e il ritiro dalla coda allo scadere
+    // dell'attesa (sotto) per quella accodata un attimo prima della caduta.
+    if (!accepting_enqueue() || !connected_.load()) {
         FW_DBG("net: container op refused — no session right now");
         return std::nullopt;
     }
@@ -1133,11 +1169,18 @@ std::optional<ContainerOpAckPayload> Client::submit_container_op_blocking(
         queue_.push_back(std::move(q));
     }
 
-    // Wait for ACK or timeout.
-    std::unique_lock lk(pending->mtx);
-    const bool ok = pending->cv.wait_for(
-        lk, std::chrono::milliseconds(timeout_ms),
-        [&]{ return pending->ready; });
+    // Wait for ACK or timeout. The ACK is copied while its lock is still held,
+    // and every lock is released before the queue is touched below: the ACK
+    // handler never holds pending_ops_mutex_ and pending->mtx together, and
+    // nothing here should start nesting them either.
+    std::optional<ContainerOpAckPayload> result;
+    {
+        std::unique_lock lk(pending->mtx);
+        if (pending->cv.wait_for(lk, std::chrono::milliseconds(timeout_ms),
+                                 [&]{ return pending->ready; })) {
+            result = pending->ack;
+        }
+    }
 
     // Always unmap: a late ACK after timeout has nothing to wake.
     {
@@ -1145,14 +1188,41 @@ std::optional<ContainerOpAckPayload> Client::submit_container_op_blocking(
         pending_ops_.erase(id);
     }
 
-    if (!ok) {
+    if (!result) {
+        // The caller is about to refuse the mutation locally. If the op has
+        // not left the send queue yet, it must not leave at all: otherwise a
+        // session that drops and comes back delivers it, and the server
+        // applies a take the player never made (see the top of this function).
+        const bool withdrawn = withdraw_queued_container_op(id);
         FW_WRN("net: submit_container_op_blocking timeout op_id=%u "
-               "kind=%u base=0x%X cell=0x%X item=0x%X count=%d",
+               "kind=%u base=0x%X cell=0x%X item=0x%X count=%d — %s",
                id, op.kind, op.container_base_id, op.container_cell_id,
-               op.item_base_id, op.count);
+               op.item_base_id, op.count,
+               withdrawn
+                   ? "withdrawn from the send queue, the server never saw it"
+                   : "already on the wire: the server may still apply it "
+                     "(the 100 ms race, older than v26 and still open)");
         return std::nullopt;
     }
-    return pending->ack;
+    return result;
+}
+
+bool Client::withdraw_queued_container_op(std::uint32_t op_id) {
+    // The id sits inside a packed payload; offsetof keeps this honest if the
+    // layout ever moves, instead of a byte offset written by hand.
+    constexpr std::size_t kIdOff = offsetof(ContainerOpPayload, client_op_id);
+    std::lock_guard lk(queue_mutex_);
+    for (auto it = queue_.begin(); it != queue_.end(); ++it) {
+        if (it->msg_type != MessageType::CONTAINER_OP) continue;
+        if (it->payload_bytes.size() < kIdOff + sizeof(std::uint32_t)) continue;
+        std::uint32_t qid = 0;
+        std::memcpy(&qid, it->payload_bytes.data() + kIdOff, sizeof(qid));
+        if (qid == op_id) {
+            queue_.erase(it);
+            return true;
+        }
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------- main loop
@@ -1229,6 +1299,15 @@ Client::HandshakeOutcome Client::do_handshake(bool use_resume) {
            static_cast<unsigned long long>(h.steam_id),
            authed ? "yes" : "no",
            authed ? ha.auth.display_name : "");
+    // Phase 4 — our own lines come back from the server with our id; they
+    // must show the name the others see, which is the one sent here and
+    // nothing else (an unauthenticated HELLO carries no name at all).
+    fw::net::peer_names::set_self(
+        cfg_.client_id,
+        authed ? std::string(ha.auth.display_name,
+                             ::strnlen(ha.auth.display_name,
+                                       MAX_PLAYER_NAME_LEN))
+               : std::string());
 
     auto frame = channel_.send_reliable(
         MessageType::HELLO, &ha, send_len);
@@ -1300,6 +1379,12 @@ Client::HandshakeOutcome Client::await_welcome(bool was_resume) {
             // Fase 2 — siamo tornati: i ghost nascosti si rivedono, e il
             // bootstrap della presenza li rimette dove sono davvero.
             fw::native::ghost_lifecycle::on_local_session_restored();
+            // Fase 3 — il server ha appena dimenticato il nostro vestito
+            // memorizzato (e' della sessione precedente, e un rilancio
+            // carica il save, che puo' vestirci diversamente). Lo
+            // ricostruiamo noi: il tick legge cio' che indossiamo davvero e
+            // lo annuncia appena la scena e' assestata.
+            fw::hooks::equip_announce_on_session_start();
             // Build 65 — once the server has accepted us, hand our
             // canonical peer_id to the ownership manager so PHASE_2
             // payloads can be compared byte-for-byte against the
@@ -3328,12 +3413,13 @@ void Client::dispatch(const Delivered& d) {
     // capo gia' indosso quando il salvataggio e' stato caricato non ha
     // prodotto nessun evento, quindi non c'e'. Quella e' la Fase 3.
     //
-    // Ancora aperto qui: il compenso lato client. La ri-trasmissione del
-    // nostro equipaggiamento a ogni ingresso altrui era stata risolta una
-    // volta — la chiamata qui sotto — e poi SPENTA dopo il crash del ponte;
-    // il suo sostituto, hooks/equip_announce.h, e' ancora marcato NON
-    // TESTATO. Oggi quel lavoro lo fa il server, che e' il posto giusto,
-    // perche' il suo annuncio porta anche la lista OMOD di ogni pezzo.
+    // Chiuso dalla Fase 3 (2026-09-23). Il vestito memorizzato non dipende
+    // piu' dagli eventi di equip che il server ha visto passare: a ogni
+    // inizio di sessione il client legge dall'inventario cio' che indossa
+    // davvero, con gli OMOD, e lo annuncia (hooks/equip_announce). Il server
+    // dimentica il vestito della sessione precedente a ogni (ri)ingresso,
+    // e ha smesso di rigiocare il vestito di chi entra a chi c'era gia':
+    // ci pensa l'annuncio, che dice il vero invece di ricordare.
     case static_cast<std::uint16_t>(MessageType::PEER_JOIN): {
         // Fase 2 — l'evento decide COSA, il tick decide QUANDO. Qui si
         // registra soltanto che a quel peer serve un corpo: il grafo di
@@ -3342,9 +3428,15 @@ void Client::dispatch(const Delivered& d) {
         if (d.payload.size() < sizeof(PeerJoinPayload)) break;
         PeerJoinPayload p{};
         std::memcpy(&p, d.payload.data(), sizeof(p));
-        FW_LOG("net: peer joined: %s (sid=%u) — re-arming equip cycle to "
-               "re-broadcast our current equipment state to the new peer",
-               p.peer_id.get().c_str(), p.session_id);
+        // Fino al 2026-09-23 questa riga diceva "re-arming equip cycle to
+        // re-broadcast our current equipment state": falso dal 2026-05-08,
+        // quando quel riarmo e' stato spento (vedi sotto). Il nome, invece,
+        // e' vero da v26 e da oggi qualcuno lo legge: chat e nametag.
+        const std::string name(p.display_name,
+                               ::strnlen(p.display_name, MAX_PLAYER_NAME_LEN));
+        FW_LOG("net: peer joined: %s (sid=%u) name='%s'",
+               p.peer_id.get().c_str(), p.session_id, name.c_str());
+        fw::net::peer_names::on_join(p.peer_id.get(), name);
         fw::native::ghost_lifecycle::on_peer_join(p.peer_id.get().c_str());
 
         // M9 v0.3.x — boot-timing race fix.
@@ -3368,9 +3460,11 @@ void Client::dispatch(const Delivered& d) {
         //
         // B8 force-equip-cycle re-arm DISABLED 2026-05-08 — see
         // `hooks/main_menu_hook.cpp` and the CHANGELOG entry for the
-        // bridge-crash post-mortem. Future replacement for the
-        // initial-apparel-broadcast role: `hooks/equip_announce.h`
-        // (NON TESTATO scaffold).
+        // bridge-crash post-mortem. Nothing needs re-arming on a peer join
+        // any more: the server shows a joiner what the others wear from
+        // their stored outfits, and every stored outfit is built from the
+        // announce each client makes at its own session start
+        // (`hooks/equip_announce`, phase 3).
         // fw::hooks::arm_equip_cycle_for_peer_join(1500);
         break;
     }
@@ -3410,6 +3504,9 @@ void Client::dispatch(const Delivered& d) {
         // piedi per sempre: il tick sul thread principale lo smonta
         // nell'ordine che la legge sopra detach_debug_cube impone.
         fw::native::ghost_lifecycle::on_peer_leave(p.peer_id.get().c_str());
+        // Le righe di chat gia' arrivate hanno il nome risolto dentro; una
+        // riga ancora in volo da chi e' uscito si mostra col suo id.
+        fw::net::peer_names::on_leave(p.peer_id.get());
         break;
     }
 
@@ -3436,9 +3533,24 @@ void Client::dispatch(const Delivered& d) {
         }
         break;
     }
-    case static_cast<std::uint16_t>(MessageType::CHAT):
-        // not meaningful in B0.5; future blocks handle these
+    case static_cast<std::uint16_t>(MessageType::CHAT): {
+        // Fase 4 — una riga della chat globale. Qui fino al 2026-09-23 c'era
+        // "not meaningful in B0.5; future blocks handle these": il server la
+        // inoltrava dalla prima versione del protocollo, e il client la
+        // buttava. Il mittente e' il peer_id timbrato dal server, mai quello
+        // che il client aveva scritto (vedi _handle_chat).
+        constexpr std::size_t kHead = MAX_CLIENT_ID_LEN + 1 + 2;
+        if (d.payload.size() < kHead) break;
+        FixedClientId sender{};
+        std::memcpy(&sender, d.payload.data(), sizeof(sender));
+        std::uint16_t len = 0;
+        std::memcpy(&len, d.payload.data() + sizeof(sender), sizeof(len));
+        if (d.payload.size() < kHead + len) break;
+        const std::string text(
+            reinterpret_cast<const char*>(d.payload.data() + kHead), len);
+        fw::render::chat::on_line(sender.get(), text);
         break;
+    }
 
     default:
         FW_DBG("net: unhandled msg_type 0x%04X", d.header.msg_type);
