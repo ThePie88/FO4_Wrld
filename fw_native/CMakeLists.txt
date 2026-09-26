@@ -50,6 +50,7 @@ add_library(fw_native SHARED
     src/hooks/kill_hook.cpp
     src/hooks/container_hook.cpp
     src/hooks/put_hook.cpp
+    src/hooks/container_menu_hook.cpp   # loot rework L3.1: rebuild the open ContainerMenu after our changes
     src/hooks/pickup_hook.cpp
     src/hooks/player_pos_hook.cpp
     src/hooks/main_menu_hook.cpp

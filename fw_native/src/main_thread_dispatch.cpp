@@ -13,6 +13,7 @@
 
 #include "engine/engine_calls.h"
 #include "hooks/container_hook.h"   // ApplyingRemoteGuard + tls_applying_remote
+#include "hooks/container_menu_hook.h" // loot rework L3.1: rebuild the open ContainerMenu
 #include "hooks/ownership_manager.h" // Build 65.c.10 — owner-driven apply gate
 #include "hooks/npc_ai_suppress.h"  // Build 65.c.47 WEDGE3 — mark_dying (corpse guard)
 #include "hooks/npc_hp_probe.h"     // HP bar — apply_pool_health_to_actor (vita-dal-pool)
@@ -20,6 +21,7 @@
 #include "log.h"
 #include "native/scene_inject.h"    // M9 wedge 2: ghost armor attach/detach
 #include "offsets.h"                // Build 53: POS_OFF for ghost.+0xD0 read
+#include "net/client.h"             // loot rework L3: reconverge_container
 #include "net/protocol.h"           // Build 55a: NPC_FIRE_TARGET_LOCAL / _GHOST
 
 namespace fw::dispatch {
@@ -1176,10 +1178,10 @@ void drain_equip_apply_queue() {
     //      false if it isn't WEAP either, or if the path doesn't match
     //      the "Weapons\\" heuristic.
     //
-    // The dual-attempt avoids needing to RE the FormType byte for ARMO vs
-    // WEAP on this build (FO4 1.11.191 next-gen has a remapped formType
-    // table — see door_hook for similar reasoning). The per-form struct
-    // walks act as their own type-detection.
+    // The dual attempt predates the formType values (ARMO 0x1D, WEAP 0x2B,
+    // confirmed live 2026-09-24). Since that date both resolvers refuse a
+    // form of the wrong type before reading its layout, so the wrong pass
+    // is a cheap early exit; the dispatch stays form-agnostic.
     //
     // Boot race note: if ghost isn't spawned yet, BOTH ghost_attach_armor
     // and ghost_attach_weapon will queue (one in armor's pending queue,
@@ -1461,6 +1463,11 @@ void drain_npc_death_apply_queue() {
         g_killed_fids.insert(fid);   // latch even on a failed call — a retry
                                      // would hit the same engine state; idempotent.
         if (ok) ++killed; else ++skipped;
+        // Loot rework L4.1 (2026-09-25): the corpse record of this actor is
+        // dropped by the net thread when the death message arrives (unless
+        // it is a replay of a known death); nothing to align here. A corpse
+        // a peer seeds after this death reaches the mirror later and is
+        // aligned at the activation or the next sweep, once dead here.
         FW_LOG("dispatch: NPC death APPLIED fid=0x%X killer=0x%X pos=(%.1f,%.1f,%.1f) ok=%d",
                fid, op.killer_form_id, op.pos_x, op.pos_y, op.pos_z, ok ? 1 : 0);
     }
@@ -2537,19 +2544,38 @@ void drain_container_apply_queue() {
     // AddItem/RemoveItem internals does NOT re-emit to the network.
     fw::hooks::ApplyingRemoteGuard guard;
 
-    std::size_t applied_ok = 0, failed = 0;
+    std::size_t applied_ok = 0, failed = 0, undone = 0, aligned = 0;
     for (const auto& op : local) {
-        const bool ok = fw::engine::apply_container_op_to_engine(
-            op.kind,
-            op.container_form_id,
-            op.container_base_id,
-            op.container_cell_id,
-            op.item_base_id,
-            op.count);
-        if (ok) ++applied_ok; else ++failed;
+        bool ok = false;
+        if (op.reconverge) {
+            fw::net::client().reconverge_container(op.container_form_id);
+            ++aligned;
+            continue;
+        }
+        if (op.rollback) {
+            ok = fw::engine::rollback_container_op_to_engine(
+                op.kind, op.container_form_id, op.container_base_id,
+                op.container_cell_id, op.item_base_id, op.count,
+                op.insufficient != 0, op.server_count);
+            if (ok) ++undone;
+        } else {
+            ok = fw::engine::apply_container_op_to_engine(
+                op.kind, op.container_form_id, op.container_base_id,
+                op.container_cell_id, op.item_base_id, op.count);
+            if (ok) ++applied_ok;
+        }
+        if (!ok) { ++failed; continue; }
+        // Loot rework L3.1: the menu's own event sink misses the removals
+        // made this way (see container_menu_hook.h), so the lists of the
+        // container on screen are rebuilt. A rollback also moved items of
+        // the player's own column.
+        fw::hooks::refresh_container_menu(
+            fw::engine::lookup_by_form_id(op.container_form_id),
+            /*container_side=*/true, /*player_side=*/op.rollback != 0);
     }
-    FW_LOG("dispatch: drained %zu container ops (applied=%zu failed=%zu)",
-           local.size(), applied_ok, failed);
+    FW_LOG("dispatch: drained %zu container ops (applied=%zu undone=%zu "
+           "aligned=%zu failed=%zu)",
+           local.size(), applied_ok, undone, aligned, failed);
 }
 
 void set_target_hwnd(HWND hwnd) {

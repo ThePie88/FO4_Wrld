@@ -89,6 +89,7 @@
 #include "kill_hook.h"
 #include "container_hook.h"
 #include "put_hook.h"
+#include "container_menu_hook.h"  // loot rework L3.1: the open ContainerMenu, rebuilt after our changes
 #include "workbench_hook.h"   // v26: PA station edits are state too
 #include "pickup_hook.h"
 #include "player_pos_hook.h"
@@ -165,6 +166,10 @@ InstallSummary install_all(std::uintptr_t module_base,
     // B1.k: must run after install_container_hook (shares MinHook manager);
     // captures PUT which vt[0x7A] doesn't see (live test 2026-04-21).
     s.put_ok         = install_put_hook(module_base);
+    // Loot rework L3.1: remembers the ContainerMenu the UI builds, so the
+    // lists of an open container can be rebuilt after a change of ours. Not
+    // counted in the summary: without it the rows go stale, nothing breaks.
+    (void)install_container_menu_hook(module_base);
     // v26: a paint job, lining or repair done at the PA station changes the
     // frame's pieces in place (no transfer, so no container hook); these
     // two ExamineMenu workers queue the same deferred pieces report.

@@ -13,6 +13,7 @@
 #include "../engine/engine_calls.h"
 #include "../ghost/actor_hijack.h"
 #include "equip_hook.h"  // M9 w4 v9: FW_MSG_DEFERRED_MESH_TX
+#include "container_hook.h"  // loot rework L3.4: container_activation_tick
 #include "../native/weapon_capture.h"  // M9.w4 PROPER (v0.4.2+): FW_MSG_WEAPON_CAPTURE_FINALIZE
 #include "../native/spai_prewarm.h"    // SPAI Tier 1: FW_MSG_SPAI_PREWARM
 // (synthetic_refr's earlier WM_APP message has been removed; the API is sync)
@@ -364,6 +365,13 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // Phase 3: the worn outfit, announced at every session start as soon
         // as the scene has settled. See equip_announce.h.
         fw::hooks::equip_announce_tick();
+        // Loot rework L3.3: the containers the server knows are aligned when
+        // the scene settles and at every change of cell, before the player
+        // looks at them. See Client::container_sweep_tick.
+        fw::net::client().container_sweep_tick();
+        // Loot rework L3.4: a container activated before the engine built
+        // its runtime list is aligned again as soon as the list exists.
+        fw::hooks::container_activation_tick();
     }
     // The heartbeat stops here: the tick block above has already consumed
     // it, and the game knows nothing about this timer.

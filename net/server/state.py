@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import itertools
 import secrets
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, Optional
+from typing import Any, ClassVar, Optional
 
 import sys
 from pathlib import Path
@@ -20,7 +21,9 @@ from protocol import (  # noqa: E402
     MessageType, MAX_CLIENT_ID_LEN,
     WelcomePayload, PeerJoinPayload, PeerLeavePayload,
     PosStatePayload, ActorEventPayload,
-    ContainerOpPayload, ContainerOpKind,
+    ContainerOpPayload, ContainerOpKind, ContainerOpAckPayload,
+    is_runtime_form_id,
+    identities_conflict,
     RejectCode, RESUME_TOKEN_LEN, RESUME_TOKEN_TTL_S,
 )
 
@@ -148,19 +151,34 @@ class PeerSession:
 class ContainerWorldState:
     """Authoritative inventory state for one container REFR.
 
-    Identity key is (base_id, cell_id) — same stability rationale as
-    ActorWorldState. The `items` dict maps item TESForm.formID -> count.
-    Entries with count == 0 are eagerly removed (no stale zero keys).
+    Loot rework L1 (2026-09-23): the key is `form_id`, the placed REFR's
+    own id, stable across processes with the same load order. Until then
+    the key was (base_id, cell_id), which merged every ref of one base in
+    one cell (two identical toolboxes, two corpses of one NPC base) into a
+    single record: emptying the first made the server refuse the second,
+    and the B1 half-transaction block turned that refusal into a destroyed
+    item. `base_id` and `cell_id` stay as the check an op must match and
+    as the check the receiver runs on its own REFR. Runtime refs (0xFF
+    prefix) are never stored: their ids alias across processes.
 
-    `last_known_form_id` is the latest observed REFR formid of the
-    container; useful hint for client-side lookup but not an identity.
+    `items` maps item TESForm.formID -> count. Entries with count == 0 are
+    eagerly removed (no stale zero keys).
+
+    Loot rework L3 (2026-09-23): `seeded` tells a record the server KNOWS
+    (built from a client's full scan) from one it only INFERRED from the
+    first op on a container nobody had scanned (the trust-the-client
+    fallback). A partial record is never pushed to clients nor put in the
+    bootstrap, because aligning an engine to it would destroy every item
+    the server never heard of; the validator trusts the client on items a
+    partial record has not seen; and the next seed replaces it whole.
     """
+    form_id: int
     base_id: int
     cell_id: int
     items: dict[int, int] = field(default_factory=dict)   # item_base_id -> count
-    last_known_form_id: int = 0
     last_owner_peer_id: Optional[str] = None
     last_update_ms: float = 0.0
+    seeded: bool = False
 
 
 @dataclass(slots=True)
@@ -398,8 +416,18 @@ class ServerState:
     # Never index by form_id directly — ref IDs alias across processes for
     # runtime (0xFF______) refs. See step 1 of Option B for rationale.
     _world_actors: dict[tuple[int, int], ActorWorldState] = field(default_factory=dict)
-    # Parallel index for container inventories, same keying scheme.
-    _containers: dict[tuple[int, int], ContainerWorldState] = field(default_factory=dict)
+    # Container inventories, keyed by the placed REFR's form_id (loot rework
+    # L1, see ContainerWorldState), NOT by the (base, cell) scheme above.
+    _containers: dict[int, ContainerWorldState] = field(default_factory=dict)
+    # Loot rework L2: the verdicts of the last CONTAINER_OPs of every peer,
+    # keyed by peer id because a rejoin is a new session. The client applies
+    # its take at once and sends the op afterwards, so an op whose ACK died
+    # with the session is sent again on the rejoin: it must get the same
+    # verdict and be applied once. Not persisted: a server restart inside
+    # that window is a known residue.
+    CONTAINER_VERDICTS_KEPT: ClassVar[int] = 256
+    _container_verdicts: dict[str, "OrderedDict[int, ContainerOpAckPayload]"] = field(
+        default_factory=dict)
     # B4: quest stages, keyed by quest_form_id.
     _quests: dict[int, QuestStageState] = field(default_factory=dict)
     # B4: global variables, keyed by global_form_id.
@@ -624,7 +652,10 @@ class ServerState:
         """Apply a TAKE/PUT op to authoritative container state.
 
         Returns the updated ContainerWorldState, or None if:
-        - op lacks stable identity (base=0 or cell=0)
+        - op lacks a usable identity (form_id 0 or a runtime ref, base=0
+          or cell=0)
+        - the REFR is known with another (base, cell): load-order drift,
+          the record is left alone
         - op.count <= 0 (invalid — must be positive even for TAKE)
         - kind unknown
 
@@ -636,21 +667,27 @@ class ServerState:
                 validator upstream should have rejected truly invalid ones.
           PUT:  increment items[item_base_id] by count.
         """
-        if op.container_base_id == 0 or op.container_cell_id == 0:
+        if (op.container_form_id == 0 or is_runtime_form_id(op.container_form_id)
+                or op.container_base_id == 0 or op.container_cell_id == 0):
             return None
         if op.count <= 0:
             return None
         if op.kind not in (int(ContainerOpKind.TAKE), int(ContainerOpKind.PUT)):
             return None
 
-        key = (op.container_base_id, op.container_cell_id)
-        container = self._containers.get(key)
+        container = self._containers.get(op.container_form_id)
         if container is None:
+            # Inferred from one op, not scanned: partial (see `seeded`).
             container = ContainerWorldState(
+                form_id=op.container_form_id,
                 base_id=op.container_base_id,
                 cell_id=op.container_cell_id,
+                seeded=False,
             )
-            self._containers[key] = container
+            self._containers[op.container_form_id] = container
+        elif identities_conflict(container.base_id, container.cell_id,
+                                 op.container_base_id, op.container_cell_id):
+            return None
 
         # Trust-the-client policy for MVP: the server has no way to seed
         # container contents from the save file, so a TAKE against an
@@ -678,21 +715,76 @@ class ServerState:
         container.last_update_ms = now_ms
         return container
 
-    def container_state(
-        self, base_id: int, cell_id: int
-    ) -> Optional[ContainerWorldState]:
-        """Identity-keyed container lookup."""
-        if base_id == 0 or cell_id == 0:
+    def container_state(self, form_id: int) -> Optional[ContainerWorldState]:
+        """Lookup by the placed REFR's form_id."""
+        if form_id == 0:
             return None
-        return self._containers.get((base_id, cell_id))
+        return self._containers.get(form_id)
 
     def container_state_for_op(
         self, op: ContainerOpPayload
     ) -> Optional[ContainerWorldState]:
-        return self.container_state(op.container_base_id, op.container_cell_id)
+        return self.container_state(op.container_form_id)
+
+    def create_container(
+        self, form_id: int, base_id: int, cell_id: int, items: dict[int, int],
+        by_peer_id: str, now_ms: float,
+    ) -> Optional[ContainerWorldState]:
+        """Create the record for a REFR the server has never seen, from a
+        client's SEED scan: a seeded record. None (and nothing stored) for
+        an unusable identity or a REFR that already has a record: the seed
+        policy (first-seed-wins, refill of an emptied record, replacement
+        of a partial one) is the caller's."""
+        if (form_id == 0 or is_runtime_form_id(form_id)
+                or base_id == 0 or cell_id == 0):
+            return None
+        if form_id in self._containers:
+            return None
+        container = ContainerWorldState(
+            form_id=form_id, base_id=base_id, cell_id=cell_id,
+            items={iid: cnt for iid, cnt in items.items() if cnt > 0},
+            last_owner_peer_id=by_peer_id, last_update_ms=now_ms,
+            seeded=True,
+        )
+        self._containers[form_id] = container
+        return container
+
+    def forget_container(self, form_id: int) -> bool:
+        """Drop the record of a REFR. Loot rework L4.1 (2026-09-25): a death
+        makes a NEW corpse with a new roll, so the record of an actor's
+        previous corpse is dropped when the server kills it again or an
+        owner reports its death; the first scan of the new corpse seeds it.
+        Measured before this: four raiders killed again in a new session
+        were aligned to the previous session's looted-out records and their
+        fresh loot vanished at the activation. True when a record existed."""
+        return self._containers.pop(form_id, None) is not None
+
+    def seeded_containers(self) -> list[ContainerWorldState]:
+        """The records a client may be aligned to: the scanned ones."""
+        return [c for c in self._containers.values() if c.seeded]
 
     def all_containers(self) -> list[ContainerWorldState]:
         return list(self._containers.values())
+
+    def remember_container_verdict(
+        self, peer_id: str, client_op_id: int, ack: ContainerOpAckPayload
+    ) -> None:
+        """Keep the verdict of one op so a repeat of it (an ACK lost in a
+        session drop, the op sent again after the rejoin) gets the same
+        answer without being applied twice. Bounded per peer, oldest out."""
+        verdicts = self._container_verdicts.setdefault(peer_id, OrderedDict())
+        verdicts[client_op_id] = ack
+        verdicts.move_to_end(client_op_id)
+        while len(verdicts) > self.CONTAINER_VERDICTS_KEPT:
+            verdicts.popitem(last=False)
+
+    def recall_container_verdict(
+        self, peer_id: str, client_op_id: int
+    ) -> Optional[ContainerOpAckPayload]:
+        verdicts = self._container_verdicts.get(peer_id)
+        if not verdicts:
+            return None
+        return verdicts.get(client_op_id)
 
     # ---------------------------------------------------------- quests (B4)
 

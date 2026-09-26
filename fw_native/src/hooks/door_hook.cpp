@@ -7,6 +7,7 @@
 
 #include "container_hook.h"      // tls_applying_remote (feedback-loop guard)
 #include "npc_ai_suppress.h"     // B6.6w0 puppet — should_freeze_actor
+#include "../engine/engine_calls.h"  // loot rework L4: actor_is_dead
 #include "../hook_manager.h"
 #include "../log.h"
 #include "../offsets.h"
@@ -35,19 +36,23 @@ ActivateWorkerFn g_orig_activate = nullptr;
 
 // Form-type filter: Activate worker fires for ALL Activate dispatches
 // (terminals, NPCs, switches, levers, weapons-on-ground, etc). For door
-// sync we only want the door-like form types observed during phase 1.b
-// + Agent A's enumeration:
-//   0x1F = TESObjectDOOR (cell-transition doors)
-//   0x20 = TESObjectACTI activator-style door (most house doors in
-//          Sanctuary — confirmed empirically)
-//   0x24 = TESObjectACTI explicit
-//   0x29 = TESObjectDOOR alt
-// Other form types are dropped silently (no broadcast).
+// sync we only want door-like form types.
 //
-// We keep this LIBERAL during phase 2 testing — if non-door fires leak
-// through, we'll see them in the log and tighten the filter post-hoc.
+// Verified in the decompilation on 2026-09-24 (the ConcreteFormFactory
+// template arguments, D:\falloutworld_decomp\out\09_disasm\text_0046.asm):
+//   0x1B = TESObjectACTI (27)
+//   0x1F = TESObjectCONT (31)  -- NOT a door. It sat in this set from phase
+//          2 to 2026-09-24 labelled "cell-transition door", so every
+//          container opening went out as a DOOR_OP and the other client
+//          activated the container with no activator. Removed.
+//   0x20 = TESObjectDOOR (32)  -- the house doors of Sanctuary (the phase 2
+//          comment called them ACTI; the number was right, the label not)
+//   0x24, 0x29 = phase 2 guesses never matched to a form type; kept as they
+//          were, they have not been seen to fire.
+// Other form types are dropped silently (no broadcast).
+constexpr std::uint8_t kFormTypeCONT = 0x1F;
 constexpr bool is_door_like_formtype(std::uint8_t ftype) {
-    return ftype == 0x1F || ftype == 0x20 || ftype == 0x24 || ftype == 0x29;
+    return ftype == 0x20 || ftype == 0x24 || ftype == 0x29;
 }
 
 // Monotonic fire counter for diagnostics + matching tx ↔ rx in the log.
@@ -135,12 +140,25 @@ char __fastcall detour_activate_worker(void* refr,
     }
 
     if (!r.identity_ok || !r.door_like) {
-        // Activate fired for a non-door (terminal, NPC, switch, etc).
-        // Drop silently — but log at DEBUG so we can see what fires
-        // unexpectedly. Pass-through to engine unchanged.
-        FW_DBG("[door-act] FIRE #%llu skip (id_ok=%d door_like=%d ftype=0x%X)",
-               static_cast<unsigned long long>(fire),
-               int(r.identity_ok), int(r.door_like), r.form_type);
+        // Loot rework L3 (2026-09-24): a container about to open. Its local
+        // inventory is aligned to the server's view BEFORE the engine builds
+        // the ContainerMenu list, so the menu shows what the server has.
+        // Loot rework L4 (2026-09-25): a dead actor is a container too. A
+        // live one is not: its inventory is not loot, and the save predates
+        // the kills, so a corpse the server knows can still be alive here.
+        if (r.identity_ok && (r.form_type == kFormTypeCONT ||
+                              (r.form_type == offsets::FORMTYPE_NPC &&
+                               fw::engine::actor_is_dead(refr)))) {
+            fw::hooks::on_container_activation(refr, r.form_id, r.base_id,
+                                               r.cell_id);
+        } else {
+            // Activate fired for a non-door (terminal, NPC, switch, etc).
+            // Drop silently — but log at DEBUG so we can see what fires
+            // unexpectedly. Pass-through to engine unchanged.
+            FW_DBG("[door-act] FIRE #%llu skip (id_ok=%d door_like=%d ftype=0x%X)",
+                   static_cast<unsigned long long>(fire),
+                   int(r.identity_ok), int(r.door_like), r.form_type);
+        }
         if (g_orig_activate) {
             return g_orig_activate(refr, activator, a3, a4, a5, a6, a7);
         }

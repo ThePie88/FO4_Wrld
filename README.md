@@ -36,10 +36,10 @@ ghost.
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │                     Python Server (asyncio UDP)                        │
-│  authoritative state · identity-keyed (base, cell) · validator         │
+│  authoritative state · keyed by placed form_id · validator             │
 │  reliable channel (SACK + retransmit) · JSON snapshot persistence      │
 └─────────────────────────┬──────────────────────────────────────────────┘
-                          │ binary protocol v26 (44B POS_BCAST · reliable channel · appearance recipes · world objects · session lifecycle)
+                          │ binary protocol v27 (44B POS_BCAST · reliable channel · appearance recipes · world objects · session lifecycle · container reconvergence)
             ┌─────────────┼─────────────┐
             │             │             │
        ┌────▼─────┐  ┌────▼─────┐  ┌────▼─────┐
@@ -61,14 +61,14 @@ ghost.
 |------|---------|
 | `fw_native/` | C++ native client (dxgi.dll proxy + MinHook + scene graph injection) |
 | `fw_native/src/native/` | Strada B native injection (NIF loader, scene graph, ghost body) |
-| `fw_native/src/hooks/` | MinHook detours (kill, container, pos poll, main_menu, worldstate) |
+| `fw_native/src/hooks/` | MinHook detours (kill, container, container menu, pos poll, main_menu, worldstate) |
 | `fw_native/src/net/` | C++ port of Python protocol (byte-identical via static_assert) |
 | `fw_native/src/render/` | Present hook on the game's own swapchain + ImGui overlay (character creation, chat, nametags) |
 | `fw_native/deps/` | Vendored third-party deps (MinHook, Dear ImGui). Fetched locally, never committed |
 | `fw_native/docs/` | Internal docs + tools list |
 | `launcher/` | Python orchestrator (FO4 INI mgmt, side A/B startup, fw_config.ini) |
 | `fw_launcher/` | C++ launcher wrapper (`FoM.exe`) |
-| `net/` | Python server (asyncio UDP, validator, persistence, snapshot v3) |
+| `net/` | Python server (asyncio UDP, validator, persistence, snapshot v6) |
 | `frida/` | Frida JS scripts + Python attach helpers (RE / live tracing) |
 | `re/` | Reverse-engineering dossiers + IDA Python scripts |
 | `tools/` | Maintenance scripts: Frida traces, decode helpers |
@@ -78,7 +78,7 @@ ghost.
 | Milestone | Status |
 |-----------|--------|
 | **B0** Networking + native client port | ✅ done — 196+ pytest, byte-identical protocol |
-| **B1** Container pre-mutation block | ✅ done — concurrent TAKE dup race closed |
+| **B1** Container pre-mutation block | ✅ done — concurrent TAKE dup race closed; the blocking wait was replaced in v0.9.0 by optimistic ops with rollback |
 | **B2** Launcher (`FoM.exe`) | ✅ done — drop-in for `start_A.bat`/`start_B.bat`. v0.6.4 adds `--connect`: pure JSON on stdout, banners on stderr, pass-through of `--auth`/`--name`/`--client-id`, the machine interface for the external server-browser launcher |
 | **P0** PIENUVO identity + auth (Ed25519 challenge-response, launcher vault, master server) | ✅ done (v0.6.4, 2026-08-04) — client id = `fw` + 13 hex of the pubkey hash, works on Steam and every non-Steam platform; signature binds the server address so a blob replays nowhere else; HELLO auth tail (wire v19), per-source challenge registry, vendored pure-Python ed25519, `net/master/` discovery server. 405 pytest |
 | **B3** Auto-load save (delayed LoadGame via WndProc subclass) | ✅ done |
@@ -117,6 +117,7 @@ ghost.
 | ↳ **N4** Player death + respawn sync | ✅ done (v0.6.2, 2026-06-06) — a client's death is vanilla: it ragdolls + respawns at Sanctuary, and the raiders re-aggro the surviving client (the threat table re-elects on the death). **v0.6.4 closed the death transition properly**: the respawn-load crash is fixed (see N row), and the aggro flip is now a message, not a timeout: one reliable NPC_UNLOAD per owned NPC at death, so the raiders turn on the survivor within a frame instead of after 8 s. |
 | **CG1** Character creation + appearance identity *(new epic, my first custom in-game UI)* | 🟡 v1 shipped (v0.7.0, 2026-08-12), deliberately unfinished. Forced first-entry ritual (server flag), sky staging + pinned auto-vanity camera, runtime catalogs (filtered head parts, 32 hair colours, 9 tint groups from race CharGenData), live editing of hair / eyes / beard / teeth / brows / skin tone / marks through the engine's own apply calls, recipe v2 (parts + tints, wire v21) stored per identity on the server, adopted at join and replicated onto the ghost with private composite textures and engine-computed body skin. Open: morph sculpting, body build, sex switch, Markings tab placement, per-peer ghost cache; the ImGui panel is a placeholder for the final UI |
 | **S1** Session lifecycle *(join / leave / disconnect / rejoin / late join)* | ✅ closed (v0.8.1, 2026-09-23) — phases 0-2 in v0.8.0: the ghost is born from PEER_JOIN and torn down on PEER_LEAVE instead of from a 30 s timer that never re-armed, a registry keyed by peer id replaces the single body pointer and the census of single-peer globals in the ghost path is empty; presence that outlives the session, resume tokens for a rejoin without the launcher, reject reasons on the wire, eviction with notice, a queued join bootstrap, a reconnection loop with backoff, a goodbye on ALT+F4. Phases 3-4 in v0.8.1: the worn outfit is read from the inventory and announced at every session start, global chat, nametags above the ghosts, the three reconnection holes closed with tests. Residue: matrix tests T4/T6/T7/T8 not run, a second remote ghost refused until a third client exists, a 100 ms race on a live container op, weapons not announced at session start |
+| **L** Loot sync rework *(containers, corpses, player inventory, world items)* | 🟡 L1-L4 done (v0.9.0, 2026-09-26) — containers keyed by the placed reference, optimistic ops with rollback, the server view pushed and applied to every engine with a real-time menu redraw, corpses of placed NPCs. Open: L5, the player's own inventory (planned as a hybrid of server-commanded saves and a server ledger), and L6, world items |
 | **B7** Rust server port | ⏳ |
 
 ## Major RE achievements
@@ -157,6 +158,30 @@ ghost.
 
 Latest 3 patches summarized below. **Full version history in
 [CHANGELOG.md](CHANGELOG.md).**
+
+### v0.9.0 (2026-09-26) — loot rework, first half: containers and corpses
+
+Tag v0.9.0, wire proto v27, server snapshot v6.
+
+- **A container is its placed reference** — the server keys containers by
+  the placed reference's form_id instead of (base, cell), which merged twins.
+  Runtime references are refused; a placed actor, whose base the engine
+  generates per client, is identified by its form_id alone.
+- **Optimistic transactions with rollback** — the engine applies at once and
+  a refusal is undone on the main thread. No more 100 ms freeze per take; ops
+  made during a drop are sent again, and a repeat gets the stored verdict.
+- **Every client converges on the server's view** — pushed at the join and
+  whenever a record changes, applied with AddItem and RemoveItem at scene
+  settle, cell change, activation and after every op. The open container menu
+  redraws in real time. A constant wrong since April kept the mod from ever
+  building an untouched container's inventory list.
+- **Corpses** — a dead placed NPC is a container, a living one is never
+  aligned, and a new death makes a new corpse.
+- **Open** — the player's own inventory is not persisted yet, which is the
+  next step; randomness is per client; corpses of runtime-spawned NPCs stay
+  local.
+
+Full detail in [CHANGELOG.md](CHANGELOG.md).
 
 ### v0.8.1 (2026-09-23) — nametags and chat, minor fixes
 
@@ -221,38 +246,6 @@ display name in PEER_JOIN, new `HELLO_RESUME`).
 
 Full detail in [CHANGELOG.md](CHANGELOG.md).
 
-### v0.7.6 (2026-09-16) — power armor closed: paint, the station, two crashes and the skeleton loan
-
-Tag v0.7.6, wire proto v25 (no protocol change: a paint job is an OMOD,
-and pieces already carried their OMOD lists).
-
-- **Paint jobs and material mods on the ghost** — the material swap of
-  every mod on a piece is read from the OMOD's own property records and
-  bound to the piece meshes on the wearer's ghost; a station edit is on
-  the other client's ghost before the menu closes.
-- **The power armor station** — it is not the ExamineMenu: the station
-  runs its own `PowerArmorModMenu`, previews mods while you browse and
-  makes the inventory count read 2 through a working copy. Nearby frames
-  are polled while the menu lives, reported once their contents are
-  stable, and the frame re-seats itself afterwards through the owner-side
-  drift watch (despawn and rebirth, as for any move).
-- **Two crashes closed** — every headlamp mod NIF is a `BSValueNode`
-  add-on point with no geometry; the engine hangs a glow effect under it
-  with global bookkeeping that outlived the ghost's clone. Headlamps are
-  skipped on the ghost and add-on nodes are stripped from every clone.
-- **The skeleton loan** — the second player to enter a painted frame lost
-  the paint locally. Third time for the same class of bug: my load of the
-  PA skeleton created the model-DB entry the engine later cloned for the
-  player, with a bare root and without the engine's "materials applied"
-  latch, so `Load3D` re-applied the default materials two milliseconds
-  after the biped had painted them. The load now uses the engine's own
-  skeleton options.
-- **Not finished** — a client that quits while wearing power armor loses
-  the frame for everyone (session-lifecycle work); fingers do not
-  articulate.
-
-Full detail in [CHANGELOG.md](CHANGELOG.md).
-
 ## Why this exists
 
 I've been waiting ~10 years for someone to ship Fallout 4 multiplayer.
@@ -306,14 +299,11 @@ that should be most reusable for anyone else attempting the same thing.
 - **Network rate-limited to 20Hz** — works smoothly on LAN, untested
   over real-world internet routes; receiver-side interpolation between
   POSE_BROADCAST frames is open work.
-- **Container UI doesn't refresh on the observer when peers picklock
-  the same container** — engine quirk in the ContainerMenu redraw
-  path; closing and reopening the container forces the refresh.
-  Cosmetic, no state impact. Note: the antidupe layer is still
-  enforced server-side by the container ack chain (server-validated
-  count), so the observer can't actually take items that another peer
-  has already removed even if the menu's local view is stale —
-  attempts get rejected before they reach the inventory.
+- **The player's own inventory is not persisted** — containers and corpses
+  are server-authoritative since v0.9.0, and the open container menu follows
+  every peer's take and deposit in real time, but what a player carries
+  resets to the save at every launch. A take or a deposit therefore survives
+  only on the world's side. This is the next step of the loot epic.
 - **Peer ghosts spawn naked at startup until the peer actively equips
   something** — side effect of disabling B8 force-equip-cycle in
   v0.5.4 (bridge crash fix). Items already worn at save load don't
@@ -337,14 +327,16 @@ that should be most reusable for anyone else attempting the same thing.
   non-deterministic and rare. Aggro on noise / line of sight works as
   designed, but every so often one raider stays idle on the client that
   doesn't own it. Tolerated for now.
-- **Raider appearance and loot diverge per client** — the Concord raiders
-  are placed leveled refs, so the form_id matches across clients (pos /
-  aggro / death sync all work), but each client's engine rolls a different
-  NPC variant, outfit, weapon, and mods from the leveled lists with its
-  own RNG. The same raider therefore looks different and drops different
-  loot on each screen. Parked: a clean fix needs either an ESL of fixed
-  content or a seeded-RNG / capture-replicate hook, and I'm deliberately
-  staying engine-native (no ESL, no Creation Kit) for now.
+- **Raider appearance diverges per client, loot converges** — the Concord
+  raiders are placed leveled refs, so the form_id matches across clients
+  (pos / aggro / death sync all work), but each client's engine rolls a
+  different NPC variant, outfit, weapon and mods from the leveled lists with
+  its own RNG. Since v0.9.0 the loot converges: the first client to open a
+  corpse or a container decides its contents, and every other client is
+  aligned to it by base and count, so a weapon's mods are lost on the way.
+  The appearance still diverges. Parked for a dedicated epic that makes the
+  engine's random rolls deterministic, staying engine-native (no ESL, no
+  Creation Kit).
 - **A client that quits while wearing power armor** no longer loses the frame
   for everyone: v0.8.0 marks the record worn instead of deleting it and hands
   the frame back at its last known position on a graceful leave, an eviction

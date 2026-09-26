@@ -45,6 +45,11 @@ namespace fw::render::chat {
 // the network thread calls it.
 void on_line(const std::string& sender_id, const std::string& text);
 
+// A line of our own, shown without a name, for something the player would
+// otherwise only find in the log: a take the server refused and undid. ANY
+// THREAD.
+void notice(const std::string& text);
+
 // MAIN THREAD, from overlay::on_frame: is there anything to draw this frame?
 bool wants_frame(std::uintptr_t module_base);
 

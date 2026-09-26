@@ -43,6 +43,9 @@ struct PutObserveResult {
     std::uint32_t base_id;
     std::uint32_t cell_id;
     std::uint32_t container_form_id;
+    // Loot rework L3.4 (2026-09-24): the container REFR resolved from the
+    // menu handle, for the pre-deposit seed. Valid for this call only.
+    void*         container_ref;
     // v23 — set when the container is a PA frame (loot-exempt): after
     // g_orig runs, the caller rescans and ships the frame's full state.
     void*         pa_frame_ref;
@@ -250,6 +253,14 @@ static void observe_transfer(
                    cid.form_id, cid.base_id, cid.cell_id, item_id);
             return;
         }
+        // Loot rework L1: a runtime ref (0xFF prefix) has no shared identity
+        // yet; the deposit stays local. Mirror of the container_hook check.
+        if (cid.form_id == 0 || (cid.form_id >> 24) == 0xFF) {
+            FW_DBG("[put] PUT into a runtime ref form=0x%X (base=0x%X cell=0x%X) "
+                   "— passthrough, no shared identity yet",
+                   cid.form_id, cid.base_id, cid.cell_id);
+            return;  // passthrough=true
+        }
 
         // 2026-08-16 — THE POWER-ARMOR FRAME IS NOT LOOT. Mirror of the
         // container_hook exemption (see the block comment there for the
@@ -272,6 +283,7 @@ static void observe_transfer(
         out->item_id = item_id;
         out->base_id = cid.base_id;
         out->cell_id = cid.cell_id;
+        out->container_ref = container_refr;
         out->container_form_id = cid.form_id;
 
         out->opp.kind              = static_cast<std::uint32_t>(
@@ -327,32 +339,13 @@ std::int64_t __fastcall detour_transfer_item(
         using namespace std::chrono;
         r.opp.timestamp_ms = duration_cast<milliseconds>(
             system_clock::now().time_since_epoch()).count();
-
-        FW_DBG("[put] SUBMIT kind=2(PUT) container=0x%X/0x%X item=0x%X count=%d",
-               r.base_id, r.cell_id, r.item_id, r.opp.count);
-        auto ack_opt = fw::net::client().submit_container_op_blocking(r.opp, 100);
-        if (!ack_opt) {
-            FW_WRN("[put] PUT BLOCKED — no verdict from server (timeout/disconnect) "
-                   "container=0x%X/0x%X item=0x%X count=%d",
-                   r.base_id, r.cell_id, r.item_id, r.opp.count);
-            return 0;
-        }
-        const auto& ack = *ack_opt;
-        FW_DBG("[put] ACK op_id=%u status=%u final_count=%d",
-               ack.client_op_id, ack.status, ack.final_count);
-        if (ack.status == static_cast<std::uint8_t>(
-                fw::net::ContainerOpAckStatus::ACCEPTED))
-        {
-            FW_LOG("[put] PUT ACCEPTED final=%d (op_id=%u) — calling g_orig",
-                   ack.final_count, ack.client_op_id);
-            // fall through
-        } else {
-            FW_WRN("[put] PUT REJECTED status=%u final=%d (op_id=%u) "
-                   "container=0x%X/0x%X item=0x%X count=%d — MUTATION BLOCKED",
-                   ack.status, ack.final_count, ack.client_op_id,
-                   r.base_id, r.cell_id, r.item_id, r.opp.count);
-            return 0;
-        }
+        // Loot rework L3.4 (2026-09-24): the pre-deposit scan seeds a
+        // container the server does not know, as the take path does. Until
+        // then a deposit into an unknown container made a partial record
+        // on the server, never bootstrapped and replaced whole by the
+        // first scan of any client.
+        fw::hooks::seed_container_if_unknown(r.container_ref, r.container_form_id,
+                                             r.base_id, r.cell_id);
     } else if (!r.passthrough) {
         FW_WRN("[put] observe error state — skipping g_orig_transfer");
         return 0;
@@ -366,13 +359,36 @@ std::int64_t __fastcall detour_transfer_item(
     FW_DBG("[put] calling g_orig_transfer(this=%p, idx=%d, cnt=%u, side=%u)",
            this_menu, inv_idx, count, side);
     const auto rc = g_orig_transfer(this_menu, inv_idx, count, side);
+    FW_DBG("[put] g_orig_transfer returned %lld",
+           static_cast<long long>(rc));
+
+    // Loot rework L2 (2026-09-23): the deposit has happened; the op goes out
+    // with no wait and a refusal comes back as a rollback on the main thread.
+    // The pre-mutation wait this replaces sat BEFORE the engine moved
+    // anything, so on this side it never destroyed an item; it did freeze
+    // the game for the round trip and fail in timeout with a remote server.
+    // See the L2 block in container_hook.cpp. The return value of
+    // TransferItem is logged and not interpreted: whether a non-zero rc can
+    // mean "nothing moved" has not been reverse-engineered, so the op is
+    // sent regardless, as it was before the rework.
+    if (r.should_submit) {
+        const std::uint32_t op_id = fw::net::client().submit_container_op(r.opp);
+        if (op_id != 0) {
+            FW_LOG("[put] PUT applied, op_id=%u sent for a verdict "
+                   "container=0x%X (base=0x%X cell=0x%X) item=0x%X count=%d",
+                   op_id, r.container_form_id, r.base_id, r.cell_id,
+                   r.item_id, r.opp.count);
+        } else {
+            FW_WRN("[put] PUT applied but NOT sent: the client is shutting down "
+                   "(container=0x%X item=0x%X count=%d)",
+                   r.container_form_id, r.item_id, r.opp.count);
+        }
+    }
     // v23 — a deposit went through on a PA frame: ship its full state.
     if (r.pa_frame_ref) {
         fw::native::world_spawn::report_frame_pieces(r.pa_frame_ref,
                                                      r.pa_frame_fid);
     }
-    FW_DBG("[put] g_orig_transfer returned %lld",
-           static_cast<long long>(rc));
     return rc;
 }
 

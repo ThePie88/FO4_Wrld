@@ -185,7 +185,36 @@ constexpr std::uint32_t  TESGLOBAL_FLAG_CONST           = 0x40;
 //   'CONT' signature: 0x544E4F43 (little-endian 'C','O','N','T')
 constexpr std::uintptr_t BGS_INV_LIST_MATERIALIZE_RVA  = 0x00511F10;
 constexpr std::uintptr_t TESFORM_GET_COMPONENT_RVA     = 0x00313570;
-constexpr std::uint32_t  TESFORM_SIG_CONT              = 0x544E4F43;  // 'CONT' LE
+// sub_140313570 is a dispatch by formType: it calls the entry of a table
+// filled at runtime (0x1430E03D0, one pointer per formType, the `sig`
+// argument is not read) and returns 0 when the entry is null or returns
+// nothing. The engine makes the same call before REFR vt[167] builds the
+// runtime inventory list. Measured 2026-09-24: 0 for the CONT base 0x913F9,
+// so that container's list is never built from its template; the entry is
+// logged for the next decomp round.
+constexpr std::uintptr_t TESFORM_COMPONENT_TABLE_RVA   = 0x030E03D0;
+// TESForm::formType values confirmed live 2026-09-24 (put hook classification
+// of the deposited items). Read at FORMTYPE_OFF (0x1A).
+constexpr std::uint8_t   FORMTYPE_ARMO                 = 0x1D;
+constexpr std::uint8_t   FORMTYPE_WEAP                 = 0x2B;
+// (FORMTYPE_NPC = 0x2D, the base of an actor, is defined above.)
+// Actor life state: bits 17..20 of the u32 at Actor+0x130. Actor vt[0xC0]
+// (sub_140C738D0, IsDead) masks with 0x1E0000 and, called with 0, returns
+// true for the values 1, 2, 5 and 7 (dying, dead, recycle, essential down).
+// Read directly with the same mask, gated on the REFR's base being a TESNPC
+// (decomp 2026-09-25; the Actor vtable is at RVA 0x25602B0).
+constexpr std::size_t    ACTOR_LIFESTATE_FLAGS_OFF     = 0x130;
+constexpr std::uint32_t  ACTOR_LIFESTATE_MASK          = 0x1E0000;
+constexpr std::uint32_t  ACTOR_LIFESTATE_SHIFT         = 17;
+// The signature of the TESContainer component (TESObjectCONT+0x68). The
+// CONT entry of the component-getter table (sub_140468070) compares edx
+// with 544E4343h and all 12 engine sites that build a REFR's runtime
+// inventory list (getter, then vt[167]) pass that value. From B1.j.1
+// (2026-04) to 2026-09-24 this constant was 0x544E4F43, a mis-conversion of
+// the decomp's 1414415171: the getter never matched, returned 0, and the
+// materializer never once built a list, so every pristine container
+// scanned as empty until the engine built the list itself.
+constexpr std::uint32_t  TESFORM_SIG_CONT              = 0x544E4343;
 
 // --- B1.n world-item pickup (PlayerCharacter vt[0xEC]) ---
 //
@@ -363,6 +392,49 @@ constexpr std::size_t CMENU_CONTAINER_ARRAY_OFF    = 640;   // WITHDRAW source
 constexpr std::size_t CMENU_CONTAINER_COUNT_OFF    = 656;
 constexpr std::size_t CMENU_CONTAINER_FLAG_OFF     = 664;
 constexpr std::size_t CMENU_CONTAINER_HANDLE_OFF   = 1064;  // BGSObjectRefHandle
+
+// --- Loot rework L3.1 (2026-09-24): the open ContainerMenu, rebuilt by hand ---
+//
+// The menu keeps its two Scaleform lists in step with the inventory through a
+// BGSInventoryList event sink (sub_140A54BD0) that handles two event types
+// only: "entry inserted at row N" (splice in) and "entry removed at row N"
+// (splice out). A stack destroyed through the engine's RemoveItem on our
+// behalf produced neither: the row stayed on screen (live 2026-09-24, seven
+// clicks on a row whose item was gone). So the menu's own rebuild is called.
+//
+// Factory registered on the name "ContainerMenu" (sub_140163970 registers
+// sub_1410412B0 with the UI): allocates 0x440 bytes, sets the four vtable
+// pointers (+0, +16, +224, +232), returns the object. Hooked to learn the
+// instance the UI is about to show.
+constexpr std::uintptr_t CONTAINER_MENU_FACTORY_RVA = 0x010412B0;
+// UI singleton qword_1430DD830 and sub_141A7FD40(ui, const BSFixedString*)
+// -> bool: looks the name up in the menu map at ui+424, tests IMenu flag 0x40,
+// releases the reference. The engine's own "is this menu open" idiom.
+constexpr std::uintptr_t UI_SINGLETON_RVA           = 0x030DD830;
+constexpr std::uintptr_t UI_MENU_IS_OPEN_RVA        = 0x01A7FD40;
+// sub_141A85DD0() -> const BSFixedString* "ContainerMenu" (static, interned
+// on first use, the object the engine itself passes to the query above).
+constexpr std::uintptr_t CONTAINER_MENU_NAME_RVA    = 0x01A85DD0;
+// ContainerMenu primary vtable (RTTI catalog, 33 slots). Slot 21 =
+// TransferItem (sub_14103E950, the put hook). Slot 32 = sub_14103E700,
+// UpdateList(bool container_side): rebuilds "containerListArray" (true) or
+// "playerListArray" (false) from the inventory lists, then vt[30] refreshes
+// weight and caps. Slot 0 is the deleting destructor.
+constexpr std::uintptr_t CONTAINER_MENU_VTABLE_RVA  = 0x025A45C8;
+constexpr std::size_t    CMENU_VT_UPDATE_LIST_SLOT  = 32;
+// UpdateList alone refills the arrays and nothing on screen moves (live
+// 2026-09-24 afternoon: thirteen rebuilds on B, rows still stale). The
+// engine follows every pair of UpdateList calls with a Scaleform invoke of
+// "InvalidateLists" on the menu object, no arguments (six call sites, e.g.
+// ContainerMenu::ProcessMessage sub_14103C630):
+//   sub_141ACFCC0(*(menu+32), *(menu+48), 0, "InvalidateLists", 0, 0)
+// where menu+32 is the GFx object reference and menu+48 its movie root.
+constexpr std::uintptr_t GFX_INVOKE_RVA             = 0x01ACFCC0;
+constexpr std::size_t    CMENU_GFX_OBJECT_OFF       = 32;
+constexpr std::size_t    CMENU_GFX_MOVIE_OFF        = 48;
+// The handle the menu stores at CMENU_CONTAINER_HANDLE_OFF is compared with
+// the container's own, from REFR_GET_HANDLE_RVA (sub_140519190, below):
+// comparing handles avoids resolving one, which would take a reference.
 constexpr std::size_t CMENU_ENTRY_STRIDE           = 32;    // bytes per entry
 
 constexpr std::uint8_t CMENU_SIDE_DEPOSIT  = 0;   // player→container (what we capture)
@@ -404,14 +476,16 @@ constexpr std::uintptr_t FORM_CACHE_SINGLETON_RVA  = 0x030E1370;   // qword_1430
 //       void*    item_form,        // TESForm* of the item
 //       uint32_t count,
 //       uint8_t  flag,             // "show message" flag — 0 = silent
-//       void*    dest_actor_refr,  // where items go; nullptr = drop in world
+//       void*    dest_refr,        // where items go (any REFR: the player, a
+//                                  //   container); nullptr = drop in world
 //       uint8_t  flag2,            // "silent" flag — 0 = normal
 //       uint32_t vm_id,            // 0 = no VM context
 //       void*    vm_state);        // nullptr OK
 //
 // For our receive-side apply we pass vm_id=0, vm_state=nullptr, flag=0,
-// flag2=0, dest_actor_refr=nullptr. The item disappears from / appears in
-// the local container, UI refreshes next time the ContainerMenu reads.
+// flag2=0, dest_refr=nullptr. The item disappears from / appears in the
+// local container, UI refreshes next time the ContainerMenu reads. The loot
+// rework L2 rollback passes the player or the container as dest_refr.
 constexpr std::uintptr_t ENGINE_ADD_ITEM_RVA    = 0x011735A0;
 constexpr std::uintptr_t ENGINE_REMOVE_ITEM_RVA = 0x011825A0;
 

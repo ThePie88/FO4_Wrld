@@ -23,6 +23,13 @@ struct RefIdentity {
     std::uint32_t cell_id = 0;   // TESForm.formID of REFR::parentCell
 };
 
+// A form created at runtime (0xFF______): its id names another object in
+// every other process. A placed actor's BASE is one too (a TESNPC the engine
+// generates per client, loot rework L4, 2026-09-25).
+inline bool is_runtime_form_id(std::uint32_t form_id) noexcept {
+    return (form_id >> 24) == 0xFF;
+}
+
 // Read all three identity fields from the given REFR pointer. Returns
 // zero-filled identity if `ref` is null.
 RefIdentity read_ref_identity(void* ref) noexcept;

@@ -26,9 +26,9 @@
 //   side == 1 → DEPOSIT, extract (container REFR from this+1064, item
 //               form from (this+640)[idx*32]+0, count=a3) and submit.
 //
-// MUST run after install_container_hook (shares the existing
-// submit_container_op_blocking pipeline + the tls_applying_remote
-// feedback-loop guard).
+// MUST run after install_container_hook (shares the submit_container_op
+// pipeline, apply first and ask after since loot rework L2, and the
+// tls_applying_remote feedback-loop guard).
 
 #pragma once
 

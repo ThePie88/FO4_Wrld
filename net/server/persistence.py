@@ -8,9 +8,12 @@ Format history:
       restarts because 0xFF______ runtime refs alias to different objects.
       load_into() drops all v1 entries with a loud warning.
   v2 (prior): identity-keyed by (base_id, cell_id) for world_actors.
-  v3 (current): v2 + `containers` section with per-container inventory
-      state (base_id, cell_id, items dict). load_into() can read v2 snapshots
+  v3: v2 + `containers` section with per-container inventory state
+      (base_id, cell_id, items dict). load_into() can read v2 snapshots
       (treating them as v3 with no containers) for zero-friction upgrade.
+  v4, v5: see SNAPSHOT_FORMAT_VERSION below.
+  v6 (current): containers keyed by the placed REFR's form_id (loot rework
+      L1). The container section of a v3..v5 snapshot is dropped on load.
 """
 from __future__ import annotations
 
@@ -30,12 +33,19 @@ from server.state import (  # noqa: E402
     ServerState, SessionState, ActorWorldState, ContainerWorldState,
     LockWorldState, OutfitEntry, ResumeTicket,
 )
-from protocol import PosStatePayload, EquipModRecord  # noqa: E402
+from protocol import PosStatePayload, EquipModRecord, is_runtime_form_id  # noqa: E402
 
 
 log = logging.getLogger("persistence")
 
-SNAPSHOT_FORMAT_VERSION: int = 5
+SNAPSHOT_FORMAT_VERSION: int = 6
+# v6 (loot rework L1, 2026-09-23): `containers` entries carry `form_id`, the
+#     placed REFR's own id, and are keyed by it. The (base_id, cell_id) key
+#     of v3..v5 merged every ref of one base in one cell into one record,
+#     and such a record cannot be mapped back to one REFR: the container
+#     section of an older snapshot is DROPPED on load, with a warning that
+#     says how many records went. Everything else in a v2..v5 snapshot
+#     loads as before.
 # v4 (B6.3 v0.5.3, 2026-05-08): adds `locks` section keyed by
 #     (base_id, cell_id), with form_id hint + locked bool + timestamp.
 #     v3 snapshots load fine (no locks key → empty lock_state).
@@ -92,11 +102,12 @@ def snapshot(state: ServerState, path: Path, *, pretty: bool = True) -> None:
         ],
         "containers": [
             {
+                "form_id": f"0x{c.form_id:X}",
                 "base_id": f"0x{c.base_id:X}",
                 "cell_id": f"0x{c.cell_id:X}",
                 # items: hex-stringified keys for JSON (JSON keys must be str)
                 "items": {f"0x{iid:X}": cnt for iid, cnt in c.items.items()},
-                "last_known_form_id": f"0x{c.last_known_form_id:X}",
+                "seeded": c.seeded,
                 "last_owner": c.last_owner_peer_id,
                 "last_update_ms": c.last_update_ms,
             }
@@ -273,12 +284,13 @@ def load_into(state: ServerState, path: Path) -> int:
         return 0
 
     # v2 snapshots have no containers section; v3 adds containers; v4 adds
-    # locks. All three are readable — older missing sections become empty.
-    # Unknown versions (> 4 or other) are rejected.
-    if version not in (2, 3, 4, SNAPSHOT_FORMAT_VERSION):
+    # locks; v5 presence and resume tokens; v6 rekeys the containers. All
+    # readable — older missing sections become empty. Unknown versions
+    # (> 6 or other) are rejected.
+    if version not in (2, 3, 4, 5, SNAPSHOT_FORMAT_VERSION):
         raise ValueError(
             f"snapshot format version {version!r} unsupported "
-            f"(expected {SNAPSHOT_FORMAT_VERSION}, 4, 3, 2, or 1)"
+            f"(expected {SNAPSHOT_FORMAT_VERSION}, 5, 4, 3, 2, or 1)"
         )
 
     # Restore world actors (the authoritative game state)
@@ -315,17 +327,32 @@ def load_into(state: ServerState, path: Path) -> int:
             path, skipped,
         )
 
-    # Restore container state (v3+). v2 snapshots won't have this key at all.
+    # Restore container state. v3..v5 keyed containers by (base_id, cell_id)
+    # and such a record cannot be mapped to one REFR (the old key merged every
+    # twin of one base in one cell): those sections are dropped, loudly.
     container_skipped = 0
-    for c in data.get("containers", []):
+    container_records = data.get("containers", []) or []
+    if version < 6 and container_records:
+        log.warning(
+            "snapshot %s is format v%d: dropping %d container record(s) keyed "
+            "by (base_id, cell_id). v6 keys containers by REFR form_id and the "
+            "old records cannot be mapped to one REFR; the clients seed them "
+            "again on the first open",
+            path, version, len(container_records),
+        )
+        container_records = []
+    for c in container_records:
+        fid_raw = c.get("form_id")
         base_raw = c.get("base_id")
         cell_raw = c.get("cell_id")
-        if base_raw is None or cell_raw is None:
+        if fid_raw is None or base_raw is None or cell_raw is None:
             container_skipped += 1
             continue
+        form_id = int(fid_raw, 16) if isinstance(fid_raw, str) else int(fid_raw)
         base_id = int(base_raw, 16) if isinstance(base_raw, str) else int(base_raw)
         cell_id = int(cell_raw, 16) if isinstance(cell_raw, str) else int(cell_raw)
-        if base_id == 0 or cell_id == 0:
+        if (form_id == 0 or is_runtime_form_id(form_id)
+                or base_id == 0 or cell_id == 0):
             container_skipped += 1
             continue
         items_raw = c.get("items", {}) or {}
@@ -340,19 +367,16 @@ def load_into(state: ServerState, path: Path) -> int:
             count = int(v)
             if count > 0:
                 items[iid] = count
-        ref_raw = c.get("last_known_form_id", 0)
-        last_form = (
-            int(ref_raw, 16) if isinstance(ref_raw, str) else int(ref_raw)
-        )
         container = ContainerWorldState(
+            form_id=form_id,
             base_id=base_id,
             cell_id=cell_id,
             items=items,
-            last_known_form_id=last_form,
             last_owner_peer_id=c.get("last_owner"),
             last_update_ms=float(c.get("last_update_ms", 0.0)),
+            seeded=bool(c.get("seeded", True)),
         )
-        state._containers[(container.base_id, container.cell_id)] = container
+        state._containers[form_id] = container
     if container_skipped:
         log.warning(
             "snapshot %s: skipped %d container entries with missing/zero identity",

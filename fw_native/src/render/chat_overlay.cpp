@@ -154,6 +154,11 @@ void on_line(const std::string& sender_id, const std::string& text) {
     push_line(Line{std::move(name), text});
 }
 
+void notice(const std::string& text) {
+    FW_LOG("[chat] notice: %s", text.c_str());
+    push_line(Line{std::string(), text});
+}
+
 bool typing() noexcept { return g_typing.load(std::memory_order_acquire); }
 
 bool wants_frame(std::uintptr_t module_base) {

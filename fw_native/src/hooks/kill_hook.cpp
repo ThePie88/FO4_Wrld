@@ -167,6 +167,20 @@ void __fastcall detour_kill(
     if (g_orig_kill) {
         g_orig_kill(victim, killer, unk2, silent, unk4);
     }
+
+    // Loot rework L4.1 (2026-09-25): a death makes a new corpse with a new
+    // loot roll. The record of the actor's previous corpse is dropped here
+    // for a kill this client performs (the server drops its own on the
+    // owner's report or on its pool kill, and the other clients on the
+    // relayed death), so the first take seeds the new corpse.
+    if (victim) {
+        const auto vi = read_ref_identity(victim);
+        if (vi.form_id != 0 && vi.form_id != offsets::PLAYER_FORMID &&
+            !is_runtime_form_id(vi.form_id))
+        {
+            fw::net::client().forget_container(vi.form_id);
+        }
+    }
 }
 
 } // namespace

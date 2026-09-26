@@ -17,7 +17,11 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from protocol import PosStatePayload, ActorEventPayload, ContainerOpPayload, ContainerOpKind  # noqa: E402
+from protocol import (  # noqa: E402
+    PosStatePayload, ActorEventPayload, ContainerOpPayload, ContainerOpKind,
+    is_runtime_form_id,
+    identities_conflict,
+)
 from server.state import PeerSession, ContainerWorldState  # noqa: E402
 
 
@@ -50,6 +54,8 @@ class RejectReason(IntEnum):
     INVALID_COUNT            = 12  # container op with count <= 0
     INVALID_KIND             = 13  # unknown op kind / actor event kind
     INSUFFICIENT_ITEMS       = 14  # TAKE more than the container has (upstream check)
+    RUNTIME_REF              = 15  # container op on a 0xFF______ ref: its id aliases across processes
+    IDENTITY_MISMATCH        = 16  # known REFR with another (base, cell): load-order drift
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,8 +172,8 @@ def validate_container_op(
 ) -> ValidationResult:
     """Check a CONTAINER_OP for validity.
 
-    container_state: the authoritative state for this container's identity
-        (base_id, cell_id), or None if the server has never seen this
+    container_state: the authoritative state for this container's REFR
+        (op.container_form_id), or None if the server has never seen this
         container before. None is fine — TAKE on an unknown container is
         valid at v1 because clients may discover inventories independently
         (a loot run on a previously-unseen container). The server
@@ -175,7 +181,10 @@ def validate_container_op(
 
     Rules:
       - Rate limit (shared token bucket)
-      - Identity required (base_id != 0 AND cell_id != 0)
+      - Identity required: form_id != 0 and not a runtime ref (0xFF prefix,
+        loot rework L1), base_id != 0 AND cell_id != 0
+      - A known REFR must come with the (base, cell) it was recorded with:
+        anything else is a load-order drift between two clients
       - count > 0 (negative or zero never makes sense; TAKE uses OP direction)
       - kind must be TAKE or PUT
       - TAKE: if we know the container, reject if count > available (keeps
@@ -188,10 +197,26 @@ def validate_container_op(
     if not session.rate.consume(now_ms, amount=1.0):
         return ValidationResult.reject(RejectReason.RATE_LIMITED)
 
-    if op.container_base_id == 0 or op.container_cell_id == 0:
+    if (op.container_form_id == 0 or op.container_base_id == 0
+            or op.container_cell_id == 0):
         return ValidationResult.reject(
             RejectReason.MISSING_IDENTITY,
-            f"container_base=0x{op.container_base_id:X} cell=0x{op.container_cell_id:X}",
+            f"container_form=0x{op.container_form_id:X} "
+            f"base=0x{op.container_base_id:X} cell=0x{op.container_cell_id:X}",
+        )
+    if is_runtime_form_id(op.container_form_id):
+        return ValidationResult.reject(
+            RejectReason.RUNTIME_REF,
+            f"container_form=0x{op.container_form_id:X} is a runtime ref",
+        )
+    if container_state is not None and identities_conflict(
+            container_state.base_id, container_state.cell_id,
+            op.container_base_id, op.container_cell_id):
+        return ValidationResult.reject(
+            RejectReason.IDENTITY_MISMATCH,
+            f"container_form=0x{op.container_form_id:X} recorded as "
+            f"(base=0x{container_state.base_id:X} cell=0x{container_state.cell_id:X}), "
+            f"op says (base=0x{op.container_base_id:X} cell=0x{op.container_cell_id:X})",
         )
     if op.count <= 0:
         return ValidationResult.reject(
@@ -230,10 +255,18 @@ def validate_container_op(
     # If a future regression reintroduces bogus INSUFFICIENT rejections,
     # set ENFORCE_INSUFFICIENT = False here and investigate the SEED
     # correctness before re-enabling.
+    #
+    # Loot rework L3 (2026-09-23): a record the server only INFERRED from a
+    # first op (not seeded, see ContainerWorldState.seeded) does not know
+    # the container's other items; a take of one of those is trusted, as
+    # the very first op was. A seeded record knows them all: absent means
+    # gone.
     ENFORCE_INSUFFICIENT = True
     if (ENFORCE_INSUFFICIENT
             and op.kind == int(ContainerOpKind.TAKE)
-            and container_state is not None):
+            and container_state is not None
+            and (container_state.seeded
+                 or op.item_base_id in container_state.items)):
         have = container_state.items.get(op.item_base_id, 0)
         if op.count > have:
             return ValidationResult.reject(

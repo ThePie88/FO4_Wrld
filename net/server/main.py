@@ -42,6 +42,9 @@ from protocol import (
     ContainerOpPayload, ContainerBroadcastPayload,
     ContainerStatePayload, ContainerStateEntry,
     ContainerSeedPayload, ContainerOpAckPayload, ContainerOpAckStatus,
+    is_runtime_form_id,
+    identities_conflict,
+    NPC_DEATH_FLAG_REPLAY,
     QuestStageSetPayload, QuestStageBroadcastPayload,
     QuestStateBootPayload, QuestStageStateEntry,
     GlobalVarSetPayload, GlobalVarBroadcastPayload,
@@ -242,6 +245,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
             "tx_frames": 0,
             "rx_invalid": 0,
             "rejections": 0,
+            "container_op_repeats": 0,   # loot rework L2: same op id again, verdict re-sent
             "ownership_changes": 0,
             "ownership_observed": 0,
             "ownership_state_relayed": 0,
@@ -1010,44 +1014,67 @@ class ServerProtocol(asyncio.DatagramProtocol):
             self._send(session.addr, raw)
 
     def _send_container_state_bootstrap(self, session: PeerSession, now_ms: float) -> None:
-        """Send authoritative container inventories to a newly-joined peer.
-
-        Flattens every (container, item_base_id, count) triple into
-        ContainerStateEntry records, then chunks into MAX_ENTRIES_PER_FRAME
-        (87 at MTU 1400) and sends each chunk reliably.
-        """
-        containers = self.state.all_containers()
+        """Send the seeded container inventories to a newly-joined peer."""
+        containers = self.state.seeded_containers()
         if not containers:
             log.debug("no container state to bootstrap for %s", session.peer_id)
             return
+        self._send_container_state([session], containers, now_ms, why="bootstrap")
 
-        # Flatten to entries. Skip empty containers — no point shipping them.
+    @staticmethod
+    def _container_state_entries(containers) -> list[ContainerStateEntry]:
+        """Flatten (container, item, count) triples into wire entries. Loot
+        rework L3: a known EMPTY container travels as a sentinel entry
+        (item 0, count 0), so the receiver knows to empty its own copy
+        instead of keeping what its save says."""
         entries: list[ContainerStateEntry] = []
         for c in containers:
+            if not c.items:
+                entries.append(ContainerStateEntry(
+                    container_form_id=c.form_id,
+                    container_base_id=c.base_id,
+                    container_cell_id=c.cell_id,
+                    item_base_id=0,
+                    count=0,
+                ))
+                continue
             for item_id, count in c.items.items():
                 entries.append(ContainerStateEntry(
+                    container_form_id=c.form_id,
                     container_base_id=c.base_id,
                     container_cell_id=c.cell_id,
                     item_base_id=item_id,
                     count=count,
                 ))
+        return entries
+
+    def _send_container_state(self, sessions, containers, now_ms: float,
+                              *, why: str) -> None:
+        """CONTAINER_STATE for `containers` to every session in `sessions`,
+        chunked into MAX_ENTRIES_PER_FRAME (69 at MTU 1400), reliable. Used
+        by the join bootstrap and, since loot rework L3, as the live push
+        whenever a record is created, replaced or refilled by a seed: the
+        receivers align their engines to it."""
+        entries = self._container_state_entries(containers)
         if not entries:
             return
-
         max_per = ContainerStatePayload.MAX_ENTRIES_PER_FRAME
         total_chunks = (len(entries) + max_per - 1) // max_per
-        log.info("container bootstrap %s: %d entries in %d chunk(s)",
-                 session.peer_id, len(entries), total_chunks)
-
-        for chunk_idx in range(total_chunks):
-            chunk = entries[chunk_idx * max_per : (chunk_idx + 1) * max_per]
-            payload = ContainerStatePayload(
-                entries=tuple(chunk),
-                chunk_index=chunk_idx,
-                total_chunks=total_chunks,
-            )
-            raw = session.channel.send_reliable(MessageType.CONTAINER_STATE, payload, now_ms)
-            self._send(session.addr, raw)
+        sessions = list(sessions)
+        log.info("container state (%s): %d entries in %d chunk(s) to %s",
+                 why, len(entries), total_chunks,
+                 ", ".join(s.peer_id for s in sessions) or "nobody")
+        for session in sessions:
+            for chunk_idx in range(total_chunks):
+                chunk = entries[chunk_idx * max_per : (chunk_idx + 1) * max_per]
+                payload = ContainerStatePayload(
+                    entries=tuple(chunk),
+                    chunk_index=chunk_idx,
+                    total_chunks=total_chunks,
+                )
+                raw = session.channel.send_reliable(
+                    MessageType.CONTAINER_STATE, payload, now_ms)
+                self._send(session.addr, raw)
 
     def _handle_disconnect(self, session: PeerSession, payload, now_ms: float) -> None:
         log.info("peer %s disconnecting", session.peer_id)
@@ -1190,14 +1217,30 @@ class ServerProtocol(asyncio.DatagramProtocol):
     def _handle_container_op(self, session: PeerSession, payload, now_ms: float) -> None:
         if not isinstance(payload, ContainerOpPayload):
             return
+
+        # Loot rework L2 (2026-09-23): the client applies the transfer AT
+        # ONCE and sends the op afterwards; this ACK is the only thing that
+        # can undo it (a REJ makes the client move the items back). An op
+        # whose ACK died with the session comes again on the rejoin, under
+        # a new channel sequence: same verdict, applied once.
+        if payload.client_op_id != 0:
+            seen = self.state.recall_container_verdict(
+                session.peer_id, payload.client_op_id)
+            if seen is not None:
+                self._counters["container_op_repeats"] += 1
+                log.info("CONTAINER_OP op_id=%d from %s seen before: verdict %d "
+                         "sent again, not applied twice",
+                         payload.client_op_id, session.peer_id, seen.status)
+                raw = session.channel.send_reliable(
+                    MessageType.CONTAINER_OP_ACK, seen, now_ms)
+                self._send(session.addr, raw)
+                return
+
         existing = self.state.container_state_for_op(payload)
         result = validate_container_op(session, payload, existing, now_ms)
 
-        # --- B1: always emit an ACK to the sender (accept or reject). ---
-        # The sender (DLL) holds a pre-mutation wait keyed on client_op_id,
-        # woken by this ACK. On accept, engine's AddObjectToContainer is
-        # allowed to proceed. On reject, the sender blocks the call and the
-        # item transfer never happens — closing the container dup race.
+        # Always emit an ACK to the sender (accept or reject), and keep it
+        # for a repeat of the same op id.
         def _send_ack(status: ContainerOpAckStatus, final_count: int) -> None:
             if payload.client_op_id == 0:
                 # Legacy B0 client — no op_id to correlate. Skip ACK.
@@ -1210,6 +1253,8 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 item_base_id=payload.item_base_id,
                 final_count=final_count,
             )
+            self.state.remember_container_verdict(
+                session.peer_id, payload.client_op_id, ack)
             raw = session.channel.send_reliable(MessageType.CONTAINER_OP_ACK, ack, now_ms)
             self._send(session.addr, raw)
 
@@ -1221,6 +1266,8 @@ class ServerProtocol(asyncio.DatagramProtocol):
             status_map = {
                 RejectReason.RATE_LIMITED:       ContainerOpAckStatus.REJ_RATE,
                 RejectReason.MISSING_IDENTITY:   ContainerOpAckStatus.REJ_IDENTITY,
+                RejectReason.RUNTIME_REF:        ContainerOpAckStatus.REJ_IDENTITY,
+                RejectReason.IDENTITY_MISMATCH:  ContainerOpAckStatus.REJ_IDENTITY,
                 RejectReason.INVALID_COUNT:      ContainerOpAckStatus.REJ_COUNT,
                 RejectReason.INVALID_KIND:       ContainerOpAckStatus.REJ_KIND,
                 RejectReason.INSUFFICIENT_ITEMS: ContainerOpAckStatus.REJ_INSUFFICIENT,
@@ -1272,8 +1319,8 @@ class ServerProtocol(asyncio.DatagramProtocol):
         received a CONTAINER_BCAST) would happily report an EMPTY container
         and erase legitimate contents that another peer had put there.
 
-        Now: SEED is applied ONLY if this (base, cell) has no server state
-        yet. Subsequent SEEDs for known containers are logged and dropped.
+        Now: SEED is applied ONLY if this REFR has no server state yet.
+        Subsequent SEEDs for known containers are logged and dropped.
         The server's state is canonical from the first scan onward;
         downstream TAKE/PUT ops keep it correct via record_container_op.
 
@@ -1295,26 +1342,50 @@ class ServerProtocol(asyncio.DatagramProtocol):
                       payload.chunk_index + 1, payload.total_chunks)
             return
 
-        # Group by container identity.
-        by_container: dict[tuple[int, int], dict[int, int]] = {}
+        # Group by REFR (loot rework L1). Entries without a usable identity
+        # are skipped: form_id 0, a runtime ref (its id names another object
+        # on every other client), base or cell 0, or a (base, cell) that
+        # disagrees with the group's first entry.
+        by_container: dict[int, tuple[int, int, dict[int, int]]] = {}
+        # Loot rework L3.4 (2026-09-24): a scan of a container the client
+        # KNOWS is empty (runtime list present, no lines) travels as the
+        # sentinel entry (item 0, count 0), the shape CONTAINER_STATE uses
+        # for a known-empty record. It creates a seeded, empty record for a
+        # container nobody scanned before, so the deposit that follows lands
+        # on a seeded record instead of making a partial one (the deposit
+        # hook seeds since the same date). It never erases a record.
+        asserted_empty: set[int] = set()
         n_skipped_identity = 0
         for e in payload.entries:
-            if e.container_base_id == 0 or e.container_cell_id == 0:
+            if (e.container_form_id == 0 or is_runtime_form_id(e.container_form_id)
+                    or e.container_base_id == 0 or e.container_cell_id == 0):
                 n_skipped_identity += 1
                 continue
-            key = (e.container_base_id, e.container_cell_id)
-            bucket = by_container.setdefault(key, {})
+            group = by_container.get(e.container_form_id)
+            if group is None:
+                group = (e.container_base_id, e.container_cell_id, {})
+                by_container[e.container_form_id] = group
+            elif (group[0], group[1]) != (e.container_base_id, e.container_cell_id):
+                n_skipped_identity += 1
+                continue
             if e.count > 0:
-                bucket[e.item_base_id] = e.count
-            # count==0 entries are silently dropped: they don't contribute
-            # to the seed (we don't track absences explicitly; missing key
-            # == count 0).
+                group[2][e.item_base_id] = e.count
+            elif e.item_base_id == 0 and e.count == 0:
+                asserted_empty.add(e.container_form_id)
+            # Other count==0 entries are silently dropped: they don't
+            # contribute to the seed (we don't track absences explicitly;
+            # missing key == count 0).
 
         n_created = 0
         n_refilled = 0
         n_rejected = 0
-        for (base, cell), items in by_container.items():
-            existing = self.state.container_state(base, cell)
+        # Loot rework L3: what changed goes to everyone, and a rejected
+        # seed is answered with the server's own view, so the seeder's
+        # mirror learns a container another peer scanned first.
+        push_all: list = []
+        push_seeder: list = []
+        for fid, (base, cell, items) in by_container.items():
+            existing = self.state.container_state(fid)
 
             # First-seed-wins, refined after 2026-04-20 live test:
             #   - If no state exists: create it from SEED (the fresh case).
@@ -1335,30 +1406,72 @@ class ServerProtocol(asyncio.DatagramProtocol):
             #     into a legitimately-emptied container. Acceptable trade-
             #     off until B1.g/B1.j close the drift class.
             if existing is None:
-                from server.state import ContainerWorldState
-                container = ContainerWorldState(base_id=base, cell_id=cell)
-                container.items = dict(items)
-                container.last_owner_peer_id = session.peer_id
-                container.last_update_ms = now_ms
-                self.state._containers[(base, cell)] = container  # type: ignore[attr-defined]
+                if not items and fid not in asserted_empty:
+                    continue
+                created = self.state.create_container(
+                    fid, base, cell, items, session.peer_id, now_ms)
+                if created is not None:
+                    push_all.append(created)
                 n_created += 1
+                if not items:
+                    log.info(
+                        "container SEED from %s: known-empty form=0x%X "
+                        "(base=0x%X cell=0x%X) recorded from the sentinel",
+                        session.peer_id, fid, base, cell)
+            elif identities_conflict(existing.base_id, existing.cell_id, base, cell):
+                n_rejected += 1
+                log.warning(
+                    "container SEED from %s: REJECT form=0x%X — recorded as "
+                    "(base=0x%X cell=0x%X), the seed says (base=0x%X cell=0x%X): "
+                    "load-order drift between clients",
+                    session.peer_id, fid, existing.base_id, existing.cell_id,
+                    base, cell)
+            elif not items:
+                # An empty scan never erases anything (B1.h). A seeded record
+                # answers with its own view: the scanner's engine is stale.
+                n_rejected += 1
+                if existing.seeded:
+                    push_seeder.append(existing)
+            elif not existing.seeded:
+                # A record inferred from a first op, never scanned: this
+                # scan is the first full view, it replaces the inference.
+                existing.items = dict(items)
+                existing.seeded = True
+                existing.last_owner_peer_id = session.peer_id
+                existing.last_update_ms = now_ms
+                push_all.append(existing)
+                n_created += 1
+                log.info(
+                    "container SEED from %s: partial record form=0x%X "
+                    "(base=0x%X cell=0x%X) replaced by the scan, %d item(s)",
+                    session.peer_id, fid, base, cell, len(items))
             elif not existing.items:
                 # Refill an empty container. Preserve the existing record
                 # (keeps history), just fill in items.
                 existing.items = dict(items)
                 existing.last_owner_peer_id = session.peer_id
                 existing.last_update_ms = now_ms
+                push_all.append(existing)
                 n_refilled += 1
                 log.info(
-                    "container SEED from %s: REFILL empty base=0x%X cell=0x%X → "
-                    "%d item(s)", session.peer_id, base, cell, len(items))
+                    "container SEED from %s: REFILL empty form=0x%X "
+                    "(base=0x%X cell=0x%X) → %d item(s)",
+                    session.peer_id, fid, base, cell, len(items))
             else:
                 n_rejected += 1
+                push_seeder.append(existing)
                 log.debug(
-                    "container SEED from %s: REJECT base=0x%X cell=0x%X — "
-                    "state already canonical (%d items, owner=%s)",
-                    session.peer_id, base, cell,
+                    "container SEED from %s: REJECT form=0x%X (base=0x%X "
+                    "cell=0x%X) — state already canonical (%d items, owner=%s)",
+                    session.peer_id, fid, base, cell,
                     len(existing.items), existing.last_owner_peer_id)
+
+        if push_all:
+            self._send_container_state(
+                self.state.all_sessions(), push_all, now_ms, why="seed")
+        if push_seeder:
+            self._send_container_state(
+                [session], push_seeder, now_ms, why="seed rejected")
 
         session.touch(now_ms)
         log.info(
@@ -2150,6 +2263,12 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 # the observer reports the body, which is its local corpse pos.
                 px, py, pz = payload.pos_x, payload.pos_y, payload.pos_z
             try:
+                # Loot rework L4.1 (2026-09-25): flags bit 0 marks a REPLAY of
+                # a known death. The corpse record survives it, on the server
+                # and in the observer's mirror: the observer's engine has the
+                # actor alive because the save predates the death, and its
+                # re-rolled corpse is aligned to what the server holds. A
+                # death without the bit is a new corpse and drops the record.
                 raw = session.channel.send_reliable(
                     MessageType.NPC_DEATH_FROM_OWNER,
                     NPCDeathFromOwnerPayload(
@@ -2157,7 +2276,8 @@ class ServerProtocol(asyncio.DatagramProtocol):
                         killer_form_id=0,
                         pos_x=px, pos_y=py, pos_z=pz,
                         ragdoll_x=0.0, ragdoll_y=0.0, ragdoll_z=0.0,
-                        damage=0.0, hit_zone=0, flags=0,
+                        damage=0.0, hit_zone=0,
+                        flags=NPC_DEATH_FLAG_REPLAY,
                         ts_ms=int(now_ms) & 0xFFFFFFFFFFFFFFFF,
                     ),
                     now_ms,
@@ -2547,6 +2667,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
             "(pos=%.0f,%.0f,%.0f totals=%s)",
             fid, sent, rec.last_pos_x, rec.last_pos_y, rec.last_pos_z,
             dict(rec.hp_dmg_by_peer))
+        self._forget_corpse_record(fid, "pool kill")
         # FIX (resurrection) — mark the fid dead in the registry's STICKY set
         # BEFORE on_unload deletes the record. Otherwise a still-in-combat client
         # re-observes the corpse → fresh live record → reeval re-elects → the new
@@ -2568,6 +2689,18 @@ class ServerProtocol(asyncio.DatagramProtocol):
         )
         if change is not None:
             self._emit_ownership_change(change, now_ms)
+
+    def _forget_corpse_record(self, form_id: int, why: str) -> None:
+        """Loot rework L4.1 (2026-09-25): a death makes a new corpse with a
+        new loot roll, so the record of the actor's previous corpse is
+        dropped; the first scan of the new corpse seeds it. Called on the
+        two real deaths (pool kill, owner report), never on a replay. The
+        clients drop their mirror entry on the same death message (flags
+        bit 0 clear) and on their own kill hook, so no push is needed."""
+        if self.state.forget_container(form_id):
+            log.info(
+                "corpse record of 0x%X dropped (%s): the next scan seeds the "
+                "new corpse", form_id, why)
 
     def _handle_npc_death_from_owner(
         self, session: PeerSession, payload: NPCDeathFromOwnerPayload,
@@ -2595,6 +2728,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 self._send_raw(sess, raw)
             except ChannelError:
                 pass
+        self._forget_corpse_record(payload.form_id, "owner death")
         # Build 68.9 — REMEMBER THE DEATH. This client-reported path never
         # registered the fid as dead (only the server-driven pool kill at
         # _fire_npc_death did), so after relaying once the server forgot it

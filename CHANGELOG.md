@@ -5,6 +5,121 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## Loot rework, first half: containers and corpses (2026-09-26) — v0.9.0
+
+Tag `v0.9.0`, wire proto v27: a container state entry carries the container's
+form_id (20 bytes, 69 per chunk). Server snapshot v6: containers are keyed by
+the placed reference's form_id and carry a seeded flag; the container sections
+of snapshots v3 to v5 are dropped at load with a warning, because their keys
+cannot be mapped. This is the first half of the loot-sync epic, covering
+containers and the corpses of placed NPCs. The player's own inventory is not
+persisted yet: that is the next step, and the reason the epic stays open.
+469 pytest.
+
+### L1: a container is its placed reference
+
+The server keyed containers by (base, cell). Two identical toolboxes in one
+house, or two corpses of the same raider base, were one record: emptying the
+first made the server refuse the second, and with the old blocking hook a
+refused take destroyed the item (six X-01 pieces were lost that way in
+August). The key is now the placed reference's form_id, which is the same on
+every client with the same load order; (base, cell) stays as a check against
+load-order drift. References created at runtime (form id prefix 0xFF) name a
+different object in every process and are refused.
+
+A placed actor is the one exception to the check. Its base is a TESNPC the
+engine generates at runtime on each client, with its own face, gear and loot
+(the same raider had base 0xFF0011EC on one client and 0xFF001218 on the
+other), and its corpse can come to rest in another cell. For a runtime base
+the placed form_id alone is the identity.
+
+### L2: optimistic transactions with rollback
+
+The client used to freeze the main thread for up to 100 ms, waiting for the
+server's verdict before the engine could move anything; with a remote server
+every take would have timed out. Now the engine applies the take or the
+deposit at once, the op leaves with a client id, and a refusal is undone on
+the main thread. A take the server could not cover, because the item was
+already gone, destroys the local phantom copy; any other refusal puts the item
+back where it came from; a line of chat says which. Ops applied while the
+connection was down are sent again after the reconnect, and the server keeps
+the last 256 verdicts per peer, so a repeated op gets the same answer instead
+of applying twice. The first live rollback ran on corpses: 30 refusals, no
+duplicates.
+
+### L3: every client converges on the server's view
+
+- **The view travels.** The server sends the contents of every container it
+  knows at the join, and pushes a container to everyone whenever a scan
+  creates, replaces or refills its record. A known-empty container travels as
+  a sentinel entry. A record inferred from a single op and never scanned is
+  never pushed: aligning an engine to it would destroy everything the server
+  never heard of.
+- **The engine follows.** Each client keeps a mirror of the server's view and
+  aligns its engine with AddItem and RemoveItem: when the scene settles, at
+  every cell change, when a container is activated, after every verdict and
+  after every peer's op. A second pass removes what an AddItem dragged along:
+  every 10mm pistol added to a container brought 5 to 9 rounds of its ammo.
+- **The open menu redraws in real time.** The container menu redraws the rows
+  added from outside it, never the rows removed. The menu is now remembered
+  from its factory and rebuilt with the engine's own pair of calls, UpdateList
+  and the Scaleform InvalidateLists invoke. The first attempt crashed inside
+  the invoke: its argument count was declared as a 32-bit int, and the upper
+  half of the 64-bit stack slot was garbage. Every parameter of an engine
+  function typedef is now 64 bits wide unless the decomp proves otherwise.
+- **The save's contents stop showing.** Every client loads the same save, with
+  every container full. The containers the server knows are now aligned as
+  soon as the scene settles and at every cell change, so the quick-loot prompt
+  no longer lists items the server knows are gone.
+- **The deposit seeds too.** Only a take used to send a container's contents
+  to the server, so a deposit into a container nobody had opened made an
+  incomplete record. Now the first op of either kind seeds it, and an empty
+  container is recorded as known empty.
+- **A constant wrong since April.** The engine's container-component getter
+  compares its argument with 0x544E4343; offsets.h had 0x544E4F43, a
+  mis-conversion of the decomp's 1414415171. The getter never matched, so the
+  mod never built an inventory list itself, and every untouched container
+  scanned as empty until the engine built the list on its own. A diagnostic
+  logged the getter's table entry, and the disassembly did the rest.
+- **The model resolvers check the form type first.** The ghost's armor
+  resolver was reading the addon list of a peer's equipped ammunition; it
+  survived only because the pointer it read happened to be null.
+
+### L4: corpses
+
+- **A dead actor is a container.** Activating a dead placed NPC aligns it like
+  a container, going by the life-state bits the engine's own IsDead reads. A
+  living actor is never aligned: the save predates the kills, so at the start
+  of a session a corpse the server knows is still alive on the client until
+  the server's death replay arrives.
+- **A death makes a new corpse.** Every session the raiders are alive again in
+  the save, and the server kills them again at the first hit. The previous
+  session's record, already looted, was applied to the new corpse at the
+  activation and its fresh loot vanished, which looked like the corpse
+  looting itself. A real death now drops the previous corpse record on the
+  server and on every client; the replay of a known death carries a flag that
+  keeps it.
+- **Verified live:** two corpses looted by both clients, the second opener
+  aligned to the first opener's roll, seven takes accepted, no refusals.
+
+### Open
+
+- The player's own inventory is not persisted: a take or a deposit lives in
+  the world's records, and the player's side resets to the save at every
+  launch. This is the next step, planned as a hybrid of server-commanded saves
+  and a server ledger.
+- Randomness is per client: the first client to open a container decides its
+  contents, the others are aligned to it by base and count, and a weapon's
+  mods do not survive a trip through a container.
+- An item a raider wears resists removal on the observer's copy of the corpse
+  and reappears. The server refuses it to whoever takes it, so it cannot be
+  duplicated.
+- Corpses of NPCs spawned at runtime stay local, corpses can lie in different
+  places on different clients, and nothing respawns.
+- The server still takes a client's word for quantities in a few places, such
+  as a deposit of items created from the console. Closing them belongs to the
+  next step.
+
 ## Nametags and chat, minor fixes (2026-09-23) — v0.8.1
 
 Tag `v0.8.1`, wire proto v26 unchanged: CHAT has been in the protocol since

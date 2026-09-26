@@ -6,8 +6,10 @@
 #include <cstddef>   // offsetof
 
 #include <windows.h>
+#include <algorithm>   // std::sort, the pending container ops in id order
 #include <chrono>
 #include <cmath>
+#include <cstdio>      // std::snprintf, the rollback notice
 #include <cstring>
 #include <mutex>
 #include <thread>
@@ -18,6 +20,8 @@
 #include "../engine/engine_calls.h"
 #include "../ghost/actor_hijack.h"
 #include "../hooks/container_hook.h"
+#include "../hooks/container_menu_hook.h"  // loot rework L3.1: rebuild the open ContainerMenu
+#include "../ref_identity.h"               // loot rework L3.3: the player's cell for the sweep
 #include "../steam/steam_id.h"      // B6.6w5: local Steam ID for HELLO auth scaffolding
 #include "../hooks/equip_cycle.h"   // M9 v0.3.x: re-arm cycle on PEER_JOIN
 #include "../hooks/npc_ai_suppress.h" // B6.5w4: suppress/passthrough counters
@@ -47,7 +51,13 @@ Client& client() {
     return instance;
 }
 
-Client::Client() = default;
+Client::Client() {
+    // Loot rework L2: see op_epoch_ in the header. Any 16 bits that differ
+    // between two launches will do; the clock's low bits at construction are
+    // that, and the |1 keeps the epoch from being 0.
+    op_epoch_ = static_cast<std::uint16_t>(
+        (std::chrono::steady_clock::now().time_since_epoch().count() & 0xFFFE) | 1);
+}
 
 Client::~Client() {
     stop();
@@ -281,16 +291,6 @@ void Client::enqueue_actor_event(const ActorEventPayload& a) {
     q.reliable = true;
     q.payload_bytes.resize(sizeof(a));
     std::memcpy(q.payload_bytes.data(), &a, sizeof(a));
-    push_queued(std::move(q));
-}
-
-void Client::enqueue_container_op(const ContainerOpPayload& op) {
-    if (!accepting_enqueue()) return;
-    QueuedSend q;
-    q.msg_type = MessageType::CONTAINER_OP;
-    q.reliable = true;
-    q.payload_bytes.resize(sizeof(op));
-    std::memcpy(q.payload_bytes.data(), &op, sizeof(op));
     push_queued(std::move(q));
 }
 
@@ -1073,14 +1073,15 @@ std::size_t Client::enqueue_nif_blob_for_equip(
     return enqueued;
 }
 
-void Client::enqueue_container_seed(std::uint32_t base_id, std::uint32_t cell_id,
+void Client::enqueue_container_seed(std::uint32_t form_id,
+                                    std::uint32_t base_id, std::uint32_t cell_id,
                                     const ContainerStateEntry* entries,
                                     std::size_t num_entries)
 {
     if (!accepting_enqueue()) return;
 
     constexpr std::size_t max_per_chunk = (MAX_PAYLOAD_SIZE - sizeof(ChunkHeader))
-                                          / sizeof(ContainerStateEntry); // 87
+                                          / sizeof(ContainerStateEntry); // 69 (v27)
 
     const std::uint16_t total_chunks = static_cast<std::uint16_t>(
         (num_entries + max_per_chunk - 1) / max_per_chunk);
@@ -1111,8 +1112,9 @@ void Client::enqueue_container_seed(std::uint32_t base_id, std::uint32_t cell_id
                         this_chunk * sizeof(ContainerStateEntry));
         }
 
-        // Silence unused-when-debug-off warning on some compilers
-        (void)base_id; (void)cell_id;
+        FW_DBG("net: CONTAINER_SEED form=0x%X (base=0x%X cell=0x%X) chunk %u/%u "
+               "entries=%zu", form_id, base_id, cell_id, ci + 1, clamp_chunks,
+               this_chunk);
 
         {
             std::lock_guard lk(queue_mutex_);
@@ -1121,109 +1123,179 @@ void Client::enqueue_container_seed(std::uint32_t base_id, std::uint32_t cell_id
     }
 }
 
-std::optional<ContainerOpAckPayload> Client::submit_container_op_blocking(
-    ContainerOpPayload op, std::uint32_t timeout_ms)
-{
-    // 2026-09-23 — the first hole of the v0.8.0 audit, CLOSED.
-    //
-    // Whoever takes an item from a container waits for a verdict, and with
-    // no session the verdict is no, AT ONCE. This only looked at
-    // accepting_enqueue, which is !stopping_ and not connected_: with the
-    // session down the operation was queued as reliable, the wait expired
-    // after 100 ms, the caller blocked the local mutation, and the operation
-    // stayed in the queue. reset_session_state keeps reliables across the
-    // drop, so on the rejoin the server applied it for a take the client had
-    // already refused: a TAKE made the item vanish from the container without
-    // entering any inventory, a PUT DUPLICATED it. The defect class B1 exists
-    // to close, reopened by v26 when the queue stopped refusing with the
-    // session down.
-    //
-    // Two defences, because one alone leaves a window: this refusal for the
-    // operation attempted while disconnected, and the withdrawal from the
-    // queue when the wait expires (below) for the one queued a moment before
-    // the drop.
-    if (!accepting_enqueue() || !connected_.load()) {
-        FW_DBG("net: container op refused — no session right now");
-        return std::nullopt;
-    }
+// Loot rework L2 (2026-09-23). The function this replaces waited up to
+// 100 ms here for the verdict and told the caller to skip the engine on a
+// refusal or a timeout; the caller sat on the ADD half of a transfer the
+// engine had already started, so "skip" destroyed the items (the whole
+// history is in container_hook.cpp). There is no wait any more and no
+// refusal with the session down: the engine has applied the op, the op is
+// owed to the server, and the queue carries it across a drop like every
+// other state event.
+std::uint32_t Client::submit_container_op(ContainerOpPayload op) {
+    if (!accepting_enqueue()) return 0;
 
-    // Allocate fresh op id (never 0).
-    std::uint32_t id = next_op_id_.fetch_add(1);
-    if (id == 0) id = next_op_id_.fetch_add(1);
+    std::uint32_t id = 0;
+    do {
+        const std::uint32_t seq = next_op_seq_.fetch_add(1) & 0xFFFFu;
+        id = (static_cast<std::uint32_t>(op_epoch_) << 16) | seq;
+    } while (id == 0);
     op.client_op_id = id;
 
-    auto pending = std::make_shared<PendingOp>();
     {
         std::lock_guard lk(pending_ops_mutex_);
-        pending_ops_[id] = pending;
+        pending_container_ops_[id] = op;
     }
 
-    // Enqueue reliable CONTAINER_OP. Use same path as fire-and-forget; the
-    // ACK correlation happens purely via client_op_id.
+    // Direct push, not push_queued: an op the engine has already applied
+    // must not be the one the ceiling drops (see the header).
+    QueuedSend q;
+    q.msg_type = MessageType::CONTAINER_OP;
+    q.reliable = true;
+    q.payload_bytes.resize(sizeof(op));
+    std::memcpy(q.payload_bytes.data(), &op, sizeof(op));
     {
-        QueuedSend q;
-        q.msg_type = MessageType::CONTAINER_OP;
-        q.reliable = true;
-        q.payload_bytes.resize(sizeof(op));
-        std::memcpy(q.payload_bytes.data(), &op, sizeof(op));
         std::lock_guard lk(queue_mutex_);
         queue_.push_back(std::move(q));
     }
-
-    // Wait for ACK or timeout. The ACK is copied while its lock is still held,
-    // and every lock is released before the queue is touched below: the ACK
-    // handler never holds pending_ops_mutex_ and pending->mtx together, and
-    // nothing here should start nesting them either.
-    std::optional<ContainerOpAckPayload> result;
-    {
-        std::unique_lock lk(pending->mtx);
-        if (pending->cv.wait_for(lk, std::chrono::milliseconds(timeout_ms),
-                                 [&]{ return pending->ready; })) {
-            result = pending->ack;
-        }
-    }
-
-    // Always unmap: a late ACK after timeout has nothing to wake.
-    {
-        std::lock_guard lk2(pending_ops_mutex_);
-        pending_ops_.erase(id);
-    }
-
-    if (!result) {
-        // The caller is about to refuse the mutation locally. If the op has
-        // not left the send queue yet, it must not leave at all: otherwise a
-        // session that drops and comes back delivers it, and the server
-        // applies a take the player never made (see the top of this function).
-        const bool withdrawn = withdraw_queued_container_op(id);
-        FW_WRN("net: submit_container_op_blocking timeout op_id=%u "
-               "kind=%u base=0x%X cell=0x%X item=0x%X count=%d — %s",
-               id, op.kind, op.container_base_id, op.container_cell_id,
-               op.item_base_id, op.count,
-               withdrawn
-                   ? "withdrawn from the send queue, the server never saw it"
-                   : "already on the wire: the server may still apply it "
-                     "(the 100 ms race, older than v26 and still open)");
-        return std::nullopt;
-    }
-    return result;
+    return id;
 }
 
-bool Client::withdraw_queued_container_op(std::uint32_t op_id) {
-    // The id sits inside a packed payload; offsetof keeps this honest if the
-    // layout ever moves, instead of a byte offset written by hand.
-    constexpr std::size_t kIdOff = offsetof(ContainerOpPayload, client_op_id);
-    std::lock_guard lk(queue_mutex_);
-    for (auto it = queue_.begin(); it != queue_.end(); ++it) {
-        if (it->msg_type != MessageType::CONTAINER_OP) continue;
-        if (it->payload_bytes.size() < kIdOff + sizeof(std::uint32_t)) continue;
-        std::uint32_t qid = 0;
-        std::memcpy(&qid, it->payload_bytes.data() + kIdOff, sizeof(qid));
-        if (qid == op_id) {
-            queue_.erase(it);
-            return true;
+void Client::resend_pending_container_ops() {
+    std::vector<ContainerOpPayload> ops;
+    {
+        std::lock_guard lk(pending_ops_mutex_);
+        ops.reserve(pending_container_ops_.size());
+        for (const auto& [id, op] : pending_container_ops_) ops.push_back(op);
+    }
+    if (ops.empty()) return;
+    // In the order they were made: the ids are one sequence per process.
+    std::sort(ops.begin(), ops.end(),
+              [](const ContainerOpPayload& a, const ContainerOpPayload& b) {
+                  return a.client_op_id < b.client_op_id;
+              });
+    {
+        std::lock_guard lk(queue_mutex_);
+        for (const auto& op : ops) {
+            QueuedSend q;
+            q.msg_type = MessageType::CONTAINER_OP;
+            q.reliable = true;
+            q.payload_bytes.resize(sizeof(op));
+            std::memcpy(q.payload_bytes.data(), &op, sizeof(op));
+            queue_.push_back(std::move(q));
         }
     }
-    return false;
+    FW_LOG("net: %zu container op(s) applied before the drop sent again for "
+           "a verdict", ops.size());
+}
+
+bool Client::container_known(std::uint32_t form_id) {
+    if (form_id == 0) return false;
+    std::lock_guard lk(container_mirror_mutex_);
+    return container_mirror_.find(form_id) != container_mirror_.end();
+}
+
+void Client::forget_container(std::uint32_t form_id) {
+    if (form_id == 0) return;
+    bool known = false;
+    {
+        std::lock_guard lk(container_mirror_mutex_);
+        known = container_mirror_.erase(form_id) != 0;
+    }
+    {
+        std::lock_guard lk(seeds_mutex_);
+        seeds_in_flight_.erase(form_id);
+    }
+    if (known) {
+        FW_LOG("net: container 0x%X forgotten: a new death, the first take "
+               "seeds the new corpse", form_id);
+    }
+}
+
+bool Client::seed_in_flight(std::uint32_t form_id, bool mark) {
+    std::lock_guard lk(seeds_mutex_);
+    if (mark) {
+        seeds_in_flight_.insert(form_id);
+        return true;
+    }
+    return seeds_in_flight_.find(form_id) != seeds_in_flight_.end();
+}
+
+bool Client::reconverge_container(std::uint32_t form_id) {
+    if (form_id == 0) return false;
+    {
+        std::lock_guard lk(pending_ops_mutex_);
+        for (const auto& [id, op] : pending_container_ops_) {
+            if (op.container_form_id == form_id) {
+                FW_DBG("net: container 0x%X not aligned now, op_id=%u still "
+                       "waits for its verdict", form_id, id);
+                return false;
+            }
+        }
+    }
+    std::vector<std::pair<std::uint32_t, std::int32_t>> want;
+    std::uint32_t base_id = 0, cell_id = 0;
+    {
+        std::lock_guard lk(container_mirror_mutex_);
+        const auto it = container_mirror_.find(form_id);
+        if (it == container_mirror_.end()) return false;
+        base_id = it->second.base_id;
+        cell_id = it->second.cell_id;
+        want.assign(it->second.items.begin(), it->second.items.end());
+    }
+    fw::hooks::ApplyingRemoteGuard guard;
+    fw::engine::ContainerDiff d{};
+    const bool ok = fw::engine::reconverge_container_to_engine(
+        form_id, base_id, cell_id, want, &d);
+    if (ok && (d.items_added || d.items_removed)) {
+        FW_LOG("net: container 0x%X (base=0x%X cell=0x%X) aligned with the "
+               "server: +%d item(s) (%d new line(s)), -%d item(s) (%d line(s) "
+               "gone), server lists %zu line(s)",
+               form_id, base_id, cell_id, d.items_added, d.lines_added,
+               d.items_removed, d.lines_removed, want.size());
+        // L3.1: the rows of a container on screen follow the change.
+        fw::hooks::refresh_container_menu(d.refr, /*container_side=*/true,
+                                          /*player_side=*/false);
+    } else if (ok) {
+        FW_DBG("net: container 0x%X already matches the server (%zu line(s))",
+               form_id, want.size());
+    }
+    return ok;
+}
+
+void Client::sweep_known_containers(const char* why) {
+    std::vector<std::uint32_t> fids;
+    {
+        std::lock_guard lk(container_mirror_mutex_);
+        fids.reserve(container_mirror_.size());
+        for (const auto& [fid, mc] : container_mirror_) fids.push_back(fid);
+    }
+    if (fids.empty()) return;
+    std::size_t found = 0;
+    for (const std::uint32_t fid : fids) {
+        if (reconverge_container(fid)) ++found;
+    }
+    FW_LOG("net: container sweep (%s, cell 0x%X): %zu known, %zu found and "
+           "aligned with the server", why, sweep_cell_, fids.size(), found);
+}
+
+void Client::container_sweep_tick() {
+    const std::uint64_t now = now_ms_wall();
+    if (now - sweep_checked_ms_ < 500) return;
+    sweep_checked_ms_ = now;
+    if (!fw::native::ghost_scene_settled()) {
+        // A load in progress: the next settle sweeps again.
+        sweep_settled_ = false;
+        return;
+    }
+    void* player = fw::engine::lookup_by_form_id(0x14);
+    if (!player) return;
+    const auto id = fw::read_ref_identity(player);
+    if (id.cell_id == 0) return;
+    const bool first = !sweep_settled_;
+    if (!first && id.cell_id == sweep_cell_) return;
+    sweep_settled_ = true;
+    sweep_cell_ = id.cell_id;
+    sweep_known_containers(first ? "scene settled" : "cell changed");
 }
 
 // ---------------------------------------------------------------- main loop
@@ -1372,6 +1444,9 @@ Client::HandshakeOutcome Client::await_welcome(bool was_resume) {
             connected_.store(true);
             last_server_frame_ms_.store(now_ms_wall(),
                                         std::memory_order_relaxed);
+            // Loot rework L2: the ops the engine applied while the session
+            // was down, or whose verdict the drop swallowed, go out now.
+            resend_pending_container_ops();
             // v26 — the token for next time. The server mints a new one at
             // every accepted WELCOME and retires the previous one, so it is
             // good for one resume: always overwritten, never accumulated.
@@ -1759,12 +1834,6 @@ void Client::run_loop() {
 
         if (stopping_.load()) break;
         if (session_lost) {
-            // Whoever is waiting for a verdict on a container must not hang
-            // until its own timeout: it is answered no at once, and the
-            // engine mutates nothing. Before phase 1 this wake-up sat only on
-            // the thread's exit, so during a drop every take or put ate a
-            // hundred milliseconds for nothing.
-            wake_pending_ops();
             // Phase 2: the others are still playing, this client just cannot
             // see them any more: their bodies are hidden instead of standing
             // as motionless statues that lie.
@@ -1778,17 +1847,18 @@ void Client::run_loop() {
 
     connected_.store(false);
 
-    wake_pending_ops();
+    {
+        std::lock_guard lk(pending_ops_mutex_);
+        if (!pending_container_ops_.empty()) {
+            FW_WRN("net: exiting with %zu container op(s) the server never "
+                   "answered: the engine applied them, the world file did not",
+                   pending_container_ops_.size());
+        }
+    }
 
     FW_LOG("net: client thread exiting");
 }
 
-// Wake all pending blocking submitters with a synthetic "no answer".
-// They see ready=false in ack — treated as "reject/timeout" → do not mutate.
-// We leave ack zeroed; the caller already has timeout logic for
-// "wait_for returned false" but here we set ready=true so it doesn't
-// stall for the full timeout. Status=0 (ACCEPTED) would be wrong, so we use
-// REJ_RATE as a harmless reject sentinel.
 // The insertion point with the ceiling (not the only one: see the header).
 //
 // Before phase 1 the queue had no ceiling: the only thing keeping it short
@@ -1828,29 +1898,6 @@ bool Client::push_queued(QueuedSend&& q) {
     return true;
 }
 
-void Client::wake_pending_ops() {
-    std::size_t woken = 0;
-    {
-        std::lock_guard lk(pending_ops_mutex_);
-        for (auto& [id, p] : pending_ops_) {
-            {
-                std::lock_guard pl(p->mtx);
-                p->ack.client_op_id = id;
-                p->ack.status = static_cast<std::uint8_t>(
-                    ContainerOpAckStatus::REJ_RATE);
-                p->ready = true;
-            }
-            p->cv.notify_all();
-            ++woken;
-        }
-        pending_ops_.clear();
-    }
-    if (woken) {
-        FW_LOG("net: answered %zu pending container op(s) with a refusal",
-               woken);
-    }
-}
-
 // Everything that belongs to ONE session and must not survive the next.
 // Only from the worker thread, between one session and the next.
 void Client::reset_session_state() {
@@ -1871,28 +1918,39 @@ void Client::reset_session_state() {
     // thread touches this map, in dispatch, and this function runs on the
     // same thread.
     mesh_blob_reasm_.clear();
-    // The container bootstrap MERGES instead of replacing, so without
-    // clearing, the entries of a container changed while this client was
-    // away would sit next to the new ones.
+    // The server's view is per session: the bootstrap of the next one
+    // rebuilds it, and a server that lost its state must be seeded again,
+    // so the seeds sent go too. The sequence accumulator belongs to this
+    // thread and is emptied with the rest.
     {
         std::lock_guard lk(container_mirror_mutex_);
         container_mirror_.clear();
     }
+    state_sequence_fids_.clear();
+    {
+        std::lock_guard lk(seeds_mutex_);
+        seeds_in_flight_.clear();
+    }
     // The snapshots queued while down are seconds old and useless to
     // anyone. State events stay instead: losing one (an equip, a spawn, a
     // death) leaves the two clients misaligned until it is redone by hand.
+    // Container ops leave the queue too, but not to vanish: every op still
+    // without a verdict is sent again from pending_container_ops_ after the
+    // WELCOME (loot rework L2), and the copy here would only double it.
     {
         std::lock_guard lk(queue_mutex_);
         std::deque<QueuedSend> keep;
-        std::size_t dropped = 0;
+        std::size_t dropped = 0, ops = 0;
         for (auto& q : queue_) {
-            if (q.reliable) keep.push_back(std::move(q));
-            else            ++dropped;
+            if (q.msg_type == MessageType::CONTAINER_OP) ++ops;
+            else if (q.reliable) keep.push_back(std::move(q));
+            else ++dropped;
         }
         queue_.swap(keep);
-        if (dropped || !queue_.empty()) {
+        if (dropped || ops || !queue_.empty()) {
             FW_LOG("net: carrying %zu state event(s) into the new session, "
-                   "dropped %zu stale snapshot(s)", queue_.size(), dropped);
+                   "dropped %zu stale snapshot(s); %zu container op(s) go out "
+                   "again after the WELCOME", queue_.size(), dropped, ops);
         }
     }
     // And the piece nobody would see missing until too late: without this
@@ -2238,23 +2296,77 @@ void Client::dispatch(const Delivered& d) {
         if (d.payload.size() < sizeof(ContainerOpAckPayload)) break;
         ContainerOpAckPayload ack{};
         std::memcpy(&ack, d.payload.data(), sizeof(ack));
-        std::shared_ptr<PendingOp> pending;
+        // Loot rework L2: the engine applied the op before it was sent.
+        // ACCEPTED closes it; anything else is undone on the main thread,
+        // the only one allowed to touch an inventory (B1.l).
+        std::optional<ContainerOpPayload> op;
         {
             std::lock_guard lk(pending_ops_mutex_);
-            auto it = pending_ops_.find(ack.client_op_id);
-            if (it != pending_ops_.end()) pending = it->second;
-        }
-        if (pending) {
-            {
-                std::lock_guard pl(pending->mtx);
-                pending->ack = ack;
-                pending->ready = true;
+            auto it = pending_container_ops_.find(ack.client_op_id);
+            if (it != pending_container_ops_.end()) {
+                op = it->second;
+                pending_container_ops_.erase(it);
             }
-            pending->cv.notify_one();
-        } else {
-            // Late ACK (past timeout) or id=0 (fire-and-forget) — log and drop.
-            FW_DBG("net: unmatched CONTAINER_OP_ACK op_id=%u status=%u",
+        }
+        if (!op) {
+            // The server answers a re-sent op with its stored verdict, and
+            // the first copy of that verdict already closed the op here.
+            FW_DBG("net: CONTAINER_OP_ACK op_id=%u status=%u for no pending op",
                    ack.client_op_id, ack.status);
+            break;
+        }
+        const bool take = op->kind ==
+            static_cast<std::uint32_t>(ContainerOpKind::TAKE);
+        // Loot rework L3: with the verdict in, an alignment deferred while
+        // this op was in flight can run; it is a no-op when the container
+        // already matches.
+        fw::dispatch::PendingContainerOp settle{};
+        settle.container_form_id = op->container_form_id;
+        settle.reconverge = 1;
+        if (ack.status == static_cast<std::uint8_t>(ContainerOpAckStatus::ACCEPTED)) {
+            {
+                std::lock_guard lk(container_mirror_mutex_);
+                auto mit = container_mirror_.find(op->container_form_id);
+                if (mit != container_mirror_.end()) {
+                    auto& bucket = mit->second.items;
+                    if (ack.final_count > 0) bucket[ack.item_base_id] = ack.final_count;
+                    else                     bucket.erase(ack.item_base_id);
+                }
+            }
+            FW_DBG("net: CONTAINER_OP op_id=%u %s ACCEPTED, server has %d x 0x%X "
+                   "in 0x%X", ack.client_op_id, take ? "TAKE" : "PUT",
+                   ack.final_count, ack.item_base_id, op->container_form_id);
+            fw::dispatch::enqueue_container_apply(settle);
+            break;
+        }
+        FW_WRN("net: CONTAINER_OP op_id=%u %s REFUSED status=%u (server has %d) "
+               "container=0x%X (base=0x%X cell=0x%X) item=0x%X count=%d — "
+               "undoing it on the main thread",
+               ack.client_op_id, take ? "TAKE" : "PUT", ack.status,
+               ack.final_count, op->container_form_id, op->container_base_id,
+               op->container_cell_id, op->item_base_id, op->count);
+        const bool insufficient = ack.status ==
+            static_cast<std::uint8_t>(ContainerOpAckStatus::REJ_INSUFFICIENT);
+        fw::dispatch::PendingContainerOp undo{};
+        undo.kind              = op->kind;
+        undo.container_form_id = op->container_form_id;
+        undo.container_base_id = op->container_base_id;
+        undo.container_cell_id = op->container_cell_id;
+        undo.item_base_id      = op->item_base_id;
+        undo.count             = op->count;
+        undo.rollback          = 1;
+        undo.insufficient      = insufficient ? 1 : 0;
+        undo.server_count      = ack.final_count;
+        fw::dispatch::enqueue_container_apply(undo);
+        fw::dispatch::enqueue_container_apply(settle);
+        {
+            char msg[160];
+            std::snprintf(msg, sizeof(msg),
+                          !take        ? "(the server refused your deposit: %d item(s) returned to you)"
+                          : insufficient ? "(someone took it first: %d item(s) removed from your inventory)"
+                                         : "(the server refused your take: %d item(s) put back)",
+                          op->count);
+            fw::render::chat::notice(msg);
         }
         break;
     }
@@ -2264,22 +2376,27 @@ void Client::dispatch(const Delivered& d) {
         if (d.payload.size() < sizeof(ContainerBroadcastPayload)) break;
         ContainerBroadcastPayload b{};
         std::memcpy(&b, d.payload.data(), sizeof(b));
-        if (b.container_base_id == 0 || b.container_cell_id == 0) break;
+        if (b.container_form_id == 0 || b.container_base_id == 0 ||
+            b.container_cell_id == 0) break;
 
-        // Mirror update (shadow container state). Same as pre-B1.g.
+        // Mirror update, keyed by the REFR (L1), only for a container whose
+        // view is held (L3: a BCAST never creates a view, see the header).
         {
             std::lock_guard lk(container_mirror_mutex_);
-            auto& bucket = container_mirror_[{b.container_base_id, b.container_cell_id}];
-            const auto it = bucket.find(b.item_base_id);
-            std::int32_t current = (it == bucket.end()) ? 0 : it->second;
-            std::int32_t new_count = current;
-            if (b.kind == static_cast<std::uint32_t>(ContainerOpKind::TAKE)) {
-                new_count = (b.count >= current) ? 0 : (current - b.count);
-            } else if (b.kind == static_cast<std::uint32_t>(ContainerOpKind::PUT)) {
-                new_count = current + b.count;
+            auto mit = container_mirror_.find(b.container_form_id);
+            if (mit != container_mirror_.end()) {
+                auto& bucket = mit->second.items;
+                const auto it = bucket.find(b.item_base_id);
+                std::int32_t current = (it == bucket.end()) ? 0 : it->second;
+                std::int32_t new_count = current;
+                if (b.kind == static_cast<std::uint32_t>(ContainerOpKind::TAKE)) {
+                    new_count = (b.count >= current) ? 0 : (current - b.count);
+                } else if (b.kind == static_cast<std::uint32_t>(ContainerOpKind::PUT)) {
+                    new_count = current + b.count;
+                }
+                if (new_count == 0) bucket.erase(b.item_base_id);
+                else               bucket[b.item_base_id] = new_count;
             }
-            if (new_count == 0) bucket.erase(b.item_base_id);
-            else               bucket[b.item_base_id] = new_count;
         }
 
         // B1.l (replaces B1.g.2 hotfix): enqueue the op on the main-
@@ -2305,6 +2422,17 @@ void Client::dispatch(const Delivered& d) {
             op.item_base_id       = b.item_base_id;
             op.count              = b.count;
             fw::dispatch::enqueue_container_apply(op);
+            // Loot rework L3.2 (2026-09-24): an alignment right behind the
+            // apply, in the same drain. The engine's AddItem of a weapon
+            // into a container drops a stack of its ammo as well (five to
+            // nine rounds after every 10mm pistol, both clients, four out
+            // of four), and nothing else brings a container back to exactly
+            // the server's list. Deferred by itself while an op of ours on
+            // that container waits for its verdict.
+            fw::dispatch::PendingContainerOp settle{};
+            settle.container_form_id = b.container_form_id;
+            settle.reconverge = 1;
+            fw::dispatch::enqueue_container_apply(settle);
             FW_DBG("net: CONTAINER_BCAST enqueued for main-thread apply "
                    "peer=%s kind=%u cfid=0x%X base=0x%X cell=0x%X "
                    "item=0x%X count=%d",
@@ -2807,10 +2935,22 @@ void Client::dispatch(const Delivered& d) {
         // handoff transient delivered one packet to a peer who just became
         // owner, the worst case is a harmless idempotent corpse — strictly
         // safer than risking a missed death (which is the crash).
-        FW_LOG("ownership: DEATH fid=0x%X killer=0x%X pos=(%.1f,%.1f,%.1f) dmg=%.1f hz=%u",
+        FW_LOG("ownership: DEATH fid=0x%X killer=0x%X pos=(%.1f,%.1f,%.1f) dmg=%.1f hz=%u%s",
                pay.form_id, pay.killer_form_id,
                pay.pos_x, pay.pos_y, pay.pos_z, pay.damage,
-               static_cast<unsigned>(pay.hit_zone));
+               static_cast<unsigned>(pay.hit_zone),
+               (pay.flags & NPC_DEATH_FLAG_REPLAY) ? " (replay of a known death)" : "");
+
+        // Loot rework L4.1 (2026-09-25): a death makes a new corpse with a
+        // new loot roll, so the record of this actor's previous corpse is
+        // dropped from the mirror, here on the net thread so that a
+        // CONTAINER_STATE sent after the death is never dropped by it. A
+        // replay of a known death keeps the record: the corpse is the same
+        // one, re-rolled by this engine because the save predates the death,
+        // and it is aligned to what the server holds.
+        if ((pay.flags & NPC_DEATH_FLAG_REPLAY) == 0) {
+            forget_container(pay.form_id);
+        }
 
         // Dispatch to the main thread: lookup → mark_dying → un-keyframe →
         // place at synced pos → engine Actor::Kill (under ApplyingRemoteGuard).
@@ -3376,13 +3516,45 @@ void Client::dispatch(const Delivered& d) {
 
         const auto* entries = reinterpret_cast<const ContainerStateEntry*>(
             d.payload.data() + sizeof(ChunkHeader));
-        std::lock_guard lk(container_mirror_mutex_);
-        for (std::uint16_t i = 0; i < h.num_entries; ++i) {
-            const auto& e = entries[i];
-            if (e.container_base_id == 0 || e.container_cell_id == 0) continue;
-            auto& bucket = container_mirror_[{e.container_base_id, e.container_cell_id}];
-            if (e.count > 0) bucket[e.item_base_id] = e.count;
-            else             bucket.erase(e.item_base_id);
+        // Loot rework L3: a sequence (the bootstrap, or a live push for the
+        // records a seed created, replaced or refilled) carries the COMPLETE
+        // list of every container it names. The first line of a container
+        // in the sequence resets its view; the sentinel (item 0) names a
+        // known, empty container and adds nothing else.
+        {
+            std::lock_guard lk(container_mirror_mutex_);
+            for (std::uint16_t i = 0; i < h.num_entries; ++i) {
+                const auto& e = entries[i];
+                if (e.container_form_id == 0) continue;
+                auto& mc = container_mirror_[e.container_form_id];
+                const bool first_in_sequence =
+                    std::find(state_sequence_fids_.begin(), state_sequence_fids_.end(),
+                              e.container_form_id) == state_sequence_fids_.end();
+                if (first_in_sequence) {
+                    state_sequence_fids_.push_back(e.container_form_id);
+                    mc.items.clear();
+                    mc.base_id = e.container_base_id;
+                    mc.cell_id = e.container_cell_id;
+                }
+                if (e.item_base_id == 0) continue;
+                if (e.count > 0) mc.items[e.item_base_id] = e.count;
+                else             mc.items.erase(e.item_base_id);
+            }
+        }
+        if (h.chunk_index + 1 >= h.total_chunks) {
+            // The sequence is complete: align every container it named, on
+            // the main thread. A container not loaded is skipped there and
+            // aligned on its activation instead.
+            const std::size_t n = state_sequence_fids_.size();
+            for (const std::uint32_t fid : state_sequence_fids_) {
+                fw::dispatch::PendingContainerOp op{};
+                op.container_form_id = fid;
+                op.reconverge = 1;
+                fw::dispatch::enqueue_container_apply(op);
+            }
+            state_sequence_fids_.clear();
+            FW_LOG("net: CONTAINER_STATE sequence complete, %zu container(s) "
+                   "to align with the server", n);
         }
         break;
     }

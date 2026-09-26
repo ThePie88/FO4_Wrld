@@ -83,6 +83,22 @@ struct PendingContainerOp {
     std::uint32_t container_cell_id;  // identity check component
     std::uint32_t item_base_id;       // what to add/remove
     std::int32_t  count;              // how many (>0)
+    // Loot rework L2 (2026-09-23): 1 = the undo of a LOCAL op the server
+    // refused. The engine had already moved the items when the op was sent
+    // (the client applies first, asks after), so the undo is done by
+    // engine::rollback_container_op_to_engine instead of the remote apply:
+    // the player's side of the op is reverted, and the container's count of
+    // the item is aligned to what the server holds (`server_count`, the
+    // ACK's final_count). `insufficient` marks the one refusal where the
+    // items never existed for the server: they are destroyed, not put back.
+    std::uint8_t  rollback;
+    std::uint8_t  insufficient;
+    std::int32_t  server_count;
+    // Loot rework L3 (2026-09-24): 1 = align the container `container_form_id`
+    // to the server's view held by the client's mirror (the other fields
+    // unused). Queued by the network thread when a CONTAINER_STATE sequence
+    // completes and after every verdict on one of our own ops.
+    std::uint8_t  reconverge;
 };
 
 struct PendingDoorOp {
@@ -155,9 +171,10 @@ struct PendingEquipOp {
 void enqueue_container_apply(const PendingContainerOp& op);
 
 // Main thread (WndProc dispatcher) only. Drains all pending ops in one
-// shot and calls fw::engine::apply_container_op_to_engine on each,
-// under an fw::hooks::ApplyingRemoteGuard to suppress feedback from any
-// internal vt[0x7A] re-entry.
+// shot and calls fw::engine::apply_container_op_to_engine on each (or
+// rollback_container_op_to_engine for an op flagged `rollback`), under an
+// fw::hooks::ApplyingRemoteGuard to suppress feedback from any internal
+// vt[0x7A] re-entry.
 void drain_container_apply_queue();
 
 // B6.1: door apply queue — same pattern as container.

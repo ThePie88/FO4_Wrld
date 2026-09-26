@@ -25,6 +25,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "../config.h"
@@ -177,13 +178,54 @@ public:
     // Reliable.
     void enqueue_actor_event(const ActorEventPayload& a);
 
-    // Fire-and-forget reliable CONTAINER_OP (legacy, B0 semantics — no wait).
-    // Prefer submit_container_op_blocking for B1+ pre-mutation block.
-    void enqueue_container_op(const ContainerOpPayload& op);
+    // Loot rework L2 (2026-09-23): the engine has ALREADY moved the items
+    // when this is called. Stamps op.client_op_id, remembers the op until
+    // its CONTAINER_OP_ACK, queues it reliable. Never waits: the verdict
+    // arrives on the network thread, and a refusal is undone on the main
+    // thread through the dispatch queue (a PendingContainerOp flagged
+    // rollback). An op still without a verdict when the session drops is
+    // sent again after the next WELCOME; the server answers a repeat with
+    // the verdict it stored. Returns the op id, 0 when the client is
+    // shutting down and nothing was queued.
+    std::uint32_t submit_container_op(ContainerOpPayload op);
+
+    // --- loot rework L3 (2026-09-24): the engine follows the server ---
+    // True when the server's view of this container is held here (the
+    // bootstrap or a live push carried it). ANY THREAD.
+    bool container_known(std::uint32_t form_id);
+    // Loot rework L4.1 (2026-09-25): a death makes a new corpse with a new
+    // loot roll, so the mirror entry and the seed mark of that actor are
+    // dropped and the first take seeds the new corpse. Called on the net
+    // thread when a death message without the replay flag arrives (before
+    // any later CONTAINER_STATE is read, so a fresh record is never dropped
+    // by an older death) and on the main thread by the local kill hook.
+    void forget_container(std::uint32_t form_id);
+    // Whether a seed for this container left in this session with no push
+    // answering it yet; with `mark`, records that one just did. ANY THREAD.
+    bool seed_in_flight(std::uint32_t form_id, bool mark);
+    // Align the local container to the server's view: nothing when the
+    // view is not held, deferred when one of our own ops on it still waits
+    // for its verdict (the ACK queues the alignment again). True when the
+    // REFR was found and is now aligned (or already was). MAIN THREAD
+    // ONLY: engine inventory calls, under ApplyingRemoteGuard.
+    bool reconverge_container(std::uint32_t form_id);
+
+    // Loot rework L3.3 (2026-09-24): the save is the world's definition and
+    // the server its history. Every launch reloads the save, so a container
+    // the server knows emptied is full again in the engine until something
+    // aligns it; the join bootstrap runs before the world is loaded ("not
+    // loaded, nothing to align") and the activation runs at the menu, where
+    // the items were seen to vanish on both clients, with the quick-loot HUD
+    // showing the save's contents until then. This tick, from the main-thread
+    // heartbeat, aligns every known container once the scene has settled and
+    // again at every change of the player's cell, so what the HUD shows is
+    // the server's before anyone opens anything. MAIN THREAD.
+    void container_sweep_tick();
 
     // Reliable CONTAINER_SEED — chunked. entries will be split across frames
     // if > MAX entries per chunk. No ACK correlation (fire-and-forget).
-    void enqueue_container_seed(std::uint32_t base_id, std::uint32_t cell_id,
+    void enqueue_container_seed(std::uint32_t form_id,
+                                std::uint32_t base_id, std::uint32_t cell_id,
                                 const ContainerStateEntry* entries,
                                 std::size_t num_entries);
 
@@ -409,16 +451,6 @@ public:
         const void*   nif_buf,
         std::size_t   nif_size);
 
-    // B1.d: Blocking submit. Fills op.client_op_id from an internal counter,
-    // sends reliable, waits up to `timeout_ms` on a condvar for the matching
-    // CONTAINER_OP_ACK from the server. Returns:
-    //   - populated ContainerOpAckPayload if ACK arrived (status may be
-    //     ACCEPTED or any REJ_*).
-    //   - std::nullopt if the wait timed out or the client is not connected.
-    //     Caller treats timeout as conservative REJECT (do not mutate).
-    std::optional<ContainerOpAckPayload> submit_container_op_blocking(
-        ContainerOpPayload op, std::uint32_t timeout_ms = 100);
-
     const Stats& stats() const noexcept { return stats_; }
 
     // --- ε.pivot: remote player state for custom renderer ---
@@ -474,25 +506,17 @@ private:
     // false se nel frattempo ci hanno chiesto di fermarci.
     bool backoff_wait(unsigned attempt);
 
-    // Wakes whoever is blocked on a container operation with a synthetic
-    // refusal instead of letting it time out. Used both when the session
-    // drops and when the thread exits.
-    void wake_pending_ops();
+    // Loot rework L2: after a WELCOME, every container op still waiting for
+    // its verdict goes out again. reset_session_state dropped the queued
+    // copies, so nothing leaves twice from this side; a repeat the server
+    // did see is answered with the stored verdict.
+    void resend_pending_container_ops();
 
     // Messages are queued until asked to stop, even while the session is
-    // down: what is reliable must wait for the rejoin, not vanish.
-    //
-    // Whoever wants an answer AT ONCE, the take from a container, also looks
-    // at `connected_`, and since 2026-09-23 that is so:
-    // submit_container_op_blocking refuses with the session down instead of
-    // queueing. It used to look only at this predicate, and the queued
-    // operation was replayed on the rejoin.
+    // down: what is reliable must wait for the rejoin, not vanish. Container
+    // ops included since loot rework L2: the engine has applied them, so the
+    // server must hear of them or refuse them, never lose them.
     bool accepting_enqueue() const noexcept { return !stopping_.load(); }
-
-    // Removes the CONTAINER_OP with that id from the send queue, if it has
-    // not left yet. True when found: the server never saw it. For whoever has
-    // just given up waiting for its verdict.
-    bool withdraw_queued_container_op(std::uint32_t op_id);
 
     // Insertion into the queue WITH the ceiling. Returns false when the
     // message was dropped.
@@ -500,8 +524,10 @@ private:
     // NOT the only insertion point, despite what this used to say: four
     // producers do a direct queue_.push_back and bypass the ceiling, the
     // MESH_BLOB chunks, the NIF_BLOB chunks, the CONTAINER_SEED chunks and
-    // submit_container_op_blocking. They are precisely the bulkiest, so
-    // kSendQueueMax does not limit what would most need a limit.
+    // submit_container_op. The first three are precisely the bulkiest, so
+    // kSendQueueMax does not limit what would most need a limit; the
+    // container ops bypass it because the engine has already applied them
+    // and they must not be the ones a full queue drops.
     bool push_queued(QueuedSend&& q);
 
     // Ceiling of the outgoing queue. The largest message is a full pose,
@@ -555,25 +581,37 @@ private:
     // --- worker thread ---
     std::thread thread_;
 
-    // --- local mirror of authoritative server state ---
-    // Keyed by (base_id, cell_id). Value map: item_base_id -> count.
-    // Populated from CONTAINER_STATE bootstrap + maintained via CONTAINER_BCAST.
-    // Currently used only for telemetry / debugging; a future block may
-    // plug it into the container hook for optimistic-apply.
-    struct ContainerKey { std::uint32_t base, cell; };
-    struct ContainerKeyHash {
-        std::size_t operator()(const ContainerKey& k) const noexcept {
-            return (static_cast<std::size_t>(k.base) << 32) ^ k.cell;
-        }
-    };
-    struct ContainerKeyEq {
-        bool operator()(const ContainerKey& a, const ContainerKey& b) const noexcept {
-            return a.base == b.base && a.cell == b.cell;
-        }
+    // --- the server's view of the containers (loot rework L1 + L3) ---
+    // Keyed by the container REFR's form_id. Since L3 this is what the
+    // engine is aligned to: fed by the CONTAINER_STATE bootstrap and by the
+    // live pushes (a record the server created, replaced or refilled),
+    // adjusted by CONTAINER_BCAST and by this client's own ACCEPTED
+    // verdicts, but never CREATED by those two: the server broadcasts ops
+    // on partial records as well, and a view built from one op would empty
+    // the container of everything else. A container present here with no
+    // items is KNOWN EMPTY (the sentinel entry): its local copy is emptied.
+    struct MirrorContainer {
+        std::uint32_t base_id = 0;
+        std::uint32_t cell_id = 0;
+        std::unordered_map<std::uint32_t, std::int32_t> items;
     };
     std::mutex container_mirror_mutex_;
-    std::unordered_map<ContainerKey, std::unordered_map<std::uint32_t, std::int32_t>,
-                       ContainerKeyHash, ContainerKeyEq> container_mirror_;
+    std::unordered_map<std::uint32_t, MirrorContainer> container_mirror_;
+    // The containers named by the CONTAINER_STATE chunks of one sequence,
+    // in order of first appearance; aligned when the last chunk lands (a
+    // container's lines may straddle two chunks). Network thread only.
+    std::vector<std::uint32_t> state_sequence_fids_;
+    // Seeds sent this session and not yet answered by a push: one seed per
+    // container per session. Cleared with the session, so a server that
+    // lost its state is seeded again.
+    std::mutex seeds_mutex_;
+    std::unordered_set<std::uint32_t> seeds_in_flight_;
+    // The sweep (L3.3): checked twice a second on the main thread; a sweep
+    // when the scene settles and when the player's cell changes.
+    std::uint64_t sweep_checked_ms_ = 0;
+    std::uint32_t sweep_cell_ = 0;
+    bool          sweep_settled_ = false;
+    void sweep_known_containers(const char* why);
 
     // --- M9 w4 v9 mesh blob reassembly state -----------------------------
     // Net worker thread owns this map exclusively (read+write from
@@ -619,20 +657,17 @@ private:
                        MeshBlobReassemblyKeyEq> mesh_blob_reasm_;
     static constexpr std::uint64_t MESH_BLOB_REASSEMBLY_TIMEOUT_MS = 5000;
 
-    // --- B1.d pending-op table for CONTAINER_OP_ACK correlation ---
-    // Sender hook thread allocates a fresh client_op_id (atomic counter),
-    // stashes a PendingOp on the heap and keys it in the map, then waits on
-    // the condvar. The net worker thread wakes it when the server's ACK
-    // lands in dispatch().
-    struct PendingOp {
-        std::mutex mtx;
-        std::condition_variable cv;
-        bool ready = false;
-        ContainerOpAckPayload ack{};
-    };
-    std::atomic<std::uint32_t> next_op_id_{1};  // 0 reserved for fire-and-forget
+    // --- loot rework L2: container ops waiting for their verdict ---
+    // Keyed by client_op_id, the full op so a refusal can be undone and a
+    // drop can send it again. The id is a per-process random epoch in the
+    // high 16 bits and a sequence in the low 16: the server remembers
+    // verdicts per PEER across sessions, and the epoch keeps a relaunched
+    // client's first ops from being answered with the verdicts of the
+    // previous process. 0 is never issued (fire-and-forget on the wire).
+    std::uint16_t op_epoch_ = 0;                // set in the constructor
+    std::atomic<std::uint32_t> next_op_seq_{1};
     std::mutex pending_ops_mutex_;
-    std::unordered_map<std::uint32_t, std::shared_ptr<PendingOp>> pending_ops_;
+    std::unordered_map<std::uint32_t, ContainerOpPayload> pending_container_ops_;
 
     // --- the remote peers' snapshot ---
     //

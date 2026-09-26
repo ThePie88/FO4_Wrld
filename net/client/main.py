@@ -115,7 +115,8 @@ class FalloutWorldClient:
         # Each value is dict[item_base_id -> count]. Populated from bootstrap
         # chunks and kept in sync via CONTAINER_BCAST. Not yet pushed to the
         # Frida bridge (A.8 will add the engine AddItem/RemoveItem hooks).
-        self.container_state: dict[tuple[int, int], dict[int, int]] = {}
+        # Keyed by the container REFR's form_id (loot rework L1, v27).
+        self.container_state: dict[int, dict[int, int]] = {}
         self._container_bootstrap_chunks_received: set[int] = set()
         self._container_bootstrap_total_chunks: int = 0
         self.container_bootstrap_complete: bool = False
@@ -446,9 +447,9 @@ class FalloutWorldClient:
         if not isinstance(payload, ContainerStatePayload):
             return
         for e in payload.entries:
-            if e.container_base_id == 0 or e.container_cell_id == 0:
+            if e.container_form_id == 0:
                 continue  # defensive: malformed entry
-            key = (e.container_base_id, e.container_cell_id)
+            key = e.container_form_id
             bucket = self.container_state.setdefault(key, {})
             if e.count > 0:
                 bucket[e.item_base_id] = e.count
@@ -479,9 +480,9 @@ class FalloutWorldClient:
         if not isinstance(payload, ContainerBroadcastPayload):
             return
         self.stats["container_ops_received"] += 1
-        if payload.container_base_id == 0 or payload.container_cell_id == 0:
+        if payload.container_form_id == 0:
             return
-        key = (payload.container_base_id, payload.container_cell_id)
+        key = payload.container_form_id
         bucket = self.container_state.setdefault(key, {})
         current = bucket.get(payload.item_base_id, 0)
         if payload.kind == int(ContainerOpKind.TAKE):
@@ -513,6 +514,7 @@ class FalloutWorldClient:
         container_cell_id: int,
         item_base_id: int,
         count: int,
+        container_form_id: int,
     ) -> None:
         """Send a TAKE/PUT op to the server (reliable). Called by the
         Frida container-hook (A.8) or by tests / manual console triggers.
@@ -531,13 +533,13 @@ class FalloutWorldClient:
         """
         if not self.connected or count <= 0:
             return
-        if container_base_id == 0 or container_cell_id == 0:
+        if container_form_id == 0 or container_base_id == 0 or container_cell_id == 0:
             log.warning("refusing to send container op with missing identity")
             return
 
         # Optimistic local apply BEFORE transmit — keeps sender's mirror
         # in sync with what the server will accept in the common case.
-        key = (container_base_id, container_cell_id)
+        key = container_form_id
         bucket = self.container_state.setdefault(key, {})
         current = bucket.get(item_base_id, 0)
         if kind == ContainerOpKind.TAKE:
@@ -559,6 +561,7 @@ class FalloutWorldClient:
             item_base_id=item_base_id,
             count=count,
             timestamp_ms=int(time.time() * 1000),
+            container_form_id=container_form_id,
         )
         now_ms = _now_ms()
         raw = self.channel.send_reliable(MessageType.CONTAINER_OP, payload, now_ms)
@@ -651,6 +654,7 @@ class FalloutWorldClient:
                 container_cell_id=cap.container_cell_id,
                 item_base_id=cap.item_base_id,
                 count=cap.count,
+                container_form_id=cap.container_form_id,
             )
 
     async def _tick_loop(self) -> None:
@@ -764,6 +768,7 @@ class FalloutWorldClient:
             log.warning("manual op unknown kind: %r", cmd)
             return
         try:
+            cform = _parse_int(cmd["container_form"])
             cbase = _parse_int(cmd["container_base"])
             ccell = _parse_int(cmd["container_cell"])
             ibase = _parse_int(cmd["item_base"])
@@ -771,14 +776,15 @@ class FalloutWorldClient:
         except (KeyError, TypeError, ValueError) as e:
             log.warning("manual op missing/bad field (%s): %r", e, cmd)
             return
-        log.info("manual op: %s container=0x%X/0x%X item=0x%X count=%d",
-                 kind.name, cbase, ccell, ibase, count)
+        log.info("manual op: %s container=0x%X (0x%X/0x%X) item=0x%X count=%d",
+                 kind.name, cform, cbase, ccell, ibase, count)
         self.send_container_op(
             kind=kind,
             container_base_id=cbase,
             container_cell_id=ccell,
             item_base_id=ibase,
             count=count,
+            container_form_id=cform,
         )
 
     # ---------------------------------------------------------- internal

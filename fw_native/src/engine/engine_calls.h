@@ -19,6 +19,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <utility>
+#include <vector>
 
 namespace fw::engine {
 
@@ -187,6 +189,64 @@ bool apply_container_op_to_engine(
     std::uint32_t expected_cell_id,
     std::uint32_t item_base_id,
     std::int32_t  count);
+
+// Loot rework L2 (2026-09-23): undo a LOCAL op the server refused. The
+// engine moved the items before the op was sent. Two steps:
+//   1. the player's side is reverted. A refused PUT: the items come back
+//      out of the container into the player (RemoveItem with the player as
+//      Papyrus's akOtherContainer). A refused TAKE: the items leave the
+//      player's inventory, and WHERE they go depends on the refusal. With
+//      `insufficient` (REJ_INSUFFICIENT: the server's container never had
+//      them, another player took them first or this engine was stale) they
+//      are destroyed, because putting them back would recreate the phantom
+//      the server just denied; that is the anti-dupe. Any other refusal
+//      (rate limit, identity) left the server's container untouched, so
+//      they go back into it.
+//   2. the container's count of the item is aligned to `server_count`, the
+//      server's count for it after the verdict (the ACK's final_count): a
+//      scan of the runtime list, then AddItem / RemoveItem for the
+//      difference. No-op when the container was in sync.
+// Same resolution and identity check as apply_container_op_to_engine; same
+// guard obligation on the caller (main thread, inside ApplyingRemoteGuard).
+bool rollback_container_op_to_engine(
+    std::uint32_t kind,
+    std::uint32_t container_form_id,
+    std::uint32_t expected_base_id,
+    std::uint32_t expected_cell_id,
+    std::uint32_t item_base_id,
+    std::int32_t  count,
+    bool          insufficient,
+    std::int32_t  server_count);
+
+// Loot rework L3 (2026-09-24): align one loaded container to the server's
+// contents. `server_items` is the COMPLETE list for that REFR (empty means
+// the server knows it empty). The runtime list is scanned, then AddItem for
+// what the server has more of, RemoveItem (destroy) for what it has less
+// of, and every line the server never mentions is removed whole. Instance
+// data (mods, condition) is not on the wire, so an added item is a fresh
+// base instance. Refuses (false) when the REFR is not loaded, the identity
+// differs, or the scan overflows its buffer; a refusal changes nothing.
+//
+// Two passes when the first one added anything: the engine's AddItem of a
+// weapon into a container also drops a stack of its ammo (live 2026-09-24,
+// five to nine rounds after every 10mm pistol, on both clients, four times
+// out of four), and the second pass, removal only, takes back what the
+// server never listed before anyone sees it. Every changed line is logged
+// with the item id and both counts.
+// Main thread, inside ApplyingRemoteGuard (the caller's obligation).
+struct ContainerDiff {
+    int lines_added = 0;     // item kinds the container lacked
+    int lines_removed = 0;   // item kinds the server does not have
+    int items_added = 0;     // units added over all lines
+    int items_removed = 0;   // units removed over all lines
+    void* refr = nullptr;    // the container REFR, for the menu rebuild
+};
+bool reconverge_container_to_engine(
+    std::uint32_t container_form_id,
+    std::uint32_t expected_base_id,
+    std::uint32_t expected_cell_id,
+    const std::vector<std::pair<std::uint32_t, std::int32_t>>& server_items,
+    ContainerDiff* out);
 
 // B6.1 — apply a remote door activation by invoking the engine's
 // Activate worker (sub_140514180 @ RVA 0x514180) on the local REFR
@@ -794,11 +854,31 @@ bool local_player_in_first_person() noexcept;
 //
 // Caller supplies `out_pairs` buffer of size >= max_items. Returns number
 // of entries written. Fails (returns 0) on any SEH / null-list.
+// `faulted` (optional) is set when the walk hit an SEH fault: a 0 with
+// `faulted` false is a list that is present and holds nothing, which the
+// seed reports as a known-empty container (loot rework L3.4, 2026-09-24);
+// a 0 with `faulted` true is unknown and must never be reported as empty.
 std::size_t scan_container_inventory(
     void* container_ref,
     std::uint32_t* out_item_ids,     // buffer [max_items]
     std::int32_t*  out_counts,       // buffer [max_items]
-    std::size_t    max_items);
+    std::size_t    max_items,
+    bool*          faulted = nullptr);
+
+// Loot rework L3.4 (2026-09-24): whether the REFR's runtime inventory list
+// (REFR+0xF8) exists. A container the engine has not touched yet has none:
+// it scans as nothing and an alignment against it can remove nothing; the
+// engine builds the list at the activation, which is when such a container
+// is aligned again (container_activation_tick). SEH-guarded, false on a
+// null or unreadable REFR.
+bool inventory_list_present(void* container_ref);
+
+// Loot rework L4 (2026-09-25): whether the REFR is an actor whose life state
+// makes its inventory loot (dying, dead, recycle, essential down: what the
+// engine's Actor::IsDead(false) answers). False for a live actor and for
+// anything whose base is not a TESNPC. SEH-guarded reads only, no engine
+// call; false on a fault.
+bool actor_is_dead(void* refr);
 
 // B6.6w4 (REWRITTEN): server-driven fire trigger via WeaponFireHandler.
 // Calls `sub_140DFF6B0(0, actor, nullptr)`:

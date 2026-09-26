@@ -37,11 +37,49 @@ bool install_container_hook(std::uintptr_t module_base);
 // so both translation units see the same TLS variable.
 extern thread_local bool tls_applying_remote;
 
+// Nestable since loot rework L3 (2026-09-24): the flag is restored to what
+// it was, not cleared, so a guard inside the dispatch drain's guard does not
+// switch the drain's remaining ops back to "emit to the network".
 struct ApplyingRemoteGuard {
     ApplyingRemoteGuard();
     ~ApplyingRemoteGuard();
     ApplyingRemoteGuard(const ApplyingRemoteGuard&) = delete;
     ApplyingRemoteGuard& operator=(const ApplyingRemoteGuard&) = delete;
+private:
+    bool prev_;
 };
+
+// Loot rework L3 (2026-09-24): a container is being activated by the local
+// player (the Activate worker, before the ContainerMenu builds its list).
+// If the server's view of it is known, the local inventory is aligned to it
+// first, so the menu opens on what the server has and not on what the save
+// says. The seed of a container the server does not know stays on the
+// first op (vt[0x7A] take, TransferItem deposit): by then the menu has made
+// the engine resolve the leveled lists, which an activation-time scan might
+// see unresolved. A container whose runtime list does not exist yet is
+// aligned once more when the activation has built it (L3.4, see
+// container_activation_tick). MAIN THREAD (the Activate worker runs there).
+void on_container_activation(void* refr, std::uint32_t form_id,
+                             std::uint32_t base_id, std::uint32_t cell_id);
+
+// Loot rework L3.4 (2026-09-24): polls the containers activated without a
+// runtime list and aligns each one as soon as the engine has built it, or
+// drops it with a warning 2 s later. Called from the main-thread tick next
+// to Client::container_sweep_tick; cheap when nothing is watched.
+void container_activation_tick();
+
+// Loot rework L3.4 (2026-09-24): seed a container the server does not know
+// from the caller's REFR, BEFORE the engine moves anything: the scan is the
+// pre-op ground truth and the server applies the op that follows on top of
+// it. Called by the take detour (vt[0x7A]) and by the deposit detour
+// (ContainerMenu::TransferItem); until 2026-09-24 only the take seeded, so
+// a deposit into an unknown container left a partial record on the server,
+// never bootstrapped and replaced whole by the first scan of any client.
+// A list present and empty is sent as the sentinel entry (item 0, count 0);
+// a list the engine has not built scans as nothing and is not sent (the
+// next touch retries). Idempotent per session via Client::seed_in_flight.
+// MAIN THREAD (both detours run there).
+void seed_container_if_unknown(void* container_ref, std::uint32_t form_id,
+                               std::uint32_t base_id, std::uint32_t cell_id);
 
 } // namespace fw::hooks

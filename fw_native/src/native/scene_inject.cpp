@@ -5566,6 +5566,9 @@ bool seh_read_armo_addons(void* tes_form, void*** out_array,
         return false;
     }
 }
+// SEH-safe formType byte read, defined with the OMOD material-swap code
+// further down; the two resolvers below use it before that definition.
+std::uint8_t seh_read_form_type(void* form);
 // SEH-protected ARMA[i] entry → ARMA pointer extraction.
 void* seh_read_arma_at(void** addon_array, std::uint32_t index) {
     __try {
@@ -6003,6 +6006,19 @@ const char* resolve_armor_nif_path(std::uint32_t item_form_id,
                "(form not loaded? wrong plugin?)", item_form_id);
         return nullptr;
     }
+    // The addon array read below is TESObjectARMO layout. Any other form
+    // reaches this path through the receiver's armor-then-weapon dispatch
+    // (the equipped ammo of a peer, measured 2026-09-24: form 0x1F276 read
+    // as 'empty addon array count=1649761840'); a non-null garbage pointer
+    // would then be walked. Refused before the read.
+    {
+        const std::uint8_t ftype = seh_read_form_type(tes_form);
+        if (ftype != offsets::FORMTYPE_ARMO) {
+            FW_DBG("[armor-resolve] form=0x%X is not an ARMO (formType 0x%02X): "
+                   "no addon walk", item_form_id, ftype);
+            return nullptr;
+        }
+    }
 
     // 2. Read ARMO addon array base + count.
     // Offsets per re/M9_w2_armo_layout.log §H (sub_140462370 =
@@ -6248,6 +6264,17 @@ const char* resolve_weapon_nif_path(std::uint32_t item_form_id) {
         FW_DBG("[weapon-resolve] lookup_by_form_id(0x%X) returned null/SEH "
                "(form not loaded?)", item_form_id);
         return nullptr;
+    }
+    // The probe below reads TESObjectWEAP layout; a form of another type
+    // (ammo, a mod, an armor that failed its own path) is refused before
+    // any pointer of it is followed. WEAP = 0x2B, confirmed live 2026-09-24.
+    {
+        const std::uint8_t ftype = seh_read_form_type(tes_form);
+        if (ftype != offsets::FORMTYPE_WEAP) {
+            FW_DBG("[weapon-resolve] form=0x%X is not a WEAP (formType 0x%02X): "
+                   "no model probe", item_form_id, ftype);
+            return nullptr;
+        }
     }
 
     // TESObjectWEAP TESModel offset — uncertain on FO4 1.11.191 next-gen.

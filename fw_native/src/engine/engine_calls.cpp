@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <unordered_map>   // loot rework L3: the local lines of a container
 #include <unordered_set>
 
 #include "../log.h"
@@ -58,8 +59,11 @@ using EngineAddItemFn    = void (*)(
     std::uint8_t flag, std::uint32_t vm_id, void* vm_state);
 using EngineRemoveItemFn = void (*)(
     void* container_refr, void* item_form, std::uint32_t count,
-    std::uint8_t flag, void* dest_actor_refr, std::uint8_t flag2,
+    std::uint8_t flag, void* dest_refr, std::uint8_t flag2,
     std::uint32_t vm_id, void* vm_state);
+// `dest_refr` is Papyrus RemoveItem's akOtherContainer: any ObjectReference,
+// the player or a container. nullptr drops the items in the world (the
+// remote apply); the loot rework L2 rollback passes the other side.
 // B1.k.2: sub_14021E230 — BGSObjectRefHandle → TESObjectREFR* resolver.
 // Written as: (out_refr_ptr_ptr, in_handle_ptr) → writes to *out.
 using RefHandleResolveFn = void (*)(void** out, void* handle_ptr);
@@ -2760,6 +2764,13 @@ void* resolve_refhandle(void* handle_ptr) {
     return result;
 }
 
+// Loot rework L4 (2026-09-25) helpers, defined next to actor_is_dead below
+// and used by the apply, rollback and reconverge paths before it.
+static bool container_identity_verified(const RefIdentity& id,
+                                        std::uint32_t expected_base_id,
+                                        std::uint32_t expected_cell_id);
+static bool container_loot_ready(void* refr, std::uint32_t form_id, const char* who);
+
 bool apply_container_op_to_engine(
     std::uint32_t kind,
     std::uint32_t container_form_id,
@@ -2792,18 +2803,24 @@ bool apply_container_op_to_engine(
     }
 
     // Identity check — refuse if (base, cell) don't match what the sender saw.
-    // Guards against plugin-order drift and the 0xFF______ aliasing bug.
+    // Guards against plugin-order drift. A REFR outside a loaded cell reads
+    // cell 0 (measured 2026-09-25 on containers of neighbouring cells):
+    // nothing to apply to, the alignment of the cell when it loads wins.
     const auto id = read_ref_identity(container_ref);
-    const bool base_mismatch =
-        (expected_base_id != 0) && (id.base_id != expected_base_id);
-    const bool cell_mismatch =
-        (expected_cell_id != 0) && (id.cell_id != expected_cell_id);
-    if (base_mismatch || cell_mismatch) {
+    if (id.cell_id == 0) {
+        FW_DBG("engine: apply_container_op: 0x%X is not in a loaded cell, "
+               "nothing to apply to", container_form_id);
+        return false;
+    }
+    if (!container_identity_verified(id, expected_base_id, expected_cell_id)) {
         FW_WRN("engine: apply_container_op: identity mismatch cfid=0x%X "
                "got=(base=0x%X cell=0x%X) expected=(base=0x%X cell=0x%X)",
                container_form_id,
                id.base_id, id.cell_id,
                expected_base_id, expected_cell_id);
+        return false;
+    }
+    if (!container_loot_ready(container_ref, container_form_id, "apply_container_op")) {
         return false;
     }
 
@@ -2872,6 +2889,274 @@ bool apply_container_op_to_engine(
                id.base_id, id.cell_id, item_base_id, count);
     }
     return ok;
+}
+
+bool rollback_container_op_to_engine(
+    std::uint32_t kind,
+    std::uint32_t container_form_id,
+    std::uint32_t expected_base_id,
+    std::uint32_t expected_cell_id,
+    std::uint32_t item_base_id,
+    std::int32_t  count,
+    bool          insufficient,
+    std::int32_t  server_count)
+{
+    if (!g_ready.load(std::memory_order_acquire)) return false;
+    if (container_form_id == 0 || item_base_id == 0 || count <= 0) return false;
+    if (kind != 1 && kind != 2) {
+        FW_WRN("engine: rollback_container_op: unknown kind=%u", kind);
+        return false;
+    }
+    if (!g_engine_remove_item || !g_engine_add_item) {
+        FW_WRN("engine: rollback_container_op: add/remove fn pointers not resolved");
+        return false;
+    }
+
+    void* container_ref = lookup_by_form_id(container_form_id);
+    if (!container_ref) {
+        // The cell streamed out between the take and the verdict. The items
+        // stay where the engine put them; the server's view wins on the next
+        // reconvergence.
+        FW_WRN("engine: rollback_container_op: container form 0x%X not found "
+               "locally, %d x 0x%X stay where they are",
+               container_form_id, count, item_base_id);
+        return false;
+    }
+    const auto id = read_ref_identity(container_ref);
+    if (id.cell_id == 0) {
+        FW_WRN("engine: rollback_container_op: container 0x%X is not in a "
+               "loaded cell, %d x 0x%X stay where they are",
+               container_form_id, count, item_base_id);
+        return false;
+    }
+    if (!container_identity_verified(id, expected_base_id, expected_cell_id)) {
+        FW_WRN("engine: rollback_container_op: identity mismatch cfid=0x%X "
+               "got=(base=0x%X cell=0x%X) expected=(base=0x%X cell=0x%X)",
+               container_form_id, id.base_id, id.cell_id,
+               expected_base_id, expected_cell_id);
+        return false;
+    }
+    void* player = lookup_by_form_id(0x14);
+    void* item_form = lookup_by_form_id(item_base_id);
+    if (!player || !item_form) {
+        FW_WRN("engine: rollback_container_op: player=%p item 0x%X=%p",
+               player, item_base_id, item_form);
+        return false;
+    }
+    (void)force_materialize_inventory(container_ref);
+
+    // Step 1: the player's side. A refused PUT: the items sit in the
+    // container, they come back to the player. A refused TAKE: they sit
+    // with the player; destroyed when the server never had them
+    // (insufficient), back into the container otherwise.
+    void* from = (kind == 1) ? player : container_ref;
+    void* to   = (kind == 1) ? (insufficient ? nullptr : container_ref) : player;
+    const char* what = (kind == 2)     ? "PUT undone, back to the player"
+                     : insufficient    ? "TAKE denied, phantom copy destroyed"
+                                       : "TAKE undone, back into the container";
+    __try {
+        g_engine_remove_item(
+            from, item_form, static_cast<std::uint32_t>(count),
+            /*flag=*/0, /*dest_refr=*/to, /*flag2=*/0,
+            /*vm_id=*/0, /*vm_state=*/nullptr);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_ERR("engine: SEH in rollback_container_op_to_engine step 1 "
+               "kind=%u cfid=0x%X iid=0x%X cnt=%d",
+               kind, container_form_id, item_base_id, count);
+        return false;
+    }
+    FW_LOG("engine: rollback_container_op_to_engine %s: %d x 0x%X, "
+           "cfid=0x%X (base=0x%X cell=0x%X)",
+           what, count, item_base_id, container_form_id, id.base_id, id.cell_id);
+
+    // Step 2: the container's count of this item becomes the server's. Only
+    // when the refusal was INSUFFICIENT: that is the one verdict where the
+    // server's record describes this container and this item. On any other
+    // refusal (identity, runtime ref) the record is not this container's
+    // view, and aligning to its count destroyed what the engine had put
+    // back (measured 2026-09-25: 'had 1, the server has 0, aligned (-1)'
+    // right after 'back into the container').
+    if (server_count < 0 || !insufficient) return true;
+    constexpr std::size_t MAX = 128;
+    std::uint32_t ids[MAX];
+    std::int32_t  cnts[MAX];
+    const std::size_t n = scan_container_inventory(container_ref, ids, cnts, MAX);
+    std::int32_t local = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (ids[i] == item_base_id) { local = cnts[i]; break; }
+    }
+    const std::int32_t diff = server_count - local;
+    if (diff == 0) return true;
+    __try {
+        if (diff > 0) {
+            g_engine_add_item(container_ref, item_form,
+                              static_cast<std::uint32_t>(diff),
+                              /*flag=*/0, /*vm_id=*/0, /*vm_state=*/nullptr);
+        } else {
+            g_engine_remove_item(container_ref, item_form,
+                                 static_cast<std::uint32_t>(-diff),
+                                 /*flag=*/0, /*dest_refr=*/nullptr, /*flag2=*/0,
+                                 /*vm_id=*/0, /*vm_state=*/nullptr);
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_ERR("engine: SEH in rollback_container_op_to_engine step 2 "
+               "cfid=0x%X iid=0x%X local=%d server=%d",
+               container_form_id, item_base_id, local, server_count);
+        return false;
+    }
+    FW_LOG("engine: rollback_container_op_to_engine: container 0x%X had %d x "
+           "0x%X, the server has %d, aligned (%+d)",
+           container_form_id, local, item_base_id, server_count, diff);
+    return true;
+}
+
+namespace {
+
+// SEH-caged single calls for the reconvergence below: MSVC refuses __try in
+// a function that also owns objects with destructors, so the engine calls
+// live here, POD-only, and the map-walking caller stays clean.
+bool seh_container_add(void* container_ref, void* item_form, std::uint32_t n) {
+    __try {
+        g_engine_add_item(container_ref, item_form, n,
+                          /*flag=*/0, /*vm_id=*/0, /*vm_state=*/nullptr);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool seh_container_destroy(void* container_ref, void* item_form, std::uint32_t n) {
+    __try {
+        g_engine_remove_item(container_ref, item_form, n,
+                             /*flag=*/0, /*dest_refr=*/nullptr, /*flag2=*/0,
+                             /*vm_id=*/0, /*vm_state=*/nullptr);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+} // namespace
+
+bool reconverge_container_to_engine(
+    std::uint32_t container_form_id,
+    std::uint32_t expected_base_id,
+    std::uint32_t expected_cell_id,
+    const std::vector<std::pair<std::uint32_t, std::int32_t>>& server_items,
+    ContainerDiff* out)
+{
+    if (out) *out = ContainerDiff{};
+    if (!g_ready.load(std::memory_order_acquire)) return false;
+    if (container_form_id == 0) return false;
+    if (!g_engine_add_item || !g_engine_remove_item) return false;
+
+    void* container_ref = lookup_by_form_id(container_form_id);
+    if (!container_ref) {
+        FW_DBG("engine: reconverge_container: 0x%X not loaded, nothing to align",
+               container_form_id);
+        return false;
+    }
+    const auto id = read_ref_identity(container_ref);
+    if (id.cell_id == 0) {
+        FW_DBG("engine: reconverge_container: 0x%X is not in a loaded cell, "
+               "nothing to align", container_form_id);
+        return false;
+    }
+    if (!container_identity_verified(id, expected_base_id, expected_cell_id)) {
+        FW_WRN("engine: reconverge_container: identity mismatch cfid=0x%X "
+               "got=(base=0x%X cell=0x%X) expected=(base=0x%X cell=0x%X)",
+               container_form_id, id.base_id, id.cell_id,
+               expected_base_id, expected_cell_id);
+        return false;
+    }
+    if (!container_loot_ready(container_ref, container_form_id, "reconverge_container")) {
+        return false;
+    }
+    (void)force_materialize_inventory(container_ref);
+
+    ContainerDiff d{};
+    d.refr = container_ref;
+    // Pass 1 adds and removes; pass 2, only when pass 1 added something,
+    // removes what the additions dragged in (the ammo of a weapon).
+    for (int pass = 1; pass <= 2; ++pass) {
+        constexpr std::size_t MAX = 256;
+        std::uint32_t ids[MAX];
+        std::int32_t  cnts[MAX];
+        const std::size_t n = scan_container_inventory(container_ref, ids, cnts, MAX);
+        if (n >= MAX) {
+            FW_WRN("engine: reconverge_container: 0x%X has %zu+ item lines, more "
+                   "than the scan buffer, not aligned", container_form_id, n);
+            return false;
+        }
+        std::unordered_map<std::uint32_t, std::int32_t> local;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (ids[i] != 0 && cnts[i] > 0) local[ids[i]] += cnts[i];
+        }
+
+        int added_this_pass = 0;
+        for (const auto& [item, want] : server_items) {
+            if (item == 0 || want <= 0) continue;
+            const auto it = local.find(item);
+            const std::int32_t have = (it == local.end()) ? 0 : it->second;
+            if (it != local.end()) local.erase(it);
+            if (want == have) continue;
+            if (want > have && pass == 2) {
+                // Pass 2 never adds: a line pass 1 added and the engine
+                // took away again is not fought over.
+                FW_WRN("engine: reconverge 0x%X: item 0x%X local %d < server %d "
+                       "after the add, left as is", container_form_id, item, have, want);
+                continue;
+            }
+            void* item_form = lookup_by_form_id(item);
+            if (!item_form) {
+                FW_WRN("engine: reconverge 0x%X: item form 0x%X not found, line "
+                       "left as is (local %d, server %d)",
+                       container_form_id, item, have, want);
+                continue;
+            }
+            const bool ok = (want > have)
+                ? seh_container_add(container_ref, item_form,
+                                    static_cast<std::uint32_t>(want - have))
+                : seh_container_destroy(container_ref, item_form,
+                                        static_cast<std::uint32_t>(have - want));
+            if (!ok) {
+                FW_ERR("engine: SEH in reconverge_container cfid=0x%X item=0x%X "
+                       "local=%d server=%d", container_form_id, item, have, want);
+                return false;
+            }
+            FW_LOG("engine: reconverge 0x%X pass %d: item 0x%X local %d -> server %d",
+                   container_form_id, pass, item, have, want);
+            if (want > have) {
+                d.items_added += want - have;
+                if (have == 0) ++d.lines_added;
+                ++added_this_pass;
+            } else {
+                d.items_removed += have - want;
+            }
+        }
+        // Everything the server never mentions is gone.
+        for (const auto& [item, have] : local) {
+            void* item_form = lookup_by_form_id(item);
+            if (!item_form) continue;
+            if (!seh_container_destroy(container_ref, item_form,
+                                       static_cast<std::uint32_t>(have))) {
+                FW_ERR("engine: SEH in reconverge_container cfid=0x%X item=0x%X "
+                       "(removing %d)", container_form_id, item, have);
+                return false;
+            }
+            FW_LOG("engine: reconverge 0x%X pass %d: item 0x%X local %d -> gone "
+                   "(not on the server)", container_form_id, pass, item, have);
+            d.items_removed += have;
+            ++d.lines_removed;
+        }
+        if (added_this_pass == 0) break;
+    }
+    if (out) *out = d;
+    return true;
 }
 
 bool apply_door_op_to_engine(
@@ -3055,8 +3340,31 @@ bool force_materialize_inventory(void* container_ref) {
         // (3) Is the baseForm a container? Ask for its CONT component.
         void* bgscont = g_get_component(base_form, offsets::TESFORM_SIG_CONT);
         if (!bgscont) {
-            FW_DBG("engine: materialize: baseForm has no CONT component "
-                   "(not a container) ref=%p base=%p", container_ref, base_form);
+            // Measured 2026-09-24: 0 for the CONT base 0x913F9 (REFR
+            // 0x5DC4F), the only time this branch ran in any log. The
+            // getter is the engine's own dispatch by formType (see
+            // TESFORM_COMPONENT_TABLE_RVA), so the engine does not build
+            // that list from its template either; only its AddItem builds
+            // one, from the save's change data. The table entry is logged
+            // as an RVA for the decomp round that explains the 0.
+            const std::uint32_t base_fid = *reinterpret_cast<const std::uint32_t*>(
+                static_cast<const std::uint8_t*>(base_form) + offsets::FORMID_OFF);
+            const std::uint8_t base_type = *(
+                static_cast<const std::uint8_t*>(base_form) + offsets::FORMTYPE_OFF);
+            std::uintptr_t entry = 0;
+            if (g_module_base_for_place) {
+                entry = *reinterpret_cast<const std::uintptr_t*>(
+                    g_module_base_for_place + offsets::TESFORM_COMPONENT_TABLE_RVA
+                    + static_cast<std::size_t>(base_type) * 8);
+            }
+            const std::uintptr_t entry_rva =
+                (entry >= g_module_base_for_place && g_module_base_for_place)
+                    ? (entry - g_module_base_for_place) : entry;
+            FW_WRN("engine: materialize: the engine's component getter returned "
+                   "nothing for base 0x%X (formType 0x%02X, table entry RVA 0x%llX) "
+                   "ref=%p: the runtime list stays unbuilt until the engine builds it",
+                   base_fid, base_type,
+                   static_cast<unsigned long long>(entry_rva), container_ref);
             return false;
         }
 
@@ -3086,12 +3394,80 @@ bool force_materialize_inventory(void* container_ref) {
     return true;
 }
 
+bool inventory_list_present(void* container_ref) {
+    if (!container_ref) return false;
+    __try {
+        return *reinterpret_cast<void* const*>(
+            static_cast<const std::uint8_t*>(container_ref)
+            + offsets::REFR_INV_LIST_OFF) != nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// The formType of the REFR's base form, 0 when unreadable.
+static std::uint8_t base_form_type_of(void* refr) {
+    if (!refr) return 0;
+    __try {
+        const void* base = *reinterpret_cast<void* const*>(
+            static_cast<const std::uint8_t*>(refr) + offsets::BASE_FORM_OFF);
+        if (!base) return 0;
+        return *(static_cast<const std::uint8_t*>(base) + offsets::FORMTYPE_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
+bool actor_is_dead(void* refr) {
+    if (!refr) return false;
+    if (base_form_type_of(refr) != offsets::FORMTYPE_NPC) return false;
+    __try {
+        const std::uint32_t flags = *reinterpret_cast<const std::uint32_t*>(
+            static_cast<const std::uint8_t*>(refr) + offsets::ACTOR_LIFESTATE_FLAGS_OFF);
+        const std::uint32_t state =
+            (flags & offsets::ACTOR_LIFESTATE_MASK) >> offsets::ACTOR_LIFESTATE_SHIFT;
+        return state == 1 || state == 2 || state == 5 || state == 7;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Loot rework L4 (2026-09-25): the (base, cell) verification of a container
+// identity. A placed actor's base is a runtime TESNPC (0xFF______) that each
+// client generates on its own, and a corpse can lie in another cell on
+// another client, so a runtime base on either side means the placed form_id
+// is the whole identity. Static bases keep the full check (load-order drift).
+static bool container_identity_verified(const RefIdentity& id,
+                                        std::uint32_t expected_base_id,
+                                        std::uint32_t expected_cell_id) {
+    if (is_runtime_form_id(expected_base_id) || is_runtime_form_id(id.base_id)) {
+        return true;
+    }
+    if (expected_base_id != 0 && id.base_id != expected_base_id) return false;
+    if (expected_cell_id != 0 && id.cell_id != expected_cell_id) return false;
+    return true;
+}
+
+// Loot rework L4 (2026-09-25): a live actor's inventory is not loot. The
+// save predates the kills, so at a session start a corpse the server knows
+// is still alive here until the server's death replay lands; the alignment
+// is deferred to that death (the dispatch queues it) or to the activation.
+static bool container_loot_ready(void* refr, std::uint32_t form_id, const char* who) {
+    if (base_form_type_of(refr) != offsets::FORMTYPE_NPC) return true;
+    if (actor_is_dead(refr)) return true;
+    FW_DBG("engine: %s: 0x%X is an actor alive on this client, its loot is "
+           "aligned when it dies", who, form_id);
+    return false;
+}
+
 std::size_t scan_container_inventory(
     void* container_ref,
     std::uint32_t* out_item_ids,
     std::int32_t*  out_counts,
-    std::size_t    max_items)
+    std::size_t    max_items,
+    bool*          faulted)
 {
+    if (faulted) *faulted = false;
     if (!container_ref || !out_item_ids || !out_counts || max_items == 0) return 0;
     if (!g_ready.load(std::memory_order_acquire) || !g_inv_item_count) return 0;
 
@@ -3167,6 +3543,7 @@ std::size_t scan_container_inventory(
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         FW_WRN("engine: SEH in scan_container_inventory(%p)", container_ref);
+        if (faulted) *faulted = true;
         return 0;
     }
 

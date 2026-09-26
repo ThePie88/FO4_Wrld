@@ -180,7 +180,13 @@ constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
 // What stays true for all three: the version check in the header rejects
 // every frame from a different build, so client, server and launcher must
 // be rebuilt together.
-constexpr std::uint8_t  PROTOCOL_VERSION  = 26;  // v26: session lifecycle phase 0
+// v27 (2026-09-23): loot rework L1. ContainerStateEntry (CONTAINER_SEED and
+//     CONTAINER_STATE) gains `container_form_id` in front, 16 -> 20 bytes per
+//     entry, 87 -> 69 entries per chunk. The server keys container state by
+//     the placed REFR's form_id instead of (base_id, cell_id), which merged
+//     every ref of one base in one cell into one record. Runtime refs (0xFF
+//     prefix) are never sent: their ids alias across processes.
+constexpr std::uint8_t  PROTOCOL_VERSION  = 27;  // v27: loot rework L1
 constexpr std::size_t   HEADER_SIZE       = 12;
 constexpr std::size_t   MAX_PAYLOAD_SIZE  = 1400;
 constexpr std::size_t   MAX_FRAME_SIZE    = HEADER_SIZE + MAX_PAYLOAD_SIZE;
@@ -1378,6 +1384,12 @@ static_assert(sizeof(NPCFireFromOwnerPayload) == 32,
               "NPCFireFromOwnerPayload size (Build 65)");
 
 // 0x0289 — NPC_DEATH_FROM_OWNER. C→S→all, reliable. Wire 48 B.
+// Loot rework L4.1 (2026-09-25): NPCDeathFromOwnerPayload::flags bit 0 marks
+// the REPLAY of a known death (this engine has the actor alive because the
+// save predates the death). A corpse record survives a replay; a death
+// without the bit is a new corpse and the mirror entry is dropped.
+constexpr std::uint8_t NPC_DEATH_FLAG_REPLAY = 0x01;
+
 struct NPCDeathFromOwnerPayload {
     std::uint32_t form_id;
     std::uint32_t killer_form_id;   // 0 = environmental
@@ -1620,14 +1632,17 @@ struct WorldActorEntry {
 };
 static_assert(sizeof(WorldActorEntry) == 13, "WorldActorEntry size");
 
-// CONTAINER_STATE entry. Python: I I I i = 16 bytes
+// CONTAINER_STATE / CONTAINER_SEED entry. Python v27: I I I I i = 20 bytes.
+// `container_form_id` is the placed REFR, the identity the server keys on;
+// base and cell are the check the receiver runs on its own REFR.
 struct ContainerStateEntry {
+    std::uint32_t container_form_id;   // v27
     std::uint32_t container_base_id;
     std::uint32_t container_cell_id;
     std::uint32_t item_base_id;
     std::int32_t  count;
 };
-static_assert(sizeof(ContainerStateEntry) == 16, "ContainerStateEntry size");
+static_assert(sizeof(ContainerStateEntry) == 20, "ContainerStateEntry size");
 
 // Chunked-payload header (shared by WORLD_STATE and CONTAINER_STATE).
 // Python: H H H = 6 bytes (num_entries, chunk_index, total_chunks)
@@ -1641,7 +1656,7 @@ static_assert(sizeof(ChunkHeader) == 6, "ChunkHeader size");
 constexpr std::size_t WORLD_STATE_MAX_ENTRIES_PER_FRAME =
     (MAX_PAYLOAD_SIZE - sizeof(ChunkHeader)) / sizeof(WorldActorEntry); // 107
 constexpr std::size_t CONTAINER_STATE_MAX_ENTRIES_PER_FRAME =
-    (MAX_PAYLOAD_SIZE - sizeof(ChunkHeader)) / sizeof(ContainerStateEntry); // 87
+    (MAX_PAYLOAD_SIZE - sizeof(ChunkHeader)) / sizeof(ContainerStateEntry); // 69
 
 #pragma pack(pop)
 

@@ -33,7 +33,15 @@ from typing import ClassVar, Union
 # ------------------------------------------------------------------ constants
 
 PROTOCOL_MAGIC: int = 0xFA
-PROTOCOL_VERSION: int = 26  # v26: session lifecycle phase 0 (reject reason, resume token, name in PEER_JOIN)
+PROTOCOL_VERSION: int = 27  # v27: loot rework L1, a container is its placed REFR
+# v27 (2026-09-23): loot rework L1. ContainerStateEntry (CONTAINER_SEED and
+# CONTAINER_STATE) gains `container_form_id` in front: 16 -> 20 bytes per
+# entry, 87 -> 69 entries per chunk. The server keys container state by the
+# placed REFR's form_id (stable across processes with the same load order)
+# instead of (base_id, cell_id), which merged every ref of one base in one
+# cell into a single record. (base_id, cell_id) travels on as the check.
+# Runtime refs (0xFF prefix) are refused: their ids alias across processes.
+# CONTAINER_OP and CONTAINER_BCAST have carried the form_id since v5.
 # v26 (2026-09-18): the session-lifecycle foundations. WELCOME gains a
 # machine-readable reject reason and a resume token; PEER_JOIN carries the
 # display name; HELLO_RESUME (0x0008) lets a client that already logged in
@@ -1289,6 +1297,29 @@ class ContainerOpKind(IntEnum):
     PUT  = 2   # player added N items to container
 
 
+def is_runtime_form_id(form_id: int) -> bool:
+    """True for a ref created at runtime (0xFF______): its id names another
+    object in every other Fallout4.exe process, so it can never be a key."""
+    return (form_id >> 24) == 0xFF
+
+
+def identities_conflict(base_a: int, cell_a: int, base_b: int, cell_b: int) -> bool:
+    """Whether two (base, cell) views of one placed REFR contradict each other.
+
+    Loot rework L4 (2026-09-25): a placed actor's base is a runtime TESNPC
+    (0xFF______) that every client generates on its own, with its own face,
+    gear and loot roll, and its corpse can lie in another cell on another
+    client (the ragdoll settles locally). Measured on four raiders: every op
+    of the second client was refused with IDENTITY_MISMATCH and every
+    alignment skipped. For such a REFR the identity is the placed form_id
+    alone: a runtime base on either side makes (base, cell) unverifiable,
+    never a contradiction. A static base (a container) keeps the full check,
+    which catches load-order drift between clients."""
+    if is_runtime_form_id(base_a) or is_runtime_form_id(base_b):
+        return False
+    return base_a != base_b or cell_a != cell_b
+
+
 class EquipOpKind(IntEnum):
     """M9 w1: kind of equipment-state change observed on the local player.
 
@@ -1411,8 +1442,10 @@ class ContainerStateEntry:
     A container with N distinct item types produces N entries. A fully
     looted container produces 0 entries (not a single entry with count=0).
     Bootstrap rebuilds the container's inventory by aggregating all entries
-    matching the same (container_base_id, container_cell_id).
+    with the same container_form_id (v27); base and cell are the check the
+    receiver runs on its own REFR before applying anything.
     """
+    container_form_id: int       # u32 — the placed REFR, the identity (v27)
     container_base_id: int       # u32
     container_cell_id: int       # u32
     item_base_id: int            # u32
@@ -1423,17 +1456,18 @@ class ContainerStateEntry:
 class ContainerStatePayload:
     """Chunked snapshot of all container inventories on the server.
 
-    Wire format (protocol v2):
+    Wire format (protocol v27):
         u16  num_entries
         u16  chunk_index
         u16  total_chunks
-        per entry (16B):
+        per entry (20B):
+            u32 container_form_id   (the placed REFR: the identity)
             u32 container_base_id
             u32 container_cell_id
             u32 item_base_id
             i32 count
 
-    Entries per frame cap: (1400 - 6) // 16 = 87. Multi-chunk via
+    Entries per frame cap: (1400 - 6) // 20 = 69. Multi-chunk via
     chunk_index + total_chunks, same pattern as WorldStatePayload.
     """
 
@@ -1441,11 +1475,11 @@ class ContainerStatePayload:
     chunk_index: int = 0
     total_chunks: int = 1
 
-    _ENTRY_STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIi")  # 16B
+    _ENTRY_STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIIi")  # 20B
     _HEADER_STRUCT: ClassVar[struct.Struct] = struct.Struct("<HHH")  # 6B
 
     MAX_ENTRIES_PER_FRAME: ClassVar[int] = (
-        (MAX_PAYLOAD_SIZE - 6) // 16  # 87 entries per chunk at MTU 1400
+        (MAX_PAYLOAD_SIZE - 6) // 20  # 69 entries per chunk at MTU 1400
     )
 
     def encode(self) -> bytes:
@@ -1456,7 +1490,7 @@ class ContainerStatePayload:
         parts = [self._HEADER_STRUCT.pack(len(self.entries), self.chunk_index, self.total_chunks)]
         for e in self.entries:
             parts.append(self._ENTRY_STRUCT.pack(
-                e.container_base_id, e.container_cell_id,
+                e.container_form_id, e.container_base_id, e.container_cell_id,
                 e.item_base_id, e.count,
             ))
         return b"".join(parts)
@@ -1472,8 +1506,9 @@ class ContainerStatePayload:
         entries = []
         off = cls._HEADER_STRUCT.size
         for _ in range(num):
-            cbase, ccell, ibase, cnt = cls._ENTRY_STRUCT.unpack_from(data, off)
+            cfid, cbase, ccell, ibase, cnt = cls._ENTRY_STRUCT.unpack_from(data, off)
             entries.append(ContainerStateEntry(
+                container_form_id=cfid,
                 container_base_id=cbase, container_cell_id=ccell,
                 item_base_id=ibase, count=cnt,
             ))
@@ -1544,8 +1579,9 @@ class ContainerSeedPayload:
     """Client -> server: full inventory of a container that the player just
     opened for the first time this session.
 
-    Replaces the server's state for that (base, cell) with the client's
-    ground truth. This is what closes the "trust-the-client on first TAKE"
+    Seeds the server's state for that REFR with the client's ground truth,
+    first-seed-wins (B1.h): a REFR the server already knows keeps its
+    record. This is what closes the "trust-the-client on first TAKE"
     loophole from B0 — once the server knows the full inventory, subsequent
     TAKEs can be validated with INSUFFICIENT_ITEMS.
 
@@ -1553,23 +1589,24 @@ class ContainerSeedPayload:
       u16 num_entries
       u16 chunk_index
       u16 total_chunks
-      u32 container_base_id   (repeated in each entry for alignment w/ CONTAINER_STATE,
-      u32 container_cell_id    but in SEED all entries share the same container)
+      u32 container_form_id   (v27: the placed REFR, the identity; a SEED may
+      u32 container_base_id    carry several containers, grouped by form_id)
+      u32 container_cell_id
       u32 item_base_id
       i32 count
 
-    Small inventories (<87 items) ship in a single chunk. For very large
-    containers (unlikely in FO4; >87 unique item types) we chunk.
+    Small inventories (<69 items) ship in a single chunk. For very large
+    containers (unlikely in FO4; >69 unique item types) we chunk.
     """
     entries: tuple["ContainerStateEntry", ...]
     chunk_index: int = 0
     total_chunks: int = 1
 
-    _ENTRY_STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIi")
+    _ENTRY_STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIIi")  # 20B
     _HEADER_STRUCT: ClassVar[struct.Struct] = struct.Struct("<HHH")
 
     MAX_ENTRIES_PER_FRAME: ClassVar[int] = (
-        (MAX_PAYLOAD_SIZE - 6) // 16
+        (MAX_PAYLOAD_SIZE - 6) // 20  # 69
     )
 
     def encode(self) -> bytes:
@@ -1580,7 +1617,7 @@ class ContainerSeedPayload:
         parts = [self._HEADER_STRUCT.pack(len(self.entries), self.chunk_index, self.total_chunks)]
         for e in self.entries:
             parts.append(self._ENTRY_STRUCT.pack(
-                e.container_base_id, e.container_cell_id,
+                e.container_form_id, e.container_base_id, e.container_cell_id,
                 e.item_base_id, e.count,
             ))
         return b"".join(parts)
@@ -1598,8 +1635,9 @@ class ContainerSeedPayload:
         entries = []
         off = cls._HEADER_STRUCT.size
         for _ in range(num):
-            cbase, ccell, ibase, cnt = cls._ENTRY_STRUCT.unpack_from(data, off)
+            cfid, cbase, ccell, ibase, cnt = cls._ENTRY_STRUCT.unpack_from(data, off)
             entries.append(ContainerStateEntry(
+                container_form_id=cfid,
                 container_base_id=cbase, container_cell_id=ccell,
                 item_base_id=ibase, count=cnt,
             ))
@@ -3856,6 +3894,14 @@ class NPCFireFromOwnerPayload:
         f, tf, wf, ax, ay, az, ts = cls._STRUCT.unpack_from(data, 0)
         return cls(form_id=f, target_form_id=tf, weapon_form_id=wf,
                    aim_x=ax, aim_y=ay, aim_z=az, ts_ms=ts)
+
+
+# Loot rework L4.1 (2026-09-25): NPCDeathFromOwnerPayload.flags bit 0 marks
+# the REPLAY of a known death (an observer's engine has the actor alive
+# because the save predates the death). A corpse record survives a replay;
+# a death without the bit is a new corpse and drops it, on the server and
+# in every client's mirror.
+NPC_DEATH_FLAG_REPLAY = 0x01
 
 
 @dataclass(frozen=True, slots=True)

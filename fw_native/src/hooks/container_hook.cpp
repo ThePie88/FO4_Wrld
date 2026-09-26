@@ -1,12 +1,11 @@
 #include "container_hook.h"
 
 #include <windows.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <mutex>
-#include <optional>
-#include <unordered_set>
 #include <vector>
 
 #include "../engine/engine_calls.h"
@@ -34,87 +33,117 @@ AddObjectFn g_orig_add = nullptr;
 
 std::atomic<std::uint64_t> g_fire_count{0};
 
-// B1.e / B1.h: containers we've already successfully seeded this session.
-// Key packs (base_id << 32 | cell_id). The set only grows when a SEND
-// happens — a null/empty scan does NOT mark seeded, so we'll try again
-// next touch (the engine may have materialized the list by then).
+// B1.e / B1.h: scan the container's BGSInventoryList and ship a
+// CONTAINER_SEED, the server's first full view of it. Returns nothing; logs
+// its own outcome.
 //
-// Importantly: the server enforces first-seed-wins (B1.h). Subsequent
-// SEEDs for a container the server already knows are REJECTED server-
-// side, so even if we re-send after a re-scan, server state is safe.
-std::mutex g_seeded_mtx;
-std::unordered_set<std::uint64_t> g_seeded_keys;
-
-// Try to scan the container's BGSInventoryList and ship a CONTAINER_SEED.
-// Returns nothing; logs its own outcome.
+// Who is seeded (loot rework L3, 2026-09-24): a container the server does
+// NOT know. The client's mirror says whether it does, fed by the bootstrap
+// and by the live push the server sends whenever a record is created,
+// replaced or refilled; a seed the server rejects (it knew the container
+// first) is answered with its view, so the mirror learns it either way.
+// Until the answer lands, `seed_in_flight` keeps one seed per container per
+// session. Before L3 a process-lifetime set did this job and a server that
+// had lost its state was never seeded again by a running client.
 //
 // Behavior:
-//   - If (base, cell) already in our seeded set: skip entirely.
-//   - Scan the runtime list at REFR+0xF8. If null/empty, DON'T mark as
-//     seeded (so a later touch, when the list has been materialized, gets
-//     another chance to seed).
-//   - On non-zero scan: send the seed and mark as seeded.
+//   - Materialize the runtime list first (B1.j.1): the engine normally does
+//     it inside the AddObject worker, AFTER this detour, and a null list
+//     scans as empty -> incomplete SEED -> every later take rejected with
+//     INSUFFICIENT_ITEMS (live bug diagnosed 2026-04-20). Idempotent.
+//   - Scan the runtime list at REFR+0xF8. If the list could not be built,
+//     or the walk faulted, DON'T mark as in flight (so a later touch, when
+//     the list exists, gets another chance to seed).
+//   - A list that is present and holds nothing is sent as the sentinel
+//     entry (item 0, count 0): the server records a known-empty container
+//     (loot rework L3.4, 2026-09-24). Until then the deposit into an empty
+//     container the server did not know made a partial record.
+//   - On non-zero scan: send the seed and mark it in flight.
+//
+// Called from the take detour (vt[0x7A]) and, since 2026-09-24, from the
+// deposit detour (ContainerMenu::TransferItem), both BEFORE the engine
+// moves anything: the scan is the pre-op ground truth and the server
+// applies the op that follows on top of it.
 //
 // Note: we no longer "optimistically" insert before sending — that was the
 // B1.h pre-fix bug where a pre-PUT empty scan would mark the container as
 // seeded forever, so we'd never re-seed after the PUT materialized items.
-static void maybe_seed_container(
-    void* container_ref, std::uint32_t base_id, std::uint32_t cell_id)
+void seed_container_impl(
+    void* container_ref, std::uint32_t form_id,
+    std::uint32_t base_id, std::uint32_t cell_id)
 {
-    if (!container_ref || base_id == 0 || cell_id == 0) return;
-    const std::uint64_t key =
-        (static_cast<std::uint64_t>(base_id) << 32) | cell_id;
-    {
-        std::lock_guard lk(g_seeded_mtx);
-        if (g_seeded_keys.count(key)) {
-            FW_DBG("[container] seed: already seeded base=0x%X cell=0x%X",
-                   base_id, cell_id);
-            return;
-        }
+    if (!container_ref || form_id == 0 || base_id == 0 || cell_id == 0) return;
+    auto& c = fw::net::client();
+    if (c.container_known(form_id)) {
+        FW_DBG("[container] seed: the server knows form=0x%X, no seed", form_id);
+        return;
     }
+    if (c.seed_in_flight(form_id, /*mark=*/false)) {
+        FW_DBG("[container] seed: already sent this session for form=0x%X", form_id);
+        return;
+    }
+    const bool mat_ok = fw::engine::force_materialize_inventory(container_ref);
+    FW_DBG("[container] pre-scan materialize: %s",
+           mat_ok ? "ok (list populated)" : "skipped / failed");
 
-    // Scan up to N entries. 128 fits nicely in one CONTAINER_SEED chunk
-    // (max 87 entries/chunk; scan returns at most MAX). Most containers
-    // are <30 items.
+    // Scan up to N entries. 128 spans two CONTAINER_SEED chunks at most
+    // (69 entries/chunk since v27; scan returns at most MAX). Most
+    // containers are <30 items.
     constexpr std::size_t MAX = 128;
     std::uint32_t ids[MAX];
     std::int32_t  cnts[MAX];
+    bool faulted = false;
     const std::size_t n = fw::engine::scan_container_inventory(
-        container_ref, ids, cnts, MAX);
+        container_ref, ids, cnts, MAX, &faulted);
     if (n == 0) {
-        // List not materialized or empty. Do NOT mark seeded — retry next
-        // touch. Server will lazy-create the container on first TAKE/PUT
-        // that reaches it, which is still correct.
-        FW_DBG("[container] seed: scan returned 0 entries base=0x%X cell=0x%X "
-               "— NOT marking seeded, will retry next touch",
-               base_id, cell_id);
+        if (!mat_ok || faulted || !fw::engine::inventory_list_present(container_ref)) {
+            // No list to scan, or a walk that faulted: unknown, not empty.
+            // Not marked, the next touch retries; the server lazy-creates a
+            // partial record from the op that follows.
+            FW_DBG("[container] seed: nothing scanned for form=0x%X "
+                   "(base=0x%X cell=0x%X, list %s, walk %s) — not marked, the "
+                   "next touch retries",
+                   form_id, base_id, cell_id,
+                   mat_ok ? "present" : "absent", faulted ? "faulted" : "clean");
+            return;
+        }
+        // The list exists and holds nothing: a known-empty container. The
+        // sentinel is the same shape CONTAINER_STATE uses for one.
+        fw::net::ContainerStateEntry sentinel{};
+        sentinel.container_form_id = form_id;
+        sentinel.container_base_id = base_id;
+        sentinel.container_cell_id = cell_id;
+        sentinel.item_base_id      = 0;
+        sentinel.count             = 0;
+        c.enqueue_container_seed(form_id, base_id, cell_id, &sentinel, 1);
+        (void)c.seed_in_flight(form_id, /*mark=*/true);
+        FW_LOG("[container] SEED sent form=0x%X (base=0x%X cell=0x%X): known "
+               "empty (sentinel)", form_id, base_id, cell_id);
         return;
     }
 
     std::vector<fw::net::ContainerStateEntry> entries(n);
     for (std::size_t i = 0; i < n; ++i) {
+        entries[i].container_form_id = form_id;
         entries[i].container_base_id = base_id;
         entries[i].container_cell_id = cell_id;
         entries[i].item_base_id      = ids[i];
         entries[i].count             = cnts[i];
     }
-    fw::net::client().enqueue_container_seed(base_id, cell_id,
-                                             entries.data(), entries.size());
+    c.enqueue_container_seed(form_id, base_id, cell_id,
+                             entries.data(), entries.size());
 
-    // Only mark seeded AFTER successful send.
-    {
-        std::lock_guard lk(g_seeded_mtx);
-        g_seeded_keys.insert(key);
-    }
-    FW_LOG("[container] SEED sent base=0x%X cell=0x%X entries=%zu",
-           base_id, cell_id, n);
+    // Only mark in flight AFTER the send.
+    (void)c.seed_in_flight(form_id, /*mark=*/true);
+    FW_LOG("[container] SEED sent form=0x%X (base=0x%X cell=0x%X) entries=%zu",
+           form_id, base_id, cell_id, n);
 }
 
 // Outcome of the SEH-gated observation phase. Plain-old-data so the caller
 // can freely use std::optional / shared_ptr afterward (MSVC disallows C++
 // object unwinding in a function that also uses __try — we split them).
 struct ObserveResult {
-    bool     should_submit;   // true → caller must do the blocking submit
+    bool     should_submit;   // true → caller sends the op after g_orig ran
     bool     passthrough;     // true → caller should unconditionally run g_orig
     fw::net::ContainerOpPayload opp;  // populated when should_submit=true
     // Debug-log fields (copied for post-SEH logging at REJ/timeout path)
@@ -183,6 +212,18 @@ static void observe(
         if (cid.base_id == 0 || cid.cell_id == 0) {
             FW_WRN("[container] %s but container identity incomplete "
                    "(form=0x%X base=0x%X cell=0x%X) — skipping",
+                   op_tag, cid.form_id, cid.base_id, cid.cell_id);
+            return;  // passthrough=true
+        }
+        // Loot rework L1 (2026-09-23): the shared identity of a container is
+        // its placed form_id. A runtime ref (0xFF prefix: a corpse of an NPC
+        // spawned at runtime, a dropped item) names another object on every
+        // other client, and the (base, cell) key that used to stand in for
+        // it merged every twin. Until such refs carry an identity of their
+        // own (L4, L6) the engine keeps them local: no seed, no op.
+        if (cid.form_id == 0 || (cid.form_id >> 24) == 0xFF) {
+            FW_DBG("[container] %s on a runtime ref form=0x%X (base=0x%X "
+                   "cell=0x%X) — passthrough, no shared identity yet",
                    op_tag, cid.form_id, cid.base_id, cid.cell_id);
             return;  // passthrough=true
         }
@@ -258,6 +299,27 @@ static void observe(
     }
 }
 
+// =============================================================================
+// Loot rework L2 (2026-09-23) — APPLY FIRST, ASK AFTER.
+//
+// From B1.d (2026-04-20) to v0.8.1 this detour waited up to 100 ms on the
+// main thread for the server's verdict and skipped g_orig_add on a refusal
+// or a timeout. That was HALF a transaction: vt[0x7A] is the add into the
+// destination, and the engine has already taken the items out of the source
+// when it runs, so a skipped g_orig_add did not cancel the take, it
+// destroyed the items. Measured: six X-01 pieces on 2026-08-16 (the frame
+// exemption above), a take with the server down on 2026-09-23. And every
+// take froze the game for the round trip, which with a server on another
+// machine is the whole 100 ms budget.
+//
+// Now the engine runs first, unconditionally, and the op is queued reliable
+// with no wait. The verdict arrives on the network thread; a refusal is
+// undone on the main thread by engine::rollback_container_op_to_engine (the
+// opposite transfer between the container and the player), and an op whose
+// ACK died with the session is sent again on the rejoin, where the server
+// answers a repeat with the stored verdict. Nothing is ever destroyed and
+// nothing ever waits.
+// =============================================================================
 void __fastcall detour_add_object(
     void* dest_this,
     void* bound_obj,
@@ -266,21 +328,20 @@ void __fastcall detour_add_object(
     void* source_old,
     std::uint32_t reason)
 {
-    // B1.h.2 DIAGNOSTIC TRACE. We log at DEBUG level the full decision
-    // tree so we can diagnose bugs like "PUT-then-TAKE sparisce": each
-    // TAKE/PUT produces a paper trail showing whether observe classified
-    // the op, whether the submit went through, whether g_orig_add was
-    // actually called, and whether it returned. Toggle log_level=debug
-    // in fw_config.ini to see the full trace.
+    // B1.h.2 DIAGNOSTIC TRACE. The whole decision tree at DEBUG level so
+    // a report like "put then take, the item vanished" has a paper trail:
+    // whether observe classified the op, whether g_orig_add ran and
+    // returned, whether the op was sent. Toggle log_level=debug in
+    // fw_config.ini to see the full trace.
     FW_DBG("[container] ENTRY dest=%p bound=%p count=%d source=%p reason=%u",
            dest_this, bound_obj, count, source_old, reason);
 
     // B1.g feedback-loop guard. If this vt[0x7A] invocation is a side-
-    // effect of us applying a remote peer's op (inside apply_container_
-    // op_to_engine), bypass the observe/submit path entirely — we MUST
-    // NOT re-emit this to the network as a fresh CONTAINER_OP.
-    // Fall through to g_orig_add so the engine's internal call still
-    // completes normally (if anything downstream expects it).
+    // effect of us applying a remote peer's op or undoing one of ours
+    // (inside apply/rollback_container_op_to_engine), bypass the observe
+    // path entirely — we MUST NOT re-emit this to the network as a fresh
+    // CONTAINER_OP. Fall through to g_orig_add so the engine's internal
+    // call still completes normally.
     if (tls_applying_remote) {
         FW_DBG("[container] tls_applying_remote=true — passthrough "
                "(dest=%p bound=%p count=%d source=%p)",
@@ -300,10 +361,10 @@ void __fastcall detour_add_object(
            r.op_tag, r.item_id, r.base_id, r.cell_id);
 
     if (r.should_submit) {
-        // B1.e: seed the container's ground truth before asking server to
-        // validate. maybe_seed_container is idempotent (tracked via
-        // g_seeded_keys) and now correctly skips marking seeded if the
-        // scan returned 0 entries (B1.h fix) so a later touch retries.
+        // B1.e: seed the container's ground truth before the op reaches the
+        // server. seed_container_if_unknown is idempotent per session
+        // (Client::seed_in_flight) and does not mark a container whose list
+        // could not be scanned (B1.h fix) so a later touch retries.
         //
         // Direction picks the correct REFR: on TAKE source_old is the
         // container; on PUT dest_this is.
@@ -312,55 +373,13 @@ void __fastcall detour_add_object(
                 ? source_old
                 : dest_this;
 
-        // B1.j.1: force-materialize the runtime BGSInventoryList BEFORE
-        // scanning. The engine normally lazy-materializes it inside
-        // sub_140502940 (AddObject worker) via vtable[167], but that
-        // fires AFTER g_orig_add — too late for our pre-op scan. If we
-        // skip this, scan sees null/partial list → incomplete SEED →
-        // subsequent TAKEs rejected with INSUFFICIENT_ITEMS (live bug
-        // diagnosed 2026-04-20). Idempotent: skips if list already
-        // present.
-        const bool mat_ok = fw::engine::force_materialize_inventory(container);
-        FW_DBG("[container] pre-scan materialize: %s",
-               mat_ok ? "ok (list populated)" : "skipped / failed");
-
-        maybe_seed_container(container, r.base_id, r.cell_id);
+        seed_container_impl(container, r.opp.container_form_id,
+                            r.base_id, r.cell_id);
 
         // Fill the clock outside the SEH (chrono has non-trivial types).
         using namespace std::chrono;
         r.opp.timestamp_ms = duration_cast<milliseconds>(
             system_clock::now().time_since_epoch()).count();
-
-        // B1.d: blocking pre-mutation submit. Wait up to 100ms for verdict.
-        //   ACCEPTED  → proceed (g_orig_add below)
-        //   REJ_*     → return (mutation blocked)
-        //   timeout   → return conservative (server dead / disconnected)
-        FW_DBG("[container] SUBMIT kind=%u container=0x%X/0x%X item=0x%X count=%d",
-               r.opp.kind, r.base_id, r.cell_id, r.item_id, count);
-        auto ack_opt = fw::net::client().submit_container_op_blocking(r.opp, 100);
-        if (!ack_opt) {
-            FW_WRN("[container] %s BLOCKED — no verdict from server "
-                   "(timeout/disconnect) container=0x%X/0x%X item=0x%X count=%d",
-                   r.op_tag, r.base_id, r.cell_id, r.item_id, count);
-            return;  // skip g_orig_add
-        }
-        const auto& ack = *ack_opt;
-        FW_DBG("[container] ACK op_id=%u status=%u final_count=%d",
-               ack.client_op_id, ack.status, ack.final_count);
-        if (ack.status == static_cast<std::uint8_t>(
-                fw::net::ContainerOpAckStatus::ACCEPTED))
-        {
-            FW_LOG("[container] %s ACCEPTED final=%d (op_id=%u) — "
-                   "calling g_orig_add",
-                   r.op_tag, ack.final_count, ack.client_op_id);
-            // fall through to g_orig_add
-        } else {
-            FW_WRN("[container] %s REJECTED status=%u final=%d (op_id=%u) "
-                   "container=0x%X/0x%X item=0x%X count=%d — MUTATION BLOCKED",
-                   r.op_tag, ack.status, ack.final_count, ack.client_op_id,
-                   r.base_id, r.cell_id, r.item_id, count);
-            return;  // skip g_orig_add — the dup close
-        }
     } else if (!r.passthrough) {
         // should_submit=false AND passthrough=false means observe set an
         // error state; don't run the engine in that case.
@@ -368,7 +387,6 @@ void __fastcall detour_add_object(
         return;
     }
 
-    // ACCEPTED or passthrough: run the original engine code.
     if (!g_orig_add) {
         FW_ERR("[container] g_orig_add is NULL — mutation WILL NOT happen, "
                "hook install was broken");
@@ -379,6 +397,20 @@ void __fastcall detour_add_object(
            dest_this, bound_obj, count, source_old, reason);
     g_orig_add(dest_this, bound_obj, extra_data_sp, count, source_old, reason);
     FW_DBG("[container] g_orig_add returned");
+
+    if (r.should_submit) {
+        const std::uint32_t op_id = fw::net::client().submit_container_op(r.opp);
+        if (op_id != 0) {
+            FW_LOG("[container] %s applied, op_id=%u sent for a verdict "
+                   "container=0x%X (base=0x%X cell=0x%X) item=0x%X count=%d",
+                   r.op_tag, op_id, r.opp.container_form_id,
+                   r.base_id, r.cell_id, r.item_id, count);
+        } else {
+            FW_WRN("[container] %s applied but NOT sent: the client is "
+                   "shutting down (container=0x%X item=0x%X count=%d)",
+                   r.op_tag, r.opp.container_form_id, r.item_id, count);
+        }
+    }
 
     // v23 — a mutation went through on a PA frame: ship its full state
     // (no-op inside PA transitions or for frames without a wid).
@@ -406,12 +438,114 @@ void __fastcall detour_add_object(
 // can see the same storage via the extern declaration in container_hook.h.
 thread_local bool tls_applying_remote = false;
 
-// B1.g / B1.k.2 feedback-loop guard — RAII.
-ApplyingRemoteGuard::ApplyingRemoteGuard() {
+// B1.g / B1.k.2 feedback-loop guard — RAII, nestable (see the header).
+ApplyingRemoteGuard::ApplyingRemoteGuard() : prev_(tls_applying_remote) {
     tls_applying_remote = true;
 }
 ApplyingRemoteGuard::~ApplyingRemoteGuard() {
-    tls_applying_remote = false;
+    tls_applying_remote = prev_;
+}
+
+// The deposit detour's entry (put_hook.cpp); the take detour calls the
+// implementation directly. See the header.
+void seed_container_if_unknown(void* container_ref, std::uint32_t form_id,
+                               std::uint32_t base_id, std::uint32_t cell_id)
+{
+    seed_container_impl(container_ref, form_id, base_id, cell_id);
+}
+
+// Loot rework L3.4 (2026-09-24): containers activated before the engine
+// built their runtime list. The alignment at the activation scans them as
+// empty and can remove nothing (measured on 0x5DC4F, whose base the
+// engine's component getter refuses); the activation itself builds the
+// list, possibly on a later frame (the ContainerMenu opens through the UI
+// message queue). Each entry is polled by container_activation_tick until
+// the list exists, then aligned once more, or dropped at the deadline with
+// a warning. Main thread only in practice; the mutex costs nothing.
+namespace {
+struct ActivationWatch {
+    std::uint32_t form_id;
+    std::uint32_t base_id;
+    std::uint32_t cell_id;
+    std::uint64_t deadline_ms;
+};
+std::mutex g_activation_watch_mtx;
+std::vector<ActivationWatch> g_activation_watch;
+constexpr std::uint64_t kActivationWatchMs = 2000;
+
+std::uint64_t wall_ms_now() {
+    using namespace std::chrono;
+    return static_cast<std::uint64_t>(
+        duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
+}
+} // namespace
+
+void on_container_activation(void* refr, std::uint32_t form_id,
+                             std::uint32_t base_id, std::uint32_t cell_id)
+{
+    if (!refr || form_id == 0 || base_id == 0 || cell_id == 0) return;
+    if ((form_id >> 24) == 0xFF) return;        // runtime ref: local only (L1)
+    if (base_id == 0x0002079Eu) return;         // the power-armor frame is not loot
+    auto& c = fw::net::client();
+    if (!c.container_known(form_id)) {
+        FW_DBG("[container] activation of 0x%X (base=0x%X cell=0x%X): the "
+               "server does not know it yet, the first take will seed it",
+               form_id, base_id, cell_id);
+        return;
+    }
+    c.reconverge_container(form_id);
+    if (fw::engine::inventory_list_present(refr)) return;
+
+    FW_LOG("[container] activation of 0x%X (base=0x%X cell=0x%X): no runtime "
+           "list before the engine's activation, aligned again once it exists",
+           form_id, base_id, cell_id);
+    std::lock_guard lk(g_activation_watch_mtx);
+    for (auto& w : g_activation_watch) {
+        if (w.form_id == form_id) {
+            w.deadline_ms = wall_ms_now() + kActivationWatchMs;
+            return;
+        }
+    }
+    if (g_activation_watch.size() >= 64) return;  // never unbounded
+    g_activation_watch.push_back(ActivationWatch{
+        form_id, base_id, cell_id, wall_ms_now() + kActivationWatchMs});
+}
+
+void container_activation_tick() {
+    std::vector<ActivationWatch> due;
+    {
+        std::lock_guard lk(g_activation_watch_mtx);
+        if (g_activation_watch.empty()) return;
+        due = g_activation_watch;
+    }
+    const std::uint64_t now = wall_ms_now();
+    std::vector<std::uint32_t> done;
+    for (const auto& w : due) {
+        void* refr = fw::engine::lookup_by_form_id(w.form_id);
+        if (refr && fw::engine::inventory_list_present(refr)) {
+            FW_LOG("[container] 0x%X (base=0x%X cell=0x%X): runtime list built "
+                   "by the activation, aligned to the server now",
+                   w.form_id, w.base_id, w.cell_id);
+            fw::net::client().reconverge_container(w.form_id);
+            done.push_back(w.form_id);
+        } else if (now >= w.deadline_ms) {
+            FW_WRN("[container] 0x%X (base=0x%X cell=0x%X): no runtime list "
+                   "%llu ms after the activation; the engine did not build it "
+                   "either, the menu shows the save until an item moves",
+                   w.form_id, w.base_id, w.cell_id,
+                   static_cast<unsigned long long>(kActivationWatchMs));
+            done.push_back(w.form_id);
+        }
+    }
+    if (done.empty()) return;
+    std::lock_guard lk(g_activation_watch_mtx);
+    g_activation_watch.erase(
+        std::remove_if(g_activation_watch.begin(), g_activation_watch.end(),
+                       [&](const ActivationWatch& w) {
+                           return std::find(done.begin(), done.end(), w.form_id)
+                                  != done.end();
+                       }),
+        g_activation_watch.end());
 }
 
 bool install_container_hook(std::uintptr_t module_base) {

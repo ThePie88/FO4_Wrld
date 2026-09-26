@@ -17,6 +17,7 @@ from protocol import (  # noqa: E402
     ContainerStatePayload, ContainerStateEntry,
     ContainerSeedPayload,
     ContainerOpKind, HelloPayload,
+    identities_conflict, NPC_DEATH_FLAG_REPLAY,
     ContainerOpAckPayload, ContainerOpAckStatus,
     AckPayload,
     encode_frame, decode_frame,
@@ -50,6 +51,38 @@ TRUNK_BASE = 0xDEAD01
 TRUNK_CELL = 0x1696A
 STIMPAK = 0x23736
 AMMO_10MM = 0x4585E
+# The placed REFR ids of the trunk and of a twin container that shares its
+# base and cell (two identical toolboxes in one house). Placed ids are stable
+# across processes with the same load order; the twin is exactly what the
+# (base_id, cell_id) key of the first loot system merged into one record.
+TRUNK_FID = 0x1F3A2
+TWIN_FID = 0x1F3A3
+
+
+def _put(fid: int, item: int, count: int) -> ContainerOpPayload:
+    return ContainerOpPayload(
+        kind=int(ContainerOpKind.PUT), container_form_id=fid,
+        container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL, item_base_id=item,
+        count=count, timestamp_ms=0,
+    )
+
+
+def _take(fid: int, item: int, count: int, op_id: int = 0) -> ContainerOpPayload:
+    return ContainerOpPayload(
+        kind=int(ContainerOpKind.TAKE), container_form_id=fid,
+        container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL, item_base_id=item,
+        count=count, timestamp_ms=0, client_op_id=op_id,
+    )
+
+
+def _seeded(state: ServerState, fid: int, items: dict[int, int],
+            by: str = "seeder", now_ms: float = 0.0) -> ContainerWorldState:
+    """A record the server KNOWS, as a client's full scan makes it. Ops on
+    a container nobody scanned only make a partial record (loot rework L3),
+    which is trusted item by item and never pushed to clients."""
+    c = state.create_container(fid, TRUNK_BASE, TRUNK_CELL, items, by, now_ms)
+    assert c is not None
+    return c
 
 
 # ------------------------------------------------------------------ protocol roundtrip
@@ -59,6 +92,7 @@ class TestProtocol:
         p = ContainerOpPayload(
             kind=int(ContainerOpKind.TAKE),
             container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+            container_form_id=TRUNK_FID,
             item_base_id=STIMPAK, count=3, timestamp_ms=123456789,
         )
         raw = encode_frame(MessageType.CONTAINER_OP, 7, p, reliable=True)
@@ -69,6 +103,7 @@ class TestProtocol:
         b = ContainerBroadcastPayload(
             peer_id="player_X", kind=int(ContainerOpKind.PUT),
             container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+            container_form_id=TRUNK_FID,
             item_base_id=AMMO_10MM, count=50, timestamp_ms=111,
         )
         raw = encode_frame(MessageType.CONTAINER_BCAST, 12, b, reliable=True)
@@ -77,7 +112,7 @@ class TestProtocol:
 
     def test_state_chunk_roundtrip(self):
         entries = tuple(
-            ContainerStateEntry(TRUNK_BASE, TRUNK_CELL, STIMPAK + i, 1 + i)
+            ContainerStateEntry(TRUNK_FID, TRUNK_BASE, TRUNK_CELL, STIMPAK + i, 1 + i)
             for i in range(10)
         )
         s = ContainerStatePayload(entries=entries, chunk_index=1, total_chunks=3)
@@ -94,11 +129,12 @@ class TestServerState:
         p = ContainerOpPayload(
             kind=int(ContainerOpKind.PUT),
             container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+            container_form_id=TRUNK_FID,
             item_base_id=STIMPAK, count=5, timestamp_ms=0,
         )
         s.record_container_op(p, "alice", 100.0)
         s.record_container_op(p, "alice", 200.0)
-        st = s.container_state(TRUNK_BASE, TRUNK_CELL)
+        st = s.container_state(TRUNK_FID)
         assert st.items == {STIMPAK: 10}
         assert st.last_owner_peer_id == "alice"
 
@@ -107,28 +143,32 @@ class TestServerState:
         s.record_container_op(ContainerOpPayload(
             kind=int(ContainerOpKind.PUT),
             container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+            container_form_id=TRUNK_FID,
             item_base_id=STIMPAK, count=7, timestamp_ms=0,
         ), "alice", 0.0)
         # take 3 leaves 4
         s.record_container_op(ContainerOpPayload(
             kind=int(ContainerOpKind.TAKE),
             container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+            container_form_id=TRUNK_FID,
             item_base_id=STIMPAK, count=3, timestamp_ms=0,
         ), "bob", 0.0)
-        assert s.container_state(TRUNK_BASE, TRUNK_CELL).items == {STIMPAK: 4}
+        assert s.container_state(TRUNK_FID).items == {STIMPAK: 4}
         # take remaining 4 -> zero -> key gone
         s.record_container_op(ContainerOpPayload(
             kind=int(ContainerOpKind.TAKE),
             container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+            container_form_id=TRUNK_FID,
             item_base_id=STIMPAK, count=4, timestamp_ms=0,
         ), "bob", 0.0)
-        assert s.container_state(TRUNK_BASE, TRUNK_CELL).items == {}
+        assert s.container_state(TRUNK_FID).items == {}
 
     def test_record_rejects_missing_identity(self):
         s = ServerState()
         p = ContainerOpPayload(
             kind=int(ContainerOpKind.PUT),
             container_base_id=0, container_cell_id=TRUNK_CELL,
+            container_form_id=TRUNK_FID,
             item_base_id=STIMPAK, count=1, timestamp_ms=0,
         )
         assert s.record_container_op(p, "alice", 0.0) is None
@@ -138,6 +178,7 @@ class TestServerState:
         p = ContainerOpPayload(
             kind=int(ContainerOpKind.PUT),
             container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+            container_form_id=TRUNK_FID,
             item_base_id=STIMPAK, count=0, timestamp_ms=0,
         )
         assert s.record_container_op(p, "alice", 0.0) is None
@@ -153,11 +194,12 @@ class TestServerState:
         op1 = ContainerOpPayload(
             kind=int(ContainerOpKind.TAKE),
             container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+            container_form_id=TRUNK_FID,
             item_base_id=STIMPAK, count=1, timestamp_ms=0,
         )
         result = s.record_container_op(op1, "A", 100.0)
         assert result is not None  # accepted (lazy-created)
-        st = s.container_state(TRUNK_BASE, TRUNK_CELL)
+        st = s.container_state(TRUNK_FID)
         assert st.items == {}  # trust-the-client: had >=1, now 0 (popped)
 
         # Second TAKE of DIFFERENT item X' on the SAME (now known) container.
@@ -165,11 +207,12 @@ class TestServerState:
         op2 = ContainerOpPayload(
             kind=int(ContainerOpKind.TAKE),
             container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+            container_form_id=TRUNK_FID,
             item_base_id=AMMO_10MM, count=2, timestamp_ms=0,
         )
         result = s.record_container_op(op2, "A", 200.0)
         assert result is not None  # still accepted
-        st = s.container_state(TRUNK_BASE, TRUNK_CELL)
+        st = s.container_state(TRUNK_FID)
         assert st.items == {}  # AMMO_10MM also first-seen, trust-the-client
 
         # Third TAKE of the SAME item X (already at 0 after first take).
@@ -177,11 +220,12 @@ class TestServerState:
         op3 = ContainerOpPayload(
             kind=int(ContainerOpKind.TAKE),
             container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+            container_form_id=TRUNK_FID,
             item_base_id=STIMPAK, count=1, timestamp_ms=0,
         )
         result = s.record_container_op(op3, "A", 300.0)
         assert result is not None
-        assert s.container_state(TRUNK_BASE, TRUNK_CELL).items == {}
+        assert s.container_state(TRUNK_FID).items == {}
 
     def test_multiple_items_coexist(self):
         s = ServerState()
@@ -189,9 +233,10 @@ class TestServerState:
             s.record_container_op(ContainerOpPayload(
                 kind=int(ContainerOpKind.PUT),
                 container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+                container_form_id=TRUNK_FID,
                 item_base_id=item, count=cnt, timestamp_ms=0,
             ), "alice", 0.0)
-        st = s.container_state(TRUNK_BASE, TRUNK_CELL)
+        st = s.container_state(TRUNK_FID)
         assert st.items == {STIMPAK: 5, AMMO_10MM: 200}
 
 
@@ -203,6 +248,7 @@ class TestValidator:
         p = ContainerOpPayload(
             kind=int(ContainerOpKind.PUT),
             container_base_id=0, container_cell_id=TRUNK_CELL,
+            container_form_id=TRUNK_FID,
             item_base_id=STIMPAK, count=1, timestamp_ms=0,
         )
         r = validate_container_op(sess, p, None, 0.0)
@@ -214,6 +260,7 @@ class TestValidator:
         p = ContainerOpPayload(
             kind=int(ContainerOpKind.PUT),
             container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+            container_form_id=TRUNK_FID,
             item_base_id=STIMPAK, count=0, timestamp_ms=0,
         )
         r = validate_container_op(sess, p, None, 0.0)
@@ -225,6 +272,7 @@ class TestValidator:
         p = ContainerOpPayload(
             kind=99,
             container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+            container_form_id=TRUNK_FID,
             item_base_id=STIMPAK, count=1, timestamp_ms=0,
         )
         r = validate_container_op(sess, p, None, 0.0)
@@ -238,6 +286,7 @@ class TestValidator:
         p = ContainerOpPayload(
             kind=int(ContainerOpKind.TAKE),
             container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+            container_form_id=TRUNK_FID,
             item_base_id=STIMPAK, count=1, timestamp_ms=0,
         )
         r = validate_container_op(sess, p, None, 0.0)
@@ -256,12 +305,13 @@ class TestValidator:
         See validator.py ENFORCE_INSUFFICIENT flag."""
         sess = _session()
         known = ContainerWorldState(
-            base_id=TRUNK_BASE, cell_id=TRUNK_CELL,
+            form_id=TRUNK_FID, base_id=TRUNK_BASE, cell_id=TRUNK_CELL,
             items={STIMPAK: 2},
         )
         p = ContainerOpPayload(
             kind=int(ContainerOpKind.TAKE),
             container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+            container_form_id=TRUNK_FID,
             item_base_id=STIMPAK, count=5, timestamp_ms=0,
         )
         r = validate_container_op(sess, p, known, 0.0)
@@ -276,6 +326,7 @@ class TestValidator:
         p = ContainerOpPayload(
             kind=int(ContainerOpKind.TAKE),
             container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+            container_form_id=TRUNK_FID,
             item_base_id=STIMPAK, count=999, timestamp_ms=0,
         )
         r = validate_container_op(sess, p, None, 0.0)
@@ -286,6 +337,7 @@ class TestValidator:
         p = ContainerOpPayload(
             kind=int(ContainerOpKind.PUT),
             container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+            container_form_id=TRUNK_FID,
             item_base_id=STIMPAK, count=9999, timestamp_ms=0,
         )
         r = validate_container_op(sess, p, None, 0.0)
@@ -295,35 +347,64 @@ class TestValidator:
 # ------------------------------------------------------------------ persistence
 
 class TestPersistence:
-    def test_v3_snapshot_roundtrip(self, tmp_path: Path):
+    def test_v6_snapshot_roundtrip(self, tmp_path: Path):
         src = ServerState()
-        # Seed containers
-        src.record_container_op(ContainerOpPayload(
-            kind=int(ContainerOpKind.PUT),
-            container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
-            item_base_id=STIMPAK, count=10, timestamp_ms=0,
-        ), "alice", 100.0)
-        src.record_container_op(ContainerOpPayload(
-            kind=int(ContainerOpKind.PUT),
-            container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
-            item_base_id=AMMO_10MM, count=50, timestamp_ms=0,
-        ), "bob", 200.0)
+        _seeded(src, TRUNK_FID, {STIMPAK: 10}, by="alice", now_ms=100.0)
+        src.record_container_op(_put(TRUNK_FID, AMMO_10MM, 50), "bob", 200.0)
+        # The twin shares base and cell: v6 keeps it apart. Made by an op
+        # alone, it is a partial record (L3) and must load back as one.
+        src.record_container_op(_put(TWIN_FID, STIMPAK, 1), "carol", 300.0)
 
         path = tmp_path / "snap.json"
         snapshot(src, path)
         data = json.loads(path.read_text())
-        assert data["version"] == SNAPSHOT_FORMAT_VERSION
-        assert len(data["containers"]) == 1
-        c = data["containers"][0]
+        assert data["version"] == SNAPSHOT_FORMAT_VERSION == 6
+        assert len(data["containers"]) == 2
+        c = next(x for x in data["containers"] if x["form_id"] == f"0x{TRUNK_FID:X}")
         assert c["base_id"] == f"0x{TRUNK_BASE:X}"
         assert c["items"] == {f"0x{STIMPAK:X}": 10, f"0x{AMMO_10MM:X}": 50}
 
         dst = ServerState()
         load_into(dst, path)
-        st = dst.container_state(TRUNK_BASE, TRUNK_CELL)
+        st = dst.container_state(TRUNK_FID)
         assert st is not None
         assert st.items == {STIMPAK: 10, AMMO_10MM: 50}
         assert st.last_owner_peer_id == "bob"  # last writer
+        assert (st.base_id, st.cell_id) == (TRUNK_BASE, TRUNK_CELL)
+        assert st.seeded is True
+        assert dst.container_state(TWIN_FID).items == {STIMPAK: 1}
+        assert dst.container_state(TWIN_FID).seeded is False
+
+    def test_pre_v6_containers_are_dropped(self, tmp_path: Path):
+        """A v5 snapshot keyed containers by (base, cell). Those records
+        cannot be mapped to one REFR (the key merged every twin), so they
+        are dropped with a warning while the rest of the snapshot loads."""
+        path = tmp_path / "v5.json"
+        path.write_text(json.dumps({
+            "version": 5,
+            "timestamp_ms": 0,
+            "server": {"tick_rate_hz": 20, "server_version": [1, 0], "peer_timeout_ms": 15000.0},
+            "sessions": [],
+            "world_actors": [
+                {
+                    "base_id": "0x1234", "cell_id": "0x1696A", "alive": False,
+                    "last_known_form_id": "0x1F3A9",
+                    "last_owner": "alice", "last_update_ms": 0.0,
+                },
+            ],
+            "containers": [
+                {
+                    "base_id": f"0x{TRUNK_BASE:X}", "cell_id": f"0x{TRUNK_CELL:X}",
+                    "items": {f"0x{STIMPAK:X}": 3},
+                    "last_known_form_id": f"0x{TRUNK_FID:X}",
+                    "last_owner": "alice", "last_update_ms": 0.0,
+                },
+            ],
+        }))
+        dst = ServerState()
+        n = load_into(dst, path)
+        assert n == 1
+        assert dst.all_containers() == []
 
     def test_v2_snapshot_loads_without_containers(self, tmp_path: Path):
         """A v2 snapshot (from before containers existed) must load cleanly
@@ -368,12 +449,8 @@ async def test_bootstrap_delivers_container_state():
     CONTAINER_STATE chunks on bootstrap."""
     port = 31500
     state = ServerState()
-    for item, cnt in [(STIMPAK, 5), (AMMO_10MM, 200)]:
-        state.record_container_op(ContainerOpPayload(
-            kind=int(ContainerOpKind.PUT),
-            container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
-            item_base_id=item, count=cnt, timestamp_ms=0,
-        ), "seeder", 100.0)
+    _seeded(state, TRUNK_FID, {STIMPAK: 5, AMMO_10MM: 200}, now_ms=100.0)
+    _seeded(state, TWIN_FID, {STIMPAK: 1}, now_ms=100.0)
 
     transport, protocol = await _start_server_with_state(state, port)
     try:
@@ -390,9 +467,10 @@ async def test_bootstrap_delivers_container_state():
         assert client.container_bootstrap_complete, \
             f"container bootstrap never completed (got chunks: {client._container_bootstrap_chunks_received})"
 
-        key = (TRUNK_BASE, TRUNK_CELL)
+        key = TRUNK_FID
         assert key in client.container_state
         assert client.container_state[key] == {STIMPAK: 5, AMMO_10MM: 200}
+        assert client.container_state[TWIN_FID] == {STIMPAK: 1}
 
         client.stop()
         await asyncio.wait_for(task, timeout=2.0)
@@ -407,12 +485,7 @@ async def test_live_container_op_propagation():
     authoritative state afterwards."""
     port = 31501
     state = ServerState()
-    # Seed: 10 stimpaks in the trunk
-    state.record_container_op(ContainerOpPayload(
-        kind=int(ContainerOpKind.PUT),
-        container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
-        item_base_id=STIMPAK, count=10, timestamp_ms=0,
-    ), "seeder", 0.0)
+    _seeded(state, TRUNK_FID, {STIMPAK: 10})
 
     transport, protocol = await _start_server_with_state(state, port)
     try:
@@ -443,21 +516,22 @@ async def test_live_container_op_propagation():
         client_a.send_container_op(
             kind=ContainerOpKind.TAKE,
             container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+            container_form_id=TRUNK_FID,
             item_base_id=STIMPAK, count=3,
         )
 
         # Wait for B to receive the broadcast
         for _ in range(100):
-            key = (TRUNK_BASE, TRUNK_CELL)
+            key = TRUNK_FID
             if key in client_b.container_state \
                     and client_b.container_state[key].get(STIMPAK) == 7:
                 break
             await asyncio.sleep(0.05)
 
         # Both sides agree: 7 stimpaks left
-        key = (TRUNK_BASE, TRUNK_CELL)
+        key = TRUNK_FID
         # Server authoritative
-        srv_view = protocol.state.container_state(*key)
+        srv_view = protocol.state.container_state(key)
         assert srv_view.items.get(STIMPAK) == 7
         assert srv_view.last_owner_peer_id == "A"
         # B's mirror (via CONTAINER_BCAST)
@@ -490,12 +564,7 @@ async def test_frida_capture_flows_through_to_peer():
     because FakeFridaBridge exposes feed_container_op()."""
     port = 31503
     state = ServerState()
-    # Seed: 5 stimpaks in the trunk
-    state.record_container_op(ContainerOpPayload(
-        kind=int(ContainerOpKind.PUT),
-        container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
-        item_base_id=STIMPAK, count=5, timestamp_ms=0,
-    ), "seeder", 0.0)
+    _seeded(state, TRUNK_FID, {STIMPAK: 5})
 
     transport, protocol = await _start_server_with_state(state, port)
     try:
@@ -522,19 +591,19 @@ async def test_frida_capture_flows_through_to_peer():
         client_a.bridge.feed_container_op(ContainerCapture(
             op_kind="TAKE",
             container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
-            container_form_id=0xABCDE, item_base_id=STIMPAK, count=2,
+            container_form_id=TRUNK_FID, item_base_id=STIMPAK, count=2,
         ))
 
         # Wait for the full chain: queue -> send -> server -> bcast -> B's mirror
         for _ in range(100):
-            key = (TRUNK_BASE, TRUNK_CELL)
+            key = TRUNK_FID
             if client_b.container_state.get(key, {}).get(STIMPAK) == 3:
                 break
             await asyncio.sleep(0.05)
 
         # Everybody agrees: 3 left after A took 2
-        key = (TRUNK_BASE, TRUNK_CELL)
-        assert protocol.state.container_state(*key).items.get(STIMPAK) == 3
+        key = TRUNK_FID
+        assert protocol.state.container_state(key).items.get(STIMPAK) == 3
         assert client_a.container_state[key].get(STIMPAK) == 3   # optimistic on sender
         assert client_b.container_state[key].get(STIMPAK) == 3   # via bcast
         assert client_a.stats["container_ops_captured"] >= 1
@@ -556,11 +625,7 @@ async def test_take_over_available_rejected_not_broadcast_b1h4():
     correctness is guaranteed by B1.j.1 + B1.g apply loop."""
     port = 31502
     state = ServerState()
-    state.record_container_op(ContainerOpPayload(
-        kind=int(ContainerOpKind.PUT),
-        container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
-        item_base_id=STIMPAK, count=2, timestamp_ms=0,
-    ), "seeder", 0.0)
+    _seeded(state, TRUNK_FID, {STIMPAK: 2})
 
     transport, protocol = await _start_server_with_state(state, port)
     try:
@@ -591,6 +656,7 @@ async def test_take_over_available_rejected_not_broadcast_b1h4():
         client_a.send_container_op(
             kind=ContainerOpKind.TAKE,
             container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+            container_form_id=TRUNK_FID,
             item_base_id=STIMPAK, count=10,
         )
 
@@ -599,7 +665,7 @@ async def test_take_over_available_rejected_not_broadcast_b1h4():
         await asyncio.sleep(0.5)
 
         # Server state: unchanged (still 2 stimpaks from the seed).
-        srv = protocol.state.container_state(TRUNK_BASE, TRUNK_CELL)
+        srv = protocol.state.container_state(TRUNK_FID)
         assert srv is not None
         assert srv.items == {STIMPAK: 2}, \
             f"state changed despite reject, got {srv.items}"
@@ -620,7 +686,7 @@ async def test_take_over_available_rejected_not_broadcast_b1h4():
 @pytest.mark.asyncio
 async def test_first_seed_creates_state_second_is_rejected():
     """B1.h policy: a container's first SEED establishes canonical state.
-    Subsequent SEEDs for the same (base, cell) are IGNORED (do not wholesale-
+    Subsequent SEEDs for the same container REFR are IGNORED (do not wholesale-
     replace) to protect against a drifted client erasing legitimate contents."""
     port = 31530
     state = ServerState()
@@ -640,14 +706,14 @@ async def test_first_seed_creates_state_second_is_rejected():
 
             # Peer A sends initial SEED: container has {STIMPAK: 5, AMMO_10MM: 100}
             seed_a = ContainerSeedPayload(entries=(
-                ContainerStateEntry(TRUNK_BASE, TRUNK_CELL, STIMPAK, 5),
-                ContainerStateEntry(TRUNK_BASE, TRUNK_CELL, AMMO_10MM, 100),
+                ContainerStateEntry(TRUNK_FID, TRUNK_BASE, TRUNK_CELL, STIMPAK, 5),
+                ContainerStateEntry(TRUNK_FID, TRUNK_BASE, TRUNK_CELL, AMMO_10MM, 100),
             ))
             sock_a.sendto(encode_frame(MessageType.CONTAINER_SEED, 1, seed_a, reliable=True),
                           server_addr)
             await asyncio.sleep(0.3)
 
-            srv = protocol_obj.state.container_state(TRUNK_BASE, TRUNK_CELL)
+            srv = protocol_obj.state.container_state(TRUNK_FID)
             assert srv is not None
             assert srv.items == {STIMPAK: 5, AMMO_10MM: 100}
             assert srv.last_owner_peer_id == "peer_sA"
@@ -655,13 +721,13 @@ async def test_first_seed_creates_state_second_is_rejected():
             # Peer B sends a SEED with LESS info (only STIMPAK, and lower count).
             # B1.h must REJECT this. Server state unchanged.
             seed_b = ContainerSeedPayload(entries=(
-                ContainerStateEntry(TRUNK_BASE, TRUNK_CELL, STIMPAK, 1),
+                ContainerStateEntry(TRUNK_FID, TRUNK_BASE, TRUNK_CELL, STIMPAK, 1),
             ))
             sock_b.sendto(encode_frame(MessageType.CONTAINER_SEED, 1, seed_b, reliable=True),
                           server_addr)
             await asyncio.sleep(0.3)
 
-            srv_after = protocol_obj.state.container_state(TRUNK_BASE, TRUNK_CELL)
+            srv_after = protocol_obj.state.container_state(TRUNK_FID)
             assert srv_after is not None
             assert srv_after.items == {STIMPAK: 5, AMMO_10MM: 100}, \
                 f"second SEED wholesale-replaced state: {srv_after.items}"
@@ -684,8 +750,9 @@ async def test_seed_refills_empty_tracked_container():
     state = ServerState()
     # Pre-existing empty tracked container (e.g., leftover from previous
     # session that got wiped, or respawned container that was emptied).
-    state._containers[(TRUNK_BASE, TRUNK_CELL)] = ContainerWorldState(
-        base_id=TRUNK_BASE, cell_id=TRUNK_CELL, items={}, last_owner_peer_id="past_peer",
+    state._containers[TRUNK_FID] = ContainerWorldState(
+        form_id=TRUNK_FID, base_id=TRUNK_BASE, cell_id=TRUNK_CELL, items={},
+        last_owner_peer_id="past_peer",
     )
     transport, protocol_obj = await _start_server_with_state(state, port)
     try:
@@ -697,14 +764,14 @@ async def test_seed_refills_empty_tracked_container():
             await _collect_frames(sock, 0.2)
 
             seed = ContainerSeedPayload(entries=(
-                ContainerStateEntry(TRUNK_BASE, TRUNK_CELL, STIMPAK, 4),
-                ContainerStateEntry(TRUNK_BASE, TRUNK_CELL, AMMO_10MM, 50),
+                ContainerStateEntry(TRUNK_FID, TRUNK_BASE, TRUNK_CELL, STIMPAK, 4),
+                ContainerStateEntry(TRUNK_FID, TRUNK_BASE, TRUNK_CELL, AMMO_10MM, 50),
             ))
             sock.sendto(encode_frame(MessageType.CONTAINER_SEED, 1, seed, reliable=True),
                         server_addr)
             await asyncio.sleep(0.3)
 
-            srv = protocol_obj.state.container_state(TRUNK_BASE, TRUNK_CELL)
+            srv = protocol_obj.state.container_state(TRUNK_FID)
             assert srv is not None
             assert srv.items == {STIMPAK: 4, AMMO_10MM: 50}, \
                 f"empty container wasn't refilled: {srv.items}"
@@ -727,6 +794,7 @@ async def test_empty_seed_does_not_erase_state():
     state.record_container_op(ContainerOpPayload(
         kind=int(ContainerOpKind.PUT),
         container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+        container_form_id=TRUNK_FID,
         item_base_id=STIMPAK, count=3, timestamp_ms=0,
     ), "peer_sA", 0.0)
 
@@ -742,14 +810,14 @@ async def test_empty_seed_does_not_erase_state():
             # Send SEED payload with entries BUT count=0 (drifted client's
             # view of an "empty" container).
             seed = ContainerSeedPayload(entries=(
-                ContainerStateEntry(TRUNK_BASE, TRUNK_CELL, STIMPAK, 0),
+                ContainerStateEntry(TRUNK_FID, TRUNK_BASE, TRUNK_CELL, STIMPAK, 0),
             ))
             sock.sendto(encode_frame(MessageType.CONTAINER_SEED, 1, seed, reliable=True),
                         server_addr)
             await asyncio.sleep(0.3)
 
             # Server state is intact — the empty SEED must not wipe the stimpaks.
-            srv = protocol_obj.state.container_state(TRUNK_BASE, TRUNK_CELL)
+            srv = protocol_obj.state.container_state(TRUNK_FID)
             assert srv is not None
             assert srv.items.get(STIMPAK) == 3, \
                 f"drifted client's empty SEED wiped state: {srv.items}"
@@ -831,11 +899,7 @@ async def test_concurrent_take_dup_race_b1h4_one_wins_one_loses():
     server's perspective."""
     port = 31510
     state = ServerState()
-    state.record_container_op(ContainerOpPayload(
-        kind=int(ContainerOpKind.PUT),
-        container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
-        item_base_id=STIMPAK, count=3, timestamp_ms=0,
-    ), "seeder", 0.0)
+    _seeded(state, TRUNK_FID, {STIMPAK: 3})
 
     transport, protocol_obj = await _start_server_with_state(state, port)
     try:
@@ -856,12 +920,14 @@ async def test_concurrent_take_dup_race_b1h4_one_wins_one_loses():
             op_a = ContainerOpPayload(
                 kind=int(ContainerOpKind.TAKE),
                 container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+                container_form_id=TRUNK_FID,
                 item_base_id=STIMPAK, count=3, timestamp_ms=0,
                 client_op_id=1001,
             )
             op_b = ContainerOpPayload(
                 kind=int(ContainerOpKind.TAKE),
                 container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+                container_form_id=TRUNK_FID,
                 item_base_id=STIMPAK, count=3, timestamp_ms=0,
                 client_op_id=2002,
             )
@@ -904,7 +970,7 @@ async def test_concurrent_take_dup_race_b1h4_one_wins_one_loses():
             }, f"expected one ACCEPTED + one REJ_INSUFFICIENT, got {statuses}"
 
             # Server state: winner took all 3, key removed (or value=0).
-            final = protocol_obj.state.container_state(TRUNK_BASE, TRUNK_CELL)
+            final = protocol_obj.state.container_state(TRUNK_FID)
             assert final is not None
             assert final.items.get(STIMPAK, 0) == 0, \
                 f"winner didn't clear the stock: {final.items}"
@@ -931,3 +997,301 @@ async def test_concurrent_take_dup_race_b1h4_one_wins_one_loses():
             sock_b.close()
     finally:
         transport.close()
+
+
+# ---------------------------------------------------------------- L1: the key is the placed REFR
+
+RUNTIME_FID = 0xFF000123   # a runtime ref: aliases across processes
+
+
+class TestPlacedRefIdentity:
+    """Loot rework L1 (2026-09-23): a container IS its placed REFR form_id.
+
+    The (base_id, cell_id) key merged every ref of one base in one cell: two
+    identical toolboxes in a house, two corpses of the same NPC base, two
+    stimpaks on one floor were a single record. Emptying the first made the
+    server refuse the second, and with the half-transaction block of B1 a
+    refused take destroyed the item (six X-01 pieces, 2026-08-16). Placed ids
+    (prefix 0x00..0xFE) are stable across processes with the same load
+    order; runtime ids (prefix 0xFF) alias and are refused until they carry
+    an identity of their own. (base, cell) stays as the verification.
+    """
+
+    def test_state_entry_carries_form_id(self):
+        e = ContainerStateEntry(TRUNK_FID, TRUNK_BASE, TRUNK_CELL, STIMPAK, 4)
+        s = ContainerStatePayload(entries=(e,))
+        f = decode_frame(encode_frame(MessageType.CONTAINER_STATE, 1, s, reliable=True))
+        assert f.payload.entries[0].container_form_id == TRUNK_FID
+        # 20 bytes per entry under the 1400-byte payload, 6 of chunk header.
+        assert ContainerStatePayload.MAX_ENTRIES_PER_FRAME == 69
+        assert ContainerSeedPayload.MAX_ENTRIES_PER_FRAME == 69
+
+    def test_twins_are_two_records(self):
+        s = ServerState()
+        for fid in (TRUNK_FID, TWIN_FID):
+            s.record_container_op(_put(fid, STIMPAK, 5), "alice", 0.0)
+        s.record_container_op(_take(TRUNK_FID, STIMPAK, 5), "bob", 1.0)
+        assert s.container_state(TRUNK_FID).items == {}
+        assert s.container_state(TWIN_FID).items == {STIMPAK: 5}
+        assert len(s.all_containers()) == 2
+
+    def test_take_on_emptied_twin_is_insufficient(self):
+        """The merged key answered this take out of the twin's stock."""
+        s = ServerState()
+        _seeded(s, TWIN_FID, {STIMPAK: 5})
+        _seeded(s, TRUNK_FID, {STIMPAK: 1})
+        s.record_container_op(_take(TRUNK_FID, STIMPAK, 1), "alice", 0.0)
+        op = _take(TRUNK_FID, STIMPAK, 1)
+        r = validate_container_op(_session(), op, s.container_state_for_op(op), 0.0)
+        assert not r.ok
+        assert r.reason == RejectReason.INSUFFICIENT_ITEMS
+
+    def test_validator_refuses_zero_form_id(self):
+        r = validate_container_op(_session(), _take(0, STIMPAK, 1), None, 0.0)
+        assert not r.ok
+        assert r.reason == RejectReason.MISSING_IDENTITY
+
+    def test_validator_refuses_runtime_ref(self):
+        r = validate_container_op(_session(), _take(RUNTIME_FID, STIMPAK, 1), None, 0.0)
+        assert not r.ok
+        assert r.reason == RejectReason.RUNTIME_REF
+
+    def test_validator_refuses_identity_drift(self):
+        """Same form_id, another (base, cell): a load-order drift between
+        two clients. The op must not touch the record."""
+        known = ContainerWorldState(
+            form_id=TRUNK_FID, base_id=TRUNK_BASE, cell_id=TRUNK_CELL,
+            items={STIMPAK: 2},
+        )
+        drifted = ContainerOpPayload(
+            kind=int(ContainerOpKind.TAKE),
+            container_base_id=TRUNK_BASE + 1, container_cell_id=TRUNK_CELL,
+            container_form_id=TRUNK_FID, item_base_id=STIMPAK, count=1,
+            timestamp_ms=0,
+        )
+        r = validate_container_op(_session(), drifted, known, 0.0)
+        assert not r.ok
+        assert r.reason == RejectReason.IDENTITY_MISMATCH
+
+    def test_record_refuses_identity_drift(self):
+        s = ServerState()
+        s.record_container_op(_put(TRUNK_FID, STIMPAK, 2), "alice", 0.0)
+        drifted = ContainerOpPayload(
+            kind=int(ContainerOpKind.TAKE),
+            container_base_id=TRUNK_BASE + 1, container_cell_id=TRUNK_CELL,
+            container_form_id=TRUNK_FID, item_base_id=STIMPAK, count=1,
+            timestamp_ms=0,
+        )
+        assert s.record_container_op(drifted, "bob", 1.0) is None
+        assert s.container_state(TRUNK_FID).items == {STIMPAK: 2}
+        assert s.container_state(TRUNK_FID).last_owner_peer_id == "alice"
+
+
+@pytest.mark.asyncio
+async def test_seed_twins_create_two_records_and_runtime_refs_are_skipped():
+    """One SEED can carry several containers. Two twins (same base and cell)
+    become two records; an entry for a runtime ref (0xFF prefix) is skipped
+    because its id means another object on every other client."""
+    port = 31533
+    state = ServerState()
+    transport, protocol_obj = await _start_server_with_state(state, port)
+    try:
+        server_addr = ("127.0.0.1", port)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("127.0.0.1", 0))
+        try:
+            await _raw_peer_hello(sock, server_addr, "peer_twins")
+            await _collect_frames(sock, 0.2)
+            seed = ContainerSeedPayload(entries=(
+                ContainerStateEntry(TRUNK_FID, TRUNK_BASE, TRUNK_CELL, STIMPAK, 5),
+                ContainerStateEntry(TWIN_FID, TRUNK_BASE, TRUNK_CELL, AMMO_10MM, 100),
+                ContainerStateEntry(RUNTIME_FID, TRUNK_BASE, TRUNK_CELL, STIMPAK, 3),
+            ))
+            sock.sendto(encode_frame(MessageType.CONTAINER_SEED, 1, seed, reliable=True),
+                        server_addr)
+            await asyncio.sleep(0.3)
+
+            assert protocol_obj.state.container_state(TRUNK_FID).items == {STIMPAK: 5}
+            assert protocol_obj.state.container_state(TWIN_FID).items == {AMMO_10MM: 100}
+            assert protocol_obj.state.container_state(RUNTIME_FID) is None
+            assert len(protocol_obj.state.all_containers()) == 2
+        finally:
+            sock.close()
+    finally:
+        transport.close()
+
+
+# ---------------------------------------------------------------- L2: one verdict per op id
+
+class TestContainerVerdictMemory:
+    """Loot rework L2 (2026-09-23): the client applies a take at once and
+    sends the op afterwards, so an op whose ACK was lost in a session drop
+    is sent again on the rejoin. The server keeps the verdict of the last
+    ops of every peer, keyed by peer id (a rejoin is a new session), and
+    answers a repeat with the stored ACK without applying it twice."""
+
+    def test_remembers_per_peer_and_evicts_oldest(self):
+        s = ServerState()
+        ack = ContainerOpAckPayload(
+            client_op_id=7, status=int(ContainerOpAckStatus.ACCEPTED),
+            container_base_id=TRUNK_BASE, container_cell_id=TRUNK_CELL,
+            item_base_id=STIMPAK, final_count=3,
+        )
+        s.remember_container_verdict("alice", 7, ack)
+        assert s.recall_container_verdict("alice", 7) == ack
+        assert s.recall_container_verdict("bob", 7) is None
+        kept = ServerState.CONTAINER_VERDICTS_KEPT
+        for i in range(kept):
+            s.remember_container_verdict("alice", 1000 + i, ack)
+        assert s.recall_container_verdict("alice", 7) is None
+        assert s.recall_container_verdict("alice", 1000) is not None
+        assert s.recall_container_verdict("alice", 1000 + kept - 1) is not None
+
+
+@pytest.mark.asyncio
+async def test_duplicate_op_applies_once_and_is_acked_twice():
+    """The same CONTAINER_OP (same client_op_id) arrives twice with different
+    channel sequence numbers, as it does when a client re-sends after a drop.
+    The stock moves once, the sender gets two identical ACKs, the other peer
+    gets one BCAST."""
+    port = 31511
+    state = ServerState()
+    state.record_container_op(_put(TRUNK_FID, STIMPAK, 5), "seeder", 0.0)
+    transport, protocol_obj = await _start_server_with_state(state, port)
+    try:
+        server_addr = ("127.0.0.1", port)
+        sock_a = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock_b = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock_a.bind(("127.0.0.1", 0)); sock_b.bind(("127.0.0.1", 0))
+        try:
+            await asyncio.gather(
+                _raw_peer_hello(sock_a, server_addr, "peer_dupA"),
+                _raw_peer_hello(sock_b, server_addr, "peer_dupB"),
+            )
+            await asyncio.gather(_collect_frames(sock_a, 0.2), _collect_frames(sock_b, 0.2))
+
+            op = _take(TRUNK_FID, STIMPAK, 2, op_id=4242)
+            sock_a.sendto(encode_frame(MessageType.CONTAINER_OP, 1, op, reliable=True), server_addr)
+            sock_a.sendto(encode_frame(MessageType.CONTAINER_OP, 2, op, reliable=True), server_addr)
+            frames_a, frames_b = await asyncio.gather(
+                _collect_frames(sock_a, 0.8), _collect_frames(sock_b, 0.8))
+
+            acks = [f.payload for f, _ in frames_a
+                    if f.header.msg_type == int(MessageType.CONTAINER_OP_ACK)]
+            bcasts = [f.payload for f, _ in frames_b
+                      if f.header.msg_type == int(MessageType.CONTAINER_BCAST)]
+            assert len(acks) == 2, acks
+            assert all(a.client_op_id == 4242 for a in acks)
+            assert all(a.status == int(ContainerOpAckStatus.ACCEPTED) for a in acks)
+            assert all(a.final_count == 3 for a in acks)
+            assert len(bcasts) == 1, bcasts
+            assert protocol_obj.state.container_state(TRUNK_FID).items == {STIMPAK: 3}
+            assert protocol_obj.stats()["container_op_repeats"] == 1
+        finally:
+            sock_a.close(); sock_b.close()
+    finally:
+        transport.close()
+
+
+@pytest.mark.asyncio
+async def test_same_op_id_from_two_peers_both_apply():
+    """Op ids are per peer: two peers reusing the same number are two ops."""
+    port = 31512
+    state = ServerState()
+    state.record_container_op(_put(TRUNK_FID, STIMPAK, 5), "seeder", 0.0)
+    transport, protocol_obj = await _start_server_with_state(state, port)
+    try:
+        server_addr = ("127.0.0.1", port)
+        sock_a = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock_b = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock_a.bind(("127.0.0.1", 0)); sock_b.bind(("127.0.0.1", 0))
+        try:
+            await asyncio.gather(
+                _raw_peer_hello(sock_a, server_addr, "peer_idA"),
+                _raw_peer_hello(sock_b, server_addr, "peer_idB"),
+            )
+            await asyncio.gather(_collect_frames(sock_a, 0.2), _collect_frames(sock_b, 0.2))
+
+            op = _take(TRUNK_FID, STIMPAK, 1, op_id=99)
+            sock_a.sendto(encode_frame(MessageType.CONTAINER_OP, 1, op, reliable=True), server_addr)
+            sock_b.sendto(encode_frame(MessageType.CONTAINER_OP, 1, op, reliable=True), server_addr)
+            frames_a, frames_b = await asyncio.gather(
+                _collect_frames(sock_a, 0.8), _collect_frames(sock_b, 0.8))
+
+            def _acks(frames):
+                return [f.payload for f, _ in frames
+                        if f.header.msg_type == int(MessageType.CONTAINER_OP_ACK)]
+            assert len(_acks(frames_a)) == 1 and len(_acks(frames_b)) == 1
+            assert protocol_obj.state.container_state(TRUNK_FID).items == {STIMPAK: 3}
+            assert protocol_obj.stats()["container_op_repeats"] == 0
+        finally:
+            sock_a.close(); sock_b.close()
+    finally:
+        transport.close()
+
+
+CORPSE_FID = 0x246CD5          # a placed raider of the test area (ACHR)
+BASE_ON_A = 0xFF0011EC         # its runtime TESNPC base on client A
+BASE_ON_B = 0xFF001218         # the same raider's base on client B
+CELL_ON_A = 0xDD5B
+CELL_ON_B = 0xDD3A             # where B's ragdoll came to rest
+
+
+def _corpse_take(base: int, cell: int, item: int, count: int) -> ContainerOpPayload:
+    return ContainerOpPayload(
+        kind=int(ContainerOpKind.TAKE), container_form_id=CORPSE_FID,
+        container_base_id=base, container_cell_id=cell, item_base_id=item,
+        count=count, timestamp_ms=0,
+    )
+
+
+class TestCorpseIdentity:
+    """Loot rework L4 (2026-09-25): a placed actor's base is a runtime TESNPC
+    that every client generates on its own (own face, gear and loot roll),
+    and its corpse can lie in another cell on another client. Measured on
+    four raiders: every op of the second client was refused with
+    IDENTITY_MISMATCH and every alignment skipped, so the corpse loot never
+    converged. For a runtime base the identity is the placed form_id alone;
+    a static base (a container) keeps the (base, cell) verification."""
+
+    def test_runtime_base_never_conflicts(self):
+        assert not identities_conflict(BASE_ON_A, CELL_ON_A, BASE_ON_B, CELL_ON_A)
+        assert not identities_conflict(BASE_ON_A, CELL_ON_A, BASE_ON_B, CELL_ON_B)
+        assert not identities_conflict(BASE_ON_A, CELL_ON_A, TRUNK_BASE, TRUNK_CELL)
+        assert identities_conflict(TRUNK_BASE, TRUNK_CELL, TRUNK_BASE, CELL_ON_B)
+        assert identities_conflict(TRUNK_BASE, TRUNK_CELL, 0x913FB, TRUNK_CELL)
+
+    def test_take_with_another_runtime_base_and_cell_is_accepted(self):
+        s = ServerState()
+        s.create_container(CORPSE_FID, BASE_ON_B, CELL_ON_A,
+                           {AMMO_10MM: 9, STIMPAK: 1}, "bob", 0.0)
+        op = _corpse_take(BASE_ON_A, CELL_ON_B, AMMO_10MM, 3)
+        r = validate_container_op(_session(), op, s.container_state_for_op(op), 0.0)
+        assert r.ok
+        assert s.record_container_op(op, "alice", 1.0) is not None
+        assert s.container_state(CORPSE_FID).items == {AMMO_10MM: 6, STIMPAK: 1}
+
+    def test_static_base_still_catches_drift(self):
+        s = ServerState()
+        _seeded(s, TRUNK_FID, {STIMPAK: 1})
+        op = ContainerOpPayload(
+            kind=int(ContainerOpKind.TAKE), container_form_id=TRUNK_FID,
+            container_base_id=0x913FB, container_cell_id=TRUNK_CELL,
+            item_base_id=STIMPAK, count=1, timestamp_ms=0,
+        )
+        r = validate_container_op(_session(), op, s.container_state_for_op(op), 0.0)
+        assert not r.ok and r.reason == RejectReason.IDENTITY_MISMATCH
+        assert s.record_container_op(op, "alice", 1.0) is None
+
+    def test_a_new_death_drops_the_corpse_record(self):
+        """Loot rework L4.1: a death makes a new corpse with a new roll. The
+        previous corpse's record (looted out yesterday) must not empty it:
+        measured 2026-09-25, four raiders killed again lost their fresh loot
+        at the activation. A replay of a known death keeps the record."""
+        s = ServerState()
+        s.create_container(CORPSE_FID, BASE_ON_B, CELL_ON_A, {}, "bob", 0.0)
+        assert s.container_state(CORPSE_FID) is not None
+        assert s.forget_container(CORPSE_FID) is True
+        assert s.container_state(CORPSE_FID) is None
+        assert s.forget_container(CORPSE_FID) is False
+        assert NPC_DEATH_FLAG_REPLAY == 0x01
