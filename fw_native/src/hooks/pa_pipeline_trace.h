@@ -78,4 +78,9 @@ bool force_local_pa_model_reload();
 // leaves for others to replicate).
 void dump_refr_inventory(const char* tag, void* refr);
 
+// L5 stage 3c — the player's Resurrect frees its AIProcess and makes a new
+// one: the pointer captured above is forgotten right before, and captured
+// again by the next per-frame call. Any thread.
+void forget_player_process();
+
 }  // namespace fw::hooks

@@ -111,8 +111,13 @@ std::int64_t __fastcall detour_destroy_by_handle(std::uint32_t* handle_ptr) {
         void* refr = fw::engine::resolve_refhandle(handle_ptr);
         std::uint32_t fid = 0, base_id = 0, cell_id = 0, flags = 0;
         if (seh_identity(refr, &fid, &base_id, &cell_id, &flags)) {
+            // By POINTER, confirmed through the handle: matching by fid
+            // alone once cleared the no-save flag on the Pip-Boy's 3D
+            // preview REFR, which had been handed the id of our dropped
+            // pistol, and its full unregistration erased our object's map
+            // entry (offsets.h: RUNTIME FORM IDS ARE NOT IDENTITIES).
             const bool ours = fid >= 0xFF000000u
-                              && fw::native::world_spawn::is_our_fid(fid);
+                              && fw::native::world_spawn::is_our_refr(refr, fid);
             if (ours) {
                 // Build 70c — THE POST-DEATH CRASH FIX. A ref that dies with
                 // no-save 0x4000 set SKIPS all global-manager unregistration
@@ -185,7 +190,7 @@ char __fastcall detour_unpersist(void* mgr, void* refr,
     // Only log at INF when the ref is one of OURS or the kill branch is
     // predicted — the janitor calls this on vanilla NPC frames all day.
     const bool ours = fid >= 0xFF000000u
-                      && fw::native::world_spawn::is_our_fid(fid);
+                      && fw::native::world_spawn::is_our_refr(refr, fid);
     const bool loud = ours || predicted_destroy;
 
     if (loud) {

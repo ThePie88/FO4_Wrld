@@ -11,6 +11,7 @@
 #include "../offsets.h"
 #include "../ref_identity.h"
 #include "../net/client.h"
+#include "../persist/lifecycle.h"   // exiting(): the teardown re-locks doors, that is not a player action
 
 namespace fw::hooks {
 
@@ -122,6 +123,15 @@ static void on_lock_flip(void* refr, bool new_locked_state, LockFlipFn orig,
                tag, static_cast<unsigned long long>(fire),
                new_locked_state ? 1 : 0, actual_locked ? 1 : 0,
                r.form_id);
+        return;
+    }
+
+    // 2026-09-28 — the exit teardown fires this on three doors per client
+    // (locked=1, measured on both clients at every exit). It is the engine
+    // unloading, not a player, and the server must not hear it.
+    if (fw::persist::exiting()) {
+        FW_DBG("[lock-act] %s FIRE #%llu during the exit teardown: not broadcast",
+               tag, static_cast<unsigned long long>(fire));
         return;
     }
 

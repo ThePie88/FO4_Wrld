@@ -17,13 +17,15 @@ Format history:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -33,12 +35,26 @@ from server.state import (  # noqa: E402
     ServerState, SessionState, ActorWorldState, ContainerWorldState,
     LockWorldState, OutfitEntry, ResumeTicket,
 )
-from protocol import PosStatePayload, EquipModRecord, is_runtime_form_id  # noqa: E402
+from protocol import PosStatePayload, EquipModRecord, is_runtime_form_id, COUNT_MAX  # noqa: E402
 
 
 log = logging.getLogger("persistence")
 
-SNAPSHOT_FORMAT_VERSION: int = 6
+SNAPSHOT_FORMAT_VERSION: int = 10
+# v10 (L5 stage 3b, 2026-09-28): `custody` on each checkpoint, true when the
+#     server holds its bytes (server/custody.py). Everything else as v9.
+# v9 (L5 stage 3a, 2026-09-28): `checkpoints`, the last three checkpoints
+#     each peer reported written (name, sha256, size, digest, watermark
+#     LSN, status, boot failures). Everything else as v8.
+# v8 (L5 stage 2, 2026-09-27): `inv_digests`, the last inventory digest each
+#     peer reported (INV_DIGEST), advisory. Everything else as v7.
+# v7 (L5 stage 1, 2026-09-27): the snapshot is a compaction of the journal.
+#     `journal` = {lsn, epoch} says which journal records it covers, so a
+#     boot replays only what came after; `quests` and `globals` are written
+#     at last (they never were: every quest stage and global set died with
+#     the process); `resume_tokens` entries carry `token_hash` (SHA-256 of
+#     the token) instead of the token. v5/v6 files load as before, their
+#     clear-text tokens hashed on the way in, their journal lsn taken as 0.
 # v6 (loot rework L1, 2026-09-23): `containers` entries carry `form_id`, the
 #     placed REFR's own id, and are keyed by it. The (base_id, cell_id) key
 #     of v3..v5 merged every ref of one base in one cell into one record,
@@ -63,9 +79,17 @@ def snapshot(state: ServerState, path: Path, *, pretty: bool = True) -> None:
 
     Writes to a temp file then renames (crash-safe against partial writes).
     """
+    journal = getattr(state, "journal", None)
     data: dict[str, Any] = {
         "version": SNAPSHOT_FORMAT_VERSION,
         "timestamp_ms": int(time.time() * 1000),
+        # v7 — what this file covers. A boot loads it and replays the
+        # journal from lsn + 1; without a journal the lsn is 0 and the
+        # snapshot is the whole story, as before.
+        "journal": {
+            "lsn": int(getattr(state, "applied_lsn", 0)),
+            "epoch": int(getattr(journal, "epoch", 0)) if journal is not None else 0,
+        },
         "server": {
             "tick_rate_hz": state.tick_rate_hz,
             "server_version": list(state.server_version),
@@ -122,6 +146,67 @@ def snapshot(state: ServerState, path: Path, *, pretty: bool = True) -> None:
                 "timestamp_ms": lk.timestamp_ms,
             }
             for lk in state.all_locks()
+        ],
+        # v7 — quest stages and global variables. Both were relayed live and
+        # forgotten at shutdown, so a quest advanced on Monday was back at
+        # its old stage for whoever joined on Tuesday.
+        "quests": [
+            {
+                "quest_form_id": f"0x{q.quest_form_id:X}",
+                "stage": q.stage,
+                "last_owner": q.last_owner_peer_id,
+                "last_update_ms": q.last_update_ms,
+            }
+            for q in state.all_quest_stages()
+        ],
+        "globals": [
+            {
+                "global_form_id": f"0x{g.global_form_id:X}",
+                "value": g.value,
+                "last_owner": g.last_owner_peer_id,
+                "last_update_ms": g.last_update_ms,
+            }
+            for g in state.all_globals()
+        ],
+        # v8 — the last inventory digest each peer reported. Advisory: the
+        # record stage 3 holds a checkpoint against; nothing reads it yet.
+        "inv_digests": [
+            {
+                "peer_id": d.peer_id,
+                "seq": d.seq,
+                "wall_ms": d.wall_ms,
+                "digest": f"0x{d.digest:016X}",
+                "entries": d.entries,
+                "stacks": d.stacks,
+                "items": d.items,
+                "reasons": d.reasons,
+                "flags": d.flags,
+                "why": d.why,
+                "received_ms": d.received_ms,
+                "count": d.count,
+            }
+            for d in state.all_inv_digests()
+        ],
+        # v9 — the checkpoints, newest first per peer.
+        "checkpoints": [
+            {
+                "peer_id": c.peer_id,
+                "identity_hex": c.identity_hex,
+                "seq": c.seq,
+                "name": c.name,
+                "sha256": c.sha256_hex,
+                "size": c.size,
+                "digest": f"0x{c.digest:016X}",
+                "digest_seq": c.digest_seq,
+                "wall_ms": c.wall_ms,
+                "received_ms": c.received_ms,
+                "watermark_lsn": c.watermark_lsn,
+                "reason": c.reason,
+                "status": c.status,
+                "boot_failures": c.boot_failures,
+                "custody": bool(c.custody),
+            }
+            for c in state.all_checkpoints()
         ],
         # B6.14 — spawned world objects. These MUST persist: the local copies
         # on every client are TEMPORARY refs that die with the session, so the
@@ -188,35 +273,137 @@ def snapshot(state: ServerState, path: Path, *, pretty: bool = True) -> None:
             }
             for p in state.all_presence()
         ],
-        # v26 — resume tokens, hex-encoded. These are BEARER CREDENTIALS in
-        # clear text: whoever reads this file can rejoin as any identity in
-        # it until the token expires. Acceptable while the server runs on the
-        # developer's own machine next to the repo, and the first thing to
-        # revisit when it moves anywhere else.
+        # v26 — resume tokens. Until v7 they were written in clear text, and
+        # whoever read this file could rejoin as any identity in it. Since
+        # L5 stage 1 the server never holds a token, only its SHA-256 (the
+        # key of state._resume_tokens), and that is what is written.
         "resume_tokens": [
             {
-                "token": tok.hex(),
+                "token_hash": key.hex(),
                 "peer_id": t.peer_id,
                 "identity_hex": t.identity_hex,
                 "issued_at_ms": t.issued_at_ms,
                 "expires_at_ms": t.expires_at_ms,
             }
-            for tok, t in state._resume_tokens.items()
+            for key, t in state._resume_tokens.items()
         ],
     }
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Atomic write: temp file + rename
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", dir=str(path.parent),
-        prefix=f".{path.name}.", suffix=".tmp", delete=False,
-    ) as tmp:
-        if pretty:
-            json.dump(data, tmp, indent=2)
-        else:
-            json.dump(data, tmp, separators=(",", ":"))
-        tmp_path = tmp.name
-    os.replace(tmp_path, path)
+    # Atomic write: temp file, flushed and fsynced, then renamed over the
+    # target. The fsync is what makes the rename mean anything: until stage 0
+    # of L5 (2026-09-27) a power cut could leave the renamed file with no
+    # data blocks behind it, and the loader answered such a file with an
+    # empty world. A failed write removes its temp file and leaves the
+    # previous snapshot as it was.
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=str(path.parent),
+            prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        ) as tmp:
+            tmp_path = tmp.name
+            if pretty:
+                json.dump(data, tmp, indent=2)
+            else:
+                json.dump(data, tmp, separators=(",", ":"))
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_path, path)
+        tmp_path = None
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    _fsync_directory(path.parent)
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Make the rename itself durable where the platform allows it. Windows
+    cannot open a directory for fsync; the rename is journaled by NTFS."""
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(str(directory), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+class SnapshotUnreadable(RuntimeError):
+    """No snapshot copy could be loaded and the operator did not allow an
+    empty world. Raised instead of starting a world that would overwrite
+    every good copy within a few rotations."""
+
+
+def restore_state(state: ServerState, path: Path, *, allow_empty_world: bool = False,
+                  keep: int = 5) -> Optional[Path]:
+    """Load the world at boot, fail-closed.
+
+    Tries `path`, then the rotated copies `path.1` .. `path.keep` in order.
+    A copy that fails to load is moved aside as `path.corrupt.N` so the next
+    write cannot rotate it over a good copy. The copy that loaded is also
+    saved as `path.lastgood`, a file the rotation never touches. Returns the
+    path that loaded, or None when no snapshot exists at all (a new world)
+    or when every copy failed and `allow_empty_world` is set.
+
+    Stage 0 of L5 (2026-09-27): before this the loader logged "starting with
+    empty world" on any failure, the first periodic write overwrote the
+    unreadable file without rotating, and the next five rotations pushed
+    every good copy out within about 180 s.
+    """
+    candidates = [path] + [path.with_name(f"{path.name}.{n}") for n in range(1, keep + 1)]
+    present = [c for c in candidates if c.is_file()]
+    if not present:
+        return None
+    failures: list[str] = []
+    for candidate in present:
+        try:
+            n = load_into(state, candidate)
+        except Exception as e:  # noqa: BLE001 - any loader failure moves the copy aside
+            failures.append(f"{candidate.name}: {e}")
+            _quarantine(candidate)
+            state.reset_world()
+            continue
+        log.info("restored %d world actors from snapshot %s", n, candidate)
+        if failures:
+            log.warning("snapshot %s: loaded a rotated copy after %d unreadable file(s): %s",
+                        path, len(failures), "; ".join(failures))
+        _keep_last_good(candidate, path.with_name(f"{path.name}.lastgood"))
+        return candidate
+    if allow_empty_world:
+        log.warning("no readable snapshot (%s): starting with an EMPTY world because "
+                    "--allow-empty-world was given", "; ".join(failures))
+        return None
+    raise SnapshotUnreadable(
+        "no readable snapshot: " + "; ".join(failures)
+        + " (pass --allow-empty-world to start a new world on purpose)")
+
+
+def _quarantine(bad: Path) -> None:
+    for n in range(1, 1000):
+        target = bad.with_name(f"{bad.name.split('.json')[0]}.json.corrupt.{n}")
+        if not target.exists():
+            try:
+                bad.rename(target)
+                log.warning("snapshot %s is unreadable, moved aside as %s", bad, target)
+            except OSError as e:
+                log.warning("snapshot %s is unreadable and could not be moved aside: %s", bad, e)
+            return
+
+
+def _keep_last_good(source: Path, target: Path) -> None:
+    try:
+        shutil.copyfile(str(source), str(target))
+    except OSError as e:
+        log.warning("could not keep a copy of the loaded snapshot at %s: %s", target, e)
 
 
 def _pos_to_dict(p) -> dict[str, Any]:
@@ -248,26 +435,16 @@ def load_into(state: ServerState, path: Path) -> int:
 
     version = data.get("version")
 
-    # Restore server-level config (non-destructive: only if present in snapshot).
-    # Done early so we get the config even when the world_actors section is
-    # unusable (v1 legacy drop).
+    # The "server" section is informational. Configuration (tick rate, peer
+    # timeout) comes from the command line and the code, never from the world
+    # file: this block used to restore both, and a tuning knob that a boot
+    # silently reverts is worse than a wrong value (a 5 s peer timeout pinned
+    # over a 15 s default for a whole phase). Stage 0 of L5, 2026-09-27.
     server_cfg = data.get("server") or {}
-    if "tick_rate_hz" in server_cfg:
-        state.tick_rate_hz = int(server_cfg["tick_rate_hz"])
-    if "peer_timeout_ms" in server_cfg:
-        # Say it out loud when the snapshot disagrees with the code. This
-        # field silently pinned 5 s over a 15 s default for a whole phase:
-        # the value was raised in ServerState, deployed, and never applied,
-        # because every boot restored the old one from the world file. A
-        # tuning knob that cannot be turned is worse than a wrong value.
-        snapshot_timeout = float(server_cfg["peer_timeout_ms"])
-        if snapshot_timeout != state.peer_timeout_ms:
-            log.info(
-                "snapshot %s: peer_timeout_ms %.0f ms from the snapshot "
-                "overrides the %.0f ms built into this build",
-                path, snapshot_timeout, state.peer_timeout_ms,
-            )
-        state.peer_timeout_ms = snapshot_timeout
+    for key in ("tick_rate_hz", "peer_timeout_ms"):
+        if key in server_cfg and server_cfg[key] != getattr(state, key):
+            log.info("snapshot %s: %s=%s in the file, %s in this build (the build wins)",
+                     path, key, server_cfg[key], getattr(state, key))
 
     if version == 1:
         # Legacy v1 snapshots keyed entries by form_id alone. Those form_ids
@@ -284,14 +461,26 @@ def load_into(state: ServerState, path: Path) -> int:
         return 0
 
     # v2 snapshots have no containers section; v3 adds containers; v4 adds
-    # locks; v5 presence and resume tokens; v6 rekeys the containers. All
-    # readable — older missing sections become empty. Unknown versions
-    # (> 6 or other) are rejected.
-    if version not in (2, 3, 4, 5, SNAPSHOT_FORMAT_VERSION):
+    # locks; v5 presence and resume tokens; v6 rekeys the containers; v7
+    # adds the journal mark, quests, globals and hashed tokens; v8 the
+    # inventory digests; v9 the checkpoints; v10 their custody. All readable
+    # — older missing sections become empty. Unknown versions (> 10 or
+    # other) are rejected.
+    if version not in (2, 3, 4, 5, 6, 7, 8, 9, SNAPSHOT_FORMAT_VERSION):
         raise ValueError(
             f"snapshot format version {version!r} unsupported "
-            f"(expected {SNAPSHOT_FORMAT_VERSION}, 5, 4, 3, 2, or 1)"
+            f"(expected {SNAPSHOT_FORMAT_VERSION}, 9, 8, 7, 6, 5, 4, 3, 2, or 1)"
         )
+
+    # v7 — the journal mark. Older files carry none: lsn 0 means "replay
+    # everything the journal holds", which is right for a journal that
+    # started after the file was written and is said out loud by the boot
+    # when it is not.
+    journal_mark = data.get("journal") or {}
+    try:
+        state.applied_lsn = max(0, int(journal_mark.get("lsn", 0)))
+    except (TypeError, ValueError):
+        state.applied_lsn = 0
 
     # Restore world actors (the authoritative game state)
     n = 0
@@ -365,6 +554,10 @@ def load_into(state: ServerState, path: Path) -> int:
             if iid == 0:
                 continue
             count = int(v)
+            if count > COUNT_MAX:
+                log.warning("snapshot %s: container 0x%X item 0x%X count %d clamped to %d",
+                            path, form_id, iid, count, COUNT_MAX)
+                count = COUNT_MAX
             if count > 0:
                 items[iid] = count
         container = ContainerWorldState(
@@ -382,6 +575,63 @@ def load_into(state: ServerState, path: Path) -> int:
             "snapshot %s: skipped %d container entries with missing/zero identity",
             path, container_skipped,
         )
+
+    # v7 — quests and globals. Restored through the state's own recorders
+    # with the journal off (this is a load, not a new fact), so the same
+    # validation applies as on the wire.
+    was_replaying = state._replaying
+    state.begin_replay()
+    try:
+        for q in data.get("quests", []) or []:
+            try:
+                raw_id = q["quest_form_id"]
+                qid = int(raw_id, 16) if isinstance(raw_id, str) else int(raw_id)
+                state.record_quest_stage(qid, int(q.get("stage", 0)),
+                                         q.get("last_owner") or "",
+                                         float(q.get("last_update_ms", 0.0)))
+            except (KeyError, TypeError, ValueError):
+                log.warning("snapshot %s: skipping malformed quest entry: %s", path, q)
+        for g in data.get("globals", []) or []:
+            try:
+                raw_id = g["global_form_id"]
+                gid = int(raw_id, 16) if isinstance(raw_id, str) else int(raw_id)
+                state.record_global_var(gid, float(g.get("value", 0.0)),
+                                        g.get("last_owner") or "",
+                                        float(g.get("last_update_ms", 0.0)))
+            except (KeyError, TypeError, ValueError):
+                log.warning("snapshot %s: skipping malformed global entry: %s", path, g)
+        # v8 — inventory digests, with their running count.
+        for d in data.get("inv_digests", []) or []:
+            try:
+                raw = d["digest"]
+                dig = int(raw, 16) if isinstance(raw, str) else int(raw)
+                state.record_inv_digest(
+                    str(d["peer_id"]), int(d.get("seq", 0)), int(d.get("wall_ms", 0)),
+                    dig, int(d.get("entries", 0)), int(d.get("stacks", 0)),
+                    int(d.get("items", 0)), int(d.get("reasons", 0)),
+                    int(d.get("flags", 0)), int(d.get("why", 0)),
+                    float(d.get("received_ms", 0.0)), count=int(d.get("count", 1)))
+            except (KeyError, TypeError, ValueError):
+                log.warning("snapshot %s: skipping malformed inv digest entry: %s", path, d)
+        # v9 — checkpoints. The file lists them newest first; recording them
+        # oldest first rebuilds the same order.
+        for c in reversed(data.get("checkpoints", []) or []):
+            try:
+                raw = c.get("digest", 0)
+                dig = int(raw, 16) if isinstance(raw, str) else int(raw)
+                state.record_checkpoint(
+                    str(c["peer_id"]), str(c.get("identity_hex", "")), int(c.get("seq", 0)),
+                    str(c["name"]), str(c.get("sha256", "")), int(c.get("size", 0)), dig,
+                    int(c.get("digest_seq", 0)), int(c.get("wall_ms", 0)),
+                    float(c.get("received_ms", 0.0)), int(c.get("watermark_lsn", 0)),
+                    int(c.get("reason", 0)), status=str(c.get("status", "provisional")),
+                    boot_failures=int(c.get("boot_failures", 0)),
+                    custody=bool(c.get("custody", False)))
+            except (KeyError, TypeError, ValueError):
+                log.warning("snapshot %s: skipping malformed checkpoint entry: %s", path, c)
+    finally:
+        if not was_replaying:
+            state.end_replay()
 
     # Restore lock states (v4+). Older snapshots won't have this key.
     lock_skipped = 0
@@ -464,8 +714,13 @@ def load_into(state: ServerState, path: Path) -> int:
     tokens_restored = 0
     for t in (data.get("resume_tokens") or []):
         try:
-            raw = bytes.fromhex(str(t["token"]))
-            state._resume_tokens[raw] = ResumeTicket(
+            if "token_hash" in t:
+                key = bytes.fromhex(str(t["token_hash"]))
+            else:
+                # v5/v6: the token itself. Hashed on the way in, so the
+                # file that still holds it in clear can be rotated away.
+                key = hashlib.sha256(bytes.fromhex(str(t["token"]))).digest()
+            state._resume_tokens[key] = ResumeTicket(
                 peer_id=str(t["peer_id"]),
                 identity_hex=str(t.get("identity_hex", "") or ""),
                 issued_at_ms=float(t.get("issued_at_ms", 0.0)),

@@ -118,6 +118,26 @@ bool apply_global_var(std::uint32_t global_form_id, float value);
 // is guaranteed main-thread by MinHook.
 bool force_materialize_inventory(void* container_ref);
 
+// 2026-09-29 — the engine's RemoveItem (sub_1411825A0) with no destination:
+// `count` units of `item_form` leave `container_refr` and are destroyed, the
+// call the loot rework L2 rollback makes for a phantom copy. Used by the
+// in-place alignment of a power armour frame's pieces. Main thread; false
+// on a null argument or an SEH fault.
+bool remove_items_destroy(void* container_refr, void* item_form, std::int32_t count) noexcept;
+
+// 2026-09-30 — whether the local player's parent cell is an interior (the
+// cell's flags at +0x40, bit 0). False when that cannot be read; then
+// `inside` is left false.
+bool player_in_interior(bool* inside) noexcept;
+
+// 2026-09-29 — a power armour frame redraws its pieces from its inventory:
+// reference task 106, sub_14098C120 with the 3D update (see
+// offsets::PA_FRAME_SYNC_TASK_RVA), what the engine runs after a
+// ContainerMenu transfer on a frame. An AddItem or RemoveItem on a frame
+// with its 3D loaded needs it. Main thread (the task runs at once there, it
+// is queued otherwise); false on a null argument, no queue or an SEH fault.
+bool sync_pa_frame_visuals(void* frame_refr) noexcept;
+
 // B1.k.3: decode a ContainerMenu inventory entry pointer to a TESForm*.
 //
 // ContainerMenu keeps a 32-byte-per-entry array at this+512 (player side)
@@ -451,8 +471,17 @@ bool in_internal_place() noexcept;
 // PlaceAtMe any base form at the player anchor, flag the REFR TEMPORARY
 // (the server owns spawned-object lifetime), return it with its minted form
 // id. Null when the world is not ready - the caller retries. MAIN THREAD.
+// out_handle (optional): the REFR's engine handle, the identity the world
+// spawn registry tracks it by (offsets.h: RUNTIME FORM IDS ARE NOT
+// IDENTITIES).
 void* place_world_object(std::uint32_t base_form_id,
-                         std::uint32_t* out_form_id) noexcept;
+                         std::uint32_t* out_form_id,
+                         std::uint32_t* out_handle = nullptr) noexcept;
+
+// The REFR's handle (GetHandle sub_140519190: mints one on first use), 0 when
+// the object has no refcount bits yet or the call faults. Any thread the
+// engine itself calls GetHandle from; the table is interlocked.
+std::uint32_t refr_get_handle(void* refr) noexcept;
 
 // Move ANY loaded REFR (furniture included) to a position + yaw through the
 // REFR::SetPosition leaf. The actor teleport refuses non-actors; this does
@@ -469,6 +498,21 @@ bool move_world_refr(void* refr, float x, float y, float z,
 // RE-FILE the engine performs on every move and the mod never did — guarded
 // by IsCellAttached, because the re-file DESTROYS a non-persistent ref whose
 // derived cell is not attached. MAIN THREAD ONLY.
+//
+// L5 stage 3 (2026-09-28) — the two poses. A FRAME stands: upright, wire
+// yaw, origin at the feet, so the ground under the target is where the
+// origin goes (the snap above). A DROPPED ITEM lies: its origin is the
+// centre of its collision, its rested height above the ground is part of
+// the pose the sender measured on the same geometry, and the snap planted
+// that centre IN the asphalt, from where Havok expelled it downwards.
+// Measured 2026-09-28 16:07 on both clients: batons announced at rest 1.1
+// units above an elevated road (z 7825.1 / 7823.8), snapped by -1.1 onto
+// the surface, found 2.5 s later at 7816.7 / 7813.9, eight to ten units
+// UNDER the road, hanging from its beams; a 10mm pistol given the same
+// treatment was expelled upwards (+7.9) by the luck of its shape.
+// `full_rot` (the wire's three engine angles) keeps the rested pose and
+// `ground_snap = false` keeps the rested height; null / true is the
+// frame's placement, unchanged.
 struct PlacementResult {
     bool  moved   = false;   // position leaf ran
     bool  snapped = false;   // Z corrected onto found ground
@@ -476,7 +520,29 @@ struct PlacementResult {
     bool  refiled = false;   // re-filed into the target cell (or already there)
 };
 PlacementResult finalize_world_placement(void* refr, float x, float y, float z,
-                                         float yaw_rad) noexcept;
+                                         float yaw_rad,
+                                         const float* full_rot = nullptr,
+                                         bool ground_snap = true) noexcept;
+
+// L5 stage 3c (2026-09-28) — the respawn move through the engine's own fast
+// travel: a temporary heading marker placed at the player, its coordinates
+// written to the destination, and the 89-byte request Game.FastTravel would
+// build (offsets.h, PLAYER_QUEUE_FAST_TRAVEL_RVA) queued on the player with
+// the destination's exterior cell resolved from the grid. The player's
+// update runs it with the loading screen, so the destination is loaded by
+// the loader and not synchronously on the main thread (the direct
+// Actor::MoveTo froze the window for 50 s on the first live death).
+// `out_marker_handle`: the marker's handle, for the caller to destroy once
+// landed. False (nothing queued) for an interior start, a missing grid cell,
+// or a placement failure: the caller falls back to the direct move. MAIN
+// THREAD.
+bool player_fast_travel_to(float x, float y, float z, float yaw_rad,
+                           std::uint32_t* out_marker_handle) noexcept;
+
+// L5 stage 3c — Actor::SetGhost (sub_140C5CE40): a ghost actor takes no
+// damage and is no target. The respawn keeps the player one from the
+// resurrect to a few seconds after the landing. MAIN THREAD.
+bool set_actor_ghost(void* actor, bool ghost) noexcept;
 
 // Build 70 - ACTUAL removal of a world REFR (the duplicate-PA fix).
 // disable_ref(fade=true) is proven broken for our TEMPORARY refs: the fade

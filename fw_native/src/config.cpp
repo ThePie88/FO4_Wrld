@@ -235,6 +235,16 @@ Settings load(const std::filesystem::path& path) {
                 FW_WRN("config: bad 'chargen_stage_z' value: %s (want game "
                        "units, 0..100000)", v.c_str());
             }
+        } else if (key == "checkpoint_test_key") {
+            const auto& v = value;
+            char* end = nullptr;
+            const unsigned long long parsed = std::strtoull(v.c_str(), &end, 0);
+            if (end && end != v.c_str() && parsed <= 0xFFull) {
+                s.checkpoint_test_key = static_cast<std::uint32_t>(parsed);
+            } else {
+                FW_WRN("config: bad 'checkpoint_test_key' value: %s (want a "
+                       "virtual-key code 0..255, e.g. 0x79 for F10)", v.c_str());
+            }
         } else if (key == "editor_key") {
             // A virtual-key code. Hex (0x71 = F2) or decimal.
             const auto& v = value;
@@ -284,6 +294,39 @@ Settings load(const std::filesystem::path& path) {
                 s.ghost_face_clone = false;
             } else {
                 FW_WRN("config: bad 'ghost_face_clone' value: %s", v.c_str());
+            }
+        } else if (key == "inventory_capture") {
+            const auto& v = value;
+            if (v == "1" || v == "true" || v == "yes" || v == "on" ||
+                v == "TRUE" || v == "YES" || v == "ON") {
+                s.inventory_capture = true;
+            } else if (v == "0" || v == "false" || v == "no" || v == "off" ||
+                       v == "FALSE" || v == "NO" || v == "OFF") {
+                s.inventory_capture = false;
+            } else {
+                FW_WRN("config: bad 'inventory_capture' value: %s", v.c_str());
+            }
+        } else if (key == "persist_lifecycle") {
+            const auto& v = value;
+            if (v == "1" || v == "true" || v == "yes" || v == "on" ||
+                v == "TRUE" || v == "YES" || v == "ON") {
+                s.persist_lifecycle = true;
+            } else if (v == "0" || v == "false" || v == "no" || v == "off" ||
+                       v == "FALSE" || v == "NO" || v == "OFF") {
+                s.persist_lifecycle = false;
+            } else {
+                FW_WRN("config: bad 'persist_lifecycle' value: %s", v.c_str());
+            }
+        } else if (key == "death_resurrect") {
+            const auto& v = value;
+            if (v == "1" || v == "true" || v == "yes" || v == "on" ||
+                v == "TRUE" || v == "YES" || v == "ON") {
+                s.death_resurrect = true;
+            } else if (v == "0" || v == "false" || v == "no" || v == "off" ||
+                       v == "FALSE" || v == "NO" || v == "OFF") {
+                s.death_resurrect = false;
+            } else {
+                FW_WRN("config: bad 'death_resurrect' value: %s", v.c_str());
             }
         } else if (key == "editor_overlay") {
             const auto& v = value;

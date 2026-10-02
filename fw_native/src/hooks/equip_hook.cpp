@@ -577,17 +577,28 @@ bool seh_read_byte_w4(void* addr, std::uint8_t* out) {
 
 // OIE.inner.data layout (CORRECTED 2026-04-30 from runtime probe).
 //
-// Tiebreaker analysis hypothesised a packed-bitstream header before the
-// records. That description applies to the SAVEGAME serialisation path
-// (BGSObjectInstanceExtra::Init which deserialises a bitstream into the
-// runtime form). The RUNTIME, in-memory representation we read here is
-// FLAT — `byte_len` bytes is exactly `byte_len / 8` records of 8 bytes
-// each, starting at `data + 0`. No header walker needed.
+// The buffer layout, from the engine's own serialiser (sub_14024A1B0, the
+// BGSObjectInstanceExtra save, read in the decomp on 2026-09-27): the inner
+// object holds {data* at +0, u32 dir_off at +8}. `data` starts with the
+// sections, back to back, and the DIRECTORY sits at data + dir_off: one u32
+// per section, `len24 | tag8 << 24`, closed by a 0xFF tag. The engine looks
+// for tag 0 (the ObjectModifier records), takes the count from
+// `(entry & 0xFFFFFF) >> 3` and the records from data plus the lengths of
+// the sections before it. Its walker gives up after one entry that is not
+// tag 0, so this buffer type carries the records as its first and only
+// section: `dir_off / 8` records at data + 0, which is the flat reading
+// the `byte_len` field (= dir_off) gives directly.
 //
 // Empirical confirmation across 4 weapons in iter 7 test:
 //   Vault Suit (1 OMOD):     byte_len=8,  1 record at data+0..+7
 //   10mm Pistol modded #1:   byte_len=48, 6 records at data+0..+47
 //   10mm Pistol modded #2:   byte_len=96, 12 records at data+0..+95
+//
+// The directory entry is read as a cross-check, never trusted alone: when
+// it is readable and tagged 0 the smaller of the two counts wins, a 0xFF
+// tag means the engine would serialise no records, and an unreadable
+// directory (the byte after the buffer is not ours to assume) leaves the
+// flat count in place.
 //
 // Each record (8 B):
 //   +0..+3  u32 mod_form_id   (OMOD form, formType 0x90)
@@ -606,16 +617,33 @@ OieHeaderWalkResult oie_walk_header(const std::uint8_t* data,
                                      std::uint32_t       byte_len) {
     OieHeaderWalkResult r{nullptr, 0};
     if (!data || byte_len < offsets::OBJMOD_RECORD_STRIDE) return r;
-    // Flat: byte_len = N * 8 (record stride)
-    if ((byte_len % offsets::OBJMOD_RECORD_STRIDE) != 0) {
-        // Not aligned — could indicate the buffer DOES have a header in
-        // some edge case. Try aligned floor and proceed; if interpretation
-        // is wrong, the form_ids will be garbage and we'll log them.
-        // (Better than refusing to extract — the wire layer will sanity-
-        // check form_ids on the receiver via lookup_by_form_id.)
+    // Flat: byte_len = N * 8 (record stride). A misaligned length takes the
+    // floor; the receiver validates every form id it is sent anyway.
+    std::uint32_t count = byte_len / offsets::OBJMOD_RECORD_STRIDE;
+
+    std::uint32_t dir_entry = 0;
+    if (seh_read_dword_w4(const_cast<std::uint8_t*>(data + byte_len), &dir_entry)) {
+        const std::uint8_t tag = static_cast<std::uint8_t>(dir_entry >> 24);
+        if (tag == 0) {
+            const std::uint32_t dir_count = (dir_entry & 0xFFFFFFu) >> 3;
+            if (dir_count < count) {
+                FW_DBG("[equip] OIE directory says %u record(s), the buffer "
+                       "length says %u: taking the smaller", dir_count, count);
+                count = dir_count;
+            }
+        } else if (tag == 0xFF) {
+            FW_DBG("[equip] OIE directory is empty (tag 0xFF): no records");
+            count = 0;
+        } else {
+            // A first section that is not the records: never observed, and
+            // the engine would serialise nothing. The flat reading stays so
+            // the case shows up in the log with real ids, not silently.
+            FW_DBG("[equip] OIE directory first tag 0x%02X (not 0): keeping "
+                   "the flat reading of %u record(s)", tag, count);
+        }
     }
     r.records_ptr  = data;
-    r.record_count = byte_len / offsets::OBJMOD_RECORD_STRIDE;
+    r.record_count = count;
     return r;
 }
 
@@ -836,7 +864,8 @@ bool extract_equipped_mods(void* actor,
     }
     auto* data_buf = reinterpret_cast<std::uint8_t*>(data_buf_ptr);
 
-    // 6) Walk records. byte_len is exact: byte_len/8 = N records (no header).
+    // 6) Walk records: byte_len/8 records at data+0, cross-checked against
+    //    the directory that follows the buffer (see oie_walk_header).
     OieHeaderWalkResult walk = oie_walk_header(data_buf, data_byte_len);
     if (!walk.records_ptr || walk.record_count == 0) return false;
     if (walk.record_count > 32) {

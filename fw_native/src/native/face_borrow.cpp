@@ -12,6 +12,7 @@
 #include "face_cache.h"
 #include "scene_inject.h"
 #include "skin_rebind.h"   // anchoring the mask to the reference skeleton
+#include "ni_offsets.h"    // the mask's cull bits (NIAV_FLAGS_OFF, kAppCulled)
 
 namespace fw::native::face_borrow {
 
@@ -83,6 +84,59 @@ DWORD  g_settle_since = 0;
 // Peers whose recipe is byte-identical to ours, already reported. Keyed by the
 // recipe hash so a peer that changes appearance is reported again.
 std::map<std::string, std::uint64_t> g_same_as_us;
+
+// 2026-09-28 — THE MASK MUST NOT INHERIT THE LOCAL WARDROBE'S CULLING.
+//
+// The mask is a clone of the local player's LIVE face node, flags included.
+// Inside a power armour the engine hides the wearer's face by setting
+// kAppCulled on the BSFaceGenNiNode itself: the PA-enter dump of the local
+// player reads that node as flags ...F **CULLED** inside the frame and ...E
+// once out of it. A checkpoint now boots the player already inside the
+// frame, so the borrows of the session run in there, and every mask built
+// came out culled: cloned onto the ghost, culled again, a ghost without a
+// head (client A, 2026-09-28 20:57, both masks anchored fine at 65 and 91
+// bones and invisible all the same). A hat hides hair the same way, one
+// geometry at a time.
+//
+// What the local player wears is not the peer's business: the mask is the
+// peer's bare face, and the ghost's own wardrobe decides what to hide on it
+// (the dressing re-culls the neck meatcap by name). So every kAppCulled bit
+// in the mask is cleared here, root and children, and counted for the log.
+// The dressing clears them again on the clone, for the mirror path and for a
+// mask built by an older DLL. SEH-caged, no destructors inside (C2712).
+// Returns the number of children cleared, -1 on a fault.
+int uncull_mask(void* master, int* root_was_culled) noexcept {
+    int cleared = 0;
+    *root_was_culled = 0;
+    if (!master) return -1;
+    __try {
+        auto* rf = reinterpret_cast<std::uint64_t*>(
+            reinterpret_cast<char*>(master) + NIAV_FLAGS_OFF);
+        if (*rf & NIAV_FLAG_APP_CULLED) {
+            *rf &= ~NIAV_FLAG_APP_CULLED;
+            *root_was_culled = 1;
+        }
+        const std::uint16_t cnt = *reinterpret_cast<std::uint16_t*>(
+            reinterpret_cast<char*>(master) + NINODE_CHILDREN_CNT_OFF);
+        void** kids = *reinterpret_cast<void***>(
+            reinterpret_cast<char*>(master) + NINODE_CHILDREN_PTR_OFF);
+        if (kids && cnt > 0 && cnt <= 64) {
+            for (std::uint16_t i = 0; i < cnt; ++i) {
+                void* kid = kids[i];
+                if (!kid) continue;
+                auto* kf = reinterpret_cast<std::uint64_t*>(
+                    reinterpret_cast<char*>(kid) + NIAV_FLAGS_OFF);
+                if (*kf & NIAV_FLAG_APP_CULLED) {
+                    *kf &= ~NIAV_FLAG_APP_CULLED;
+                    ++cleared;
+                }
+            }
+        }
+        return cleared;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
 
 void enter(State s, const char* why) {
     g_state    = s;
@@ -420,6 +474,26 @@ void tick(std::uintptr_t module_base) {
                         FW_WRN("[face-borrow] no reference skeleton: the mask "
                                "stays hooked to the player's rig and will rot "
                                "at the next power armor");
+                    }
+                }
+                // The local wardrobe's culling stays on the local player;
+                // see uncull_mask.
+                {
+                    int root_culled = 0;
+                    const int n = uncull_mask(master, &root_culled);
+                    if (n < 0) {
+                        FW_WRN("[face-borrow] mask un-cull: SEH reading the "
+                               "mask's flags; it keeps the flags it was cloned "
+                               "with");
+                    } else if (root_culled || n > 0) {
+                        FW_LOG("[face-borrow] mask un-culled: the face node was "
+                               "%s on the local player and %d child(ren) were "
+                               "hidden (a power armour or a hat on the local "
+                               "player, none of the peer's business)",
+                               root_culled ? "CULLED" : "visible", n);
+                    } else {
+                        FW_DBG("[face-borrow] mask flags clean: nothing was "
+                               "culled on the local player's face");
                     }
                 }
                 face_cache::set_master(g_peer, g_peer_hash, master);

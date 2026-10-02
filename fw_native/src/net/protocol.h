@@ -186,7 +186,7 @@ constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
 //     the placed REFR's form_id instead of (base_id, cell_id), which merged
 //     every ref of one base in one cell into one record. Runtime refs (0xFF
 //     prefix) are never sent: their ids alias across processes.
-constexpr std::uint8_t  PROTOCOL_VERSION  = 27;  // v27: loot rework L1
+constexpr std::uint8_t  PROTOCOL_VERSION  = 33;  // v33: CKPT_RESPAWN, the server's moved checkpoint after a death (stage 3d)
 constexpr std::size_t   HEADER_SIZE       = 12;
 constexpr std::size_t   MAX_PAYLOAD_SIZE  = 1400;
 constexpr std::size_t   MAX_FRAME_SIZE    = HEADER_SIZE + MAX_PAYLOAD_SIZE;
@@ -265,6 +265,13 @@ enum class MessageType : std::uint16_t {
     WORLD_DESPAWN_BCAST = 0x02A3, // B6.14 v22: server -> ALL clients: remove your copy of wid
     WORLD_PA_PIECES_OP    = 0x02A4, // v23: client -> server: full piece list for wid (manual take/put)
     WORLD_PA_PIECES_BCAST = 0x02A5, // v23: server -> OTHER clients: replace replica content for wid
+    INV_DIGEST            = 0x02B0, // L5 stage 2 (v28): client -> server: advisory digest of the player's inventory (reliable, no answer)
+    CKPT_REQUEST          = 0x02C0, // L5 stage 3 (v29): server -> client: write a checkpoint at your next quiet moment
+    CKPT_DONE             = 0x02C1, // L5 stage 3 (v29): client -> server: the checkpoint written (or why not)
+    CKPT_BOOT             = 0x02C2, // L5 stage 3 (v29): server -> client, first bootstrap stage: boot from this checkpoint
+    BOOT_RESULT           = 0x02C3, // L5 stage 3 (v29): client -> server: what the client actually loaded at boot
+    PLAYER_LIFE           = 0x02C4, // L5 stage 3c (v32): client -> server: the local player died / respawned / fell back to the reload
+    CKPT_RESPAWN          = 0x02C5, // L5 stage 3d (v33): server -> client: after your death load this checkpoint, moved onto the respawn point (or none)
     NPC_STATE_BCAST = 0x0270,   // B6.5w2 v13: server -> peers batched NPC pos/anim state (unreliable, ~10 Hz)
     NPC_FIRE        = 0x0271,   // B6.6w1 v15: server -> peers "this raider fires its equipped weapon NOW" (unreliable, event-driven)
     NPC_DISCOVER    = 0x0272,   // B6.6w2 v16: client -> server "I auto-tracked this hostile NPC; register it" (reliable, event-driven)
@@ -344,6 +351,9 @@ enum class ContainerOpAckStatus : std::uint8_t {
     REJ_COUNT       = 3,   // count <= 0 or absurd
     REJ_KIND        = 4,   // unknown op kind
     REJ_INSUFFICIENT = 5,  // TAKE count > what the container has (race loser)
+    // L5 stage 1: the server's journal failed, nothing can be made durable;
+    // refused like any other verdict, nothing was applied on the server.
+    REJ_UNAVAILABLE  = 6,
 };
 
 // -------------------------------------------------------------- header
@@ -811,7 +821,13 @@ constexpr std::size_t kMaxPaPieces = 12;
 // leveled roll — "same category, different level" every time. With the
 // mod forms on the wire the receiver re-attaches them after AddItem
 // (PAPYRUS_ATTACH_MOD_RVA) and the piece is byte-identical.
-constexpr std::size_t kMaxPieceMods = 8;
+// v28 (2026-09-27): 8 was measured too small the first time a modded
+// weapon was dropped: the 10mm's instance extra on the ground held 12
+// records (the inventory stack shows 8 explicit ones, the world REFR also
+// carries the template's defaults), and the wire truncated the list to
+// its first 8, which were not the visible ones. 16 covers every weapon
+// record count seen so far with room; the payloads below grow with it.
+constexpr std::size_t kMaxPieceMods = 16;
 // v25 — health: the stack's Health extra (0x25) as the engine stores it
 // (0..1; a core's charge, a piece's condition), -1.0 = no extra on the
 // original, so the replica creates none either — an exact mirror.
@@ -822,7 +838,18 @@ struct PaPieceEntry {
     std::uint32_t mods[kMaxPieceMods];
     float         health;
 };
-static_assert(sizeof(PaPieceEntry) == 45, "PaPieceEntry size");
+static_assert(sizeof(PaPieceEntry) == 77, "PaPieceEntry size");
+
+// flags of WorldSpawnOpPayload / WorldSpawnBroadcastPayload (u8, passed
+// through the server verbatim and stored with the object):
+//   bit0 = transient: relayed, never stored, gone at the first death.
+//   bit1 = self-described (L5 stage 2, 2026-09-27): pieces[0] describes the
+//          OBJECT ITSELF, not the content of a container: a dropped item's
+//          base, world count, condition and mods. The receiver writes them
+//          onto the placed REFR instead of stocking an inventory. No wire
+//          bump: the byte and the pieces block already existed.
+constexpr std::uint8_t kWorldSpawnFlagTransient     = 0x01;
+constexpr std::uint8_t kWorldSpawnFlagSelfDescribed = 0x02;
 
 struct WorldSpawnOpPayload {
     std::uint32_t base_form_id;    // what was placed (base form)
@@ -835,7 +862,7 @@ struct WorldSpawnOpPayload {
     std::uint8_t  piece_n;         // v23: valid entries in pieces[]
     PaPieceEntry  pieces[kMaxPaPieces];  // v23: frame inventory at announce
 };
-static_assert(sizeof(WorldSpawnOpPayload) == 586, "WorldSpawnOpPayload size");
+static_assert(sizeof(WorldSpawnOpPayload) == 970, "WorldSpawnOpPayload size");
 
 struct WorldSpawnBroadcastPayload {
     FixedClientId peer_id;           // spawner ("server" on join bootstrap)
@@ -850,7 +877,7 @@ struct WorldSpawnBroadcastPayload {
     std::uint8_t  piece_n;               // v23
     PaPieceEntry  pieces[kMaxPaPieces];  // v23: server-ledger content
 };
-static_assert(sizeof(WorldSpawnBroadcastPayload) == 606,
+static_assert(sizeof(WorldSpawnBroadcastPayload) == 990,
               "WorldSpawnBroadcastPayload size");
 
 // v23 — WORLD_PA_PIECES_OP / BCAST. Full-state, not delta: any manual
@@ -865,7 +892,7 @@ struct WorldPaPiecesOpPayload {
     PaPieceEntry  pieces[kMaxPaPieces];
     std::uint64_t timestamp_ms;
 };
-static_assert(sizeof(WorldPaPiecesOpPayload) == 553,
+static_assert(sizeof(WorldPaPiecesOpPayload) == 937,
               "WorldPaPiecesOpPayload size");
 
 struct WorldPaPiecesBroadcastPayload {
@@ -875,7 +902,7 @@ struct WorldPaPiecesBroadcastPayload {
     PaPieceEntry  pieces[kMaxPaPieces];
     std::uint64_t timestamp_ms;
 };
-static_assert(sizeof(WorldPaPiecesBroadcastPayload) == 569,
+static_assert(sizeof(WorldPaPiecesBroadcastPayload) == 953,
               "WorldPaPiecesBroadcastPayload size");
 
 // B6.14 v22 — WORLD_DESPAWN_OP / WORLD_DESPAWN_BCAST. The other half of the
@@ -887,7 +914,9 @@ static_assert(sizeof(WorldPaPiecesBroadcastPayload) == 569,
 // removes it from the store and tells everyone to drop their copies.
 //
 // reason: 1 = deleted flag, 2 = disabled flag, 3 = vanished from the form
-// table while its cell was the player's current cell. Diagnostic only — the
+// table while its cell was the player's current cell, 4 = moved (re-announce
+// follows), 5 = picked up by the local player (L5 stage 2: the pickup hook
+// says so before the engine destroys the REFR). Diagnostic only — the
 // server treats them identically — but the codes make the first live logs
 // tell us exactly HOW a power-armor entry kills the frame.
 struct WorldDespawnOpPayload {
@@ -896,6 +925,156 @@ struct WorldDespawnOpPayload {
     std::uint64_t timestamp_ms;
 };
 static_assert(sizeof(WorldDespawnOpPayload) == 13, "WorldDespawnOpPayload size");
+
+// L5 stage 2 (2026-09-27) — INV_DIGEST. The player's inventory as the
+// client's capture (persist/inventory_capture.cpp) saw it, in one line: the
+// digest, the counts and why it was sent. ADVISORY: the server records the
+// last one per peer (journal + snapshot) and acts on nothing; stage 3's
+// checkpoint protocol compares a checkpoint against the digest on record,
+// stage 4's ledger is what will judge an inventory. Sent when the digest of
+// a COMPLETE capture changes (at most every 10 s), before a test checkpoint
+// and on the way out. A capture that did not complete is never sent: the
+// server must not learn a half-read inventory as a fact.
+struct InvDigestPayload {
+    std::uint32_t seq;          // capture number in this session
+    std::uint64_t wall_ms;      // client wall clock of the capture (ms since the Unix epoch)
+    std::uint64_t digest;       // FNV-1a 64 over the canonical records
+    std::uint32_t entries;      // inventory entries walked
+    std::uint32_t stacks;       // stacks in the digest (transient ones excluded)
+    std::uint32_t items;        // sum of the stack counts
+    std::uint32_t reasons;      // the capture's reasons (0 = complete; kept for the format, never nonzero on the wire)
+    std::uint8_t  flags;        // kInvDigestFlag*
+    std::uint8_t  why;          // kInvDigestWhy*
+};
+static_assert(sizeof(InvDigestPayload) == 38, "InvDigestPayload size");
+constexpr std::uint8_t kInvDigestFlagComplete     = 0x01;
+constexpr std::uint8_t kInvDigestFlagInPowerArmor = 0x02;
+constexpr std::uint8_t kInvDigestWhyChange     = 0;   // the digest changed (the 10 s cadence)
+constexpr std::uint8_t kInvDigestWhyCheckpoint = 1;   // right before a commanded save
+constexpr std::uint8_t kInvDigestWhyExit       = 2;   // the exit save request was seen
+constexpr std::uint8_t kInvDigestWhyFirst      = 3;   // the first complete capture of the session
+
+// L5 stage 3a (2026-09-28) — THE COMMANDED CHECKPOINT.
+//
+// The character lives in an engine save the SERVER commands: every other
+// save is refused (stage 1), this one is written at the client's next quiet
+// moment, named after the identity, hashed, and reported. The server keeps
+// the last few per identity (journal + snapshot) and names one at the next
+// boot; the client loads it instead of the genesis save when the file on
+// disk carries the recorded hash, and says what it loaded. The bytes stay
+// on the client's disk in this stage (custody on the server is stage 3b).
+constexpr std::size_t kCkptNameLen = 48;   // "fwck_<client id>_<yyyymmdd>_<hhmmss>", null-terminated
+
+struct CkptRequestPayload {         // server -> client, reliable
+    std::uint32_t seq;              // the server's request number for this session
+    std::uint8_t  reason;           // kCkptReason*
+    std::uint16_t deadline_s;       // how long the client may wait for a quiet moment
+};
+static_assert(sizeof(CkptRequestPayload) == 7, "CkptRequestPayload size");
+
+struct CkptDonePayload {            // client -> server, reliable
+    std::uint32_t seq;              // the request answered (0 = unsolicited: exit, test key)
+    std::uint8_t  status;           // kCkptStatus*
+    char          name[kCkptNameLen];
+    std::uint8_t  sha256[32];       // of the .fos as written
+    std::uint32_t size;             // bytes
+    std::uint64_t digest;           // the inventory digest of the same instant (0 = none)
+    std::uint32_t digest_seq;
+    std::uint64_t wall_ms;          // client clock at the save
+};
+static_assert(sizeof(CkptDonePayload) == 109, "CkptDonePayload size");
+
+struct CkptCandidate {              // v31 — one checkpoint the client may boot from
+    char          name[kCkptNameLen];
+    std::uint8_t  sha256[32];
+    std::uint32_t size;
+    std::uint32_t seq;
+    std::uint8_t  custody;          // 1 = the server holds the bytes: fetchable
+};
+static_assert(sizeof(CkptCandidate) == 89, "CkptCandidate size");
+constexpr std::size_t kCkptCandidates = 3;
+
+struct CkptBootPayload {            // server -> client, reliable, first bootstrap stage
+    std::uint8_t  has;              // 0 = boot from the genesis save, 1 = from the checkpoint below
+    std::uint32_t seq;              // the server's record number
+    char          name[kCkptNameLen];
+    std::uint8_t  sha256[32];
+    std::uint32_t size;
+    std::uint64_t digest;
+    // v30 — the server's last known position of this player, when it is
+    // newer than the checkpoint by more than a couple of seconds (a crash,
+    // a kill, anything that left no checkpoint behind): the client
+    // teleports there once the loaded scene has settled. Items gained in
+    // that window are lost (decision 8 of the dossier), the place is not.
+    std::uint8_t  has_pos;
+    float         pos[3];
+    float         yaw;              // the rotation Z the client itself reported (engine radians)
+    std::uint64_t pos_ms;           // server clock of that position
+    // v31 — custody (stage 3b): the TCP port of the server's bulk service
+    // (0 = none, the bytes stay on this disk), the token this session
+    // uploads and fetches under, and the checkpoints on record newest
+    // first, each with whether the server holds its bytes. The boot loads
+    // the newest it can get: on this disk, or fetched.
+    std::uint16_t bulk_port;
+    std::uint8_t  token[32];
+    std::uint8_t  n_candidates;
+    CkptCandidate candidates[kCkptCandidates];
+    // v32 — the respawn point (stage 3c): where a dead player comes back
+    // without a reload. has_respawn = 0 means the server names none and a
+    // death reloads the last checkpoint, as in stage 3a.
+    std::uint8_t  has_respawn;
+    float         respawn_pos[3];
+    float         respawn_yaw;      // engine rotation Z, radians
+};
+static_assert(sizeof(CkptBootPayload) == 441, "CkptBootPayload size");
+
+struct BootResultPayload {          // client -> server, reliable
+    std::uint32_t seq;              // the CKPT_BOOT answered (0 = none received)
+    std::uint8_t  outcome;          // kBootOutcome*
+    char          name[kCkptNameLen];   // what was loaded
+    std::uint64_t wall_ms;
+};
+static_assert(sizeof(BootResultPayload) == 61, "BootResultPayload size");
+
+struct PlayerLifePayload {          // client -> server, reliable (v32, stage 3c)
+    std::uint8_t  event;            // kPlayerLife*
+    float         pos[3];           // where it happened
+    std::uint64_t wall_ms;          // client clock
+};
+static_assert(sizeof(PlayerLifePayload) == 21, "PlayerLifePayload size");
+
+// v33 (L5 stage 3d) - the server's answer to a death: the player's boot
+// checkpoint moved onto the respawn point and booked in custody (has = 1),
+// a worn power armour frame moved with the player, fetched and loaded
+// instead of the engine's reload; or none (has = 0), and the engine's
+// reload and the fast travel of stage 3c run.
+struct CkptRespawnPayload {         // server -> client, reliable
+    std::uint8_t  has;
+    char          name[kCkptNameLen];
+    std::uint8_t  sha256[32];
+    std::uint32_t size;
+};
+static_assert(sizeof(CkptRespawnPayload) == 85, "CkptRespawnPayload size");
+
+constexpr std::uint8_t kPlayerLifeDied           = 0;   // the kill hook saw the local player die
+constexpr std::uint8_t kPlayerLifeRespawned      = 1;   // resurrected and teleported to the respawn point
+constexpr std::uint8_t kPlayerLifeReloadFallback = 2;   // the respawn failed: the engine reloads the last checkpoint
+
+constexpr std::uint8_t kCkptReasonPeriodic = 0;   // the server's cadence
+constexpr std::uint8_t kCkptReasonDemand   = 1;   // the server asked outside the cadence
+constexpr std::uint8_t kCkptReasonExit     = 2;   // the client saw its exit save request
+constexpr std::uint8_t kCkptReasonTest     = 3;   // the F10 test key
+constexpr std::uint8_t kCkptStatusOk        = 0;  // written, hashed, on disk
+constexpr std::uint8_t kCkptStatusDeferred  = 1;  // no quiet moment inside the deadline
+constexpr std::uint8_t kCkptStatusSaveFailed = 2; // the engine's save returned 0 or the file never appeared
+constexpr std::uint8_t kCkptStatusNoDevice  = 3;  // the save device was not available
+constexpr std::uint8_t kCkptStatusRefused   = 4;  // the module is off (persist_lifecycle=false) or no session
+constexpr std::uint8_t kBootOutcomeCheckpoint  = 0;   // the named checkpoint was loaded
+constexpr std::uint8_t kBootOutcomeNoneOffered = 1;   // genesis: the server named none
+constexpr std::uint8_t kBootOutcomeMissing     = 2;   // genesis: the file is not on this disk
+constexpr std::uint8_t kBootOutcomeMismatch    = 3;   // genesis: the file's hash or size differs
+constexpr std::uint8_t kBootOutcomeLoadFailed  = 4;   // genesis: the checkpoint load returned 0
+constexpr std::uint8_t kBootOutcomeNoDecision  = 5;   // genesis: the server said nothing in time
 
 struct WorldDespawnBroadcastPayload {
     FixedClientId peer_id;   // who reported it ("server" never used here)

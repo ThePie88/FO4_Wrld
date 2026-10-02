@@ -9,6 +9,7 @@
 #include "../offsets.h"
 #include "../ref_identity.h"
 #include "npc_ai_suppress.h"   // Build 69c: note_local_player_death()
+#include "../persist/death.h"  // L5 stage 3c: note_killed()
 #include "../net/client.h"
 #include "../net/protocol.h"
 #include "container_hook.h"        // Build 65.c.47 WEDGE3 — tls_applying_remote (no-echo)
@@ -19,7 +20,17 @@ namespace fw::hooks {
 namespace {
 
 // Original function trampoline. Populated by MinHook during install.
-using KillFn = void (*)(void* victim, void* killer, void* unk2, std::uint8_t silent, int unk4);
+//
+// Signature as the decomp shows it (stage 0 of L5, 2026-09-27):
+//   _DWORD* __fastcall sub_140C612E0(Actor* victim, Actor* killer,
+//                                    float a3, char a4, char a5)
+// The third argument is a FLOAT, carried in XMM2. Declared as a pointer it
+// was read from R8 and passed back in R8, while the engine read XMM2, which
+// by then held whatever this detour's own calls had left there. The return
+// value is returned by one engine caller in turn, so the detour now returns
+// what the original returns instead of leaving RAX to the call made after it.
+using KillFn = void* (__fastcall*)(void* victim, void* killer, float a3,
+                                   std::uint8_t a4, std::uint8_t a5);
 KillFn g_orig_kill = nullptr;
 
 std::atomic<std::uint64_t> g_fire_count{0};
@@ -47,8 +58,8 @@ bool read_actor_pos(void* actor, float out[3]) noexcept {
     }
 }
 
-void __fastcall detour_kill(
-    void* victim, void* killer, void* unk2, std::uint8_t silent, int unk4)
+void* __fastcall detour_kill(
+    void* victim, void* killer, float a3, std::uint8_t a4, std::uint8_t a5)
 {
     // Build 65.c.47 WEDGE3 — NO-ECHO. When WE invoke Actor::Kill on a relayed
     // owner death (engine::kill_actor inside drain_npc_death_apply_queue, under
@@ -57,9 +68,9 @@ void __fastcall detour_kill(
     // server as a fresh NPC_DEATH_FROM_OWNER and loop). Pass straight through.
     if (tls_applying_remote) {
         if (g_orig_kill) {
-            g_orig_kill(victim, killer, unk2, silent, unk4);
+            return g_orig_kill(victim, killer, a3, a4, a5);
         }
-        return;
+        return nullptr;
     }
 
     __try {
@@ -80,6 +91,7 @@ void __fastcall detour_kill(
             // 160 ms after that teleport on 2026-08-02).
             if (vi.form_id == offsets::PLAYER_FORMID) {
                 fw::hooks::note_local_player_death();
+                fw::persist::death::note_killed();   // L5 stage 3c: PLAYER_LIFE, the respawn's clock
             }
 
             // Build 65.c.33 — ROLLED BACK the c.32 proxy-ghost teardown call:
@@ -164,8 +176,9 @@ void __fastcall detour_kill(
     }
 
     // ALWAYS call through. The engine needs Kill to actually kill.
+    void* result = nullptr;
     if (g_orig_kill) {
-        g_orig_kill(victim, killer, unk2, silent, unk4);
+        result = g_orig_kill(victim, killer, a3, a4, a5);
     }
 
     // Loot rework L4.1 (2026-09-25): a death makes a new corpse with a new
@@ -181,6 +194,7 @@ void __fastcall detour_kill(
             fw::net::client().forget_container(vi.form_id);
         }
     }
+    return result;
 }
 
 } // namespace

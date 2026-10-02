@@ -14,8 +14,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import collections
+import configparser
 import logging
 import math
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -31,6 +34,12 @@ from protocol import (
     WorldSpawnBroadcastPayload,
     WorldDespawnOpPayload,
     WorldDespawnBroadcastPayload,  # noqa: E402
+    InvDigestPayload, INV_DIGEST_WHY, INV_DIGEST_FLAG_COMPLETE,
+    INV_DIGEST_FLAG_IN_POWER_ARMOR,
+    CkptRequestPayload, CkptDonePayload, CkptBootPayload, BootResultPayload,
+    CkptCandidate, CKPT_CANDIDATES_MAX, PlayerLifePayload, PLAYER_LIFE_EVENTS,
+    CkptRespawnPayload,
+    CKPT_REASON, CKPT_STATUS, BOOT_OUTCOME,
     MessageType, ProtocolError, PROTOCOL_VERSION,
     HelloPayload, WelcomePayload, PeerJoinPayload, PeerLeavePayload,
     HelloResumePayload, RejectCode, derive_client_id,
@@ -45,6 +54,8 @@ from protocol import (
     is_runtime_form_id,
     identities_conflict,
     NPC_DEATH_FLAG_REPLAY,
+    COUNT_MAX, AUTH_CLIENT_ID_PREFIX, AUTH_CLIENT_ID_HEX_LEN,
+    FLAG_RELIABLE,
     QuestStageSetPayload, QuestStageBroadcastPayload,
     QuestStateBootPayload, QuestStageStateEntry,
     GlobalVarSetPayload, GlobalVarBroadcastPayload,
@@ -89,7 +100,17 @@ from server.auth import (  # noqa: E402
 from server.validator import (  # noqa: E402
     validate_pos_state, validate_actor_event, validate_container_op, RejectReason,
 )
-from server.persistence import snapshot, load_into, rotate_snapshots  # noqa: E402
+from server.journal import Journal, JournalCorrupt  # noqa: E402
+from server.respawn import (  # noqa: E402
+    CKPT_REASON_FIRST_ENTRY, RespawnError, RespawnPoint, checkpoint_in_power_armour,
+    checkpoint_wears_frame, checkpoint_worn_frame, make_first_checkpoint,
+    make_respawn_checkpoint, worn_frame_fid,
+)
+from server.custody import BulkServer, BulkTokens, CustodyStore  # noqa: E402
+from server.savepos import SaveFormatError, exterior_sky  # noqa: E402
+from server.persistence import (  # noqa: E402
+    snapshot, load_into, rotate_snapshots, restore_state, SnapshotUnreadable,
+)
 from server.npc_brain import NPCBrain  # noqa: E402
 from server.raider_brain import RaiderBrain  # noqa: E402
 from server.ownership import (  # noqa: E402
@@ -167,10 +188,43 @@ class Config:
         require_auth: bool = False,
         public_addr: Optional[str] = None,
         require_chargen: bool = False,
+        allow_empty_world: bool = False,
+        journal_dir: Optional[Path] = None,
+        respawn: str = "sanctuary",
+        respawn_source: str = "default",
+        genesis_save: Optional[Path] = None,
+        checkpoint_every_s: float = 300.0,
+        bulk_port: int = 0,
+        custody_dir: Optional[Path] = None,
     ) -> None:
         self.host = host
         self.port = port
         self.require_chargen = require_chargen
+        # Stage 0 of L5: only an explicit flag lets the server start with no
+        # readable snapshot where one was expected.
+        self.allow_empty_world = allow_empty_world
+        # Stage 1 of L5: the durable journal (server/journal.py). None runs
+        # without one, as before this stage: for tests and throwaway worlds.
+        self.journal_dir = journal_dir
+        # Where a dead player comes back (decision of 2026-09-27: Sanctuary,
+        # set by whoever creates the server). Recorded and logged from this
+        # stage; the respawn itself, without an engine reload, is stage 3,
+        # which also puts it on the wire.
+        self.respawn = respawn
+        self.respawn_source = respawn_source
+        # L5 stage 3d (2026-09-30): the genesis save, whose sky a checkpoint
+        # moved out of an interior gets. None = no such move.
+        self.genesis_save = genesis_save
+        # L5 stage 3a: how often each player in the world is asked for a
+        # checkpoint (seconds; 0 = never asked, the exit and the test key
+        # still report theirs).
+        self.checkpoint_every_s = float(checkpoint_every_s)
+        # L5 stage 3b: custody of the checkpoint bytes. `custody_dir` is
+        # where they are kept (None = no service, the bytes stay on the
+        # clients' disks); `bulk_port` is the TCP port of the transfer
+        # service (0 = the UDP port's number, on TCP).
+        self.bulk_port = int(bulk_port)
+        self.custody_dir = custody_dir
         self.tick_rate_hz = tick_rate_hz
         self.snapshot_path = snapshot_path
         self.snapshot_interval_s = snapshot_interval_s
@@ -240,11 +294,59 @@ class ServerProtocol(asyncio.DatagramProtocol):
         # v26 — addresses we have already warned about, so a peer speaking a
         # foreign protocol produces one line instead of one per packet.
         self._logged_once: set = set()
+        # L5 stage 1 (2026-09-27) — the durability gate. A reliable frame
+        # describes state the journal may not have on disk yet; it waits
+        # here, in order, until the journal's durable LSN reaches the head
+        # LSN at the time it was sent (see _send / on_durable). Unreliable
+        # frames (positions, ACKs of the reliable layer) never wait. When the
+        # journal fails the gate opens for good and item ops are refused.
+        self._held: "collections.deque[tuple[int, tuple[str, int], bytes]]" = collections.deque()
+        self._journal_healthy = True
+        self._last_unavailable_log_ms = -1e18
+        # L5 stage 2 — INV_DIGEST: when each peer last had one recorded
+        # (one per second per peer is plenty for an advisory line).
+        self._inv_digest_last_ms: dict[str, float] = {}
+        # L5 stage 3a — the checkpoint cadence, set by run_server from the
+        # Config (0 = never asked).
+        self.checkpoint_every_ms: float = 300_000.0
+        # L5 stage 3b — custody: the store of checkpoint bytes (None = no
+        # service), the tokens the boot word hands out, the TCP port told to
+        # the clients. run_server fills the first and the last.
+        self.custody: Optional[CustodyStore] = None
+        self.bulk_tokens = BulkTokens()
+        self.bulk_port: int = 0
+        # L5 stage 3c — the respawn point (x, y, z, yaw) every client gets in
+        # its boot word, or None: a death then reloads the last checkpoint.
+        self.respawn_point: Optional[tuple[float, float, float, float]] = None
+        # L5 stage 3d (2026-09-30) — the sky and sound entries of the genesis
+        # save (savepos.exterior_sky), given to a checkpoint moved out of an
+        # interior. None: a death in an interior falls back to the engine's
+        # reload. run_server fills it from [genesis] save.
+        self.exterior_globals: Optional[dict[int, bytes]] = None
+        # L5 stage 3d (2026-09-30) — the genesis save itself, read again at
+        # every first entry (they are rare, 5 MB are not kept in memory).
+        # None: a new character boots the genesis where it was written.
+        self.genesis_path: Optional[Path] = None
+        # L5 stage 3d (2026-09-29) — the frames to give back at a respawn: a
+        # player who died in power armour and comes back on foot leaves the
+        # frame where they fell. peer_id -> (x, y, z, cell_id) of the death.
+        # In memory only: a peer who leaves first gets the frame back through
+        # the disconnect path, at the same spot.
+        self._frame_drops: dict[str, tuple[float, float, float, int]] = {}
+        # L5 stage 3d (2026-09-30) — the opposite: a player who died on foot
+        # and whose checkpoint has them inside the frame they had left takes
+        # that frame back from the world at the respawn. peer_id -> wid.
+        self._frame_reclaims: dict[str, int] = {}
         self._counters = {
             "rx_frames": 0,
             "tx_frames": 0,
             "rx_invalid": 0,
             "rejections": 0,
+            "player_deaths": 0,             # L5 stage 3c: PLAYER_LIFE died
+            "player_respawns": 0,           # L5 stage 3c: PLAYER_LIFE respawned (no reload)
+            "player_reload_fallbacks": 0,   # L5 stage 3c: the respawn failed, the engine reloaded
+            "respawn_checkpoints": 0,       # L5 stage 3d: deaths answered with a moved checkpoint
+            "first_entries": 0,             # L5 stage 3d: new characters booted on the spawn point
             "container_op_repeats": 0,   # loot rework L2: same op id again, verdict re-sent
             "ownership_changes": 0,
             "ownership_observed": 0,
@@ -258,6 +360,8 @@ class ServerProtocol(asyncio.DatagramProtocol):
             "npc_crouch_relayed": 0,   # NPC crouch
             "npc_damage_claims_rx": 0,  # c.39b
             "npc_death_replayed": 0,    # 68.9 — kills re-sent to late arrivals
+            "tx_held": 0,               # L5 stage 1: frames that waited for the journal
+            "container_ops_unavailable": 0,  # L5 stage 1: refused, journal failed
         }
 
     # ----- asyncio callbacks
@@ -493,6 +597,18 @@ class ServerProtocol(asyncio.DatagramProtocol):
         if mtype == MessageType.WORLD_PA_PIECES_OP:
             self._handle_world_pa_pieces_op(session, payload, now_ms)
             return
+        if mtype == MessageType.INV_DIGEST:
+            self._handle_inv_digest(session, payload, now_ms)
+            return
+        if mtype == MessageType.CKPT_DONE:
+            self._handle_ckpt_done(session, payload, now_ms)
+            return
+        if mtype == MessageType.BOOT_RESULT:
+            self._handle_boot_result(session, payload, now_ms)
+            return
+        if mtype == MessageType.PLAYER_LIFE:
+            self._handle_player_life(session, payload, now_ms)
+            return
         if mtype == MessageType.EQUIP_OP:
             self._handle_equip_op(session, payload, now_ms)
             return
@@ -671,6 +787,14 @@ class ServerProtocol(asyncio.DatagramProtocol):
             log.warning("rejecting %s (%s): auth_required (unauthenticated "
                         "HELLO on a --require-auth server)", addr,
                         payload.client_id)
+            self._send_hello_reject(addr, "auth_required")
+            return
+        elif _looks_like_authenticated_id(payload.client_id):
+            # Stage 0 of L5 (2026-09-27): an id of the authenticated shape
+            # belongs to a key. Without the key's signature it is somebody
+            # else's character, and characters are about to persist.
+            log.warning("rejecting %s (%s): an anonymous HELLO cannot claim an "
+                        "authenticated client id", addr, payload.client_id)
             self._send_hello_reject(addr, "auth_required")
             return
 
@@ -854,44 +978,59 @@ class ServerProtocol(asyncio.DatagramProtocol):
             log.info("%s (re)joined: forgot %d item(s) of its last session's "
                      "outfit — the client re-announces what it wears now",
                      session.peer_id, dropped)
-        # Bootstrap: send authoritative world state (dead/alive actors) to the new peer
-        self._send_world_state_bootstrap(session, now_ms)
-        # Bootstrap: container inventories (chunked)
-        self._send_container_state_bootstrap(session, now_ms)
-        # Bootstrap: quest stages (B4, chunked)
-        self._send_quest_state_bootstrap(session, now_ms)
-        # Bootstrap: global variables (B4, chunked)
-        self._send_global_var_state_bootstrap(session, now_ms)
-        # Bootstrap: appearances (v20) — every character the server knows,
-        # so a late joiner does not see everyone as the default model.
-        self._send_appearance_bootstrap(session, now_ms)
-        # Bootstrap: lock states (B6.3 v0.5.3) — replay last-known state
-        # for every (base, cell) the server has seen, as individual
-        # LOCK_BCAST frames. Client treats them as fresh remote ops.
-        self._send_lock_state_bootstrap(session, now_ms)
-        self._send_world_spawn_bootstrap(session, now_ms)
-        # Bootstrap: NPC ownership table (Build 65 owner-driven sync).
-        # Hands the new peer the current (fid, epoch, owner) map so it
-        # can attach the correct local-vs-remote AI gate to every NPC
-        # already loaded by other peers before it joined.
-        self._send_ownership_state_bootstrap(session, now_ms)
-
-        # Notify other peers (PEER_JOIN, reliable)
+        # Each stage on its own: one that fails is logged and the rest still
+        # go out. Stage 0 of L5 (2026-09-27): an encode error in the container
+        # stage used to abort everything after it, for every joiner, until
+        # the offending record was edited out of the snapshot.
+        stages = (
+            # L5 stage 3a — FIRST: which save this client boots from. The
+            # client's boot waits for this and nothing else.
+            ("checkpoint", self._send_checkpoint_boot),
+            # authoritative world state (dead/alive actors)
+            ("world state", self._send_world_state_bootstrap),
+            # container inventories (chunked)
+            ("containers", self._send_container_state_bootstrap),
+            # quest stages (B4, chunked)
+            ("quests", self._send_quest_state_bootstrap),
+            # global variables (B4, chunked)
+            ("globals", self._send_global_var_state_bootstrap),
+            # appearances (v20): every character the server knows, so a late
+            # joiner does not see everyone as the default model
+            ("appearances", self._send_appearance_bootstrap),
+            # lock states (B6.3 v0.5.3): last-known state for every (base,
+            # cell) the server has seen, as LOCK_BCAST frames the client
+            # treats as fresh remote ops
+            ("locks", self._send_lock_state_bootstrap),
+            ("world spawns", self._send_world_spawn_bootstrap),
+            # NPC ownership table (Build 65): the (fid, epoch, owner) map so
+            # the peer attaches the right AI gate to every NPC already loaded
+            ("ownership", self._send_ownership_state_bootstrap),
+            ("peer joins", self._send_peer_joins),
+            # v26: where the others are and what they wear; without it a late
+            # joiner saw everyone naked at the origin until they moved
+            ("presence", self._send_presence_bootstrap),
+        )
+        for name, stage in stages:
+            try:
+                stage(session, now_ms)
+            except Exception as e:  # noqa: BLE001 - one stage must not take the others down
+                self._counters["bootstrap_stage_errors"] = \
+                    self._counters.get("bootstrap_stage_errors", 0) + 1
+                log.exception("join bootstrap for %s: the %s stage failed (%s); "
+                              "the remaining stages still go out",
+                              session.peer_id, name, e)
+    def _send_peer_joins(self, session: PeerSession, now_ms: float) -> None:
+        """Tell the others about the joiner (PEER_JOIN, reliable) and the
+        joiner about each of the others."""
+        addr = session.addr
         join_msg = self.state.peer_join_for(session)
         for other in self.state.other_sessions(addr):
             raw = other.channel.send_reliable(MessageType.PEER_JOIN, join_msg, now_ms)
             self._send(other.addr, raw)
-
-        # Announce existing peers to the new one (PEER_JOIN for each)
         for other in self.state.other_sessions(addr):
             existing = self.state.peer_join_for(other)
             raw = session.channel.send_reliable(MessageType.PEER_JOIN, existing, now_ms)
             self._send(addr, raw)
-
-        # v26 — and what those peers look like: where they are and what they
-        # are wearing. Without this a late joiner saw everyone naked at the
-        # origin until they happened to move or change clothes.
-        self._send_presence_bootstrap(session, now_ms)
         # The mirror — the joiner's own outfit, announced to those already
         # here — is no longer the server's job. See the tombstone where
         # _announce_joiner_outfit used to be.
@@ -1237,11 +1376,11 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 return
 
         existing = self.state.container_state_for_op(payload)
-        result = validate_container_op(session, payload, existing, now_ms)
 
         # Always emit an ACK to the sender (accept or reject), and keep it
         # for a repeat of the same op id.
-        def _send_ack(status: ContainerOpAckStatus, final_count: int) -> None:
+        def _send_ack(status: ContainerOpAckStatus, final_count: int,
+                      remember: bool = True) -> None:
             if payload.client_op_id == 0:
                 # Legacy B0 client — no op_id to correlate. Skip ACK.
                 return
@@ -1253,10 +1392,27 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 item_base_id=payload.item_base_id,
                 final_count=final_count,
             )
-            self.state.remember_container_verdict(
-                session.peer_id, payload.client_op_id, ack)
+            if remember:
+                self.state.remember_container_verdict(
+                    session.peer_id, payload.client_op_id, ack)
             raw = session.channel.send_reliable(MessageType.CONTAINER_OP_ACK, ack, now_ms)
             self._send(session.addr, raw)
+
+        # L5 stage 1: with the journal down nothing can be made durable, so
+        # nothing is accepted. The client undoes the transfer as for any
+        # refusal; the verdict is not remembered because it is not one.
+        if self.state.journal is not None and not self._journal_healthy:
+            self._counters["container_ops_unavailable"] += 1
+            if now_ms - self._last_unavailable_log_ms > 30_000.0:
+                self._last_unavailable_log_ms = now_ms
+                log.error("CONTAINER_OP from %s refused: the journal has failed "
+                          "and the server is read-only for item ops",
+                          session.peer_id)
+            have = existing.items.get(payload.item_base_id, 0) if existing else 0
+            _send_ack(ContainerOpAckStatus.REJ_UNAVAILABLE, have, remember=False)
+            return
+
+        result = validate_container_op(session, payload, existing, now_ms)
 
         if not result.ok:
             self._counters["rejections"] += 1
@@ -1269,6 +1425,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 RejectReason.RUNTIME_REF:        ContainerOpAckStatus.REJ_IDENTITY,
                 RejectReason.IDENTITY_MISMATCH:  ContainerOpAckStatus.REJ_IDENTITY,
                 RejectReason.INVALID_COUNT:      ContainerOpAckStatus.REJ_COUNT,
+                RejectReason.COUNT_OVERFLOW:     ContainerOpAckStatus.REJ_COUNT,
                 RejectReason.INVALID_KIND:       ContainerOpAckStatus.REJ_KIND,
                 RejectReason.INSUFFICIENT_ITEMS: ContainerOpAckStatus.REJ_INSUFFICIENT,
             }
@@ -1369,7 +1526,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 n_skipped_identity += 1
                 continue
             if e.count > 0:
-                group[2][e.item_base_id] = e.count
+                group[2][e.item_base_id] = min(e.count, COUNT_MAX)
             elif e.item_base_id == 0 and e.count == 0:
                 asserted_empty.add(e.container_form_id)
             # Other count==0 entries are silently dropped: they don't
@@ -1435,10 +1592,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
             elif not existing.seeded:
                 # A record inferred from a first op, never scanned: this
                 # scan is the first full view, it replaces the inference.
-                existing.items = dict(items)
-                existing.seeded = True
-                existing.last_owner_peer_id = session.peer_id
-                existing.last_update_ms = now_ms
+                self.state.reseed_container(fid, items, session.peer_id, now_ms)
                 push_all.append(existing)
                 n_created += 1
                 log.info(
@@ -1448,9 +1602,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
             elif not existing.items:
                 # Refill an empty container. Preserve the existing record
                 # (keeps history), just fill in items.
-                existing.items = dict(items)
-                existing.last_owner_peer_id = session.peer_id
-                existing.last_update_ms = now_ms
+                self.state.reseed_container(fid, items, session.peer_id, now_ms)
                 push_all.append(existing)
                 n_refilled += 1
                 log.info(
@@ -1711,11 +1863,13 @@ class ServerProtocol(asyncio.DatagramProtocol):
         # alive, and it would have been handed back as a SECOND frame the
         # moment that peer disconnected. The new wid is that frame; the old
         # record is superseded and goes.
+        left_armour = False
         if payload.base_form_id == self._PA_FRAME_BASE:
             for old_wid, old in list(self.state.world_spawns.items()):
                 if (old.worn_by_peer_id == session.peer_id
                         and old.base_form_id == payload.base_form_id):
-                    del self.state.world_spawns[old_wid]
+                    self.state.remove_world_spawn(old_wid)
+                    left_armour = True
                     log.info("wid=%d was worn by %s and has just been "
                              "re-announced: the old record is superseded",
                              old_wid, session.peer_id)
@@ -1751,8 +1905,17 @@ class ServerProtocol(asyncio.DatagramProtocol):
             sent += 1
         log.info("world spawn wid=%d base=0x%X by %s at (%.0f, %.0f, %.0f)%s "
                  "-> %d peer(s)", st.wid, st.base_form_id, session.peer_id,
-                 st.px, st.py, st.pz, " [transient]" if transient else "",
+                 st.px, st.py, st.pz,
+                 (" [transient]" if transient else "")
+                 + (" [item]" if payload.flags & 2 else ""),
                  sent)
+        if left_armour:
+            # L5 stage 3d (2026-09-30) — the player is on foot now, and the
+            # last checkpoint may still have them inside the frame: a death
+            # or a boot from it would put them back in it (the owner's rule:
+            # who left the armour comes back on foot, the armour where it was
+            # left). The checkpoint is asked for now.
+            self._demand_checkpoint(session, now_ms, "left their power armour")
 
     def _handle_world_despawn_op(self, session: PeerSession, payload,
                                  now_ms: float) -> None:
@@ -1786,15 +1949,14 @@ class ServerProtocol(asyncio.DatagramProtocol):
         # and the wearer disconnecting brings it back where they stood.
         if (payload.reason == 2 and st.base_form_id == self._PA_FRAME_BASE
                 and not st.worn_by_peer_id):
-            st.worn_by_peer_id = session.peer_id
-            st.worn_since_ms = now_ms
+            self.state.mark_world_spawn_worn(st.wid, session.peer_id, now_ms)
             self.state.record_presence_worn_frame(
                 session.peer_id, st.wid, now_ms)
             log.info("world spawn wid=%d (PA frame) marked WORN by %s — kept "
                      "with its %d piece(s) instead of deleted",
                      st.wid, session.peer_id, len(st.pieces))
         else:
-            self.state.world_spawns.pop(payload.wid, None)
+            self.state.remove_world_spawn(payload.wid)
         bcast = WorldDespawnBroadcastPayload(
             peer_id=session.peer_id,
             wid=payload.wid,
@@ -1810,6 +1972,483 @@ class ServerProtocol(asyncio.DatagramProtocol):
         log.info("world despawn wid=%d (base=0x%X) reported by %s reason=%d "
                  "-> %d peer(s)", payload.wid, st.base_form_id,
                  session.peer_id, payload.reason, sent)
+
+    def _handle_inv_digest(self, session: PeerSession, payload,
+                           now_ms: float) -> None:
+        """L5 stage 2 — the advisory digest of a peer's inventory.
+
+        Recorded (journal + snapshot), answered with nothing, acted on by
+        nothing: stage 3 compares a checkpoint against the record, stage 4's
+        ledger is what will judge an inventory. An incomplete capture is
+        ignored (the client never sends one; a forged one must not become a
+        fact), and more than one per second per peer is noise.
+        """
+        if not isinstance(payload, InvDigestPayload):
+            return
+        if not (payload.flags & INV_DIGEST_FLAG_COMPLETE):
+            log.debug("inv digest from %s seq=%d marked incomplete (reasons 0x%X): ignored",
+                      session.peer_id, payload.seq, payload.reasons)
+            return
+        last = self._inv_digest_last_ms.get(session.peer_id, -1e18)
+        if now_ms - last < 1000.0:
+            log.debug("inv digest from %s seq=%d within 1 s of the previous: ignored",
+                      session.peer_id, payload.seq)
+            return
+        rec = self.state.record_inv_digest(
+            session.peer_id, payload.seq, payload.wall_ms, payload.digest,
+            payload.entries, payload.stacks, payload.items, payload.reasons,
+            payload.flags, payload.why, now_ms)
+        if rec is None:
+            self._counters["rejections"] += 1
+            return
+        self._inv_digest_last_ms[session.peer_id] = now_ms
+        session.total_events += 1
+        log.info("inv digest from %s: capture #%d digest=%016X, %d stacks, %d items, "
+                 "%s%s (#%d for this peer)", session.peer_id, payload.seq,
+                 payload.digest, payload.stacks, payload.items,
+                 INV_DIGEST_WHY.get(payload.why, f"why={payload.why}"),
+                 " in power armor" if payload.flags & INV_DIGEST_FLAG_IN_POWER_ARMOR else "",
+                 rec.count)
+
+    # ------------------------------------------------ L5 stage 3a: checkpoints
+
+    def _send_checkpoint_boot(self, session: PeerSession, now_ms: float) -> None:
+        """The first bootstrap stage: the checkpoint this identity boots from,
+        or none. Sent to every session, so an anonymous one is told "genesis"
+        at once instead of waiting for a word that never comes."""
+        rec = self.state.checkpoint_to_boot(session.peer_id) if session.identity_hex else None
+        if rec is None and session.identity_hex:
+            rec = self._first_entry(session, now_ms)
+        elif rec is not None and rec.reason != CKPT_REASON_FIRST_ENTRY:
+            self._reclaim_frame_at_boot(session.peer_id, rec, now_ms)
+        # v30 — the last known position, when it is newer than the checkpoint
+        # by more than two seconds: the player left without a checkpoint (a
+        # crash, a kill) and comes back where they were, not where the last
+        # save was. A Quit or a window close write their checkpoint after the
+        # last position report, so they never trigger this.
+        pos = {}
+        presence = self.state.presence(session.peer_id) if session.identity_hex else None
+        newer_than = (rec.received_ms if rec is not None else 0.0) + 2000.0
+        if (presence is not None and presence.last_pos is not None
+                and presence.last_pos_at_ms > newer_than):
+            lp = presence.last_pos
+            if lp.x != 0.0 or lp.y != 0.0 or lp.z != 0.0:
+                pos = dict(has_pos=True, px=lp.x, py=lp.y, pz=lp.z, yaw=lp.rz,
+                           pos_ms=int(presence.last_pos_at_ms))
+        # v31 — custody (stage 3b): the candidates newest first with whether
+        # the server holds their bytes, the bulk port and a token for this
+        # session. Without the service the candidates still ride (an older
+        # one may be on the client's disk), port and token stay zero.
+        cands: list[CkptCandidate] = []
+        if session.identity_hex:
+            for r in self.state.checkpoints(session.peer_id):
+                if r.boot_failures >= 2:
+                    continue
+                cands.append(CkptCandidate(
+                    name=r.name, sha256=bytes.fromhex(r.sha256_hex) if r.sha256_hex else b"",
+                    size=r.size, seq=r.seq, custody=bool(r.custody)))
+                if len(cands) >= CKPT_CANDIDATES_MAX:
+                    break
+        token = b""
+        if self.custody is not None and self.bulk_port and session.identity_hex:
+            token = self.bulk_tokens.mint(session.peer_id, session.identity_hex, now_ms)
+            session.bulk_token = token
+        extra = dict(bulk_port=self.bulk_port if token else 0, token=token, candidates=tuple(cands))
+        # v32 — the respawn point (stage 3c), the same for everyone.
+        rp = self.respawn_point
+        if rp is not None:
+            extra.update(has_respawn=True, respawn_pos=(rp[0], rp[1], rp[2]), respawn_yaw=rp[3])
+        cust_note = ""
+        if token:
+            cust_note = ", bulk port %d (%d of %d candidate(s) in custody)" % (
+                self.bulk_port, sum(1 for c in cands if c.custody), len(cands))
+        if rec is None:
+            payload = CkptBootPayload(has=False, seq=0, name="", sha256=b"", size=0, digest=0,
+                                      **pos, **extra)
+        else:
+            payload = CkptBootPayload(has=True, seq=rec.seq, name=rec.name,
+                                      sha256=bytes.fromhex(rec.sha256_hex) if rec.sha256_hex else b"",
+                                      size=rec.size, digest=rec.digest, **pos, **extra)
+        raw = session.channel.send_reliable(MessageType.CKPT_BOOT, payload, now_ms)
+        self._send(session.addr, raw)
+        pos_note = ""
+        if pos:
+            behind_s = (presence.last_pos_at_ms - (rec.received_ms if rec is not None else 0.0)) / 1000.0
+            pos_note = (" + last position (%.0f, %.0f, %.0f) from %.0f s after it"
+                        % (pos["px"], pos["py"], pos["pz"], behind_s))
+        if rec is None:
+            log.info("checkpoint boot for %s: none on record -> genesis save%s%s",
+                     session.peer_id, pos_note, cust_note)
+        else:
+            log.info("checkpoint boot for %s: '%s' (seq %d, %d bytes, %s, %d failed boot(s))%s%s",
+                     session.peer_id, rec.name, rec.seq, rec.size, rec.status, rec.boot_failures,
+                     pos_note, cust_note)
+
+    def _first_entry(self, session: PeerSession, now_ms: float):
+        """L5 stage 3d (2026-09-30) — a new character starts on the
+        founder's point: its first checkpoint is the genesis save moved
+        there (respawn.make_first_checkpoint). New means no checkpoint on
+        record and no position ever reported: records that all failed to
+        boot, or a player known from before the checkpoints existed, keep
+        the old behaviour (the genesis, and the last position when there is
+        one). None whenever it is not made; the genesis then boots where it
+        was written, as before."""
+        peer = session.peer_id
+        if self.state.checkpoints(peer):
+            return None
+        presence = self.state.presence(peer)
+        if presence is not None and presence.last_pos is not None:
+            return None
+        rp = self.respawn_point
+        why = ("no spawn point" if rp is None else "no custody" if self.custody is None
+               else "no genesis save" if self.genesis_path is None else "")
+        if why:
+            log.info("first entry: %s has no character yet and %s on this server: the genesis "
+                     "save boots where it was written", peer, why)
+            return None
+        try:
+            genesis = self.genesis_path.read_bytes()
+            rec = make_first_checkpoint(self.state, self.custody, peer, session.identity_hex,
+                                        genesis, RespawnPoint(rp[0], rp[1], rp[2], rp[3]),
+                                        now_ms)
+        except (OSError, RespawnError) as e:
+            log.warning("first entry: %s: %s; the genesis save boots where it was written",
+                        peer, e)
+            return None
+        self._counters["first_entries"] += 1
+        return rec
+
+    def _demand_checkpoint(self, session: PeerSession, now_ms: float, why: str) -> None:
+        """L5 stage 3d (2026-09-30) — a checkpoint now, outside the cadence
+        (reason 1, "on demand"), because the character changed in a way the
+        last one contradicts. The client writes it in a fight too: the
+        respawn moves the position, which is what its combat gate protects.
+        The cadence counts from this request."""
+        if not session.identity_hex:
+            return
+        session.ckpt_seq += 1
+        session.ckpt_last_request_ms = now_ms
+        session.ckpt_retry_at_ms = 0.0
+        req = CkptRequestPayload(seq=session.ckpt_seq, reason=1, deadline_s=30)
+        raw = session.channel.send_reliable(MessageType.CKPT_REQUEST, req, now_ms)
+        self._send(session.addr, raw)
+        log.info("checkpoint requested from %s (seq %d, on demand: %s)",
+                 session.peer_id, session.ckpt_seq, why)
+
+    def _schedule_checkpoints(self, now_ms: float) -> None:
+        """Ask every authenticated player in the world for a checkpoint on
+        the cadence. Called from tick(). A deferred answer is asked again
+        after a minute; a session that never answers is asked again on the
+        next cadence, with a new number."""
+        every = self.checkpoint_every_ms
+        if every <= 0:
+            return
+        for session in self.state.all_sessions():
+            if not session.identity_hex or session.last_pos_at_ms <= 0:
+                continue
+            if session.ckpt_retry_at_ms and now_ms < session.ckpt_retry_at_ms:
+                continue
+            ref = max(session.joined_at_ms, session.ckpt_last_request_ms,
+                      session.ckpt_last_done_ms)
+            if now_ms - ref < every:
+                continue
+            session.ckpt_seq += 1
+            session.ckpt_last_request_ms = now_ms
+            session.ckpt_retry_at_ms = 0.0
+            req = CkptRequestPayload(seq=session.ckpt_seq, reason=0, deadline_s=30)
+            raw = session.channel.send_reliable(MessageType.CKPT_REQUEST, req, now_ms)
+            self._send(session.addr, raw)
+            log.info("checkpoint requested from %s (seq %d, periodic)",
+                     session.peer_id, session.ckpt_seq)
+
+    def _handle_ckpt_done(self, session: PeerSession, payload, now_ms: float) -> None:
+        """A client wrote a checkpoint (or could not). Recorded with the
+        journal head of this instant as its watermark. Only an identity may
+        have one, and only under its own name prefix."""
+        if not isinstance(payload, CkptDonePayload):
+            return
+        if not session.identity_hex:
+            log.debug("ckpt_done from anonymous %s ignored", session.peer_id)
+            return
+        status = CKPT_STATUS.get(payload.status, f"status={payload.status}")
+        if payload.status != 0:
+            if payload.status == 1:
+                session.ckpt_retry_at_ms = now_ms + 60_000.0
+            log.info("checkpoint from %s (seq %d) NOT written: %s", session.peer_id,
+                     payload.seq, status)
+            return
+        prefix = f"fwck_{session.peer_id}_"
+        if not payload.name.startswith(prefix) or len(payload.sha256) != 32 \
+                or not any(payload.sha256) or payload.size == 0 or payload.size > 256 * 1024 * 1024:
+            self._counters["rejections"] += 1
+            log.warning("checkpoint from %s REFUSED: name '%s' / sha / size %d not acceptable",
+                        session.peer_id, payload.name, payload.size)
+            return
+        # The exit report is sent twice on purpose (two unreliable datagrams
+        # ahead of the goodbye): the second copy names the same file with
+        # the same hash and is not a new checkpoint. A same-named report
+        # with other bytes still replaces the record.
+        for prev in self.state.checkpoints(session.peer_id):
+            if prev.name == payload.name and prev.sha256_hex == payload.sha256.hex():
+                log.debug("checkpoint '%s' from %s already on record: duplicate report ignored",
+                          payload.name, session.peer_id)
+                return
+        rec = self.state.record_checkpoint(
+            session.peer_id, session.identity_hex, payload.seq, payload.name,
+            payload.sha256.hex(), payload.size, payload.digest, payload.digest_seq,
+            payload.wall_ms, now_ms, watermark_lsn=int(self.state.applied_lsn),
+            reason=0 if payload.seq else 2)
+        if rec is None:
+            self._counters["rejections"] += 1
+            return
+        # v31 — custody (stage 3b): the bytes may have arrived before this
+        # report (the upload starts right after the write); a stored file
+        # with this hash puts the record in custody now. The files of the
+        # records that just dropped off the last three go with them.
+        if self.custody is not None:
+            if self.custody.has(session.peer_id, rec.name, rec.sha256_hex):
+                if self.state.set_checkpoint_custody(session.peer_id, rec.name, rec.sha256_hex,
+                                                     now_ms) is not None:
+                    log.info("custody: '%s' from %s was uploaded before its report: in custody",
+                             rec.name, session.peer_id)
+            self.custody.keep_only(session.peer_id,
+                                   {r.name for r in self.state.checkpoints(session.peer_id)})
+        session.ckpt_last_done_ms = now_ms
+        session.ckpt_retry_at_ms = 0.0
+        session.total_events += 1
+        log.info("checkpoint from %s recorded: '%s' %d bytes sha %s… digest=%016X "
+                 "(capture #%d) watermark lsn %d (seq %d, %d on record)",
+                 session.peer_id, rec.name, rec.size, rec.sha256_hex[:12], rec.digest,
+                 rec.digest_seq, rec.watermark_lsn, rec.seq,
+                 len(self.state.checkpoints(session.peer_id)))
+
+    def _handle_boot_result(self, session: PeerSession, payload, now_ms: float) -> None:
+        """What the client loaded at boot: confirms the checkpoint it named,
+        or counts a failure against it."""
+        if not isinstance(payload, BootResultPayload):
+            return
+        outcome = BOOT_OUTCOME.get(payload.outcome, f"outcome={payload.outcome}")
+        if not session.identity_hex or not payload.name:
+            log.info("boot result from %s: %s", session.peer_id, outcome)
+            return
+        rec = self.state.confirm_checkpoint(session.peer_id, payload.name,
+                                            payload.outcome, now_ms)
+        if rec is None:
+            log.info("boot result from %s: %s ('%s' is not on record)",
+                     session.peer_id, outcome, payload.name)
+            return
+        log.info("boot result from %s: %s -> '%s' is %s (%d failed boot(s))",
+                 session.peer_id, outcome, rec.name, rec.status, rec.boot_failures)
+
+    def _handle_player_life(self, session: PeerSession, payload, now_ms: float) -> None:
+        """L5 stage 3c — the local player of a client died, respawned without
+        a reload, or fell back to the reload. Logged and counted; nothing to
+        journal: the character lives in its checkpoint, the world in the
+        server, and neither changed here."""
+        if not isinstance(payload, PlayerLifePayload):
+            return
+        what = PLAYER_LIFE_EVENTS.get(payload.event, f"event={payload.event}")
+        if payload.event == 0:
+            self._counters["player_deaths"] += 1
+        elif payload.event == 1:
+            self._counters["player_respawns"] += 1
+        else:
+            self._counters["player_reload_fallbacks"] += 1
+        log.info("player life: %s %s at (%.0f, %.0f, %.0f)", session.peer_id, what,
+                 payload.pos[0], payload.pos[1], payload.pos[2])
+        if payload.event == 0:
+            self._answer_death(session, now_ms, payload.pos)
+        elif payload.event == 1:
+            self._give_back_frame_after_respawn(session, now_ms)
+
+    def _answer_death(self, session: PeerSession, now_ms: float,
+                      death_pos: Optional[tuple] = None) -> None:
+        """L5 stage 3d — the answer to a death: the player's boot checkpoint
+        moved onto the respawn point and booked in custody, which the client
+        loads instead of the engine's reload (one loading screen, no fast
+        travel: the fast travel after a reload held the engine's loading
+        screen up for 116 and 339 s on the live tests). has=0 whenever it
+        cannot be made, and the client runs the reload and the fast travel
+        of stage 3c. In power armour the worn frame moves with the player
+        (savepos finds it through the player's ExtraPowerArmor); the digest
+        of the checkpoint cross-checks that there is one."""
+        rec = None
+        why = ""
+        rp = self.respawn_point
+        if rp is None:
+            why = "no respawn point on this server"
+        elif self.custody is None:
+            why = "no custody on this server"
+        else:
+            try:
+                rec = make_respawn_checkpoint(self.state, self.custody, session.peer_id,
+                                              RespawnPoint(rp[0], rp[1], rp[2], rp[3]), now_ms,
+                                              exterior_globals=self.exterior_globals)
+            except RespawnError as e:
+                why = str(e)
+        if rec is not None:
+            self._counters["respawn_checkpoints"] += 1
+            payload = CkptRespawnPayload(True, rec.name, bytes.fromhex(rec.sha256_hex), rec.size)
+            pa = checkpoint_in_power_armour(self.state, session.peer_id)
+            log.info("respawn: %s died -> '%s' (the boot checkpoint moved onto the point%s) goes "
+                     "to the client instead of the engine's reload", session.peer_id, rec.name,
+                     ", the worn power armour frame with it" if pa else "")
+        else:
+            payload = CkptRespawnPayload(False, "", b"", 0)
+            log.info("respawn: %s died -> no moved checkpoint (%s): the engine's reload and the "
+                     "fast travel run", session.peer_id, why)
+        self._plan_frame_drop(session.peer_id, rec, death_pos)
+        raw = session.channel.send_reliable(MessageType.CKPT_RESPAWN, payload, now_ms)
+        self._send(session.addr, raw)
+
+    def _plan_frame_drop(self, peer_id: str, rec, death_pos: Optional[tuple]) -> None:
+        """L5 stage 3d — a death in power armour with a checkpoint on foot.
+
+        The frame a player wears is marked worn here (kept, placed for
+        nobody). The checkpoint the player comes back from decides where the
+        player is: inside a frame (savepos moves it with them, live test #15)
+        or on foot. On foot, the frame stays where they fell and is given back
+        to the world when they respawn. Before this it stayed marked worn by a
+        player who no longer wore it, placed for nobody (their own client
+        included), and the others kept seeing their ghost in it (live test
+        #18). When the save cannot be read nothing changes: the frame comes
+        back when they leave, as before.
+        """
+        self._frame_drops.pop(peer_id, None)
+        self._frame_reclaims.pop(peer_id, None)
+        worn = sorted(st.wid for st in self.state.world_spawns.values()
+                      if st.worn_by_peer_id == peer_id)
+        src = rec if rec is not None else self.state.checkpoint_to_boot(peer_id)
+        if not worn:
+            # 2026-09-30 — on foot at the death, and the checkpoint may have
+            # them inside the frame they left after it was written: the
+            # reload puts them back in the save's copy, and the frame they
+            # left must not keep standing in the world.
+            # Since the checkpoint on demand at every exit this is the few
+            # seconds between leaving the frame and that checkpoint being
+            # written: the only checkpoint still has them inside. One armour,
+            # not two: the standing one is taken back.
+            st = self._frame_left_by(peer_id, src, "died on foot")
+            if st is not None:
+                self._frame_reclaims[peer_id] = st.wid
+                log.warning("respawn: %s died on foot before the checkpoint asked for when they "
+                            "left their frame was written: they come back inside it, and the "
+                            "frame standing as wid %d is taken back when they respawn (one "
+                            "armour, not two)", peer_id, st.wid)
+            return
+        wears = checkpoint_wears_frame(self.custody, peer_id, src)
+        wids = ", ".join(str(w) for w in worn)
+        name = src.name if src is not None else "no checkpoint"
+        if wears is None:
+            log.info("respawn: %s died wearing frame wid %s; whether '%s' has them in power "
+                     "armour cannot be read: the frame stays worn (given back when they leave)",
+                     peer_id, wids, name)
+            return
+        if wears:
+            log.info("respawn: %s died wearing frame wid %s and '%s' has them in power armour: "
+                     "the frame goes with them", peer_id, wids, name)
+            return
+        presence = self.state.presence(peer_id)
+        last = presence.last_pos if presence is not None else None
+        cell = int(last.cell_id) if last is not None else 0
+        if death_pos is not None and any(abs(float(v)) > 0.001 for v in death_pos[:3]):
+            x, y, z = (float(v) for v in death_pos[:3])
+        elif last is not None:
+            x, y, z = float(last.x), float(last.y), float(last.z)
+        else:
+            log.info("respawn: %s died wearing frame wid %s and comes back on foot, but where "
+                     "they fell is unknown: the frame stays worn (given back when they leave)",
+                     peer_id, wids)
+            return
+        self._frame_drops[peer_id] = (x, y, z, cell)
+        log.info("respawn: %s died wearing frame wid %s but '%s' has them on foot: the frame "
+                 "stays where they fell (%.0f, %.0f, %.0f), given back to the world when they "
+                 "respawn", peer_id, wids, name, x, y, z)
+
+    def _give_back_frame_after_respawn(self, session: PeerSession, now_ms: float) -> None:
+        """L5 stage 3d — the respawn of a player _plan_frame_drop left on
+        foot: the frame they wore becomes a world object where they fell, for
+        every client, theirs included (its world was reloaded without it)."""
+        wid = self._frame_reclaims.pop(session.peer_id, None)
+        if wid is not None:
+            self._take_frame_back(session.peer_id, wid, now_ms, "respawned inside it")
+        at = self._frame_drops.pop(session.peer_id, None)
+        if at is None:
+            return
+        self._give_back_worn_frames(session.peer_id, now_ms, at=at, include_self=True,
+                                    why="who died in it and came back on foot")
+
+    def _frame_left_by(self, peer_id: str, rec, why: str):
+        """L5 stage 3d (2026-09-30) — the world's record of the frame the
+        checkpoint `rec` has the player inside, when it stands in the world:
+        announced by this player with the local form id the save knows the
+        frame by (the exit re-announces the frame the player leaves, with its
+        own form id), a power armour frame, worn by nobody. None otherwise:
+        the checkpoint on foot or unreadable, no such record (the newest wins
+        when a form id came back), or a record someone else wears (logged:
+        two frames until one of them is left)."""
+        known, frame = checkpoint_worn_frame(self.custody, peer_id, rec)
+        if not known or frame is None:
+            return None
+        fid = worn_frame_fid(frame)
+        cands = [st for st in self.state.world_spawns.values()
+                 if st.base_form_id == self._PA_FRAME_BASE and st.spawner_peer == peer_id
+                 and (int(st.spawner_local_fid) & 0xFFFFFFFF) == fid]
+        if not cands:
+            return None
+        st = max(cands, key=lambda s: s.wid)
+        if st.worn_by_peer_id:
+            if st.worn_by_peer_id != peer_id:
+                log.warning("frame: %s %s and comes back inside frame 0x%08X, standing as wid %d, "
+                            "which %s wears now: left alone, there are two frames until one is "
+                            "left", peer_id, why, fid, st.wid, st.worn_by_peer_id)
+            return None
+        return st
+
+    def _take_frame_back(self, peer_id: str, wid: int, now_ms: float, why: str) -> None:
+        """The frame `wid` is worn by `peer_id` again: kept, placed for
+        nobody, and every client drops its copy (a despawn in the name of the
+        server: the player's own client purges the placement it had queued
+        again after its reload, never an object it has)."""
+        st = self.state.world_spawns.get(wid)
+        if st is None or st.worn_by_peer_id:
+            log.info("frame: wid %d is no longer a standing frame, nothing taken back for %s",
+                     wid, peer_id)
+            return
+        self.state.mark_world_spawn_worn(wid, peer_id, now_ms)
+        self.state.record_presence_worn_frame(peer_id, wid, now_ms)
+        bcast = WorldDespawnBroadcastPayload(peer_id="server", wid=wid, reason=2,
+                                             timestamp_ms=int(now_ms))
+        sent = 0
+        for other in self.state.all_sessions():
+            raw = other.channel.send_reliable(MessageType.WORLD_DESPAWN_BCAST, bcast, now_ms)
+            self._send(other.addr, raw)
+            sent += 1
+        log.info("frame: wid %d taken back from the world, %s %s (their checkpoint has them "
+                 "inside it): worn again, despawned on %d client(s)", wid, peer_id, why, sent)
+
+    def _reclaim_frame_at_boot(self, peer_id: str, rec, now_ms: float) -> None:
+        """L5 stage 3d (2026-09-30) — a boot inside a frame that stands in
+        the world: the player left it after that checkpoint was written and
+        the game ended before another one (a crash, ALT+F4), or the frame
+        was given back to the world when they left in it. The boot puts them
+        back inside the save's copy; the standing one is taken back."""
+        st = self._frame_left_by(peer_id, rec, "boots")
+        if st is not None:
+            self._take_frame_back(peer_id, st.wid, now_ms, "boots inside it")
+
+    def on_custody_put(self, peer_id: str, name: str, sha256_hex: str, size: int,
+                       now_ms: float) -> None:
+        """v31 — the bulk service stored a checkpoint's bytes: the record
+        with that hash is in custody now. A report not yet arrived finds
+        the file when it comes (_handle_ckpt_done)."""
+        rec = self.state.set_checkpoint_custody(peer_id, name, sha256_hex, now_ms)
+        if rec is not None:
+            log.info("custody: '%s' from %s in custody (%d bytes, sha %s…)",
+                     name, peer_id, size, sha256_hex[:12])
+        else:
+            log.info("custody: '%s' from %s stored ahead of its report (%d bytes)",
+                     name, peer_id, size)
 
     def _handle_world_pa_pieces_op(self, session: PeerSession, payload,
                                    now_ms: float) -> None:
@@ -1827,7 +2466,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
             log.debug("pa_pieces_op wid=%d from %s: unknown wid — dropped",
                       payload.wid, session.peer_id)
             return
-        st.pieces = tuple(payload.pieces)
+        self.state.set_world_spawn_pieces(payload.wid, tuple(payload.pieces))
         bcast = WorldPaPiecesBroadcastPayload(
             peer_id=session.peer_id,
             wid=payload.wid,
@@ -2773,15 +3412,11 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 pass
 
     def _send_raw(self, sess: PeerSession, raw: bytes) -> None:
-        """Small helper for ownership handlers; mirrors the inline send
-        pattern used by container/door/lock/equip handlers."""
-        if self.transport is None or not raw:
+        """Small helper for ownership handlers; the same path as every other
+        send, durability gate included (L5 stage 1)."""
+        if not raw:
             return
-        try:
-            self.transport.sendto(raw, sess.addr)
-            self._counters["tx_frames"] += 1
-        except OSError as e:
-            log.debug("sendto %s failed: %s", sess.addr, e)
+        self._send(sess.addr, raw)
 
     def _handle_lock_op(self, session: PeerSession, payload, now_ms: float) -> None:
         """B6.3 v0.5.3 — lock state change broadcast + persistence.
@@ -2805,21 +3440,13 @@ class ServerProtocol(asyncio.DatagramProtocol):
                       session.peer_id, payload.lock_form_id, payload.lock_base_id)
             return
 
-        new_locked = bool(payload.locked)
-        key = (payload.lock_base_id, payload.lock_cell_id)
-        prev = self.state.lock_state.get(key)
-        if prev is not None and prev.locked == new_locked:
+        changed = self.state.record_lock(
+            payload.lock_base_id, payload.lock_cell_id, payload.lock_form_id,
+            bool(payload.locked), payload.timestamp_ms)
+        if not changed:
             log.debug("lock_op no-op (state unchanged) form=0x%X by %s",
                       payload.lock_form_id, session.peer_id)
             return
-
-        self.state.lock_state[key] = LockWorldState(
-            base_id=payload.lock_base_id,
-            cell_id=payload.lock_cell_id,
-            form_id=payload.lock_form_id,
-            locked=new_locked,
-            timestamp_ms=payload.timestamp_ms,
-        )
 
         broadcast = LockBroadcastPayload(
             peer_id=session.peer_id,
@@ -3344,6 +3971,9 @@ class ServerProtocol(asyncio.DatagramProtocol):
 
     def tick(self, now_ms: float) -> None:
         """Called at tick_rate_hz. Drives retransmits, acks, timeouts."""
+        # L5 stage 3a — the checkpoint cadence.
+        self._schedule_checkpoints(now_ms)
+        self.bulk_tokens.expire(now_ms)
         # Per-session retransmit + ACK flush
         for session in self.state.all_sessions():
             try:
@@ -3363,6 +3993,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
         stale = self.state.expire_stale(now_ms)
         for s in stale:
             log.info("peer %s timed out", s.peer_id)
+            self.bulk_tokens.end_session(s.peer_id, now_ms)
             # Build 65 — release every NPC owned by the timed-out peer.
             for change in self.ownership.on_peer_disconnect(s.peer_id, now_ms):
                 self._emit_ownership_change(change, now_ms)
@@ -3443,17 +4074,31 @@ class ServerProtocol(asyncio.DatagramProtocol):
         Everyone still connected is told to place it, and the mark is cleared
         so the frame is an ordinary world object again.
         """
+        # L5 stage 3d: a peer who died in it and leaves before the respawn
+        # gets it back here, at the last position they sent: where they fell.
+        # One who was to take a frame back no longer does: their next boot does.
+        self._frame_drops.pop(peer_id, None)
+        self._frame_reclaims.pop(peer_id, None)
+        self._give_back_worn_frames(peer_id, now_ms)
+
+    def _give_back_worn_frames(self, peer_id: str, now_ms: float, *,
+                               at: Optional[tuple] = None, include_self: bool = False,
+                               why: str = "who just left") -> None:
+        """The body of the give-back. `at` (x, y, z, cell_id) overrides the
+        last known position; `include_self` tells the peer itself too (L5
+        stage 3d: a respawn, not a departure)."""
         presence = self.state.presence(peer_id)
         for st in list(self.state.world_spawns.values()):
             if st.worn_by_peer_id != peer_id:
                 continue
-            if presence is not None and presence.last_pos is not None:
-                st.px = presence.last_pos.x
-                st.py = presence.last_pos.y
-                st.pz = presence.last_pos.z
-                st.cell_id = presence.last_pos.cell_id
-            st.worn_by_peer_id = ""
-            st.worn_since_ms = 0.0
+            if at is not None:
+                self.state.return_worn_frame(st.wid, at[0], at[1], at[2], at[3])
+            elif presence is not None and presence.last_pos is not None:
+                self.state.return_worn_frame(
+                    st.wid, presence.last_pos.x, presence.last_pos.y,
+                    presence.last_pos.z, presence.last_pos.cell_id)
+            else:
+                self.state.return_worn_frame(st.wid, st.px, st.py, st.pz, st.cell_id)
             # The power armor becomes a world object again, ENTIRELY.
             #
             # The frame reappears below at the wearer's last position with
@@ -3487,16 +4132,17 @@ class ServerProtocol(asyncio.DatagramProtocol):
             )
             sent = 0
             for other in self.state.all_sessions():
-                if other.peer_id == peer_id:
+                if other.peer_id == peer_id and not include_self:
                     continue
                 raw = other.channel.send_reliable(
                     MessageType.WORLD_SPAWN_BCAST, bcast, now_ms)
                 self._send(other.addr, raw)
                 sent += 1
-            log.info("wid=%d was worn by %s who just left: re-announced at "
-                     "their last position to %d peer(s); %d piece(s) went "
-                     "back to the frame and out of their stored outfit",
-                     st.wid, peer_id, sent, dropped)
+            log.info("wid=%d was worn by %s %s: re-announced at %s to %d peer(s); "
+                     "%d piece(s) went back to the frame and out of their stored outfit",
+                     st.wid, peer_id, why,
+                     "where they fell" if at is not None else "their last position",
+                     sent, dropped)
         if presence is not None:
             presence.worn_frame_wid = 0
 
@@ -3511,6 +4157,9 @@ class ServerProtocol(asyncio.DatagramProtocol):
         # v26 — before the session is gone, hand back any power armour frame
         # this peer was wearing. Without this the frame is lost for everyone.
         self._reannounce_worn_frames(session.peer_id, now_ms)
+        # v31 — the bulk token outlives the session by a grace: the exit
+        # checkpoint is uploaded after this goodbye.
+        self.bulk_tokens.end_session(session.peer_id, now_ms)
         self.state.remove(session.peer_id)
         for change in ownership_changes:
             self._emit_ownership_change(change, now_ms)
@@ -3555,6 +4204,52 @@ class ServerProtocol(asyncio.DatagramProtocol):
         return sent
 
     def _send(self, addr: tuple[str, int], raw: bytes) -> None:
+        """Hand a frame to the socket, or hold it until the journal has what
+        it describes (L5 stage 1).
+
+        Every reliable frame goes through the gate whether or not its own
+        handler journaled anything: the gate compares the journal's head at
+        the moment of the send with its durable LSN, so a frame that follows
+        a durable world leaves at once and one that follows a fresh mutation
+        waits for that mutation's fsync. Holding them all, not only the ACKs,
+        keeps the reliable stream to each peer in the order the handlers
+        produced it. Unreliable frames (positions, the reliable layer's own
+        ACKs) never wait.
+        """
+        if self.transport is None:
+            return
+        journal = self.state.journal
+        if (journal is not None and self._journal_healthy
+                and len(raw) > 10 and (raw[10] & FLAG_RELIABLE)):
+            head = journal.head_lsn
+            if self._held or head > journal.durable_lsn:
+                self._held.append((head, addr, raw))
+                self._counters["tx_held"] += 1
+                return
+        self._transmit(addr, raw)
+
+    def on_durable(self, lsn: int) -> None:
+        """The journal's durable LSN reached `lsn` (called on the loop)."""
+        while self._held and self._held[0][0] <= lsn:
+            _, addr, raw = self._held.popleft()
+            self._transmit(addr, raw)
+
+    def on_journal_failure(self, reason: str) -> None:
+        """The journal cannot write any more (called on the loop). What was
+        held describes state that exists in memory and cannot be taken
+        back, so it goes out; from here on nothing waits, and item ops are
+        refused with REJ_UNAVAILABLE until a restart."""
+        if not self._journal_healthy:
+            return
+        self._journal_healthy = False
+        log.error("journal FAILED (%s): the server is READ-ONLY for item ops "
+                  "until it is restarted with a working disk; %d held frame(s) "
+                  "released", reason, len(self._held))
+        while self._held:
+            _, addr, raw = self._held.popleft()
+            self._transmit(addr, raw)
+
+    def _transmit(self, addr: tuple[str, int], raw: bytes) -> None:
         if self.transport is None:
             return
         try:
@@ -3702,18 +4397,31 @@ async def _periodic_snapshot(
     This preserves a rolling history of the last N snapshots for debugging
     desync / rollback scenarios.
     """
-    first_write = True
     while True:
         await asyncio.sleep(interval_s)
         try:
-            if not first_write and path.exists():
-                # Rotate existing snapshot before overwriting
+            if path.exists():
+                # Rotate the existing snapshot before overwriting, on the
+                # first write of a run too: that file is the previous run's
+                # last state, the one copy worth keeping when this run has
+                # gone wrong (stage 0 of L5, 2026-09-27).
                 rotate_snapshots(path, keep=rotate_keep)
+            covered = int(getattr(protocol.state, "applied_lsn", 0))
             snapshot(protocol.state, path)
-            first_write = False
             log.debug("snapshot written to %s", path)
         except Exception as e:
             log.warning("snapshot failed: %s", e)
+            continue
+        # Stage 1 of L5: the snapshot is the journal's compaction point.
+        # Segments made only of records the file covers go, the durable
+        # mark is written, and the journal stays a short tail.
+        journal = protocol.state.journal
+        if journal is not None:
+            try:
+                journal.compact(up_to_lsn=min(covered, journal.durable_lsn))
+                journal.note_high_water_mark()
+            except Exception as e:
+                log.warning("journal housekeeping failed: %s", e)
 
 
 MASTER_HEARTBEAT_S: float = 30.0
@@ -3778,13 +4486,72 @@ async def run_server(cfg: Config) -> None:
         log.warning("could not set up server.log file mirror: %s", e)
     state = ServerState(tick_rate_hz=cfg.tick_rate_hz)
 
-    # Restore authoritative world state from snapshot if available
-    if cfg.snapshot_path is not None and cfg.snapshot_path.is_file():
+    # Restore the world from the snapshot, fail-closed: an unreadable file is
+    # moved aside and a rotated copy is tried; with no readable copy the
+    # server refuses to start unless --allow-empty-world says a new world is
+    # intended (stage 0 of L5, 2026-09-27).
+    if cfg.snapshot_path is not None:
         try:
-            n = load_into(state, cfg.snapshot_path)
-            log.info("restored %d world actors from snapshot %s", n, cfg.snapshot_path)
-        except Exception as e:
-            log.warning("snapshot restore failed (%s): starting with empty world", e)
+            loaded = restore_state(state, cfg.snapshot_path,
+                                   allow_empty_world=cfg.allow_empty_world)
+        except SnapshotUnreadable as e:
+            log.error("%s", e)
+            raise SystemExit(2)
+        if loaded is None:
+            log.info("no snapshot at %s: starting a new world", cfg.snapshot_path)
+
+    # Stage 1 of L5: the journal. Opened fail-closed (a corrupt record that
+    # is not a torn tail stops the boot), replayed over the snapshot from
+    # the LSN the snapshot covers, then handed to the state so every later
+    # mutation is appended before anyone hears of it.
+    journal: Optional[Journal] = None
+    if cfg.journal_dir is not None:
+        try:
+            journal = Journal.open(cfg.journal_dir)
+        except JournalCorrupt as e:
+            log.error("journal %s cannot be opened: %s. Move the damaged "
+                      "segment aside to start without those records, or "
+                      "restore the directory from a backup", cfg.journal_dir, e)
+            raise SystemExit(2)
+        if state.applied_lsn == 0 and journal.head_lsn > 0:
+            log.warning("the snapshot carries no journal mark and the journal "
+                        "holds %d record(s): every one of them is replayed",
+                        journal.head_lsn)
+        replayed = journal.replay(state, after_lsn=state.applied_lsn)
+        log.info("journal %s: epoch %d, head lsn %d, %d record(s) replayed over "
+                 "the snapshot (which covered lsn %d)", cfg.journal_dir,
+                 journal.epoch, journal.head_lsn, replayed, state.applied_lsn)
+        state.applied_lsn = max(state.applied_lsn, journal.head_lsn)
+        state.journal = journal
+    # L5 stage 3c — the respawn point goes to every client in the boot word;
+    # without one (--respawn off) a death reloads the last checkpoint. The
+    # CLI refused a malformed option already; a Config built by hand fails
+    # here, before any socket is open.
+    respawn_point = parse_respawn(cfg.respawn)
+    if respawn_point is None:
+        log.info("respawn point: none (%s from %s): a death reloads the last checkpoint",
+                 cfg.respawn, getattr(cfg, "respawn_source", "default"))
+    else:
+        rx, ry, rz, ryaw = respawn_point
+        log.info("respawn point: %s (from %s) -> (%.1f, %.1f, %.1f) yaw %.2f, sent to every client "
+                 "in the boot word", cfg.respawn, getattr(cfg, "respawn_source", "default"),
+                 rx, ry, rz, ryaw)
+    # L5 stage 3d (2026-09-30) — the genesis save's sky, for a death in an
+    # interior. Unusable or absent: that death falls back to the engine's
+    # reload of the last checkpoint, as before.
+    exterior_globals: Optional[dict[int, bytes]] = None
+    genesis = getattr(cfg, "genesis_save", None)
+    if genesis is None:
+        log.info("genesis save: none ([genesis] save in server.ini): a death in an interior "
+                 "falls back to the engine's reload")
+    else:
+        try:
+            exterior_globals = exterior_sky(Path(genesis).read_bytes())
+            log.info("genesis save: %s, its sky goes to a checkpoint moved out of an interior, "
+                     "and a new character starts from it on the spawn point", genesis)
+        except (OSError, SaveFormatError) as e:
+            log.warning("genesis save %s is not usable (%s): a death in an interior falls back "
+                        "to the engine's reload", genesis, e)
 
     # B6.5w1 — load NPC brain from waypoint JSONs, if any. Brain is only
     # ticked when at least one NPC was loaded; an empty brain is a no-op
@@ -3865,6 +4632,15 @@ async def run_server(cfg: Config) -> None:
     # NPC_DISCOVER events.
     protocol.npc_brain = npc_brain
     protocol.raider_brain = raider_brain
+    # Stage 1 of L5: the journal's writer thread reports durability and
+    # failure to the protocol on the loop thread, never directly.
+    if journal is not None:
+        journal.set_notify(
+            lambda lsn: loop.call_soon_threadsafe(protocol.on_durable, lsn),
+            lambda err: loop.call_soon_threadsafe(protocol.on_journal_failure, err))
+        journal.start_writer()
+        log.info("journal writer started: every reliable frame now waits for "
+                 "the fsync of the state it describes")
     # Browser identity + listing policy (dedicated-server work).
     protocol.browser_cfg = {
         "name": cfg.name,
@@ -3876,10 +4652,30 @@ async def run_server(cfg: Config) -> None:
     state.max_players = cfg.max_players
     state.require_chargen = cfg.require_chargen
     protocol.require_auth = cfg.require_auth
+    # L5 stage 3a — the checkpoint cadence (seconds in the Config, ms here).
+    protocol.checkpoint_every_ms = cfg.checkpoint_every_s * 1000.0
+    protocol.respawn_point = respawn_point   # L5 stage 3c, parsed and logged above
+    protocol.exterior_globals = exterior_globals   # L5 stage 3d, read and logged above
+    protocol.genesis_path = Path(genesis) if exterior_globals is not None else None
+    log.info("checkpoints: %s", ("every %.0f s for every player in the world" % cfg.checkpoint_every_s)
+             if cfg.checkpoint_every_s > 0 else "never asked (exit and test key only)")
     # Bind login proofs to the addresses this server answers to. The bind
     # address covers local play (127.0.0.1:PORT); --public-addr is what a
     # NAT'd/public server needs, because players dial its public address and
     # sign THAT, which never equals a 0.0.0.0 bind.
+    # L5 stage 3b — custody of the checkpoint bytes: the store and the TCP
+    # service next to the UDP port. Without a directory the checkpoints
+    # stay on the clients' disks, as in stage 3a.
+    bulk_server = None
+    if cfg.custody_dir is not None:
+        protocol.custody = CustodyStore(cfg.custody_dir)
+        protocol.bulk_port = cfg.bulk_port or cfg.port
+        bulk = BulkServer(protocol, protocol.custody, protocol.bulk_tokens, _now_ms)
+        bulk_server = await bulk.start(cfg.host, protocol.bulk_port)
+        log.info("custody: checkpoint bytes kept in %s, transfers on TCP %s:%d",
+                 cfg.custody_dir, cfg.host, protocol.bulk_port)
+    else:
+        log.info("custody: OFF (no --custody-dir): checkpoints stay on the clients' disks")
     addrs = {f"{cfg.host}:{cfg.port}"}
     if cfg.public_addr:
         addrs.add(cfg.public_addr.strip())
@@ -3941,12 +4737,110 @@ async def run_server(cfg: Config) -> None:
                 log.info("final snapshot written to %s", cfg.snapshot_path)
             except Exception as e:
                 log.error("final snapshot FAILED (%s): up to %.0fs of state "
-                          "is lost", e, cfg.snapshot_interval_s)
+                          "is lost%s", e, cfg.snapshot_interval_s,
+                          " (the journal has it)" if journal is not None else "")
+        if journal is not None:
+            journal.close()
+            log.info("journal closed at lsn %d", journal.durable_lsn)
+        if bulk_server is not None:
+            bulk_server.close()
         transport.close()
 
 
+# L5 stage 3c — the named respawn points. "sanctuary": Sanctuary Hills, on
+# the street where the first drop tests of L5 stage 2 happened (2026-09-28);
+# yaw 0 = facing +Y. Any point can be given as "x,y,z[,yaw]" instead.
+RESPAWN_POINTS: dict[str, tuple[float, float, float, float]] = {
+    "sanctuary": (-79857.5, 89852.6, 7821.7, 0.0),
+}
+
+
+def read_server_ini(path: Path) -> tuple[Optional[str], dict[str, tuple[float, float, float, float]]]:
+    """L5 stage 3d — the founder's settings file. ([spawn] point or None,
+    the [points] by lower-case name). A missing file is (None, {}); a file
+    that does not parse, or a point that is not x,y,z[,yaw], raises
+    ValueError with the reason."""
+    if not path.is_file():
+        return None, {}
+    cp = configparser.ConfigParser(inline_comment_prefixes=(";", "#"))
+    try:
+        cp.read(path, encoding="utf-8")
+    except (configparser.Error, UnicodeDecodeError) as e:
+        raise ValueError(f"{path}: {e}") from e
+    points: dict[str, tuple[float, float, float, float]] = {}
+    if cp.has_section("points"):
+        for name, value in cp.items("points"):
+            parts = [p.strip() for p in value.split(",")]
+            try:
+                vals = [float(p) for p in parts]
+            except ValueError:
+                vals = []
+            if len(parts) not in (3, 4) or len(vals) != len(parts) or not all(math.isfinite(v) for v in vals):
+                raise ValueError(f"{path}: [points] {name} = {value!r} is not x, y, z[, yaw]")
+            points[name.strip().lower()] = (vals[0], vals[1], vals[2], vals[3] if len(vals) == 4 else 0.0)
+    point = cp.get("spawn", "point", fallback=None)
+    if point is not None:
+        point = point.strip()
+    return point, points
+
+
+def read_genesis_path(path: Path) -> Optional[str]:
+    """L5 stage 3d (2026-09-30) — [genesis] save of the founder's settings
+    file, or None (no file, no key, or a file that does not parse: the
+    caller has already refused that one)."""
+    if not path.is_file():
+        return None
+    cp = configparser.ConfigParser(inline_comment_prefixes=(";", "#"))
+    try:
+        cp.read(path, encoding="utf-8")
+    except (configparser.Error, UnicodeDecodeError):
+        return None
+    value = cp.get("genesis", "save", fallback=None)
+    return value.strip() if value and value.strip() else None
+
+
+def parse_respawn(spec: Optional[str]) -> Optional[tuple[float, float, float, float]]:
+    """The --respawn option: a named point, "x,y,z[,yaw]", or off/none."""
+    s = (spec or "").strip().lower()
+    if s in ("", "off", "none", "reload"):
+        return None
+    if s in RESPAWN_POINTS:
+        return RESPAWN_POINTS[s]
+    parts = [p.strip() for p in s.split(",")]
+    if len(parts) in (3, 4):
+        try:
+            vals = [float(p) for p in parts]
+        except ValueError:
+            vals = []
+        if len(vals) == len(parts) and all(math.isfinite(v) for v in vals):
+            return (vals[0], vals[1], vals[2], vals[3] if len(vals) == 4 else 0.0)
+    raise ValueError(f"--respawn {spec!r}: not a known point ({', '.join(sorted(RESPAWN_POINTS))}) "
+                     f"nor x,y,z[,yaw] nor off")
+
+
+_AUTHED_ID_RE = re.compile(
+    "^" + re.escape(AUTH_CLIENT_ID_PREFIX) + "[0-9a-f]{" + str(AUTH_CLIENT_ID_HEX_LEN) + "}$")
+
+
+def _looks_like_authenticated_id(client_id: str) -> bool:
+    """The shape derive_client_id produces: an id that belongs to a key."""
+    return bool(_AUTHED_ID_RE.match(client_id or ""))
+
+
+_CLOCK_WALL_AT_START_MS: float = time.time() * 1000.0
+_CLOCK_MONO_AT_START_S: float = time.monotonic()
+
+
 def _now_ms() -> float:
-    return time.monotonic() * 1000.0
+    """The server clock: wall-clock anchored at start, monotonic within a run.
+
+    Stage 0 of L5 (2026-09-27): this was the bare monotonic clock, so every
+    persisted time (records, presence, resume tokens) was an uptime that
+    meant nothing after a restart, and a token from a long run came back
+    valid on a short one. Anchoring the wall clock once and advancing it with
+    the monotonic clock keeps intervals immune to clock steps within a run
+    and makes stored times comparable across runs."""
+    return _CLOCK_WALL_AT_START_MS + (time.monotonic() - _CLOCK_MONO_AT_START_S) * 1000.0
 
 
 def _clean_chat_text(raw: str) -> str:
@@ -4008,11 +4902,91 @@ def parse_args() -> Config:
                     help="reject HELLOs without a verified PIENUVO identity "
                          "(launcher-signed challenge). Default: allow "
                          "anonymous sessions for local testing")
+    ap.add_argument("--allow-empty-world", action="store_true",
+                    help="start with an empty world when the snapshot and every "
+                         "rotated copy are unreadable; without it the server "
+                         "refuses to start rather than overwrite the world")
+    ap.add_argument("--journal-dir", type=Path, default=None, metavar="DIR",
+                    help="directory of the durable journal (L5 stage 1). Every "
+                         "accepted change is fsynced there before its ACK or "
+                         "broadcast leaves; the snapshot compacts it. Default: "
+                         "<snapshot-path>_journal next to the snapshot; "
+                         "--no-journal runs without one")
+    ap.add_argument("--no-journal", action="store_true",
+                    help="run without a journal: the world is only as durable "
+                         "as the last snapshot (pre-stage-1 behaviour)")
+    ap.add_argument("--respawn", default=None, metavar="POINT",
+                    help="where a dead player comes back: a named point (sanctuary or one "
+                         "of server.ini's [points]), x,y,z[,yaw] in engine units, or off "
+                         "(a death reloads the last checkpoint where it was written). "
+                         "Wins over server.ini; without both, sanctuary")
+    ap.add_argument("--genesis", type=Path, default=None, metavar="FILE",
+                    help="L5 stage 3d: the genesis save (the world_base.fos the clients boot "
+                         "without a checkpoint); its sky goes to a checkpoint moved out of an "
+                         "interior. Wins over server.ini's [genesis] save")
+    ap.add_argument("--config", type=Path, default=Path("server.ini"), metavar="FILE",
+                    help="L5 stage 3d: the founder's settings file (default server.ini in "
+                         "the working folder; a missing file is not an error)")
+    ap.add_argument("--checkpoint-every", type=float, default=300.0, metavar="SECONDS",
+                    help="L5 stage 3a: how often each player in the world is asked "
+                         "to write a checkpoint (default 300; 0 = never asked, the "
+                         "exit and the test key still report theirs)")
+    ap.add_argument("--custody-dir", type=Path, default=None, metavar="DIR",
+                    help="L5 stage 3b: where the bytes of the checkpoints are kept "
+                         "(one directory per player, the last three). Default: "
+                         "state_checkpoints next to the snapshot; --no-custody "
+                         "leaves them on the clients' disks")
+    ap.add_argument("--no-custody", action="store_true",
+                    help="run without custody: no bulk service, no bytes kept")
+    ap.add_argument("--bulk-port", type=int, default=0, metavar="PORT",
+                    help="TCP port of the checkpoint transfer service (default: the "
+                         "UDP port's number, on TCP)")
     args = ap.parse_args()
+    # L5 stage 3d — the founder's server.ini: [spawn] point and named
+    # [points]. The command line wins; without both, sanctuary.
+    try:
+        ini_point, ini_points = read_server_ini(args.config)
+    except ValueError as e:
+        ap.error(str(e))
+    RESPAWN_POINTS.update(ini_points)
+    if args.respawn is not None:
+        respawn, respawn_source = args.respawn, "--respawn"
+    elif ini_point is not None:
+        respawn, respawn_source = ini_point, str(args.config)
+    else:
+        respawn, respawn_source = "sanctuary", "the default"
+    try:
+        parse_respawn(respawn)   # a bad point is refused here, with its reason
+    except ValueError as e:
+        ap.error(f"{e} (from {respawn_source})")
+    genesis_save: Optional[Path] = args.genesis
+    if genesis_save is None:
+        ini_genesis = read_genesis_path(args.config)
+        genesis_save = Path(ini_genesis) if ini_genesis else None
+    custody_dir: Optional[Path] = None
+    if not args.no_custody:
+        if args.custody_dir is not None:
+            custody_dir = args.custody_dir
+        elif args.snapshot_path is not None:
+            custody_dir = args.snapshot_path.with_name("state_checkpoints")
+    journal_dir: Optional[Path] = None
+    if not args.no_journal:
+        if args.journal_dir is not None:
+            journal_dir = args.journal_dir
+        elif args.snapshot_path is not None:
+            sp: Path = args.snapshot_path
+            journal_dir = sp.with_name(sp.stem + "_journal")
     return Config(
         host=args.host, port=args.port,
         tick_rate_hz=args.tick_hz,
         snapshot_path=args.snapshot_path,
+        allow_empty_world=args.allow_empty_world,
+        journal_dir=journal_dir,
+        respawn=respawn,
+        respawn_source=respawn_source,
+        genesis_save=genesis_save,
+        checkpoint_every_s=args.checkpoint_every,
+        bulk_port=args.bulk_port, custody_dir=custody_dir,
         snapshot_interval_s=args.snapshot_interval_s,
         log_level=args.log_level,
         waypoints_dir=args.waypoints_dir,

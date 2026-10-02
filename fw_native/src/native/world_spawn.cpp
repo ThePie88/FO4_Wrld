@@ -4,19 +4,26 @@
 
 #include <atomic>
 #include <cmath>   // v26: std::sqrt in the drift watch
+#include <cstdio>  // L5 stage 2: the mod lists in the log
 #include "../hooks/workbench_hook.h"   // v26: PowerArmorModMenu open/closed
 #include <deque>
 #include <mutex>
 #include <unordered_map>
 
 #include <vector>
+#include <string>
 
 #include "../engine/engine_calls.h"
 #include "../hooks/equip_hook.h"        // v24: read_item_mod_forms (piece OMODs)
+#include "../hooks/container_hook.h"    // 2026-09-29: ApplyingRemoteGuard around the in-place alignment
+#include "../hooks/container_menu_hook.h" // 2026-09-29: refresh an open menu on the aligned frame
 #include "../hooks/npc_ai_suppress.h"   // Build 70b: in_local_death_standdown gate
 #include "../hooks/pa_pipeline_trace.h" // Build 70u: force_local_pa_model_reload
+#include "../hooks/world_spawn_hook.h"  // L5 stage 2: announce_world_refr (a rested drop)
 #include "../net/client.h"
 #include "../offsets.h"
+#include "../persist/inventory_capture.h" // L5 stage 2: read_refr_instance (drop rebirth)
+#include "../persist/lifecycle.h"         // exiting(): no engine work during the teardown
 #include "../ref_identity.h"
 #include "../log.h"
 #include "scene_inject.h"               // Build 70i: dump_local_player_tree
@@ -65,9 +72,20 @@ struct Bound {
     bool          move_seen = false;
     float         last_pos[3] = {0.0f, 0.0f, 0.0f};
     float         last_yaw = 0.0f;
+    // L5 stage 2 (2026-09-27) — the engine handle: THE identity of the
+    // object (offsets.h: RUNTIME FORM IDS ARE NOT IDENTITIES). 0 = legacy
+    // binding by fid only (an object the engine gave no handle for).
+    std::uint32_t handle = 0;
+    // Dressing of a self-described replica, verified by re-reading the
+    // instance after the engine had its turn: a placed REFR rolls its own
+    // instance, and if that roll lands after our attach the replica shows
+    // the roll, not the item. Then dress again, twice at most.
+    DWORD         dress_verify_ms = 0;
+    std::uint8_t  dress_attempts  = 0;
 };
 std::unordered_map<std::uint32_t, Bound>         g_wid_to_bound;
-std::unordered_map<std::uint32_t, std::uint32_t> g_fid_to_wid;
+std::unordered_map<std::uint32_t, std::uint32_t> g_fid_to_wid;      // log and prefilter only
+std::unordered_map<std::uint32_t, std::uint32_t> g_handle_to_wid;   // the identity
 
 // Despawns from the network thread, applied on the main tick.
 std::vector<std::uint32_t> g_pending_despawns;
@@ -97,10 +115,88 @@ std::vector<DeferredReport> g_deferred_reports;
 // to the server as a brand-new spawn at its live position. The server mints
 // a new wid, everyone places, and the exit frame exists for every client.
 // Entries expire so a frame that never comes back cannot leak forever.
-struct Tombstone { std::uint32_t fid; DWORD since_ms; };
+// self_described: the wid was a dropped item (flags bit1); its rebirth
+// re-reads the REFR's instance so the re-announce keeps count, condition
+// and mods (a bare re-announce would replace every replica with a fresh
+// roll of the base: the drift watch fires on the item's own fall).
+struct Tombstone { std::uint32_t fid; DWORD since_ms; bool self_described; std::uint32_t handle; };
 std::vector<Tombstone> g_tombstones;
 constexpr DWORD       kTombstoneTtlMs = 15u * 60u * 1000u;
 constexpr std::size_t kTombstoneCap   = 256;
+
+// L5 stage 2 (2026-09-27) — objects of OURS announced and not yet echoed:
+// fid -> handle, consumed by on_bcast(is_self) so the binding carries the
+// handle from its first second. Entries expire on their own.
+struct SelfObject { std::uint32_t fid; std::uint32_t handle; DWORD since_ms; };
+std::vector<SelfObject> g_self_objects;
+constexpr DWORD kSelfObjectTtlMs = 30000;
+
+// Drops watched until they rest (watch_local_drop in the header). A drop
+// leaves the hand at chest height and falls; announcing that pose made the
+// drift watch despawn and rebirth every drop two seconds later.
+struct PendingDrop {
+    std::uint32_t handle, fid, base_id;
+    std::int32_t  count_hint;
+    DWORD         since_ms, stable_since_ms;
+    float         last_pos[3];
+    bool          rested;
+};
+std::vector<PendingDrop> g_pending_drops;
+constexpr DWORD kDropSettleMs   = 1500;   // still for this long, model loaded = rested
+constexpr DWORD kDropMaxWaitMs  = 6000;   // announce anyway after this
+constexpr float kDropStillUnits = 1.0f;
+
+// Deaths the pickup hook reported (any thread); the tick sends them.
+struct PickupDeath { std::uint32_t wid; std::uint32_t fid; };
+std::vector<PickupDeath> g_pickup_deaths;
+
+// After a self-described replica is dressed, when to re-read it.
+constexpr DWORD kDressVerifyMs = 2500;
+
+// L5 stage 3 — the saved copies to purge (world_spawn.h, "the saved
+// copies"): the manifest of the save being loaded, queued by the lifecycle
+// module through purge_saved_copies, applied by the tick once the world is
+// back. g_mx.
+struct PurgeJob { std::vector<WorldObjectStamp> stamps; std::string save; };
+PurgeJob g_purge;
+bool     g_purge_armed = false;
+
+// 2026-09-30 (live test #23) — the saved copy of a power armour frame is
+// ADOPTED instead of purged when the server still has its wid (the wid is
+// queued for placement once the world is back). The player's own record
+// names the last frame they used (the tail of the player's change form),
+// and destroying that object left the reference dead: after a respawn the
+// player could not enter any frame again, the animation played and the
+// engine's enter never ran, while the other client, with no load in
+// between, entered the same frame. The copy is bound to its wid when the
+// placement comes to it, its position and pieces aligned to the server's
+// record; a despawn of the wid destroys it. g_mx.
+struct Adoptable { std::uint32_t wid = 0, fid = 0, handle = 0; };
+std::vector<Adoptable> g_adoptable;
+constexpr float        kPurgeRadius   = 1024.0f;   // Havok may have rolled the copy since the save
+constexpr std::uint8_t kFormTypeRefr  = 0x40;      // TESObjectREFR in this engine (ACHR is 0x41)
+
+// Resolve a binding: by handle when it has one (the engine's own identity,
+// never reused while the object lives), by fid otherwise.
+static void* resolve_object(std::uint32_t handle, std::uint32_t fid) noexcept {
+    if (handle != 0 && handle != 0xFFFFFFFFu) {
+        std::uint32_t h = handle;
+        return fw::engine::resolve_refhandle(&h);
+    }
+    return fid ? fw::engine::lookup_by_form_id(fid) : nullptr;
+}
+
+// The self handle noted for a fid, taken out of the list. g_mx held.
+static std::uint32_t take_self_handle_locked(std::uint32_t fid) {
+    const DWORD now = GetTickCount();
+    std::uint32_t handle = 0;
+    for (auto it = g_self_objects.begin(); it != g_self_objects.end();) {
+        if (now - it->since_ms > kSelfObjectTtlMs) { it = g_self_objects.erase(it); continue; }
+        if (it->fid == fid && handle == 0) { handle = it->handle; it = g_self_objects.erase(it); continue; }
+        ++it;
+    }
+    return handle;
+}
 
 // v26 — absolute yaw difference, wrapped to [0, pi].
 float yaw_delta(float a, float b) noexcept {
@@ -282,6 +378,10 @@ std::uint32_t player_cell_id(std::uintptr_t base) noexcept {
 // destroyed all local replicas, so they must be re-placed from wire truth —
 // and the old bindings would otherwise produce false reason=3 deaths.
 bool  g_standdown_prev  = false;
+// L5 stage 3c — the engine's load count when the death stand-down opened:
+// unchanged at the close = the player respawned without a reload and every
+// replica survived (nothing to re-queue).
+std::uint64_t g_loads_at_standdown = 0;
 bool  g_have_last_pos   = false;
 float g_last_pos[3]     = {0.0f, 0.0f, 0.0f};
 DWORD g_settle_until_ms = 0;
@@ -403,8 +503,9 @@ static float read_stack_health(void* refr, std::uint32_t form_id) {
     } __except (EXCEPTION_EXECUTE_HANDLER) { return -1.0f; }
 }
 
-static bool write_stack_health(void* refr, std::uint32_t form_id, float value) {
-    void* list = seh_find_stack_extras(refr, form_id);
+// The health writer on ANY ExtraDataList: a stack's (the PA pieces) or a
+// world REFR's own (+0x100, a dropped item's condition).
+static bool write_list_health(void* list, float value) {
     if (!list || !g_module_base) return false;
     const std::uintptr_t base = g_module_base;
     using GetByTypeFn = void*(__fastcall*)(void* list, std::uint32_t type);
@@ -436,6 +537,301 @@ static bool write_stack_health(void* refr, std::uint32_t form_id, float value) {
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
+static bool write_stack_health(void* refr, std::uint32_t form_id, float value) {
+    return write_list_health(seh_find_stack_extras(refr, form_id), value);
+}
+
+static bool seh_refr_disabled(void* refr) {
+    __try {
+        return (*reinterpret_cast<const std::uint32_t*>(
+                    static_cast<const std::uint8_t*>(refr) + fw::offsets::FLAGS_OFF) & 0x800u) != 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return true;   // unreadable: treat it as not a standing frame
+    }
+}
+
+// v23/v24/v25/v26 — one piece onto a frame the way a replica is stocked:
+// AddItem of ONE (the mod worker needs a singular stack), the source OMODs
+// re-attached (a bare AddItem gets the engine's leveled roll), the
+// condition or core charge, then the rest of the stack bare. True when the
+// piece was added (its mods may still have failed: counted). Main thread.
+static bool stock_one_piece(void* refr, const fw::net::PaPieceEntry& pe,
+                            int* mods_applied, int* mods_failed) {
+    void* form = fw::engine::lookup_by_form_id(pe.form_id);
+    if (!form) {
+        FW_WRN("[pa-pieces] entry 0x%08X: form lookup failed — skipped", pe.form_id);
+        return false;
+    }
+    const int cnt = (pe.count > 0) ? pe.count : 1;
+    if (!seh_papyrus_additem(refr, form, 1)) {
+        FW_ERR("[pa-pieces] entry 0x%08X: AddItem SEH/call failed", pe.form_id);
+        return false;
+    }
+    // v26: measured on B (2026-09-15) that one piece per re-stock round fails
+    // every mod, i.e. the worker's count check refuses it; ask the same
+    // question first and say what the answer was instead of letting the
+    // worker fault in its error logger.
+    const std::int64_t have = seh_refr_item_count(refr, form);
+    if (have != 1) {
+        *mods_failed += pe.mod_n;
+        FW_WRN("[pa-pieces] piece 0x%08X: refr holds %lld of it after AddItem(%d) — %u mod(s) "
+               "NOT attached (worker needs exactly one)", pe.form_id,
+               static_cast<long long>(have), cnt, unsigned(pe.mod_n));
+        if (pe.health >= 0.0f) {
+            const bool hok = write_stack_health(refr, pe.form_id, pe.health);
+            FW_LOG("[pa-pieces] piece 0x%08X: health %.3f %s", pe.form_id, pe.health,
+                   hok ? "written" : "WRITE FAILED");
+        }
+        return true;
+    }
+    for (std::uint8_t m = 0; m < pe.mod_n && m < fw::net::kMaxPieceMods; ++m) {
+        void* mod = fw::engine::lookup_by_form_id(pe.mods[m]);
+        if (mod && seh_papyrus_attachmod(refr, form, mod)) {
+            ++*mods_applied;
+        } else {
+            ++*mods_failed;
+            FW_WRN("[pa-pieces] piece 0x%08X: mod 0x%08X %s", pe.form_id, pe.mods[m],
+                   mod ? "attach failed" : "lookup failed");
+        }
+    }
+    // v25 — condition / core charge: the Health extra on the stack, created
+    // only when the original had one (an exact mirror).
+    if (pe.health >= 0.0f) {
+        const bool hok = write_stack_health(refr, pe.form_id, pe.health);
+        FW_LOG("[pa-pieces] piece 0x%08X: health %.3f %s", pe.form_id, pe.health,
+               hok ? "written" : "WRITE FAILED");
+    }
+    if (cnt > 1) {
+        const bool rok = seh_papyrus_additem(refr, form, cnt - 1);
+        FW_LOG("[pa-pieces] piece 0x%08X: %d more bare cop%s %s", pe.form_id, cnt - 1,
+               (cnt - 1) == 1 ? "y" : "ies", rok ? "added" : "ADD FAILED");
+    }
+    return true;
+}
+
+static bool same_piece(const fw::net::PaPieceEntry& a, const fw::net::PaPieceEntry& b) {
+    if (a.form_id != b.form_id || a.count != b.count || a.mod_n != b.mod_n) return false;
+    if (std::fabs(a.health - b.health) > 0.001f) return false;
+    for (std::uint8_t i = 0; i < a.mod_n && i < fw::net::kMaxPieceMods; ++i) {
+        bool found = false;
+        for (std::uint8_t j = 0; j < b.mod_n && j < fw::net::kMaxPieceMods; ++j) {
+            if (a.mods[i] == b.mods[j]) { found = true; break; }
+        }
+        if (!found) return false;
+    }
+    return true;
+}
+
+// True when the frame holds exactly the wanted stacks of `form`: the same
+// number of stacks, each matched once by count, mods and condition.
+static bool same_stacks_of(std::uint32_t form, const fw::net::PaPieceEntry* have, std::uint8_t n_have,
+                           const fw::net::PaPieceEntry* want, std::uint8_t n_want) {
+    bool used[12] = {};
+    int wanted = 0, had = 0;
+    for (std::uint8_t j = 0; j < n_have; ++j) if (have[j].form_id == form) ++had;
+    for (std::uint8_t i = 0; i < n_want; ++i) {
+        if (want[i].form_id != form) continue;
+        ++wanted;
+        bool matched = false;
+        for (std::uint8_t j = 0; j < n_have && j < 12; ++j) {
+            if (!used[j] && same_piece(want[i], have[j])) { used[j] = true; matched = true; break; }
+        }
+        if (!matched) return false;
+    }
+    return wanted == had;
+}
+
+// 2026-09-29 — a peer changed this frame's pieces: the frame is aligned IN
+// PLACE. It used to be destroyed and placed again (v23, "no remove-item
+// primitive"), and on the client that had spawned the frame that destroyed
+// its ORIGINAL: live test #12, wid 71, the console spawn of A, replaced
+// twice by replicas that recycled its form id 0xFF00139F, one of which A
+// then wore. Every destroyed copy also stays in the saves as a disabled
+// zombie. Per form: when the frame already holds exactly the wanted stacks
+// (count, mods, condition) nothing is touched; otherwise every unit of that
+// form is removed and destroyed (never dropped) and the wanted stacks are
+// stocked like a new replica's, and the frame redraws its pieces (the sync
+// the engine runs after a menu transfer). Main thread, inside
+// ApplyingRemoteGuard.
+static void align_frame_pieces(void* refr, std::uint32_t fid, std::uint32_t wid,
+                               const fw::net::PaPieceEntry* want, std::uint8_t n_want) {
+    fw::net::PaPieceEntry have[12] = {};
+    (void)fw::engine::force_materialize_inventory(refr);
+    const std::uint8_t n_have = capture_frame_pieces(refr, kPaFrameBase, have);
+    std::uint32_t forms[24] = {};
+    int nf = 0;
+    auto note_form = [&](std::uint32_t f) {
+        for (int i = 0; i < nf; ++i) if (forms[i] == f) return;
+        if (nf < 24) forms[nf++] = f;
+    };
+    for (std::uint8_t j = 0; j < n_have && j < 12; ++j) note_form(have[j].form_id);
+    for (std::uint8_t i = 0; i < n_want && i < 12; ++i) note_form(want[i].form_id);
+
+    int kept = 0, units_removed = 0, stacks_added = 0, mods_applied = 0, mods_failed = 0;
+    for (int k = 0; k < nf; ++k) {
+        const std::uint32_t f = forms[k];
+        if (same_stacks_of(f, have, n_have, want, n_want)) { ++kept; continue; }
+        int units = 0;
+        for (std::uint8_t j = 0; j < n_have && j < 12; ++j) {
+            if (have[j].form_id == f) units += (have[j].count > 0 ? have[j].count : 1);
+        }
+        if (units > 0) {
+            void* form = fw::engine::lookup_by_form_id(f);
+            if (form && fw::engine::remove_items_destroy(refr, form, units)) {
+                units_removed += units;
+            } else {
+                FW_WRN("[pa-pieces] frame fid=0x%08X: removing %d x 0x%08X FAILED", fid, units, f);
+            }
+        }
+        for (std::uint8_t i = 0; i < n_want && i < 12; ++i) {
+            if (want[i].form_id == f && stock_one_piece(refr, want[i], &mods_applied, &mods_failed)) {
+                ++stacks_added;
+            }
+        }
+    }
+    // Live test #17: the inventory alone does not redraw a frame whose 3D is
+    // loaded (the data reached both clients, no piece moved on screen); the
+    // engine's own post-transfer sync does.
+    const bool changed = units_removed > 0 || stacks_added > 0;
+    const bool redrawn = changed && fw::engine::sync_pa_frame_visuals(refr);
+    FW_LOG("[pa-pieces] wid=%u content changed remotely -> frame fid=0x%08X aligned IN PLACE (not "
+           "destroyed): %d form(s) kept, %d unit(s) removed, %d stack(s) added, %d mod(s) applied%s; "
+           "visuals %s",
+           wid, fid, kept, units_removed, stacks_added, mods_applied,
+           mods_failed ? " (SOME MODS FAILED, see above)" : "",
+           !changed ? "untouched" : redrawn ? "redrawn (task 106)" : "REDRAW FAILED");
+    fw::hooks::dump_refr_inventory("post-align", refr);
+    if (fw::hooks::refresh_container_menu(refr, true, false)) {
+        FW_LOG("[pa-pieces] frame fid=0x%08X: the open container menu shows the new pieces", fid);
+    }
+}
+
+// ---- L5 stage 2 (2026-09-27): a dropped item's world count and mods -------
+//
+// ExtraCount (0x24) on a world REFR's own list: what makes a placed base
+// "Stimpak (5)" instead of one. Built the way the engine's own loader
+// builds it (offsets::EXTRACOUNT_CTOR_RVA), added under the write lock
+// like the health above; an existing node is updated in place.
+static bool write_list_count(void* list, std::uint16_t count) {
+    if (!list || !g_module_base || count == 0) return false;
+    const std::uintptr_t base = g_module_base;
+    using GetByTypeFn = void*(__fastcall*)(void* list, std::uint32_t type);
+    using AllocFn     = void*(__fastcall*)(std::size_t size);
+    using CtorFn      = void*(__fastcall*)(void* mem, std::int16_t count);
+    using AddFn       = void*(__fastcall*)(void* head_slot, void* extra);
+    using LockFn      = void (__fastcall*)(void* lock);
+    const auto get    = reinterpret_cast<GetByTypeFn>(base + fw::offsets::EXTRA_GET_BY_TYPE_RVA);
+    const auto alloc  = reinterpret_cast<AllocFn>(base + fw::offsets::EXTRA_ALLOC_RVA);
+    const auto ctor   = reinterpret_cast<CtorFn>(base + fw::offsets::EXTRACOUNT_CTOR_RVA);
+    const auto add    = reinterpret_cast<AddFn>(base + fw::offsets::EXTRALIST_ADD_RVA);
+    const auto wlock  = reinterpret_cast<LockFn>(base + fw::offsets::EXTRALIST_WLOCK_RVA);
+    const auto wunlk  = reinterpret_cast<LockFn>(base + fw::offsets::EXTRALIST_WUNLOCK_RVA);
+    __try {
+        auto* lb = reinterpret_cast<std::uint8_t*>(list);
+        void* extra = get(list, fw::offsets::EXTRA_TYPE_COUNT);
+        if (extra) {
+            *reinterpret_cast<std::uint16_t*>(
+                reinterpret_cast<std::uint8_t*>(extra) + fw::offsets::EXTRACOUNT_VALUE_OFF) = count;
+            return true;
+        }
+        void* mem = alloc(fw::offsets::EXTRACOUNT_SIZE);
+        if (!mem) return false;
+        ctor(mem, static_cast<std::int16_t>(count));
+        wlock(lb + fw::offsets::EXTRALIST_LOCK_OFF);
+        add(lb + fw::offsets::EXTRALIST_HEAD_OFF, mem);
+        wunlk(lb + fw::offsets::EXTRALIST_LOCK_OFF);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// TESObjectREFR::extraList (+0x100), a pointer the engine assumes non-null
+// on every REFR; read under SEH all the same.
+static void* seh_refr_extra_list(void* refr) {
+    if (!refr) return nullptr;
+    __try {
+        return *reinterpret_cast<void**>(
+            reinterpret_cast<std::uint8_t*>(refr) + fw::offsets::REFR_EXTRA_LIST_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+
+// The engine's REFR-level mod attach (offsets::REFR_ATTACH_MOD_RVA, contract
+// there): records the mod on the REFR's own instance extra and refreshes
+// the 3D itself. rank 0 = the script default; the wire carries no ranks.
+static bool seh_refr_attach_mod(void* refr, void* mod_form, std::uint8_t rank) {
+    if (!refr || !mod_form || !g_module_base) return false;
+    using AttachFn = std::uint64_t(__fastcall*)(void* refr, void* mod, std::uint8_t rank,
+                                                std::uint8_t attach);
+    const auto fn = reinterpret_cast<AttachFn>(g_module_base + fw::offsets::REFR_ATTACH_MOD_RVA);
+    __try {
+        return (fn(refr, mod_form, rank, 1) & 0xFF) != 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// The mod list of a descriptor as "A,B,C" (hex), for the log.
+static void format_mods(const fw::net::PaPieceEntry& pe, char* out, std::size_t n) {
+    if (!out || n == 0) return;
+    out[0] = '\0';
+    std::size_t p = 0;
+    for (std::uint8_t m = 0; m < pe.mod_n && m < fw::net::kMaxPieceMods && p + 12 < n; ++m) {
+        p += static_cast<std::size_t>(std::snprintf(out + p, n - p, "%s%X", m ? "," : "", pe.mods[m]));
+    }
+}
+
+// Whether the REFR has a loaded model right now (+0xF0), SEH-caged.
+static bool seh_loaded_3d(void* refr) noexcept {
+    if (!refr) return false;
+    __try {
+        return *reinterpret_cast<void**>(
+            reinterpret_cast<std::uint8_t*>(refr) + fw::offsets::REFR_LOADED_3D_OFF) != nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// A self-described spawn (flags bit1, a dropped item): pieces[0] is the
+// object itself. Write its world count, condition and mods onto the placed
+// REFR instead of stocking an inventory. Every step has its own fallback
+// and its own word in the log; a descriptor that does not match the base
+// leaves the object bare rather than dressing it as something else.
+static void apply_self_descriptor(void* refr, std::uint32_t new_fid, const SpawnEntry& e) {
+    if (e.piece_n < 1) {
+        FW_WRN("[world-spawn] wid=%u is self-described but carries no descriptor: "
+               "placed bare", e.wid);
+        return;
+    }
+    const fw::net::PaPieceEntry& pe = e.pieces[0];
+    if (pe.form_id != e.base_form_id) {
+        FW_WRN("[world-spawn] wid=%u: descriptor base 0x%08X != object base 0x%08X: "
+               "placed bare", e.wid, pe.form_id, e.base_form_id);
+        return;
+    }
+    void* list = seh_refr_extra_list(refr);
+    int mods_ok = 0, mods_failed = 0;
+    for (std::uint8_t m = 0; m < pe.mod_n && m < fw::net::kMaxPieceMods; ++m) {
+        void* mod = fw::engine::lookup_by_form_id(pe.mods[m]);
+        if (mod && seh_refr_attach_mod(refr, mod, 0)) {
+            ++mods_ok;
+        } else {
+            ++mods_failed;
+            FW_WRN("[world-spawn] wid=%u: mod 0x%08X %s", e.wid, pe.mods[m],
+                   mod ? "attach failed" : "lookup failed");
+        }
+    }
+    bool hp_ok = true;
+    if (pe.health >= 0.0f) hp_ok = write_list_health(list, pe.health);
+    bool cnt_ok = true;
+    if (pe.count > 1) {
+        const std::uint16_t c = static_cast<std::uint16_t>(pe.count > 65535 ? 65535 : pe.count);
+        cnt_ok = write_list_count(list, c);
+    }
+    char mods[fw::net::kMaxPieceMods * 9 + 4];
+    format_mods(pe, mods, sizeof(mods));
+    FW_LOG("[world-spawn] wid=%u fid=0x%08X dressed as the dropped item: count %d %s, "
+           "condition %s, %d/%u mods%s [%s], 3D %s at dress time", e.wid, new_fid, pe.count,
+           (pe.count > 1) ? (cnt_ok ? "written" : "WRITE FAILED (shows as one)") : "(single)",
+           (pe.health >= 0.0f) ? (hp_ok ? "written" : "WRITE FAILED") : "none on the original",
+           mods_ok, unsigned(pe.mod_n), mods_failed ? " (SOME MODS FAILED, see above)" : "",
+           mods, seh_loaded_3d(refr) ? "loaded" : "not loaded");
+}
+
 // Placement retry bookkeeping. The head entry is retried, not dropped, when
 // the world is not ready (player null during a load, teleport refused): the
 // bootstrap arrives long before the save has finished loading, exactly like
@@ -458,14 +854,18 @@ void on_bcast(const SpawnEntry& e, bool is_self) {
         std::lock_guard<std::mutex> lk(g_mx);
         Bound b{};
         b.fid         = e.spawner_fid;
+        b.handle      = take_self_handle_locked(e.spawner_fid);
         b.cell_id     = e.cell_id;
         b.bound_at_ms = GetTickCount();
         b.entry       = e;
         b.ours        = true;
         g_wid_to_bound[e.wid]       = b;
         g_fid_to_wid[e.spawner_fid] = e.wid;
-        FW_LOG("[world-spawn] wid=%u is OURS (base=0x%08X, local fid=0x%08X) "
-               "— bound, not re-placed", e.wid, e.base_form_id, e.spawner_fid);
+        if (b.handle) g_handle_to_wid[b.handle] = e.wid;
+        FW_LOG("[world-spawn] wid=%u is OURS (base=0x%08X, local fid=0x%08X, "
+               "handle=0x%08X%s) — bound, not re-placed", e.wid, e.base_form_id,
+               e.spawner_fid, b.handle,
+               b.handle ? "" : " NONE: fid-only binding, a reused id can fool the sweep");
         return;
     }
 
@@ -491,16 +891,331 @@ void on_bcast(const SpawnEntry& e, bool is_self) {
         g_pending.push_back(e);
     }
     FW_LOG("[world-spawn] wid=%u queued: base=0x%08X at (%.1f, %.1f, %.1f) "
-           "cell=0x%08X%s", e.wid, e.base_form_id,
+           "cell=0x%08X%s%s", e.wid, e.base_form_id,
            e.pos[0], e.pos[1], e.pos[2], e.cell_id,
-           (e.flags & 1) ? " [transient]" : "");
+           (e.flags & 1) ? " [transient]" : "",
+           (e.flags & fw::net::kWorldSpawnFlagSelfDescribed) ? " [item]" : "");
 }
 
 static void fire_due_frame_reports();   // v23b, defined with the API below
 
+// L5 stage 2 — drops watched until they rest, then announced with the
+// instance read at that moment. Main thread (tick).
+static void tick_pending_drops() {
+    std::vector<PendingDrop> ready;
+    const DWORD now = GetTickCount();
+    {
+        std::lock_guard<std::mutex> lk(g_mx);
+        for (auto it = g_pending_drops.begin(); it != g_pending_drops.end();) {
+            PendingDrop& d = *it;
+            std::uint32_t h = d.handle;
+            void* refr = fw::engine::resolve_refhandle(&h);
+            if (!refr) {
+                FW_LOG("[world-spawn-tx] drop fid=0x%08X (base=0x%08X) is gone before it "
+                       "rested (picked up again?): nothing announced", d.fid, d.base_id);
+                it = g_pending_drops.erase(it);
+                continue;
+            }
+            // The stillness clock runs only once the model exists: havok
+            // moves the object only then. Live (2026-09-27): every first
+            // drop "rested" for a second at chest height, was announced
+            // there, then fell 80 units and went through the drift watch's
+            // despawn and rebirth.
+            const bool loaded = seh_loaded_3d(refr);
+            if (!loaded) d.stable_since_ms = now;
+            float p[3];
+            if (seh_vec3_at(reinterpret_cast<std::uint8_t*>(refr) + fw::offsets::POS_OFF, p)) {
+                const float dx = p[0] - d.last_pos[0];
+                const float dy = p[1] - d.last_pos[1];
+                const float dz = p[2] - d.last_pos[2];
+                if (dx * dx + dy * dy + dz * dz > kDropStillUnits * kDropStillUnits) {
+                    d.last_pos[0] = p[0]; d.last_pos[1] = p[1]; d.last_pos[2] = p[2];
+                    d.stable_since_ms = now;
+                }
+            }
+            d.rested = loaded && (now - d.stable_since_ms) >= kDropSettleMs;
+            const bool waited = (now - d.since_ms) >= kDropMaxWaitMs;
+            if (d.rested || waited) {
+                ready.push_back(d);
+                it = g_pending_drops.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (const PendingDrop& d : ready) {
+        std::uint32_t h = d.handle;
+        void* refr = fw::engine::resolve_refhandle(&h);
+        if (!refr) continue;
+        // The descriptor: what the item IS, read from the REFR the engine
+        // built out of the stack (count, condition, mods). Unreadable =
+        // bare, said out loud, never a half-read one presented as complete.
+        fw::net::PaPieceEntry self{};
+        const bool read_ok = fw::persist::inventory::read_refr_instance(g_module_base, refr, &self);
+        if (!read_ok) {
+            self.form_id = d.base_id;
+            self.count   = d.count_hint > 0 ? d.count_hint : 1;
+            self.mod_n   = 0;
+            self.health  = -1.0f;
+        } else if (self.form_id != d.base_id) {
+            FW_WRN("[world-spawn-tx] drop: descriptor base 0x%08X != REFR base 0x%08X, "
+                   "the REFR wins", self.form_id, d.base_id);
+            self.form_id = d.base_id;
+        }
+        char mods[fw::net::kMaxPieceMods * 9 + 4];
+        format_mods(self, mods, sizeof(mods));
+        char what[320];
+        std::snprintf(what, sizeof(what),
+                      "Pip-Boy drop x%d hp=%.3f mods=%u[%s] (%s; %s after %u ms)",
+                      self.count, self.health, unsigned(self.mod_n), mods,
+                      read_ok ? "instance read" : "instance UNREAD, bare descriptor",
+                      d.rested ? "rested" : "still moving, announced anyway",
+                      unsigned(now - d.since_ms));
+        fw::hooks::announce_world_refr(refr, d.handle,
+                                       fw::net::kWorldSpawnFlagSelfDescribed,
+                                       &self, 1, what);
+    }
+}
+
+// L5 stage 2 — re-read every self-described replica a while after it was
+// dressed: if the engine's own instance roll landed after our attach, the
+// replica shows the roll and is dressed again (twice at most). Main thread.
+static void tick_dress_verify(std::uintptr_t module_base) {
+    const DWORD now = GetTickCount();
+    struct Job { std::uint32_t wid, handle, fid; std::uint8_t attempts; SpawnEntry entry; };
+    std::vector<Job> jobs;
+    {
+        std::lock_guard<std::mutex> lk(g_mx);
+        for (auto& [wid, b] : g_wid_to_bound) {
+            if (b.dress_verify_ms == 0 || now < b.dress_verify_ms) continue;
+            b.dress_verify_ms = 0;
+            jobs.push_back({wid, b.handle, b.fid, b.dress_attempts, b.entry});
+        }
+    }
+    for (const Job& j : jobs) {
+        void* refr = resolve_object(j.handle, j.fid);
+        if (!refr || j.entry.piece_n < 1) continue;   // gone already: nothing to verify
+        const fw::net::PaPieceEntry& want = j.entry.pieces[0];
+        fw::net::PaPieceEntry live{};
+        const bool read_ok = fw::persist::inventory::read_refr_instance(module_base, refr, &live);
+        unsigned missing = 0;
+        for (std::uint8_t m = 0; m < want.mod_n && m < fw::net::kMaxPieceMods; ++m) {
+            bool found = false;
+            for (std::uint8_t k = 0; k < live.mod_n && k < fw::net::kMaxPieceMods; ++k) {
+                if (live.mods[k] == want.mods[m]) { found = true; break; }
+            }
+            if (!found) ++missing;
+        }
+        char lm[fw::net::kMaxPieceMods * 9 + 4];
+        format_mods(live, lm, sizeof(lm));
+        const char* d3 = seh_loaded_3d(refr) ? "loaded" : "not loaded";
+        // Where the replica stands NOW: a dropped item that fell through the
+        // ground or flew off an overlapping copy is told apart from one that
+        // was never looked at by this line alone.
+        float lp[3] = {0.0f, 0.0f, 0.0f};
+        (void)seh_vec3_at(reinterpret_cast<std::uint8_t*>(refr) + fw::offsets::POS_OFF, lp);
+        if (!read_ok) {
+            FW_WRN("[world-spawn] wid=%u dressing not verifiable: instance unreadable "
+                   "(3D %s)", j.wid, d3);
+            continue;
+        }
+        if (missing == 0) {
+            FW_LOG("[world-spawn] wid=%u dressing verified after %u ms: %u/%u mods on the "
+                   "replica, count %d, hp %.3f, live mods=[%s], 3D %s, now at (%.1f, %.1f, %.1f)",
+                   j.wid, unsigned(kDressVerifyMs), unsigned(want.mod_n), unsigned(want.mod_n),
+                   live.count, live.health, lm, d3, lp[0], lp[1], lp[2]);
+            continue;
+        }
+        if (j.attempts < 2) {
+            FW_WRN("[world-spawn] wid=%u dressing LOST %u/%u mods (the engine rolled its "
+                   "own instance after ours: live=[%s], 3D %s) -> dressing again",
+                   j.wid, missing, unsigned(want.mod_n), lm, d3);
+            apply_self_descriptor(refr, j.fid, j.entry);
+            std::lock_guard<std::mutex> lk(g_mx);
+            auto it = g_wid_to_bound.find(j.wid);
+            if (it != g_wid_to_bound.end()) {
+                it->second.dress_verify_ms = now + kDressVerifyMs;
+                it->second.dress_attempts  = static_cast<std::uint8_t>(j.attempts + 1);
+            }
+        } else {
+            FW_ERR("[world-spawn] wid=%u dressing lost %u/%u mods twice: giving up "
+                   "(live=[%s], 3D %s)", j.wid, missing, unsigned(want.mod_n), lm, d3);
+        }
+    }
+}
+
+// ============================================================================
+// L5 stage 3 — the saved copies (world_spawn.h, "the saved copies").
+// ============================================================================
+
+std::uint8_t seh_u8_at(const void* at) noexcept {
+    if (!at) return 0;
+    __try { return *reinterpret_cast<const std::uint8_t*>(at); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
+std::size_t snapshot_world_objects(WorldObjectStamp* out, std::size_t cap) {
+    if (!out || cap == 0) return 0;
+    std::size_t n = 0;
+    std::lock_guard<std::mutex> lk(g_mx);
+    for (const auto& [wid, b] : g_wid_to_bound) {
+        if (n >= cap) break;
+        void* refr = resolve_object(b.handle, b.fid);
+        if (!refr) continue;   // not in this world: not in the save either
+        const std::uint8_t* rb = reinterpret_cast<const std::uint8_t*>(refr);
+        WorldObjectStamp s{};
+        s.fid = seh_u32_at(rb + fw::offsets::FORMID_OFF);
+        if (s.fid == 0) continue;
+        void* base = seh_deref(reinterpret_cast<std::uintptr_t>(rb) + fw::offsets::BASE_FORM_OFF);
+        s.base_id = base ? seh_u32_at(reinterpret_cast<const std::uint8_t*>(base)
+                                      + fw::offsets::FORMID_OFF)
+                         : b.entry.base_form_id;
+        if (!seh_vec3_at(rb + fw::offsets::POS_OFF, s.pos)) {
+            s.pos[0] = b.entry.pos[0]; s.pos[1] = b.entry.pos[1]; s.pos[2] = b.entry.pos[2];
+        }
+        s.wid = wid;
+        out[n++] = s;
+    }
+    return n;
+}
+
+void watch_unknown_frame(void* frame_refr, std::uint32_t handle) {
+    if (!frame_refr) return;
+    const auto id = fw::read_ref_identity(frame_refr);
+    if (id.form_id == 0 || id.base_id != kPaFrameBase) return;
+    if (is_our_refr(frame_refr, id.form_id)) {
+        FW_LOG("[world-spawn] PA exit: frame fid=0x%08X is bound already (the sweep announces "
+               "its rebirth)", id.form_id);
+        return;
+    }
+    std::lock_guard<std::mutex> lk(g_mx);
+    for (const Tombstone& t : g_tombstones) {
+        if (t.fid == id.form_id) return;   // on the watch already
+    }
+    if (g_tombstones.size() >= kTombstoneCap) return;
+    g_tombstones.push_back({id.form_id, GetTickCount(), false, handle});
+    FW_LOG("[world-spawn] PA exit: frame fid=0x%08X handle=0x%08X is not one of ours (worn "
+           "across a save): on the watch, announced when the engine enables it",
+           id.form_id, handle);
+}
+
+void purge_saved_copies(const WorldObjectStamp* stamps, std::size_t n, const char* save_name) {
+    std::lock_guard<std::mutex> lk(g_mx);
+    // L5 stage 3d (2026-09-29): every load comes through here, and a load
+    // replaces the world: each fid on the resurrection watch names an object
+    // of the old one. The runtime form ids start again from the save's
+    // counter, so a watched fid can come back as another object, or as the
+    // replica of the same frame placed again after a respawn, and be
+    // announced as a rebirth. A frame worn out of a save is found at its
+    // exit by watch_unknown_frame.
+    if (!g_tombstones.empty()) {
+        FW_LOG("[world-spawn] load: %zu fid(s) on the resurrection watch dropped (objects of "
+               "the world before the load)", g_tombstones.size());
+        g_tombstones.clear();
+    }
+    // The same for the saved copies kept for adoption: objects of the world
+    // before this load.
+    g_adoptable.clear();
+    g_purge.stamps.clear();
+    if (stamps && n) g_purge.stamps.assign(stamps, stamps + n);
+    g_purge.save   = save_name ? save_name : "";
+    g_purge_armed  = !g_purge.stamps.empty();
+    if (g_purge_armed) {
+        FW_LOG("[world-spawn] %zu saved cop(ies) of our objects listed for '%s': purged "
+               "when the world is back, before any placement", g_purge.stamps.size(),
+               g_purge.save.c_str());
+    }
+}
+
+// The tick, once the world is back and before the queues: each stamped fid
+// looked up, the form that answers destroyed only when it is the copy.
+static bool run_saved_copy_purge() {
+    PurgeJob job;
+    {
+        std::lock_guard<std::mutex> lk(g_mx);
+        if (!g_purge_armed) return false;
+        g_purge_armed = false;
+        job.stamps.swap(g_purge.stamps);
+        job.save.swap(g_purge.save);
+    }
+    std::size_t purged = 0, absent = 0, kept = 0, adopted = 0;
+    for (const WorldObjectStamp& s : job.stamps) {
+        void* f = fw::engine::lookup_by_form_id(s.fid);
+        if (!f) {
+            ++absent;
+            FW_DBG("[world-spawn] saved copy fid=0x%08X (wid %u then): not in this world",
+                   s.fid, s.wid);
+            continue;
+        }
+        if (is_our_refr(f, s.fid)) {
+            ++kept;
+            FW_LOG("[world-spawn] saved copy fid=0x%08X (wid %u then) is a live binding of "
+                   "this session: kept", s.fid, s.wid);
+            continue;
+        }
+        const std::uint8_t* rb = reinterpret_cast<const std::uint8_t*>(f);
+        const std::uint8_t ft = seh_u8_at(rb + fw::offsets::FORMTYPE_OFF);
+        void* base = seh_deref(reinterpret_cast<std::uintptr_t>(rb) + fw::offsets::BASE_FORM_OFF);
+        const std::uint32_t base_id = base
+            ? seh_u32_at(reinterpret_cast<const std::uint8_t*>(base) + fw::offsets::FORMID_OFF)
+            : 0;
+        float p[3] = {0.0f, 0.0f, 0.0f};
+        const bool have_pos = seh_vec3_at(rb + fw::offsets::POS_OFF, p);
+        const float dx = p[0] - s.pos[0], dy = p[1] - s.pos[1], dz = p[2] - s.pos[2];
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (ft != kFormTypeRefr || base_id != s.base_id || !have_pos
+                || d2 > kPurgeRadius * kPurgeRadius) {
+            ++kept;
+            FW_WRN("[world-spawn] saved copy fid=0x%08X (wid %u then, base 0x%08X): the form "
+                   "here is not it (type 0x%02X, base 0x%08X, %.0f units from the stamp): kept",
+                   s.fid, s.wid, s.base_id, unsigned(ft), base_id,
+                   have_pos ? std::sqrt(d2) : -1.0f);
+            continue;
+        }
+        if (s.base_id == kPaFrameBase) {
+            // 2026-09-30 — see g_adoptable.
+            const std::uint32_t h = fw::engine::refr_get_handle(f);
+            bool pending = false;
+            {
+                std::lock_guard<std::mutex> lk(g_mx);
+                for (const SpawnEntry& pe : g_pending) {
+                    if (pe.wid == s.wid) { pending = true; break; }
+                }
+                if (pending) g_adoptable.push_back(Adoptable{s.wid, s.fid, h});
+            }
+            if (pending) {
+                ++adopted;
+                FW_LOG("[world-spawn] saved copy fid=0x%08X handle=0x%08X (power armour frame, wid "
+                       "%u) at (%.1f, %.1f, %.1f): KEPT for adoption, not purged: the player's "
+                       "record may name it as their last power armour", s.fid, h, s.wid,
+                       p[0], p[1], p[2]);
+                continue;
+            }
+        }
+        const bool gone = fw::engine::destroy_world_refr(f);
+        if (gone) ++purged; else ++kept;
+        FW_LOG("[world-spawn] saved copy fid=0x%08X base=0x%08X at (%.1f, %.1f, %.1f) from "
+               "'%s' (wid %u then): %s", s.fid, s.base_id, p[0], p[1], p[2], job.save.c_str(),
+               s.wid, gone ? "PURGED (unfile+destroy)" : "destroy FAILED - see preceding SEH line");
+    }
+    FW_LOG("[world-spawn] saved copies of '%s': %zu purged, %zu kept for adoption, %zu absent "
+           "from this world, %zu kept", job.save.c_str(), purged, adopted, absent, kept);
+    return purged > 0;
+}
+
 void tick(std::uintptr_t module_base) {
     if (!module_base) return;
     g_module_base = module_base;
+
+    // 2026-09-28 — no engine work after the exit save request or while the
+    // player has no parent cell (the exit teardown, a loading screen). The
+    // shutdown nulls the handle table first and the resolver reads it:
+    // measured at the end of live test #4 as a first-chance AV inside
+    // sub_14021E230 at rcx = 0, SEH-caught, 40 ms before the process died
+    // in the allocator. The queues keep what they hold; the next world
+    // drains them.
+    if (fw::persist::exiting()) return;
+    if (fw::engine::get_pc_parent_cell() == nullptr) return;
 
     // ---- Build 70b: world-instability gates. NO engine work while the
     // world is being torn down or rebuilt (see the constants block).
@@ -510,8 +1225,15 @@ void tick(std::uintptr_t module_base) {
         if (standdown != g_standdown_prev) {
             g_standdown_prev = standdown;
             if (standdown) {
+                g_loads_at_standdown = fw::persist::loads_requested();
                 FW_LOG("[world-spawn] death stand-down OPEN — tick paused "
                        "(no placement, no sweep, no despawn apply)");
+            } else if (fw::persist::loads_requested() == g_loads_at_standdown) {
+                // L5 stage 3c — the stand-down ended in a respawn, not a
+                // reload: the world and every replica survived, and
+                // re-queuing them would place each object a second time.
+                FW_LOG("[world-spawn] death stand-down CLOSED without a reload (the "
+                       "respawn without a reload): the replicas survived, nothing re-queued");
             } else {
                 // The death reload finished. Its teardown destroyed every
                 // local replica, so all bindings are corpses: re-queue them
@@ -526,6 +1248,7 @@ void tick(std::uintptr_t module_base) {
                 }
                 g_wid_to_bound.clear();
                 g_fid_to_wid.clear();
+                g_handle_to_wid.clear();
                 g_settle_until_ms = now0 + kJumpSettleMs;
                 g_have_last_pos   = false;
                 FW_LOG("[world-spawn] death stand-down CLOSED — %zu "
@@ -558,6 +1281,14 @@ void tick(std::uintptr_t module_base) {
             g_settle_until_ms = 0;
         }
     }
+
+    // L5 stage 3 - the saved copies of the save that just loaded go first:
+    // the bootstrap's placements are queued behind this line and would
+    // otherwise stand next to their own copies. A tick passes after a
+    // purge that destroyed anything: on live test #4 the copy's rigid body
+    // and the fresh replica shared one tick and Havok kicked the replica
+    // 27 units away.
+    if (run_saved_copy_purge()) return;
 
     // Build 70i - deferred PA diagnostic dump (fires ~2.5s after the enter,
     // when the race-swap model reload has landed).
@@ -617,15 +1348,21 @@ void tick(std::uintptr_t module_base) {
         }
         for (const std::uint32_t wid : dead) {
             std::uint32_t fid = 0;
+            std::uint32_t handle = 0;
             bool self_reported = false;
+            bool self_described = false;
             std::size_t purged = 0;
             {
                 std::lock_guard<std::mutex> lk(g_mx);
                 auto it = g_wid_to_bound.find(wid);
                 if (it != g_wid_to_bound.end()) {
                     fid           = it->second.fid;
+                    handle        = it->second.handle;
                     self_reported = it->second.reported;
+                    self_described = (it->second.entry.flags
+                                      & fw::net::kWorldSpawnFlagSelfDescribed) != 0;
                     g_fid_to_wid.erase(fid);
+                    if (handle) g_handle_to_wid.erase(handle);
                     g_wid_to_bound.erase(it);
                 }
                 // Build 70b — a despawned wid may still be QUEUED behind the
@@ -646,6 +1383,24 @@ void tick(std::uintptr_t module_base) {
                        "placement(s) waiting behind the range gate",
                        wid, purged);
             }
+            {
+                // 2026-09-30 — a saved copy kept for this wid dies with it.
+                Adoptable ad{};
+                bool have_ad = false;
+                {
+                    std::lock_guard<std::mutex> lk(g_mx);
+                    for (auto it = g_adoptable.begin(); it != g_adoptable.end(); ++it) {
+                        if (it->wid == wid) { ad = *it; have_ad = true; g_adoptable.erase(it); break; }
+                    }
+                }
+                if (have_ad) {
+                    void* old = resolve_object(ad.handle, ad.fid);
+                    const bool gone = old && fw::engine::destroy_world_refr(old);
+                    FW_LOG("[world-spawn] despawn wid=%u: the saved copy fid=0x%08X kept for "
+                           "adoption %s", wid, ad.fid, gone ? "DESTROYED" : "was already gone");
+                    ++purged;
+                }
+            }
             if (fid == 0) {
                 if (!purged) {
                     FW_LOG("[world-spawn] despawn wid=%u: nothing bound here "
@@ -660,13 +1415,13 @@ void tick(std::uintptr_t module_base) {
                 // fid on the resurrection watch instead.
                 std::lock_guard<std::mutex> lk(g_mx);
                 if (g_tombstones.size() < kTombstoneCap) {
-                    g_tombstones.push_back({fid, GetTickCount()});
+                    g_tombstones.push_back({fid, GetTickCount(), self_described, handle});
                 }
                 FW_LOG("[world-spawn] despawn wid=%u confirmed for our own "
                        "report — fid=0x%08X on resurrection watch", wid, fid);
                 continue;
             }
-            void* refr = fw::engine::lookup_by_form_id(fid);
+            void* refr = resolve_object(handle, fid);
             if (refr) {
                 // Build 70 - REAL removal, not disable. The old
                 // disable_ref(fade=true) parked the entry in the engine's
@@ -685,10 +1440,10 @@ void tick(std::uintptr_t module_base) {
         }
     }
 
-    // ---- v23: apply queued piece updates by DESTROY-AND-REPLACE — the
-    // streaming-requeue idiom. A peer changed the frame's content by hand;
-    // there is no remove-item primitive and no need for one: kill our
-    // replica and let the placement path rebuild it with the new list.
+    // ---- v23 -> 2026-09-29: apply queued piece updates IN PLACE (see
+    // align_frame_pieces). The v23 destroy-and-replace survives only for a
+    // bound object that no longer resolves: then there is nothing to align
+    // and a fresh placement with the new content is the right answer.
     {
         std::vector<PiecesUpdate> updates;
         {
@@ -698,16 +1453,16 @@ void tick(std::uintptr_t module_base) {
         for (const PiecesUpdate& u : updates) {
             SpawnEntry entry{};
             std::uint32_t fid = 0;
+            std::uint32_t handle = 0;
             bool have = false;
             {
                 std::lock_guard<std::mutex> lk(g_mx);
                 auto it = g_wid_to_bound.find(u.wid);
                 if (it != g_wid_to_bound.end()) {
-                    fid   = it->second.fid;
-                    entry = it->second.entry;
-                    have  = true;
-                    g_fid_to_wid.erase(fid);
-                    g_wid_to_bound.erase(it);
+                    fid    = it->second.fid;
+                    handle = it->second.handle;
+                    entry  = it->second.entry;
+                    have   = true;
                 } else {
                     // Not placed yet — update the queued entry in place.
                     for (auto& p : g_pending) {
@@ -728,19 +1483,61 @@ void tick(std::uintptr_t module_base) {
             for (std::uint8_t i = 0; i < u.n; ++i) {
                 entry.pieces[i] = u.entries[i];
             }
-            void* refr = fw::engine::lookup_by_form_id(fid);
-            const bool gone = refr ? fw::engine::destroy_world_refr(refr)
-                                   : true;
-            {
+            void* refr = resolve_object(handle, fid);
+            if (!refr) {
                 std::lock_guard<std::mutex> lk(g_mx);
+                auto it = g_wid_to_bound.find(u.wid);
+                if (it != g_wid_to_bound.end() && it->second.fid == fid) {
+                    g_fid_to_wid.erase(fid);
+                    if (handle) g_handle_to_wid.erase(handle);
+                    g_wid_to_bound.erase(it);
+                }
                 if (!(entry.flags & 1)) g_pending.push_back(entry);
+                FW_LOG("[pa-pieces] wid=%u content changed remotely -> its frame fid=0x%08X no "
+                       "longer resolves: placed again with %u entr%s", u.wid, fid, u.n,
+                       u.n == 1 ? "y" : "ies");
+                continue;
             }
-            FW_LOG("[pa-pieces] wid=%u content changed remotely -> replica "
-                   "fid=0x%08X %s, re-queued with %u entr%s", u.wid, fid,
-                   gone ? "destroyed" : "destroy FAILED (re-queued anyway)",
-                   u.n, u.n == 1 ? "y" : "ies");
+            if (seh_refr_disabled(refr)) {
+                FW_LOG("[pa-pieces] wid=%u content changed remotely -> frame fid=0x%08X is disabled "
+                       "(worn or despawned): its inventory is left as it is, the new list is kept",
+                       u.wid, fid);
+            } else {
+                fw::hooks::ApplyingRemoteGuard guard;
+                align_frame_pieces(refr, fid, u.wid, u.entries, u.n);
+            }
+            {
+                // The ledger copy follows what the frame now holds, so the
+                // station poll stays quiet and no report echoes it back.
+                std::lock_guard<std::mutex> lk(g_mx);
+                auto it = g_wid_to_bound.find(u.wid);
+                if (it != g_wid_to_bound.end()) {
+                    it->second.entry.piece_n = entry.piece_n;
+                    for (std::uint8_t i = 0; i < entry.piece_n && i < 12; ++i) {
+                        it->second.entry.pieces[i] = entry.pieces[i];
+                    }
+                }
+            }
         }
     }
+
+    // ---- L5 stage 2: deaths the pickup hook reported (reason 5), the
+    // drops that rested, the dressings to verify.
+    {
+        std::vector<PickupDeath> picked;
+        {
+            std::lock_guard<std::mutex> lk(g_mx);
+            picked.swap(g_pickup_deaths);
+        }
+        for (const PickupDeath& d : picked) {
+            FW_LOG("[world-spawn] wid=%u (fid=0x%08X) picked up by the local player "
+                   "-> WORLD_DESPAWN_OP sent (reason=5)", d.wid, d.fid);
+            fw::net::client().enqueue_world_despawn_op(
+                d.wid, 5, static_cast<std::uint64_t>(GetTickCount64()));
+        }
+    }
+    tick_pending_drops();
+    tick_dress_verify(module_base);
 
     // ---- v23b: fire deferred manual-change reports whose settle window
     // has elapsed (the take-timing fix — see report_frame_pieces).
@@ -759,7 +1556,7 @@ void tick(std::uintptr_t module_base) {
             g_next_station_poll_ms = now64 + kStationPollEveryMs;
             float pp[3];
             if (player_pos(module_base, pp)) {
-                struct Cand { std::uint32_t wid, fid; };
+                struct Cand { std::uint32_t wid, fid, handle; };
                 std::vector<Cand> cands;
                 {
                     std::lock_guard<std::mutex> lk(g_mx);
@@ -771,11 +1568,11 @@ void tick(std::uintptr_t module_base) {
                         const float dz = b.entry.pos[2] - pp[2];
                         if (dx * dx + dy * dy + dz * dz
                             > kStationPollRange * kStationPollRange) continue;
-                        cands.push_back({wid, b.fid});
+                        cands.push_back({wid, b.fid, b.handle});
                     }
                 }
                 for (const Cand& c : cands) {
-                    void* refr = fw::engine::lookup_by_form_id(c.fid);
+                    void* refr = resolve_object(c.handle, c.fid);
                     if (!refr) continue;
                     fw::net::PaPieceEntry live[12] = {};
                     const std::uint8_t n =
@@ -830,8 +1627,9 @@ void tick(std::uintptr_t module_base) {
                     // death verdict — the false kill that motivated this
                     // fired one second after placement.
                     if (now_ms - b.bound_at_ms < kDeathGraceMs) continue;
-                    void* refr = fw::engine::lookup_by_form_id(b.fid);
+                    void* refr = resolve_object(b.handle, b.fid);
                     std::uint8_t reason = 0;
+                    bool pc_alive = false;
                     if (refr) {
                         b.null_seen = false;
                         const std::uint32_t flags = seh_u32_at(
@@ -850,6 +1648,7 @@ void tick(std::uintptr_t module_base) {
                             reinterpret_cast<std::uintptr_t>(refr)
                             + fw::offsets::PARENT_CELL_OFF);
                         if (pc) {
+                            pc_alive = true;
                             const std::uint32_t cid = seh_u32_at(
                                 reinterpret_cast<std::uint8_t*>(pc)
                                 + fw::offsets::FORMID_OFF);
@@ -920,7 +1719,14 @@ void tick(std::uintptr_t module_base) {
                         pa_enter_diag       = true;
                         g_pa_diag_second_ms = now_ms + kPaDiag2ndMs;
                     }
-                    if (reason == 1) {
+                    // L5 stage 2 — an ITEM (self-described) marked deleted
+                    // while its parent cell is alive was consumed (picked
+                    // up by someone the pickup hook did not see, a script):
+                    // a world event. The janitor case below has no live
+                    // parent cell by definition.
+                    const bool item = (b.entry.flags
+                                       & fw::net::kWorldSpawnFlagSelfDescribed) != 0;
+                    if (reason == 1 && !(item && pc_alive)) {
                         // Build 70b — DELETED by the engine is a LOCAL
                         // streaming event, not a world event. Measured live:
                         // the engine's PA janitor (caller +0x109DAA7)
@@ -947,13 +1753,14 @@ void tick(std::uintptr_t module_base) {
                         g_pending.push_back(it->second.entry);
                     }
                     g_fid_to_wid.erase(it->second.fid);
+                    if (it->second.handle) g_handle_to_wid.erase(it->second.handle);
                     g_wid_to_bound.erase(it);
                 }
             }
             for (const auto& d : deaths) {
                 FW_LOG("[world-spawn] wid=%u died locally (reason=%u: "
-                       "1=deleted 2=disabled 3=vanished-same-cell 4=moved) -> "
-                       "WORLD_DESPAWN_OP sent", d.wid, d.reason);
+                       "1=deleted 2=disabled 3=vanished-same-cell 4=moved "
+                       "5=picked up) -> WORLD_DESPAWN_OP sent", d.wid, d.reason);
                 fw::net::client().enqueue_world_despawn_op(
                     d.wid, d.reason,
                     static_cast<std::uint64_t>(GetTickCount64()));
@@ -974,6 +1781,8 @@ void tick(std::uintptr_t module_base) {
                 // with each piece's OMOD list).
                 std::uint8_t          piece_n = 0;
                 fw::net::PaPieceEntry pieces[12] = {};
+                std::uint8_t          flags = 0;   // bit1 = self-described
+                std::uint32_t         handle = 0;
             };
             std::vector<Rebirth> reborn;
             {
@@ -984,7 +1793,7 @@ void tick(std::uintptr_t module_base) {
                         it = g_tombstones.erase(it);
                         continue;
                     }
-                    void* refr = fw::engine::lookup_by_form_id(it->fid);
+                    void* refr = resolve_object(it->handle, it->fid);
                     if (!refr) {
                         it = g_tombstones.erase(it);   // really gone
                         continue;
@@ -999,6 +1808,7 @@ void tick(std::uintptr_t module_base) {
                     const auto id = fw::read_ref_identity(refr);
                     Rebirth r{};
                     r.fid = it->fid;
+                    r.handle = it->handle;
                     r.base_id = id.base_id;
                     r.cell_id = id.cell_id;
                     auto* rb = reinterpret_cast<std::uint8_t*>(refr);
@@ -1014,6 +1824,19 @@ void tick(std::uintptr_t module_base) {
                             "PA-exit reborn frame", refr);
                         r.piece_n = capture_frame_pieces(
                             refr, r.base_id, r.pieces);
+                    } else if (it->self_described) {
+                        // A dropped item that moved (its own fall, a
+                        // nudge): re-announce WITH its descriptor, so the
+                        // replicas keep count, condition and mods.
+                        r.flags = fw::net::kWorldSpawnFlagSelfDescribed;
+                        if (!fw::persist::inventory::read_refr_instance(
+                                module_base, refr, &r.pieces[0])) {
+                            FW_WRN("[world-spawn] fid=0x%08X: instance unread at "
+                                   "rebirth, re-announced with a bare descriptor",
+                                   r.fid);
+                            r.pieces[0].form_id = r.base_id;
+                        }
+                        r.piece_n = 1;
                     }
                     if (r.base_id != 0) reborn.push_back(r);
                     it = g_tombstones.erase(it);
@@ -1024,8 +1847,9 @@ void tick(std::uintptr_t module_base) {
                        "exit or re-enable) at (%.1f, %.1f, %.1f) -> "
                        "re-announced as a new spawn", r.fid,
                        r.pos[0], r.pos[1], r.pos[2]);
+                note_self_object(r.fid, r.handle);
                 fw::net::client().enqueue_world_spawn_op(
-                    r.base_id, r.fid, r.pos, r.rot, r.cell_id, /*flags=*/0,
+                    r.base_id, r.fid, r.pos, r.rot, r.cell_id, r.flags,
                     static_cast<std::uint64_t>(GetTickCount64()),
                     r.piece_n ? r.pieces : nullptr, r.piece_n);
                 if (r.base_id == kPaFrameBase) {
@@ -1086,12 +1910,72 @@ void tick(std::uintptr_t module_base) {
         }
     }
 
+    // 2026-09-30 — a saved copy kept for this wid (see g_adoptable) is bound
+    // instead of placing a new replica: the engine's references to it, the
+    // player's last power armour among them, stay valid.
+    {
+        Adoptable ad{};
+        bool have_ad = false;
+        {
+            std::lock_guard<std::mutex> lk(g_mx);
+            for (auto it = g_adoptable.begin(); it != g_adoptable.end(); ++it) {
+                if (it->wid == e.wid) { ad = *it; have_ad = true; g_adoptable.erase(it); break; }
+            }
+        }
+        void* old = have_ad ? resolve_object(ad.handle, ad.fid) : nullptr;
+        if (have_ad && !old) {
+            FW_WRN("[world-spawn] wid=%u: the saved copy fid=0x%08X kept for adoption no longer "
+                   "resolves: placed anew", e.wid, ad.fid);
+        }
+        if (old) {
+            {
+                std::lock_guard<std::mutex> lk(g_mx);
+                for (auto it = g_pending.begin(); it != g_pending.end(); ++it) {
+                    if (it->wid == e.wid) { g_pending.erase(it); break; }
+                }
+                g_attempts = 0;
+                Bound b{};
+                b.fid         = ad.fid;
+                b.handle      = ad.handle;
+                b.cell_id     = e.cell_id;
+                b.bound_at_ms = GetTickCount();
+                b.entry       = e;
+                g_wid_to_bound[e.wid] = b;
+                g_fid_to_wid[ad.fid]  = e.wid;
+                if (ad.handle) g_handle_to_wid[ad.handle] = e.wid;
+            }
+            // Disabled = worn: the local player climbed into it before this
+            // ran. Left as it is; the sweep reports it entered, as for any
+            // bound frame.
+            const bool worn = seh_refr_disabled(old);
+            float p[3] = {0.0f, 0.0f, 0.0f};
+            bool moved = false;
+            if (!worn && seh_vec3_at(static_cast<const std::uint8_t*>(old) + fw::offsets::POS_OFF, p)) {
+                const float dx = p[0] - e.pos[0], dy = p[1] - e.pos[1], dz = p[2] - e.pos[2];
+                if (dx * dx + dy * dy + dz * dz > kMoveThresholdUnits * kMoveThresholdUnits) {
+                    moved = fw::engine::finalize_world_placement(
+                        old, e.pos[0], e.pos[1], e.pos[2], e.rot[2], nullptr, true).moved;
+                }
+            }
+            FW_LOG("[world-spawn] wid=%u ADOPTED: the saved copy fid=0x%08X handle=0x%08X is "
+                   "bound instead of a new replica%s%s", e.wid, ad.fid, ad.handle,
+                   worn ? " (worn by the local player already: left as it is)" : "",
+                   moved ? ", moved onto the server's position" : "");
+            if (!worn && e.base_form_id == kPaFrameBase) {
+                fw::hooks::ApplyingRemoteGuard guard;
+                align_frame_pieces(old, ad.fid, e.wid, e.pieces, e.piece_n);
+            }
+            return;
+        }
+    }
+
     // All engine work happens here, on the main thread, mirroring the ghost
     // donor: resolve the base form, PlaceAtMe anchored at the player (the
     // engine call is wrapped in the internal-place scope so our own sender
     // detour does not re-broadcast it), then move it to the real target.
     std::uint32_t new_fid = 0;
-    void* refr = fw::engine::place_world_object(e.base_form_id, &new_fid);
+    std::uint32_t new_handle = 0;
+    void* refr = fw::engine::place_world_object(e.base_form_id, &new_fid, &new_handle);
     if (!refr) {
         if (++g_attempts >= kMaxAttempts) {
             FW_ERR("[world-spawn] wid=%u: placement failed %d times — giving "
@@ -1108,8 +1992,12 @@ void tick(std::uintptr_t module_base) {
     }
 
     // Build 70f — the correct placement: upright, ground-snapped, re-filed.
+    // L5 stage 3 — a dropped item keeps the pose and the height the sender
+    // measured at rest instead (engine_calls.h, "the two poses"): the snap
+    // planted its centre in the road and Havok pushed it through.
+    const bool item = (e.flags & fw::net::kWorldSpawnFlagSelfDescribed) != 0;
     const auto fin = fw::engine::finalize_world_placement(
-        refr, e.pos[0], e.pos[1], e.pos[2], e.rot[2]);
+        refr, e.pos[0], e.pos[1], e.pos[2], e.rot[2], item ? e.rot : nullptr, !item);
     const bool moved = fin.moved;
 
     {
@@ -1121,18 +2009,25 @@ void tick(std::uintptr_t module_base) {
         g_attempts = 0;
         Bound b{};
         b.fid         = new_fid;
+        b.handle      = new_handle;
         b.cell_id     = e.cell_id;
         b.bound_at_ms = GetTickCount();
         b.entry       = e;
+        if (e.flags & fw::net::kWorldSpawnFlagSelfDescribed) {
+            b.dress_verify_ms = b.bound_at_ms + kDressVerifyMs;
+            b.dress_attempts  = 1;
+        }
         g_wid_to_bound[e.wid]  = b;
         g_fid_to_wid[new_fid]  = e.wid;
+        if (new_handle) g_handle_to_wid[new_handle] = e.wid;
     }
-    FW_LOG("[world-spawn] wid=%u PLACED: base=0x%08X -> local fid=0x%08X at "
-           "(%.1f, %.1f, %.1f) teleport=%s ground=%s%+.1f refile=%s",
-           e.wid, e.base_form_id, new_fid,
+    FW_LOG("[world-spawn] wid=%u PLACED: base=0x%08X -> local fid=0x%08X handle=0x%08X at "
+           "(%.1f, %.1f, %.1f) teleport=%s ground=%s%+.1f pose=%s refile=%s",
+           e.wid, e.base_form_id, new_fid, new_handle,
            e.pos[0], e.pos[1], e.pos[2],
            moved ? "ok" : "FAILED (left at the player)",
            fin.snapped ? "snapped" : "wire", fin.dz,
+           item ? "rested" : "upright",
            fin.refiled ? "ok" : "SKIPPED (target cell not attached)");
 
     // ========================================================================
@@ -1143,73 +2038,16 @@ void tick(std::uintptr_t module_base) {
     // to write — and the engine's own AddItem right after placement renders
     // on the standing frame and transfers on enter, both verified live.
     // ========================================================================
-    if (e.piece_n > 0) {
+    if (e.flags & fw::net::kWorldSpawnFlagSelfDescribed) {
+        // L5 stage 2 — a dropped item: pieces[0] is the object itself.
+        apply_self_descriptor(refr, new_fid, e);
+    } else if (e.piece_n > 0) {
         int injected = 0;
         int mods_applied = 0, mods_failed = 0;
         for (std::uint8_t i = 0; i < e.piece_n && i < 12; ++i) {
-            const fw::net::PaPieceEntry& pe = e.pieces[i];
-            void* form = fw::engine::lookup_by_form_id(pe.form_id);
-            if (!form) {
-                FW_WRN("[pa-pieces] entry 0x%08X: form lookup failed — "
-                       "skipped", pe.form_id);
-                continue;
-            }
-            const int cnt = (pe.count > 0) ? pe.count : 1;
-            // v26 — the mod worker needs a SINGULAR stack: add one, dress
-            // it, and only then add the rest (a bare copy lands in its own
-            // stack, the dressed one keeps its extras).
-            if (!seh_papyrus_additem(refr, form, 1)) {
-                FW_ERR("[pa-pieces] entry 0x%08X: AddItem SEH/call failed",
-                       pe.form_id);
-                continue;
-            }
-            ++injected;
-            // v24 — re-attach the source OMODs so the piece is the SAME
-            // variant, not the engine leveled roll. The worker requires a
-            // singular stack. v26: measured on B (2026-09-15) that one piece
-            // per re-stock round fails every mod, i.e. the worker's count
-            // check refuses it; ask the same question first and say what
-            // the answer was instead of letting the worker fault in its
-            // error logger.
-            const std::int64_t have = seh_refr_item_count(refr, form);
-            if (have != 1) {
-                mods_failed += pe.mod_n;
-                FW_WRN("[pa-pieces] piece 0x%08X: refr holds %lld of it after "
-                       "AddItem(%d) — %u mod(s) NOT attached (worker needs "
-                       "exactly one)", pe.form_id, static_cast<long long>(have),
-                       cnt, unsigned(pe.mod_n));
-                if (pe.health >= 0.0f) {
-                    const bool hok = write_stack_health(refr, pe.form_id, pe.health);
-                    FW_LOG("[pa-pieces] piece 0x%08X: health %.3f %s", pe.form_id,
-                           pe.health, hok ? "written" : "WRITE FAILED");
-                }
-                continue;
-            }
-            for (std::uint8_t m = 0; m < pe.mod_n
-                                     && m < fw::net::kMaxPieceMods; ++m) {
-                void* mod = fw::engine::lookup_by_form_id(pe.mods[m]);
-                if (mod && seh_papyrus_attachmod(refr, form, mod)) {
-                    ++mods_applied;
-                } else {
-                    ++mods_failed;
-                    FW_WRN("[pa-pieces] piece 0x%08X: mod 0x%08X %s",
-                           pe.form_id, pe.mods[m],
-                           mod ? "attach failed" : "lookup failed");
-                }
-            }
-            // v25 — condition / core charge: the Health extra on the stack,
-            // created only when the original had one (an exact mirror).
-            if (pe.health >= 0.0f) {
-                const bool hok = write_stack_health(refr, pe.form_id, pe.health);
-                FW_LOG("[pa-pieces] piece 0x%08X: health %.3f %s", pe.form_id,
-                       pe.health, hok ? "written" : "WRITE FAILED");
-            }
-            if (cnt > 1) {
-                const bool rok = seh_papyrus_additem(refr, form, cnt - 1);
-                FW_LOG("[pa-pieces] piece 0x%08X: %d more bare cop%s %s",
-                       pe.form_id, cnt - 1, (cnt - 1) == 1 ? "y" : "ies",
-                       rok ? "added" : "ADD FAILED");
-            }
+            // 2026-09-29: the same code the in-place alignment of a
+            // remote change uses (stock_one_piece).
+            if (stock_one_piece(refr, e.pieces[i], &mods_applied, &mods_failed)) ++injected;
         }
         FW_LOG("[pa-pieces] stocked replica fid=0x%08X (wid=%u) with %d/%u "
                "wire entries, %d mods applied%s", new_fid, e.wid, injected,
@@ -1378,6 +2216,88 @@ bool is_our_fid(std::uint32_t fid) {
     if (fid == 0) return false;
     std::lock_guard<std::mutex> lk(g_mx);
     return g_fid_to_wid.count(fid) != 0;
+}
+
+std::uint32_t wid_for_refr(void* refr, std::uint32_t fid) {
+    if (!refr || fid == 0) return 0;
+    if (fw::persist::exiting()) return 0;   // the teardown destroys everything; nothing of ours to confirm
+    std::uint32_t wid = 0, handle = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_mx);
+        auto it = g_fid_to_wid.find(fid);
+        if (it == g_fid_to_wid.end()) return 0;   // the prefilter: not one of ours
+        auto bt = g_wid_to_bound.find(it->second);
+        if (bt == g_wid_to_bound.end()) return 0;
+        wid    = it->second;
+        handle = bt->second.handle;
+    }
+    // Legacy fid-only binding: the fid is all there is to go by.
+    if (handle == 0) return wid;
+    std::uint32_t h = handle;
+    if (fw::engine::resolve_refhandle(&h) == refr) return wid;
+    // The fid map holds ONE wid per fid, and two live objects of ours can
+    // share a fid (the engine hands ids out again): the full scan, only on
+    // a prefilter hit that did not confirm.
+    struct Cand { std::uint32_t wid, handle; };
+    std::vector<Cand> cands;
+    {
+        std::lock_guard<std::mutex> lk(g_mx);
+        for (const auto& [w, b] : g_wid_to_bound) {
+            if (b.fid == fid && b.handle != 0 && b.handle != handle) cands.push_back({w, b.handle});
+        }
+    }
+    for (const Cand& c : cands) {
+        std::uint32_t hh = c.handle;
+        if (fw::engine::resolve_refhandle(&hh) == refr) return c.wid;
+    }
+    return 0;
+}
+
+bool is_our_refr(void* refr, std::uint32_t fid) {
+    return wid_for_refr(refr, fid) != 0;
+}
+
+void note_self_object(std::uint32_t fid, std::uint32_t handle) {
+    if (fid == 0) return;
+    const DWORD now = GetTickCount();
+    std::lock_guard<std::mutex> lk(g_mx);
+    for (auto it = g_self_objects.begin(); it != g_self_objects.end();) {
+        if (now - it->since_ms > kSelfObjectTtlMs || it->fid == fid) it = g_self_objects.erase(it);
+        else ++it;
+    }
+    if (g_self_objects.size() < 64) g_self_objects.push_back({fid, handle, now});
+}
+
+void on_local_pickup(void* refr) {
+    if (!refr) return;
+    const auto id = fw::read_ref_identity(refr);
+    if (id.form_id == 0) return;
+    const std::uint32_t wid = wid_for_refr(refr, id.form_id);
+    if (wid == 0) return;   // not one of ours: the ordinary pickup path handles it
+    std::lock_guard<std::mutex> lk(g_mx);
+    auto it = g_wid_to_bound.find(wid);
+    if (it == g_wid_to_bound.end() || it->second.reported) return;
+    it->second.reported = true;
+    g_pickup_deaths.push_back({wid, id.form_id});
+}
+
+void watch_local_drop(void* refr, std::uint32_t handle, std::int32_t count_hint) {
+    if (!refr || handle == 0 || handle == 0xFFFFFFFFu) return;
+    const auto id = fw::read_ref_identity(refr);
+    if (id.form_id == 0 || id.base_id == 0) return;
+    PendingDrop d{};
+    d.handle = handle;
+    d.fid = id.form_id;
+    d.base_id = id.base_id;
+    d.count_hint = count_hint;
+    d.since_ms = d.stable_since_ms = GetTickCount();
+    (void)seh_vec3_at(reinterpret_cast<std::uint8_t*>(refr) + fw::offsets::POS_OFF, d.last_pos);
+    d.rested = false;
+    std::lock_guard<std::mutex> lk(g_mx);
+    for (const PendingDrop& p : g_pending_drops) {
+        if (p.handle == handle) return;   // already watched
+    }
+    if (g_pending_drops.size() < 64) g_pending_drops.push_back(d);
 }
 
 }  // namespace fw::native::world_spawn

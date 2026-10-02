@@ -185,6 +185,51 @@ LONG WINAPI veh_handler(EXCEPTION_POINTERS* info) noexcept {
         FW_ERR("[crash-veh]   stack: <unreadable>");
     }
 
+    // 2026-09-28 — a REAL unwind, RtlVirtualUnwind over a copy of the
+    // context: the raw stack qwords above never named the caller of the
+    // allocator free that ends every exit to the desktop. Frames print as
+    // G+rva (the game), F+rva (this DLL) or EXT:address; a leaf frame
+    // without unwind info is stepped by its return address.
+    if (n < 3) {
+        CONTEXT ctx = *info->ContextRecord;
+        char line[1024];
+        std::size_t ln = 0;
+        for (int depth = 0; depth < 24 && ln + 40 < sizeof(line); ++depth) {
+            const std::uintptr_t pc = static_cast<std::uintptr_t>(ctx.Rip);
+            if (pc == 0) break;
+            const char* tag = "EXT:";
+            std::uintptr_t off = pc;
+            if (g_game_base && pc >= g_game_base && pc < g_game_end) {
+                tag = "G+"; off = pc - g_game_base;
+            } else if (g_self_base && pc >= g_self_base && pc < g_self_end) {
+                tag = "F+"; off = pc - g_self_base;
+            }
+            ln += static_cast<std::size_t>(std::snprintf(
+                line + ln, sizeof(line) - ln, "%s%s0x%llX", depth ? " " : "",
+                tag, static_cast<unsigned long long>(off)));
+            DWORD64 image_base = 0;
+            PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry(ctx.Rip, &image_base, nullptr);
+            if (!fn) {
+                std::uint64_t ret = 0;
+                if (!probe_qword(static_cast<std::uint64_t>(ctx.Rsp), &ret) || ret == 0) break;
+                ctx.Rip = ret;
+                ctx.Rsp += 8;
+                continue;
+            }
+            PVOID handler_data = nullptr;
+            DWORD64 establisher = 0;
+            bool ok = true;
+            __try {
+                RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, ctx.Rip, fn, &ctx,
+                                 &handler_data, &establisher, nullptr);
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                ok = false;
+            }
+            if (!ok) break;
+        }
+        FW_ERR("[crash-veh]   unwind: %s", line);
+    }
+
     // Build 69p (2026-08-04) — full register set (the first line only prints
     // rsp/rbp/rcx/rdx/r8; DetachReference keeps the REFR in rsi) + the
     // refr-o-scope over every register and the top stack qwords: the next

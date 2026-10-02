@@ -17,6 +17,7 @@
 #include "../hooks/npc_ai_suppress.h"  // B6.6w5 Build 12 Fix 1 gate: get_fid_for_aiproc
 #include "../hooks/ghost_is_attachable.h"  // B6.6w5 Build 28f: TLS bypass for IsAttachable during spawn
 #include "../main_thread_dispatch.h"        // Build 55f: mark_raider_ghost_targeted_yaw
+#include "../persist/lifecycle.h"           // L5 stage 1: CommandedLoadScope around our boot load
 
 namespace fw::engine {
 
@@ -62,8 +63,14 @@ using EngineRemoveItemFn = void (*)(
     std::uint8_t flag, void* dest_refr, std::uint8_t flag2,
     std::uint32_t vm_id, void* vm_state);
 // `dest_refr` is Papyrus RemoveItem's akOtherContainer: any ObjectReference,
-// the player or a container. nullptr drops the items in the world (the
-// remote apply); the loot rework L2 rollback passes the other side.
+// the player or a container. nullptr destroys the items (the remote apply;
+// see offsets.h); the loot rework L2 rollback passes the other side.
+// 2026-09-29: the frame visual sync task builder (offsets.h
+// PA_FRAME_SYNC_TASK_RVA). The decomp types the flags as char; they are
+// passed full width, the callee reads the low byte.
+using PaFrameSyncTaskFn = char (*)(
+    void* queue, void* frame_refr, std::uint64_t update_3d, void* extra,
+    std::uint64_t flag_a, std::uint64_t flag_b);
 // B1.k.2: sub_14021E230 — BGSObjectRefHandle → TESObjectREFR* resolver.
 // Written as: (out_refr_ptr_ptr, in_handle_ptr) → writes to *out.
 using RefHandleResolveFn = void (*)(void** out, void* handle_ptr);
@@ -71,7 +78,14 @@ using RefHandleResolveFn = void (*)(void** out, void* handle_ptr);
 // Takes (form_cache_global_value, entry_ptr) → returns form ptr or null.
 using InvEntryToFormFn = void* (*)(void* form_cache, void* entry_ptr);
 // B3.b: the engine's LoadGame native. Signature decoded from the
-// LoadGame console command (re/console_table_report.txt).
+// LoadGame console command (re/console_table_report.txt) and checked
+// against the decomp on 2026-09-27 (stage 0 of L5):
+//   __int64 __fastcall sub_140BF93B0(mgr, char* name, int a3, int a4,
+//                                    char a5, char a6)
+// a3 and a4 are 32-bit in the callee and a5/a6 single bytes, so the widths
+// declared here are the callee's own; nothing reads more than it is given.
+// The call posts a load job (sub_140C01E80) to the loader thread and pumps
+// the main thread until it completes; persist/lifecycle.cpp brackets both.
 using LoadGameFn       = std::uint8_t (*)(
     void* save_load_mgr, const char* filename,
     int unk_neg1, std::uint32_t flags, int one, int zero);
@@ -95,6 +109,8 @@ MaterializeInvListFn g_materialize_inv = nullptr;
 GetComponentFn       g_get_component  = nullptr;
 EngineAddItemFn      g_engine_add_item    = nullptr;
 EngineRemoveItemFn   g_engine_remove_item = nullptr;
+PaFrameSyncTaskFn    g_pa_frame_sync_task = nullptr;   // 2026-09-29
+void* const*         g_refr_task_queue_slot = nullptr; // 2026-09-29
 
 // B6.1: Activate worker = sub_140514180. Reused for door open/close
 // receive-side apply. 7-arg signature inferred from Papyrus SetOpen
@@ -941,6 +957,11 @@ bool init(std::uintptr_t module_base) {
         module_base + offsets::ENGINE_ADD_ITEM_RVA);
     g_engine_remove_item = reinterpret_cast<EngineRemoveItemFn>(
         module_base + offsets::ENGINE_REMOVE_ITEM_RVA);
+    // 2026-09-29: a power armour frame redraws its pieces (task 106).
+    g_pa_frame_sync_task = reinterpret_cast<PaFrameSyncTaskFn>(
+        module_base + offsets::PA_FRAME_SYNC_TASK_RVA);
+    g_refr_task_queue_slot = reinterpret_cast<void* const*>(
+        module_base + offsets::REFR_TASK_QUEUE_PTR_RVA);
 
     // B6.1: Activate worker resolver (door open/close engine call).
     g_engine_activate = reinterpret_cast<ActivateWorkerFn>(
@@ -2584,6 +2605,18 @@ void write_ghost_pos_rot(
     safe_write<float>(base + offsets::ROT_OFF + 8, rz);
 }
 
+// The one call of the engine's load request this DLL makes, wrapped in the
+// lifecycle scope that marks it as commanded (L5 stage 1). A separate
+// function because the caller below holds an SEH frame, which cannot hold
+// an object with a destructor.
+static std::uint8_t commanded_load_game(void* mgr, const char* save_name,
+                                        int unk_neg1, std::uint32_t flags,
+                                        int one, int zero)
+{
+    fw::persist::CommandedLoadScope commanded;
+    return g_load_game(mgr, save_name, unk_neg1, flags, one, zero);
+}
+
 bool load_game_by_name(const char* save_name) {
     if (!g_ready.load(std::memory_order_acquire)) {
         FW_WRN("engine: load_game_by_name called before engine init");
@@ -2633,7 +2666,11 @@ bool load_game_by_name(const char* save_name) {
 
         // flags=0: all four parsed-flag bits clear (default console behavior
         // when the user types "LoadGame <name>" with no extra switches).
-        const std::uint8_t rc = g_load_game(
+        // L5 stage 1: the lifecycle detour on this very function logs the
+        // request as commanded by us; a1 = 1 also makes the loader store
+        // the name at mgr+0x60, the death-reload target, which is intended:
+        // with every save refused, a death reloads exactly this file.
+        const std::uint8_t rc = commanded_load_game(
             mgr, save_name, /*unk_neg1=*/-1, /*flags=*/0,
             /*one=*/1, /*zero=*/0);
 
@@ -2862,10 +2899,10 @@ bool apply_container_op_to_engine(
                 item_form,
                 static_cast<std::uint32_t>(count),
                 /*flag=*/0,
-                /*dest_actor_refr=*/nullptr,  // nullptr = drop on ground
-                                               // (nobody ever sees it — receiver's
-                                               //  local world; peer A already took
-                                               //  it on their side)
+                /*dest_actor_refr=*/nullptr,  // nullptr = destroyed, not
+                                               // dropped (see offsets.h
+                                               // ENGINE_REMOVE_ITEM_RVA); peer A
+                                               // already took it on their side
                 /*flag2=*/0,
                 /*vm_id=*/0,
                 /*vm_state=*/nullptr);
@@ -3304,6 +3341,34 @@ bool apply_lock_op_to_engine(
     return ok;
 }
 
+bool remove_items_destroy(void* container_refr, void* item_form, std::int32_t count) noexcept {
+    if (!container_refr || !item_form || count <= 0 || !g_engine_remove_item) return false;
+    __try {
+        g_engine_remove_item(container_refr, item_form, static_cast<std::uint32_t>(count),
+                             /*flag=*/0, /*dest_refr=*/nullptr, /*flag2=*/0,
+                             /*vm_id=*/0, /*vm_state=*/nullptr);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("engine: SEH in remove_items_destroy(refr=%p, item=%p, count=%d)",
+               container_refr, item_form, count);
+        return false;
+    }
+}
+
+bool sync_pa_frame_visuals(void* frame_refr) noexcept {
+    if (!frame_refr || !g_pa_frame_sync_task || !g_refr_task_queue_slot) return false;
+    __try {
+        void* queue = *g_refr_task_queue_slot;
+        if (!queue) return false;
+        g_pa_frame_sync_task(queue, frame_refr, /*update_3d=*/1, /*extra=*/nullptr,
+                             /*flag_a=*/0, /*flag_b=*/0);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("engine: SEH in sync_pa_frame_visuals(frame=%p)", frame_refr);
+        return false;
+    }
+}
+
 bool force_materialize_inventory(void* container_ref) {
     if (!container_ref) return false;
     if (!g_ready.load(std::memory_order_acquire)) return false;
@@ -3426,7 +3491,11 @@ bool actor_is_dead(void* refr) {
             static_cast<const std::uint8_t*>(refr) + offsets::ACTOR_LIFESTATE_FLAGS_OFF);
         const std::uint32_t state =
             (flags & offsets::ACTOR_LIFESTATE_MASK) >> offsets::ACTOR_LIFESTATE_SHIFT;
-        return state == 1 || state == 2 || state == 5 || state == 7;
+        // Life states: 1 dying, 2 dead, 5 recycle (a corpse being reclaimed).
+        // State 7 is "essential down": the NPC is on the ground and gets up
+        // again, and its inventory is not loot. Counting it as dead (until
+        // stage 0 of L5, 2026-09-27) let an alignment touch a living actor.
+        return state == 1 || state == 2 || state == 5;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
@@ -4351,7 +4420,8 @@ bool in_internal_place() noexcept {
 }
 
 PlacementResult finalize_world_placement(void* refr, float x, float y, float z,
-                                         float yaw_rad) noexcept {
+                                         float yaw_rad, const float* full_rot,
+                                         bool ground_snap) noexcept {
     // Build 70f - see the header. Order matters: rotation first (the async
     // 3D build reads +0xC0 when it lands), then the ground probe at the
     // TARGET x/y, then the position leaf, then the cell re-file - the exact
@@ -4364,18 +4434,29 @@ PlacementResult finalize_world_placement(void* refr, float x, float y, float z,
     __try {
         auto* rb = reinterpret_cast<std::uint8_t*>(refr);
 
-        // 1. Upright, wire yaw (Build 70e, kept here).
+        // 1. Upright, wire yaw (Build 70e, kept here) - or, for a dropped
+        //    item, the rested pose the sender measured (the header, "the
+        //    two poses"). The position leaf's vt[13](2) that follows is the
+        //    same notification the engine's SetRotation leaf emits, so an
+        //    already-loaded 3D takes the angles too.
         auto* rot = reinterpret_cast<float*>(rb + fw::offsets::ROT_OFF);
-        rot[0] = 0.0f;
-        rot[1] = 0.0f;
-        rot[2] = yaw_rad;
+        if (full_rot) {
+            rot[0] = full_rot[0];
+            rot[1] = full_rot[1];
+            rot[2] = full_rot[2];
+        } else {
+            rot[0] = 0.0f;
+            rot[1] = 0.0f;
+            rot[2] = yaw_rad;
+        }
 
         void* cell = *reinterpret_cast<void**>(rb + offsets::PARENT_CELL_OFF);
 
         // 2. Ground under the target: engine raycast (world geometry, roads
         //    and floors included), terrain-height fallback. Snap refused
-        //    beyond 96 units so a bridge target keeps the wire truth.
-        if (cell) {
+        //    beyond 96 units so a bridge target keeps the wire truth. Not
+        //    for a dropped item: its wire Z IS its rested height.
+        if (cell && ground_snap) {
             float ground = 0.0f;
             bool  have_ground = false;
 
@@ -4479,6 +4560,96 @@ PlacementResult finalize_world_placement(void* refr, float x, float y, float z,
     }
 }
 
+bool set_actor_ghost(void* actor, bool ghost) noexcept {
+    if (!actor || !g_set_ghost) return false;
+    __try {
+        g_set_ghost(actor, static_cast<std::uint8_t>(ghost ? 1 : 0));
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("engine: SEH in SetGhost actor=%p ghost=%d", actor, ghost ? 1 : 0);
+        return false;
+    }
+}
+
+bool player_in_interior(bool* inside) noexcept {
+    if (!inside) return false;
+    *inside = false;
+    void* cell = get_pc_parent_cell();
+    if (!cell) return false;
+    __try {
+        *inside = (*reinterpret_cast<const std::uint8_t*>(
+                       static_cast<std::uint8_t*>(cell) + offsets::CELL_FLAGS40_OFF) & 1) != 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *inside = false;
+        return false;
+    }
+}
+
+bool player_fast_travel_to(float x, float y, float z, float yaw_rad,
+                           std::uint32_t* out_marker_handle) noexcept {
+    if (out_marker_handle) *out_marker_handle = 0;
+    if (!g_module_base_for_place) return false;
+    const std::uintptr_t base = g_module_base_for_place;
+    void* player = get_local_player();
+    void* cur_cell = get_pc_parent_cell();
+    if (!player || !cur_cell) return false;
+    // The request's cell is the MARKER's parent cell, as the engine's own
+    // core builds it (sub_140D587D0: GetParentCell(marker)); the execution
+    // derives the destination from the marker's position inside that
+    // cell's worldspace. The grid lookup (EXT_CELL_BY_GRID) refuses a cell
+    // never loaded in this session (the second live death: "no exterior
+    // cell" 17,000 units from the point), and the marker is placed in the
+    // player's cell anyway.
+    void* dest_cell = cur_cell;
+    __try {
+        const std::uint8_t cflags = *reinterpret_cast<const std::uint8_t*>(
+            static_cast<std::uint8_t*>(cur_cell) + offsets::CELL_FLAGS40_OFF);
+        if (cflags & 1) {
+            FW_WRN("engine: fast travel not queued: the player is in an interior, whose "
+                   "worldspace this code does not resolve");
+            return false;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("engine: SEH reading the player's cell for the fast travel");
+        return false;
+    }
+    std::uint32_t fid = 0, handle = 0;
+    void* marker = place_world_object(offsets::XMARKER_HEADING_BASE, &fid, &handle);
+    if (!marker || handle == 0) {
+        FW_WRN("engine: fast travel not queued: the heading marker could not be placed");
+        return false;
+    }
+    __try {
+        auto* mb = static_cast<std::uint8_t*>(marker);
+        float* mrot = reinterpret_cast<float*>(mb + offsets::ROT_OFF);
+        mrot[0] = 0.0f; mrot[1] = 0.0f; mrot[2] = yaw_rad;
+        float* mpos = reinterpret_cast<float*>(mb + offsets::POS_OFF);
+        mpos[0] = x; mpos[1] = y; mpos[2] = z;   // the raw fields: no leaf, no re-file into an unattached cell
+        alignas(8) std::uint8_t req[96] = {};
+        std::memcpy(req + 0, &dest_cell, sizeof(void*));
+        std::memcpy(req + 24, &x, 4);
+        std::memcpy(req + 28, &y, 4);
+        std::memcpy(req + 32, &z, 4);
+        std::memcpy(req + 44, &yaw_rad, 4);
+        const std::uint32_t null_handle = *reinterpret_cast<const std::uint32_t*>(base + offsets::NULL_HANDLE_VALUE_RVA);
+        std::memcpy(req + 72, &null_handle, 4);
+        std::memcpy(req + 76, &handle, 4);
+        req[84] = 1;
+        req[85] = 0;
+        req[88] = 1;
+        reinterpret_cast<void(__fastcall*)(void*, void*)>(base + offsets::PLAYER_QUEUE_FAST_TRAVEL_RVA)(player, req);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("engine: SEH queueing the fast travel (marker handle 0x%08X)", handle);
+        if (out_marker_handle) *out_marker_handle = handle;
+        return false;
+    }
+    if (out_marker_handle) *out_marker_handle = handle;
+    FW_LOG("engine: fast travel queued to (%.1f, %.1f, %.1f) in cell %p, marker fid=0x%08X "
+           "handle=0x%08X", x, y, z, dest_cell, fid, handle);
+    return true;
+}
+
 bool destroy_world_refr(void* refr) noexcept {
     // Build 70 — the duplicate-PA fix. disable_ref(fade=true) is PROVEN
     // BROKEN for our objects (offsets.h Build 70 block): the fade entry
@@ -4574,13 +4745,29 @@ bool move_world_refr(void* refr, float x, float y, float z,
     }
 }
 
+std::uint32_t refr_get_handle(void* refr) noexcept {
+    if (!refr || !g_module_base_for_place) return 0;
+    using GetHandleFn = void* (__fastcall*)(void* refr, std::uint32_t* out);
+    const auto fn = reinterpret_cast<GetHandleFn>(
+        g_module_base_for_place + offsets::REFR_GET_HANDLE_RVA);
+    std::uint32_t out = 0;
+    __try {
+        fn(refr, &out);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+    return (out == 0xFFFFFFFFu) ? 0u : out;
+}
+
 void* place_world_object(std::uint32_t base_form_id,
-                         std::uint32_t* out_form_id) noexcept {
+                         std::uint32_t* out_form_id,
+                         std::uint32_t* out_handle) noexcept {
     // Build 70d - the two formerly SILENT failure paths now say their name
     // (throttled): a whole post-respawn test window burned with the tick
     // retrying one of these mutely every 250ms and the log showing nothing.
     static DWORD s_silent_log_ms = 0;
     if (out_form_id) *out_form_id = 0;
+    if (out_handle) *out_handle = 0;
     if (!g_place_at_me || base_form_id == 0) {
         const DWORD n = GetTickCount();
         if (n - s_silent_log_ms >= 2000) {
@@ -4628,10 +4815,16 @@ void* place_world_object(std::uint32_t base_form_id,
     }
 
     auto* rb = reinterpret_cast<std::uint8_t*>(refr);
-    (void)ws_seh_or_u32(rb + offsets::FLAGS_OFF,
-                        offsets::REFR_FLAG_TEMPORARY);
+    // L5 stage 3d — never on a power armour frame (see
+    // offsets::PA_FRAME_FURNITURE_BASE): a worn frame must save its cell.
+    // Its saved copies are the world manifest's to purge at the next load.
+    if (base_form_id != offsets::PA_FRAME_FURNITURE_BASE) {
+        (void)ws_seh_or_u32(rb + offsets::FLAGS_OFF,
+                            offsets::REFR_FLAG_TEMPORARY);
+    }
     const std::uint32_t fid = ws_seh_u32(rb + offsets::FORMID_OFF);
     if (out_form_id) *out_form_id = fid;
+    if (out_handle) *out_handle = handle;
     return refr;
 }
 

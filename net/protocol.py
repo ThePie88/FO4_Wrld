@@ -33,7 +33,7 @@ from typing import ClassVar, Union
 # ------------------------------------------------------------------ constants
 
 PROTOCOL_MAGIC: int = 0xFA
-PROTOCOL_VERSION: int = 27  # v27: loot rework L1, a container is its placed REFR
+PROTOCOL_VERSION: int = 33  # v33: CKPT_RESPAWN, the server's moved checkpoint after a death (stage 3d)
 # v27 (2026-09-23): loot rework L1. ContainerStateEntry (CONTAINER_SEED and
 # CONTAINER_STATE) gains `container_form_id` in front: 16 -> 20 bytes per
 # entry, 87 -> 69 entries per chunk. The server keys container state by the
@@ -306,6 +306,13 @@ class MessageType(IntEnum):
     WORLD_DESPAWN_BCAST = 0x02A3  # B6.14 v22: server -> ALL clients: remove your copy of wid
     WORLD_PA_PIECES_OP    = 0x02A4  # v23: client -> server: full piece list for wid
     WORLD_PA_PIECES_BCAST = 0x02A5  # v23: server -> OTHER clients: replace replica content
+    INV_DIGEST            = 0x02B0  # L5 stage 2 (v28): client -> server: advisory digest of the player's inventory (reliable, no answer)
+    CKPT_REQUEST          = 0x02C0  # L5 stage 3 (v29): server -> client: write a checkpoint at your next quiet moment
+    CKPT_DONE             = 0x02C1  # L5 stage 3 (v29): client -> server: the checkpoint written (or why not)
+    CKPT_BOOT             = 0x02C2  # L5 stage 3 (v29): server -> client, first bootstrap stage: boot from this checkpoint
+    BOOT_RESULT           = 0x02C3  # L5 stage 3 (v29): client -> server: what the client actually loaded at boot
+    PLAYER_LIFE           = 0x02C4  # L5 stage 3c (v32): client -> server: the local player died / respawned / fell back to the reload
+    CKPT_RESPAWN          = 0x02C5  # L5 stage 3d (v33): server -> client: after your death load this checkpoint, moved onto the respawn point (or none)
     NPC_STATE_BCAST  = 0x0270   # B6.5w2 v13: server -> peers: batched NPC pos/anim state (unreliable, ~10 Hz)
     NPC_FIRE         = 0x0271   # B6.6w1 v15: server -> peers: "this raider fires its equipped weapon NOW" (event-driven)
     NPC_DISCOVER     = 0x0272   # B6.6w2 v16: client -> server: "I auto-tracked hostile NPC X (form+base+cell+pos)" (reliable, event-driven)
@@ -1303,6 +1310,14 @@ def is_runtime_form_id(form_id: int) -> bool:
     return (form_id >> 24) == 0xFF
 
 
+# The largest count the wire carries: CONTAINER_STATE entries and the ACK's
+# final_count pack an i32. Stage 0 of L5 (2026-09-27): a container record was
+# allowed to grow past it (two console deposits of 2e9 caps made 4e9), the
+# packers raised inside the join bootstrap, and every later bootstrap stage
+# was lost for every joiner until the record was edited out of the snapshot.
+COUNT_MAX: int = 2 ** 31 - 1
+
+
 def identities_conflict(base_a: int, cell_a: int, base_b: int, cell_b: int) -> bool:
     """Whether two (base, cell) views of one placed REFR contradict each other.
 
@@ -1528,6 +1543,10 @@ class ContainerOpAckStatus(IntEnum):
     REJ_COUNT       = 3   # count <= 0 or absurd
     REJ_KIND        = 4   # unknown op kind
     REJ_INSUFFICIENT = 5  # TAKE count > what the container has (race loser)
+    # L5 stage 1 (2026-09-27): the server's journal failed, so no result can
+    # be made durable; the op is refused and the client undoes it, like any
+    # refusal. Nothing was applied on the server.
+    REJ_UNAVAILABLE = 6
 
 
 @dataclass(frozen=True, slots=True)
@@ -2081,8 +2100,15 @@ class LockBroadcastPayload:
                    lock_cell_id=cid, locked=locked, timestamp_ms=ts)
 
 
+# v28: a piece carries up to 16 mods (a modded weapon on the ground holds 12
+# OMOD records; 8 truncated the visible ones away in the first live test).
+PIECE_MAX_MODS = 16
+_PIECE_FMT = "IiB16If"          # form u32, count i32, mod_n u8, 16 mods, health f32
+_PIECE_VALUES = 3 + PIECE_MAX_MODS + 1
+
+
 def _flatten_pieces(pieces) -> list:
-    """v25 wire shape per piece: form u32, count i32, mod_n u8, mods 8*u32,
+    """v28 wire shape per piece: form u32, count i32, mod_n u8, mods 16*u32,
     health f32 (the stack's Health extra, 0..1; -1.0 = none).
 
     A piece tuple is (form_id, count, mods_tuple, health); shorter legacy
@@ -2091,24 +2117,24 @@ def _flatten_pieces(pieces) -> list:
     for entry in list(pieces)[:12]:
         fid, cnt = entry[0], entry[1]
         mods = tuple(entry[2]) if len(entry) > 2 else ()
-        mods = mods[:8]
+        mods = mods[:PIECE_MAX_MODS]
         health = float(entry[3]) if len(entry) > 3 else -1.0
         flat.extend((fid, cnt, len(mods)))
         flat.extend(mods)
-        flat.extend((0,) * (8 - len(mods)))
+        flat.extend((0,) * (PIECE_MAX_MODS - len(mods)))
         flat.append(health)
-    while len(flat) < 12 * 12:
-        flat.extend((0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1.0))
+    while len(flat) < 12 * _PIECE_VALUES:
+        flat.extend((0, 0, 0) + (0,) * PIECE_MAX_MODS + (-1.0,))
     return flat
 
 
 def _unflatten_pieces(flat, n) -> tuple:
     out = []
     for i in range(min(n, 12)):
-        base = i * 12
+        base = i * _PIECE_VALUES
         fid, cnt, mod_n = flat[base], flat[base + 1], flat[base + 2]
-        mods = tuple(flat[base + 3:base + 3 + min(mod_n, 8)])
-        health = flat[base + 11]
+        mods = tuple(flat[base + 3:base + 3 + min(mod_n, PIECE_MAX_MODS)])
+        health = flat[base + 3 + PIECE_MAX_MODS]
         out.append((fid, cnt, mods, health))
     return tuple(out)
 
@@ -2122,6 +2148,10 @@ class WorldSpawnOpPayload:
     flagged TEMPORARY the moment this ships: from here on the SERVER owns the
     object's lifetime, and the join bootstrap re-creates it everywhere.
     flags bit0 = transient (broadcast, never persisted).
+    flags bit1 = self-described (L5 stage 2, 2026-09-27): pieces[0] is the
+    object ITSELF, a dropped item's base, world count, condition and mods;
+    the receiver writes them onto its placed copy instead of stocking an
+    inventory. Passed through and stored verbatim; no wire change.
     """
     base_form_id: int    # u32 — base form that was placed
     local_form_id: int   # u32 — sender's new REFR (bind target on echo)
@@ -2138,7 +2168,7 @@ class WorldSpawnOpPayload:
     pieces: tuple = ()
 
     _STRUCT: ClassVar[struct.Struct] = struct.Struct(
-        "<II6fIBQB" + "IiB8If" * 12)  # 586B (v25: mods + health per piece)
+        "<II6fIBQB" + _PIECE_FMT * 12)  # 970B (v28: 16 mods + health per piece)
 
     def encode(self) -> bytes:
         flat = _flatten_pieces(self.pieces)
@@ -2189,7 +2219,7 @@ class WorldSpawnBroadcastPayload:
     pieces: tuple = ()
 
     _STRUCT: ClassVar[struct.Struct] = struct.Struct(
-        "<16sIII6fIBQB" + "IiB8If" * 12)  # 606B (v25)
+        "<16sIII6fIBQB" + _PIECE_FMT * 12)  # 990B (v28)
 
     def encode(self) -> bytes:
         pid = self.peer_id.encode("utf-8")[:16].ljust(16, b"\x00")
@@ -2245,6 +2275,301 @@ class WorldDespawnOpPayload:
         return cls(wid, reason, ts)
 
 
+INV_DIGEST_FLAG_COMPLETE = 0x01
+INV_DIGEST_FLAG_IN_POWER_ARMOR = 0x02
+INV_DIGEST_WHY = {0: "changed", 1: "checkpoint", 2: "exit", 3: "first"}
+
+
+@dataclass(frozen=True, slots=True)
+class InvDigestPayload:
+    """L5 stage 2 (2026-09-27) — client -> server: the player's inventory as
+    the client's capture saw it, in one line: digest, counts, why it was sent.
+
+    ADVISORY. The server records the last one per peer (journal + snapshot)
+    and acts on nothing: stage 3 compares a checkpoint against the digest on
+    record, stage 4's ledger is what will judge an inventory. The client sends
+    it when the digest of a COMPLETE capture changes (at most every 10 s),
+    before a test checkpoint and on the way out; an incomplete capture is
+    never sent.
+    """
+    seq: int           # u32 — capture number in the client's session
+    wall_ms: int       # u64 — client wall clock of the capture (Unix ms)
+    digest: int        # u64 — FNV-1a 64 over the canonical records
+    entries: int       # u32
+    stacks: int        # u32 (transient stacks excluded)
+    items: int         # u32 — sum of the stack counts
+    reasons: int       # u32 — 0 = complete
+    flags: int         # u8 — bit0 complete, bit1 in power armor
+    why: int           # u8 — INV_DIGEST_WHY
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IQQIIIIBB")  # 38B
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.seq & 0xFFFFFFFF, self.wall_ms & 0xFFFFFFFFFFFFFFFF,
+            self.digest & 0xFFFFFFFFFFFFFFFF, self.entries & 0xFFFFFFFF,
+            self.stacks & 0xFFFFFFFF, self.items & 0xFFFFFFFF,
+            self.reasons & 0xFFFFFFFF, self.flags & 0xFF, self.why & 0xFF)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "InvDigestPayload":
+        if len(data) != cls._STRUCT.size:
+            raise ValueError(
+                f"InvDigestPayload: expected {cls._STRUCT.size} bytes, got {len(data)}")
+        return cls(*cls._STRUCT.unpack(data))
+
+
+# L5 stage 3a (2026-09-28) — the commanded checkpoint. See the C++ header
+# for the contract; the codes and sizes here are the same bytes.
+CKPT_NAME_MAX = 47                     # 48 bytes on the wire, null-terminated
+CKPT_REASON = {0: "periodic", 1: "demand", 2: "exit", 3: "test"}
+CKPT_STATUS = {0: "ok", 1: "deferred", 2: "save failed", 3: "no device", 4: "refused"}
+BOOT_OUTCOME = {0: "checkpoint", 1: "genesis: none offered", 2: "genesis: file missing",
+                3: "genesis: hash mismatch", 4: "genesis: checkpoint load failed",
+                5: "genesis: no decision in time"}
+
+
+@dataclass(frozen=True, slots=True)
+class CkptRequestPayload:
+    """server -> client: write a checkpoint at your next quiet moment."""
+    seq: int          # u32
+    reason: int       # u8 — CKPT_REASON
+    deadline_s: int   # u16
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IBH")  # 7B
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(self.seq & 0xFFFFFFFF, self.reason & 0xFF,
+                                 self.deadline_s & 0xFFFF)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "CkptRequestPayload":
+        if len(data) != cls._STRUCT.size:
+            raise ValueError(f"CkptRequestPayload: expected {cls._STRUCT.size} bytes, got {len(data)}")
+        return cls(*cls._STRUCT.unpack(data))
+
+
+@dataclass(frozen=True, slots=True)
+class CkptDonePayload:
+    """client -> server: the checkpoint written, or why it was not."""
+    seq: int          # u32 — the request answered (0 = unsolicited: exit, test key)
+    status: int       # u8 — CKPT_STATUS
+    name: str         # ASCII, max 47
+    sha256: bytes     # 32 bytes
+    size: int         # u32
+    digest: int       # u64 — the inventory digest of the same instant (0 = none)
+    digest_seq: int   # u32
+    wall_ms: int      # u64
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IB48s32sIQIQ")  # 109B
+
+    def encode(self) -> bytes:
+        sha = (self.sha256 or b"")[:32].ljust(32, b"\x00")
+        return self._STRUCT.pack(
+            self.seq & 0xFFFFFFFF, self.status & 0xFF,
+            _encode_fixed_string(self.name, CKPT_NAME_MAX), sha,
+            self.size & 0xFFFFFFFF, self.digest & 0xFFFFFFFFFFFFFFFF,
+            self.digest_seq & 0xFFFFFFFF, self.wall_ms & 0xFFFFFFFFFFFFFFFF)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "CkptDonePayload":
+        if len(data) != cls._STRUCT.size:
+            raise ValueError(f"CkptDonePayload: expected {cls._STRUCT.size} bytes, got {len(data)}")
+        seq, status, name, sha, size, digest, dseq, wall = cls._STRUCT.unpack(data)
+        # An all-zero hash means "none" (a failed checkpoint has no file):
+        # kept as b"" so callers test truthiness, like the resume token.
+        if not any(sha):
+            sha = b""
+        return cls(seq, status, _decode_fixed_string(name, CKPT_NAME_MAX), sha,
+                   size, digest, dseq, wall)
+
+
+@dataclass(frozen=True, slots=True)
+class CkptCandidate:
+    """v31 — one checkpoint the client may boot from (CKPT_BOOT carries up
+    to three, newest first) and whether the server holds its bytes."""
+    name: str
+    sha256: bytes
+    size: int
+    seq: int
+    custody: bool
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<48s32sIIB")  # 89B
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            _encode_fixed_string(self.name or "", CKPT_NAME_MAX),
+            (self.sha256 or b"")[:32].ljust(32, b"\x00"),
+            self.size & 0xFFFFFFFF, self.seq & 0xFFFFFFFF, 1 if self.custody else 0)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "CkptCandidate":
+        name, sha, size, seq, custody = cls._STRUCT.unpack(data)
+        return cls(_decode_fixed_string(name, CKPT_NAME_MAX), sha if any(sha) else b"",
+                   size, seq, bool(custody))
+
+
+CKPT_CANDIDATES_MAX = 3
+
+
+@dataclass(frozen=True, slots=True)
+class CkptBootPayload:
+    """server -> client, first bootstrap stage: boot from this checkpoint."""
+    has: bool         # u8 — 0 = boot from the genesis save
+    seq: int          # u32 — the server's record number
+    name: str
+    sha256: bytes
+    size: int
+    digest: int
+    # v30 — the last known position, when newer than the checkpoint (see the
+    # C++ header): the client teleports there once the loaded scene settled.
+    has_pos: bool = False
+    px: float = 0.0
+    py: float = 0.0
+    pz: float = 0.0
+    yaw: float = 0.0
+    pos_ms: int = 0
+    # v31 — custody (stage 3b): the TCP port of the server's bulk service
+    # (0 = none, the bytes stay on the client's disk), the token this
+    # session uploads and fetches under, and the checkpoints on record
+    # newest first, each with whether the server holds its bytes. The
+    # client boots the newest it can get: on its disk, or fetched.
+    bulk_port: int = 0
+    token: bytes = b""
+    candidates: tuple = ()
+    # v32 — the respawn point (stage 3c): where a dead player comes back
+    # without a reload. has_respawn False = the server names none and a
+    # death reloads the last checkpoint, as in stage 3a.
+    has_respawn: bool = False
+    respawn_pos: tuple = (0.0, 0.0, 0.0)
+    respawn_yaw: float = 0.0
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<BI48s32sIQB3ffQH32sB")  # 157B head
+    _TAIL: ClassVar[struct.Struct] = struct.Struct("<B3ff")                    # 17B, after the candidates
+    SIZE: ClassVar[int] = 157 + CKPT_CANDIDATES_MAX * 89 + 17                   # 441B
+
+    def encode(self) -> bytes:
+        sha = (self.sha256 or b"")[:32].ljust(32, b"\x00")
+        if len(self.candidates) > CKPT_CANDIDATES_MAX:
+            raise ProtocolError("too many boot candidates")
+        head = self._STRUCT.pack(
+            1 if self.has else 0, self.seq & 0xFFFFFFFF,
+            _encode_fixed_string(self.name or "", CKPT_NAME_MAX), sha,
+            self.size & 0xFFFFFFFF, self.digest & 0xFFFFFFFFFFFFFFFF,
+            1 if self.has_pos else 0, self.px, self.py, self.pz, self.yaw,
+            self.pos_ms & 0xFFFFFFFFFFFFFFFF,
+            self.bulk_port & 0xFFFF, (self.token or b"")[:32].ljust(32, b"\x00"),
+            len(self.candidates))
+        tail = b"".join(c.encode() for c in self.candidates)
+        tail += bytes(CkptCandidate._STRUCT.size) * (CKPT_CANDIDATES_MAX - len(self.candidates))
+        rp = tuple(self.respawn_pos) + (0.0, 0.0, 0.0)
+        tail += self._TAIL.pack(1 if self.has_respawn else 0, float(rp[0]), float(rp[1]),
+                                float(rp[2]), float(self.respawn_yaw))
+        return head + tail
+
+    @classmethod
+    def decode(cls, data: bytes) -> "CkptBootPayload":
+        if len(data) != cls.SIZE:
+            raise ValueError(f"CkptBootPayload: expected {cls.SIZE} bytes, got {len(data)}")
+        (has, seq, name, sha, size, digest,
+         has_pos, px, py, pz, yaw, pos_ms,
+         bulk_port, token, n) = cls._STRUCT.unpack(data[:cls._STRUCT.size])
+        if not any(sha):
+            sha = b""
+        if not any(token):
+            token = b""
+        csz = CkptCandidate._STRUCT.size
+        cands = []
+        for i in range(min(n, CKPT_CANDIDATES_MAX)):
+            off = cls._STRUCT.size + i * csz
+            cands.append(CkptCandidate.decode(data[off:off + csz]))
+        toff = cls._STRUCT.size + CKPT_CANDIDATES_MAX * csz
+        has_rp, rx, ry, rz, ryaw = cls._TAIL.unpack(data[toff:toff + cls._TAIL.size])
+        return cls(bool(has), seq, _decode_fixed_string(name, CKPT_NAME_MAX), sha, size, digest,
+                   bool(has_pos), px, py, pz, yaw, pos_ms, bulk_port, token, tuple(cands),
+                   bool(has_rp), (rx, ry, rz), ryaw)
+
+
+@dataclass(frozen=True, slots=True)
+class PlayerLifePayload:
+    """client -> server (v32, stage 3c): the local player died, respawned
+    without a reload, or fell back to the reload."""
+    event: int        # u8 — PLAYER_LIFE_EVENTS
+    pos: tuple        # 3 x f32, where it happened
+    wall_ms: int      # u64, client clock
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<B3fQ")  # 21B
+
+    def encode(self) -> bytes:
+        p = tuple(self.pos) + (0.0, 0.0, 0.0)
+        return self._STRUCT.pack(self.event & 0xFF, float(p[0]), float(p[1]), float(p[2]),
+                                 self.wall_ms & 0xFFFFFFFFFFFFFFFF)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "PlayerLifePayload":
+        if len(data) != cls._STRUCT.size:
+            raise ValueError(f"PlayerLifePayload: expected {cls._STRUCT.size} bytes, got {len(data)}")
+        event, x, y, z, wall = cls._STRUCT.unpack(data)
+        return cls(event, (x, y, z), wall)
+
+
+PLAYER_LIFE_EVENTS = {0: "died", 1: "respawned", 2: "reload fallback"}
+
+
+@dataclass(frozen=True, slots=True)
+class CkptRespawnPayload:
+    """server -> client (v33, stage 3d): the answer to a death. has = 1: the
+    server booked `name`, the player's boot checkpoint moved onto the respawn
+    point, in custody; the client fetches it and loads it instead of the
+    engine's reload (one loading screen, no fast travel; a worn power
+    armour frame moves with the player). has = 0: no such checkpoint (no
+    point, no custody, an interior, a frame that cannot be found): the
+    engine's reload and the fast travel of stage 3c run."""
+    has: bool
+    name: str
+    sha256: bytes
+    size: int
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<B48s32sI")  # 85B
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(1 if self.has else 0,
+                                 _encode_fixed_string(self.name or "", CKPT_NAME_MAX),
+                                 (self.sha256 or b"")[:32].ljust(32, b"\x00"),
+                                 self.size & 0xFFFFFFFF)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "CkptRespawnPayload":
+        if len(data) != cls._STRUCT.size:
+            raise ValueError(f"CkptRespawnPayload: expected {cls._STRUCT.size} bytes, got {len(data)}")
+        has, name, sha, size = cls._STRUCT.unpack(data)
+        return cls(bool(has), _decode_fixed_string(name, CKPT_NAME_MAX),
+                   sha if any(sha) else b"", size)
+
+
+@dataclass(frozen=True, slots=True)
+class BootResultPayload:
+    """client -> server: what the client actually loaded at boot."""
+    seq: int          # u32 — the CKPT_BOOT answered (0 = none received)
+    outcome: int      # u8 — BOOT_OUTCOME
+    name: str         # what was loaded
+    wall_ms: int      # u64
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IB48sQ")  # 61B
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(self.seq & 0xFFFFFFFF, self.outcome & 0xFF,
+                                 _encode_fixed_string(self.name or "", CKPT_NAME_MAX),
+                                 self.wall_ms & 0xFFFFFFFFFFFFFFFF)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "BootResultPayload":
+        if len(data) != cls._STRUCT.size:
+            raise ValueError(f"BootResultPayload: expected {cls._STRUCT.size} bytes, got {len(data)}")
+        seq, outcome, name, wall = cls._STRUCT.unpack(data)
+        return cls(seq, outcome, _decode_fixed_string(name, CKPT_NAME_MAX), wall)
+
+
 @dataclass(frozen=True, slots=True)
 class WorldDespawnBroadcastPayload:
     """B6.14 v22 — server -> ALL clients: drop your copy of wid.
@@ -2285,7 +2610,7 @@ class WorldPaPiecesOpPayload:
     pieces: tuple = ()   # up to 12 (form_id, count) pairs
 
     _STRUCT: ClassVar[struct.Struct] = struct.Struct(
-        "<IB" + "IiB8If" * 12 + "Q")  # 553B (v25)
+        "<IB" + _PIECE_FMT * 12 + "Q")  # 937B (v28)
 
     def encode(self) -> bytes:
         flat = _flatten_pieces(self.pieces)
@@ -2315,7 +2640,7 @@ class WorldPaPiecesBroadcastPayload:
     pieces: tuple = ()
 
     _STRUCT: ClassVar[struct.Struct] = struct.Struct(
-        "<16sIB" + "IiB8If" * 12 + "Q")  # 569B (v25)
+        "<16sIB" + _PIECE_FMT * 12 + "Q")  # 953B (v28)
 
     def encode(self) -> bytes:
         pid = self.peer_id.encode("utf-8")[:16].ljust(16, bytes(1))
@@ -4413,6 +4738,13 @@ _TYPE_TO_PAYLOAD_CLS: dict[int, type] = {
     MessageType.WORLD_DESPAWN_BCAST:   WorldDespawnBroadcastPayload,
     MessageType.WORLD_PA_PIECES_OP:    WorldPaPiecesOpPayload,
     MessageType.WORLD_PA_PIECES_BCAST: WorldPaPiecesBroadcastPayload,
+    MessageType.INV_DIGEST:            InvDigestPayload,
+    MessageType.CKPT_REQUEST:          CkptRequestPayload,
+    MessageType.CKPT_DONE:             CkptDonePayload,
+    MessageType.CKPT_BOOT:             CkptBootPayload,
+    MessageType.BOOT_RESULT:           BootResultPayload,
+    MessageType.PLAYER_LIFE:           PlayerLifePayload,
+    MessageType.CKPT_RESPAWN:          CkptRespawnPayload,
     MessageType.NPC_STATE_BCAST:       NPCStateBroadcastPayload,
     MessageType.NPC_FIRE:              NPCFirePayload,
     MessageType.NPC_DISCOVER:          NPCDiscoverPayload,
@@ -4445,17 +4777,34 @@ class Frame:
     payload: Payload
 
 
-def encode_frame(msg_type: int, seq: int, payload: Payload, *, reliable: bool = False) -> bytes:
-    """Encode a full frame (header + payload) to bytes."""
+def encode_payload(payload: Payload) -> bytes:
+    """Serialize a payload alone, the step that can raise (a struct.error on a
+    value outside its field, a ProtocolError on an oversized string). Split
+    from the frame so a reliable sender can run it BEFORE allocating a
+    sequence number: until 2026-09-27 the sequence was allocated first, and a
+    failed encode left a hole the receiver could never fill (retransmits,
+    then a kick), which is how a single overflowing container count took a
+    session down."""
     if isinstance(payload, RawMessage):
         payload_bytes = payload.payload
     else:
         payload_bytes = payload.encode()
     if len(payload_bytes) > MAX_PAYLOAD_SIZE:
         raise ProtocolError(f"payload {len(payload_bytes)}B exceeds max {MAX_PAYLOAD_SIZE}")
+    return payload_bytes
+
+
+def encode_frame_from_bytes(msg_type: int, seq: int, payload_bytes: bytes, *,
+                            reliable: bool = False) -> bytes:
+    """Frame an already-serialized payload (see encode_payload)."""
     flags = FLAG_RELIABLE if reliable else 0
     header = FrameHeader(msg_type=int(msg_type), seq=seq, payload_len=len(payload_bytes), flags=flags)
     return encode_header(header) + payload_bytes
+
+
+def encode_frame(msg_type: int, seq: int, payload: Payload, *, reliable: bool = False) -> bytes:
+    """Encode a full frame (header + payload) to bytes."""
+    return encode_frame_from_bytes(msg_type, seq, encode_payload(payload), reliable=reliable)
 
 
 def decode_frame(data: bytes) -> Frame:

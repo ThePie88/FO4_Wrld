@@ -253,27 +253,30 @@ static void observe_transfer(
                    cid.form_id, cid.base_id, cid.cell_id, item_id);
             return;
         }
-        // Loot rework L1: a runtime ref (0xFF prefix) has no shared identity
-        // yet; the deposit stays local. Mirror of the container_hook check.
-        if (cid.form_id == 0 || (cid.form_id >> 24) == 0xFF) {
-            FW_DBG("[put] PUT into a runtime ref form=0x%X (base=0x%X cell=0x%X) "
-                   "— passthrough, no shared identity yet",
-                   cid.form_id, cid.base_id, cid.cell_id);
-            return;  // passthrough=true
-        }
-
         // 2026-08-16 — THE POWER-ARMOR FRAME IS NOT LOOT. Mirror of the
         // container_hook exemption (see the block comment there for the
         // measured piece-destruction this caused): the frame's inventory
         // is native PA machinery plus the wid-keyed pieces replication,
         // never the loot layer. Blocking a frame PUT would eat the piece
         // exactly like the blocked TAKEs did.
+        // 2026-09-28 — before the identity test below, as in
+        // container_hook.cpp (see the note there): every frame is a runtime
+        // ref, and the L1 exit placed first ate every manual deposit.
         if (cid.base_id == 0x0002079Eu) {
             FW_DBG("[put] PUT on a power-armor frame — passthrough, "
                    "frames are not loot");
             // v23 — a manual deposit IS state: report after g_orig runs.
             out->pa_frame_ref = container_refr;
             out->pa_frame_fid = cid.form_id;
+            return;  // passthrough=true
+        }
+
+        // Loot rework L1: a runtime ref (0xFF prefix) has no shared identity
+        // yet; the deposit stays local. Mirror of the container_hook check.
+        if (cid.form_id == 0 || (cid.form_id >> 24) == 0xFF) {
+            FW_DBG("[put] PUT into a runtime ref form=0x%X (base=0x%X cell=0x%X) "
+                   "— passthrough, no shared identity yet",
+                   cid.form_id, cid.base_id, cid.cell_id);
             return;  // passthrough=true
         }
 
@@ -358,7 +361,17 @@ std::int64_t __fastcall detour_transfer_item(
     }
     FW_DBG("[put] calling g_orig_transfer(this=%p, idx=%d, cnt=%u, side=%u)",
            this_menu, inv_idx, count, side);
+    // Stage 0 of L5 (2026-09-27): a deposit into an actor's inventory also
+    // reaches the add detour (Actor and PlayerCharacter share slot 0x7A),
+    // which reported it a second time as a PUT. The flag tells it this
+    // deposit is already ours; restored to its previous value, never
+    // cleared, so a nested transfer keeps the outer one's state. Withdraws
+    // leave it alone: those are the add detour's TAKEs.
+    const bool deposit = (side == offsets::CMENU_SIDE_DEPOSIT);
+    const bool prev_menu_transfer = tls_menu_transfer;
+    if (deposit) tls_menu_transfer = true;
     const auto rc = g_orig_transfer(this_menu, inv_idx, count, side);
+    tls_menu_transfer = prev_menu_transfer;
     FW_DBG("[put] g_orig_transfer returned %lld",
            static_cast<long long>(rc));
 

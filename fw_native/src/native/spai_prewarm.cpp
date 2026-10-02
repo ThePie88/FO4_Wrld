@@ -16,6 +16,7 @@
 
 #include "../log.h"
 #include "../main_thread_dispatch.h"  // FW_MSG_SPAI_PREWARM, get_target_hwnd
+#include "../persist/lifecycle.h"     // exiting(): no NIF loads while the engine shuts down
 #include "scene_inject.h"             // spai_force_load_path
 
 namespace fw::native::spai {
@@ -70,6 +71,11 @@ void prewarm_worker(unsigned int delay_ms, unsigned int throttle_ms) {
     // the cursor reaches `total` even if PostMessage failures lost
     // some — the cursor advance is what's authoritative.
     for (std::size_t i = 0; i < total; ++i) {
+        if (fw::persist::exiting()) {
+            FW_LOG("[spai] worker: exit in progress, prewarm stopped at %zu/%zu",
+                   i, total);
+            return;
+        }
         const HWND h = fw::dispatch::get_target_hwnd();
         if (h) {
             // Best-effort post — failures are logged but not retried.

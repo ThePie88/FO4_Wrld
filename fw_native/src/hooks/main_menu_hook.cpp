@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <cstdint>
 #include <string>
 #include <thread>
@@ -31,6 +32,9 @@
 #include "../render/editor_overlay.h"  // the panel, and its input capture
 #include "../render/chat_overlay.h"    // phase 4: Enter opens the chat, the chat takes the keyboard
 #include "../native/chargen_stage.h"     // 2026-08-08: stage the player for creation
+#include "../persist/inventory_capture.h" // L5 stage 2: the player's inventory, read once a second
+#include "../persist/checkpoint.h"        // L5 stage 2: the test checkpoint key
+#include "../persist/lifecycle.h"         // 2026-09-28: exiting(), the whole tick stops with the world
 #include "../native/face_borrow.h"       // v20: build peers' faces locally
 #include "../offsets.h"
 #include "equip_cycle.h"  // B8: WndProc dispatches FW_MSG_FORCE_EQUIP_CYCLE_*
@@ -63,11 +67,57 @@ std::atomic<bool> g_load_dispatched{false};
 // Settings snapshot captured at install time.
 std::string g_save_name;
 std::uint32_t g_delay_ms = 4000;   // v4 default: 4s after registrar hit
+// L5 stage 3a — the boot: the genesis save from the ini, and what the
+// server's word made of it (the checkpoint's name and record number, the
+// outcome code for BOOT_RESULT). Written by the boot worker, read on the
+// main thread after it posted the load message.
+std::string   g_genesis_name;
+std::string   g_boot_name;
+std::uint32_t g_boot_seq = 0;
+std::uint8_t  g_boot_outcome = 5;   // kBootOutcomeNoDecision until the worker decides
+constexpr DWORD kBootWaitMs = 20000;   // how long the boot waits for CKPT_BOOT
+// v30 — the last known position the server sent with the boot, applied
+// once the loaded scene has settled (the fallback for an exit that left
+// no checkpoint: a crash, a kill). Written by the boot worker, consumed
+// on the main thread.
+std::atomic<bool> g_boot_pos_pending{false};
+float         g_boot_pos[3] = {0.0f, 0.0f, 0.0f};
+float         g_boot_yaw = 0.0f;
+std::uint64_t g_boot_pos_ms = 0;
+DWORD         g_boot_pos_since_ms = 0;   // when the load was accepted; the settle wait starts here
+constexpr DWORD kBootPosSettleMaxMs = 90000;
+
+// The position fallback: one teleport of the local player, when the scene
+// the load produced has settled. Main thread (the tick block).
+void boot_position_tick() {
+    if (!g_boot_pos_pending.load(std::memory_order_relaxed)) return;
+    if (g_boot_pos_since_ms == 0) return;   // the load has not been accepted yet
+    const DWORD now = GetTickCount();
+    if (!fw::native::ghost_scene_settled() || fw::persist::load_in_flight()
+            || fw::engine::get_pc_parent_cell() == nullptr) {
+        if (now - g_boot_pos_since_ms > kBootPosSettleMaxMs) {
+            g_boot_pos_pending.store(false, std::memory_order_relaxed);
+            FW_WRN("[boot] last position NOT restored: the scene never settled in %u ms",
+                   unsigned(kBootPosSettleMaxMs));
+        }
+        return;
+    }
+    g_boot_pos_pending.store(false, std::memory_order_relaxed);
+    void* player = fw::engine::get_local_player();
+    const bool ok = player && fw::engine::actor_teleport_handoff(
+        player, g_boot_pos[0], g_boot_pos[1], g_boot_pos[2], g_boot_yaw);
+    FW_LOG("[boot] last position %s: (%.1f, %.1f, %.1f) yaw %.2f, the server's word from "
+           "after the checkpoint (%u ms after the load)",
+           ok ? "restored" : "NOT restored (teleport failed)",
+           g_boot_pos[0], g_boot_pos[1], g_boot_pos[2], g_boot_yaw,
+           unsigned(now - g_boot_pos_since_ms));
+}
 // 2026-08-08 — virtual-key code that toggles the character editor, cached from
 // the ini at install. Read on the main thread from the subclass below; there is
 // no global config accessor in this project, every module is handed what it
 // needs at init. 0 = the key is not configured.
 std::uint32_t g_editor_key = 0;
+std::uint32_t g_checkpoint_key = 0;   // L5 stage 2: asks for a test checkpoint
 
 // ----------------------------------------------------------------- WndProc subclass
 //
@@ -170,6 +220,27 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
     }
 
+    // 2026-09-28 — from the exit save request on, every message of ours
+    // (WM_APP range: container/door/lock/NPC applies, equip and mesh applies,
+    // the SPAI prewarm, the ghost bone tick and pose applies) is dropped
+    // unread: each of them does engine work, and the engine is going away.
+    if (msg >= WM_APP && msg < WM_APP + 0x100 && fw::persist::exiting()) {
+        return 0;
+    }
+
+    // L5 stage 2: the test checkpoint key. F10 (the default) is a SYSTEM key
+    // on Windows: it arrives as WM_SYSKEYDOWN, never as WM_KEYDOWN, which is
+    // why the first live test pressed it and nothing happened. Both messages
+    // are accepted; the key only files the request, the save runs at the
+    // engine's save point on a later frame. Swallowed, so F10 does not also
+    // activate the window menu. Not while a chat line is being typed.
+    if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && (lp & 0x40000000) == 0 &&
+        !fw::render::chat::typing() && g_checkpoint_key != 0 &&
+        static_cast<std::uint32_t>(wp) == g_checkpoint_key) {
+        fw::persist::checkpoint::request_test("key");
+        return 0;
+    }
+
     // THE TOGGLE KEY COMES FIRST. Before the editor is offered the message,
     // because the editor swallows WM_KEYDOWN while it is open — so handling the
     // toggle after it meant the key that CLOSES the panel could never arrive.
@@ -254,6 +325,18 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         FW_LOG("ALT+F4 DETECTED BY USER — window close requested; any AV "
                "logged after this line is process-teardown fallout, NOT a "
                "gameplay crash");
+        // L5 stage 3a — the last checkpoint, BEFORE the goodbye: a window
+        // close is an exit the engine queues no save for, and the first
+        // live test lost 50 s of walking to it. Written now, reported at
+        // once on this thread; then the modules stand still for the
+        // teardown, then the goodbye.
+        if (!fw::persist::exiting()) {
+            fw::persist::checkpoint::run_now_here(fw::net::kCkptReasonExit, /*immediate=*/true);
+            // L5 stage 3b — the bytes to the server before the goodbye: a
+            // few seconds at most, the next session catches up.
+            fw::persist::checkpoint::wait_uploads(5000);
+        }
+        fw::persist::note_exit();
         fw::diag::note_user_shutdown();
         // The server is told WHILE this process can still speak. From here on
         // the process is going down and the network thread may never run
@@ -314,7 +397,9 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         TickReentryGuard() : taken(!flag()) { if (taken) flag() = true; }
         ~TickReentryGuard() { if (taken) flag() = false; }
     } tick_guard;
-    if (tick_guard.taken) {
+    // 2026-09-28 — and not after the exit save request: everything in here
+    // polls the engine, and the engine is going away.
+    if (tick_guard.taken && !fw::persist::exiting()) {
         static const std::uintptr_t s_base = reinterpret_cast<std::uintptr_t>(
             GetModuleHandleW(L"Fallout4.exe"));
         fw::native::chargen_dump::maybe_dump_catalogue(s_base);
@@ -357,6 +442,8 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // work, so it lives on this tick like everything else that touches
         // the scene.
         fw::native::world_spawn::tick(s_base);
+        // v30 — the boot's position fallback, once the loaded scene settled.
+        boot_position_tick();
         // Phase 2: the peers' ghosts are born and die with the session
         // lifecycle instead of with a timer. It lives here for the same reason
         // as everything else: every scene graph mutation is main-thread only,
@@ -372,6 +459,9 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // Loot rework L3.4: a container activated before the engine built
         // its runtime list is aligned again as soon as the list exists.
         fw::hooks::container_activation_tick();
+        // L5 stage 2: the player's inventory, read as the save writes it,
+        // once a second, in observation only.
+        fw::persist::inventory::tick(s_base);
     }
     // The heartbeat stops here: the tick block above has already consumed
     // it, and the game knows nothing about this timer.
@@ -389,16 +479,46 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         FW_LOG("[main_menu] WM_APP+0x42 received on WndProc main thread — "
                "invoking engine LoadGame('%s')", g_save_name.c_str());
         // No ghost may be built while inside this call. It BLOCKS for seconds
-        // (six, measured) and the engine pumps the message queue meanwhile, so
-        // the tick block above keeps running, PEER_JOIN included, which is
-        // drained from exactly there. See the gate above ghost_scene_is_stable.
+        // (six, measured) and the engine pumps the message queue meanwhile.
+        // Since 2026-09-18 the tick block above does not run inside itself
+        // (TickReentryGuard), so nothing is drained from this WndProc during
+        // the load; the bracket stays because the drain runs again on the
+        // first pass after this call returns, and the scene is not stable
+        // until the load has settled. See the gate above ghost_scene_is_stable.
         fw::native::ghost_note_load_begin();
-        const bool ok = fw::engine::load_game_by_name(g_save_name.c_str());
+        bool ok = fw::engine::load_game_by_name(g_save_name.c_str());
         fw::native::ghost_note_load_end();
+        // L5 stage 3a — a checkpoint the engine refuses (rc 0: unreadable,
+        // wrong version) falls back to the genesis save, and the server is
+        // told so it counts a failed boot against that checkpoint.
+        if (!ok && g_boot_outcome == fw::net::kBootOutcomeCheckpoint
+                && !g_genesis_name.empty() && g_genesis_name != g_save_name) {
+            FW_WRN("[boot] checkpoint '%s' was refused by the engine: the genesis "
+                   "save '%s' boots instead", g_save_name.c_str(), g_genesis_name.c_str());
+            g_boot_outcome = fw::net::kBootOutcomeLoadFailed;
+            g_save_name = g_genesis_name;
+            fw::native::ghost_note_load_begin();
+            ok = fw::engine::load_game_by_name(g_save_name.c_str());
+            fw::native::ghost_note_load_end();
+        }
+        {
+            fw::net::BootResultPayload r{};
+            r.seq     = g_boot_seq;
+            r.outcome = g_boot_outcome;
+            std::snprintf(r.name, sizeof(r.name), "%s", ok ? g_save_name.c_str() : "");
+            r.wall_ms = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count());
+            fw::net::client().enqueue_boot_result(r);
+            FW_LOG("[boot] BOOT_RESULT sent: outcome %u, loaded '%s' (checkpoint seq %u)",
+                   unsigned(r.outcome), r.name, r.seq);
+        }
         if (!ok) {
+            g_boot_pos_pending.store(false, std::memory_order_relaxed);
             FW_WRN("[main_menu] LoadGame returned failure — main menu stays up");
             return 0;
         }
+        g_boot_pos_since_ms = GetTickCount();   // v30: the settle wait of the position fallback
         // B8 force-equip-cycle — DISABLED 2026-05-08.
         //
         // Was: post-LoadGame BipedAnim normalize via direct engine call to
@@ -686,6 +806,107 @@ void worker_thread_main() {
         Sleep(50);
     }
 
+    // L5 stage 3a — which save boots: the server's word, up to 20 s. The
+    // session was opened at DLL start, so CKPT_BOOT (the first bootstrap
+    // stage) is normally here long before the menu is; the wait is for a
+    // slow server, and its end is the genesis save, said in the log.
+    if (!g_genesis_name.empty()) {
+        const auto b0 = std::chrono::steady_clock::now();
+        fw::net::Client::BootCheckpoint bc{};
+        int st = 0;
+        while (std::chrono::steady_clock::now() - b0 < std::chrono::milliseconds(kBootWaitMs)) {
+            if (g_worker_should_stop.load()) return;
+            st = fw::net::client().boot_decision(&bc);
+            if (st != 0) break;
+            Sleep(100);
+        }
+        const unsigned waited = static_cast<unsigned>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - b0).count());
+        if (st == 0) {
+            g_boot_outcome = fw::net::kBootOutcomeNoDecision;
+            FW_LOG("[boot] no word from the server in %u ms: the genesis save '%s' boots",
+                   waited, g_genesis_name.c_str());
+        } else if (st == 1) {
+            g_boot_outcome = fw::net::kBootOutcomeNoneOffered;
+            FW_LOG("[boot] the server has no checkpoint for this identity: the genesis "
+                   "save '%s' boots", g_genesis_name.c_str());
+        }
+        // v30 — the last known position, for either decision.
+        if (st != 0 && bc.has_pos) {
+            g_boot_pos[0] = bc.pos[0]; g_boot_pos[1] = bc.pos[1]; g_boot_pos[2] = bc.pos[2];
+            g_boot_yaw = bc.yaw;
+            g_boot_pos_ms = bc.pos_ms;
+            g_boot_pos_pending.store(true, std::memory_order_relaxed);
+            FW_LOG("[boot] the server also sent a last position newer than the save: "
+                   "(%.1f, %.1f, %.1f); applied once the scene has settled",
+                   bc.pos[0], bc.pos[1], bc.pos[2]);
+        }
+        if (st == 2) {
+            char why[96] = "";
+            const int v = fw::persist::checkpoint::verify_file(bc.name, bc.sha256, bc.size,
+                                                               why, sizeof(why));
+            g_boot_seq  = bc.seq;
+            g_boot_name = bc.name;
+            if (v == 0) {
+                g_save_name    = bc.name;
+                g_boot_outcome = fw::net::kBootOutcomeCheckpoint;
+                FW_LOG("[boot] checkpoint '%s' verified on disk (%u bytes, sha256 matches "
+                       "the record, %u ms): it boots instead of '%s'", bc.name, bc.size,
+                       waited, g_genesis_name.c_str());
+            } else {
+                // L5 stage 3b — not on this disk (another machine, a wiped
+                // Saves folder) or not the recorded bytes: the server's
+                // custody, then the older candidates, on this disk or
+                // fetched, newest first. Only then the genesis save.
+                FW_LOG("[boot] checkpoint '%s' is not usable on this disk (%s): trying the "
+                       "server's custody and the older checkpoints", bc.name, why);
+                bool booted = false;
+                for (std::uint8_t i = 0; i < bc.n_candidates && !booted; ++i) {
+                    const fw::net::CkptCandidate& c = bc.candidates[i];
+                    char cname[fw::net::kCkptNameLen];
+                    std::memcpy(cname, c.name, sizeof(cname));
+                    cname[sizeof(cname) - 1] = '\0';
+                    if (!cname[0]) continue;
+                    const bool is_pick = std::strcmp(cname, bc.name) == 0;
+                    char cw[96] = "";
+                    int cv = is_pick ? v
+                                     : fw::persist::checkpoint::verify_file(cname, c.sha256, c.size,
+                                                                            cw, sizeof(cw));
+                    const char* how = "on this disk";
+                    if (cv != 0) {
+                        if (!c.custody) {
+                            FW_LOG("[boot] candidate '%s': not on this disk and not in the "
+                                   "server's custody", cname);
+                            continue;
+                        }
+                        cv = fw::persist::checkpoint::fetch_from_custody(cname, c.sha256, c.size,
+                                                                         cw, sizeof(cw));
+                        how = "fetched from the server's custody";
+                        if (cv != 0) {
+                            FW_WRN("[boot] candidate '%s': fetch failed (%s)", cname, cw);
+                            continue;
+                        }
+                    }
+                    g_save_name    = cname;
+                    g_boot_name    = cname;
+                    g_boot_seq     = c.seq;
+                    g_boot_outcome = fw::net::kBootOutcomeCheckpoint;
+                    FW_LOG("[boot] checkpoint '%s' (%s%s) boots instead of '%s'", cname, how,
+                           is_pick ? "" : ", an older checkpoint", g_genesis_name.c_str());
+                    booted = true;
+                }
+                if (!booted) {
+                    g_boot_outcome = (v == 2) ? fw::net::kBootOutcomeMissing
+                                              : fw::net::kBootOutcomeMismatch;
+                    FW_WRN("[boot] checkpoint '%s' NOT usable (%s) and no candidate could be "
+                           "had: the genesis save '%s' boots; the server is told",
+                           bc.name, why, g_genesis_name.c_str());
+                }
+            }
+        }
+    }
+
     // Now the menu should be fully visible and idle. Install subclass +
     // post the message.
     bool expected = false;
@@ -737,7 +958,9 @@ bool install_main_menu_hook(std::uintptr_t module_base,
                             const fw::config::Settings& cfg)
 {
     g_save_name = cfg.auto_load_save;
+    g_genesis_name = cfg.auto_load_save;
     g_editor_key = cfg.editor_key;
+    g_checkpoint_key = cfg.checkpoint_test_key;
     if (g_editor_key) {
         FW_LOG("[editor] toggle key armed: virtual-key 0x%02X", g_editor_key);
     }

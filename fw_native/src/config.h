@@ -168,6 +168,35 @@ struct Settings {
     // relays.
     bool          world_spawn_sync = true;
 
+    // L5 stage 1 (2026-09-27) - the save/load lifecycle module
+    // (persist/lifecycle.cpp): the engine's own saves are refused, the
+    // autosave/quicksave/quickload requests dropped, every load observed.
+    // false = none of its seven detours is installed and the engine saves
+    // and loads as vanilla. The switch exists as the fallback: a session
+    // that misbehaves around a load can be re-run without the module and
+    // without a rebuild.
+    bool          persist_lifecycle = true;
+
+    // L5 stage 3c (2026-09-28) - the resurrect path of persist/death.cpp:
+    // the player's own Resurrect, then the move to the respawn point, no
+    // reload. OFF: every death goes through the engine's reload of the last
+    // checkpoint, then the fast travel to the server's point. Four live
+    // tests left the resurrect fighting the engine (an AI process that never
+    // grew back, the kill-cam, a console kill its health check refused,
+    // radiation through SetGhost); the reload resets all of that. Kept as a
+    // switch, not written by the launcher.
+    bool          death_resurrect = false;
+
+    // L5 stage 2 (2026-09-27) - the player's inventory read once a second
+    // on the main thread, in observation only (persist/inventory_capture.cpp):
+    // a summary line when it changes, every stack at debug level. false =
+    // the reader never runs. It writes nothing to the engine either way.
+    bool          inventory_capture = true;
+    // L5 stage 2 - virtual-key that asks for a TEST checkpoint: a granted
+    // named save (fwck_test_N) plus the inventory manifest of the same
+    // instant, for tools/fos_inventory.py --diff. 0 = off. Default F10.
+    std::uint32_t checkpoint_test_key = 0x79;
+
     // 2026-08-08 — ghost body cull. true (default) = shipping behaviour: the
     // ghost's body geometry is hidden when the peer wears body armour. false
     // = log only. That is the A/B for the "player's own body vanishes on

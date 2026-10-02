@@ -129,15 +129,18 @@ class TestPersistenceLoad:
         assert a1 is not None and a1.alive is True
         assert a2 is not None and a2.alive is False
 
-    def test_restores_server_config(self, tmp_path: Path):
+    def test_server_config_is_not_restored_from_the_snapshot(self, tmp_path: Path):
+        """Stage 0 of L5 (2026-09-27): the tick rate and the peer timeout are
+        configuration, not world state. Restoring them from the file made a
+        tuning knob that every boot silently reverted."""
         src = ServerState(tick_rate_hz=42, peer_timeout_ms=7_777.0)
         path = tmp_path / "snap.json"
         snapshot(src, path)
 
         dst = ServerState()  # defaults differ
         load_into(dst, path)
-        assert dst.tick_rate_hz == 42
-        assert dst.peer_timeout_ms == 7_777.0
+        assert dst.tick_rate_hz == ServerState().tick_rate_hz
+        assert dst.peer_timeout_ms == ServerState().peer_timeout_ms
 
     def test_missing_file_raises(self, tmp_path: Path):
         with pytest.raises(FileNotFoundError):

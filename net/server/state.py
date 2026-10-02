@@ -5,7 +5,10 @@ Pure data + mutation methods. No I/O, no asyncio here — main.py drives this.
 """
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import itertools
+import logging
 import secrets
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -22,10 +25,14 @@ from protocol import (  # noqa: E402
     WelcomePayload, PeerJoinPayload, PeerLeavePayload,
     PosStatePayload, ActorEventPayload,
     ContainerOpPayload, ContainerOpKind, ContainerOpAckPayload,
+    EquipModRecord,
     is_runtime_form_id,
     identities_conflict,
+    COUNT_MAX,
     RejectCode, RESUME_TOKEN_LEN, RESUME_TOKEN_TTL_S,
 )
+
+log = logging.getLogger("fw.state")
 
 
 class SessionState(IntEnum):
@@ -78,6 +85,13 @@ class PeerSession:
 
     channel: ReliableChannel = field(default_factory=ReliableChannel)
     rate: RateTracker = field(default_factory=RateTracker)
+    # Stage 0 of L5 (2026-09-27): item ops (container take/put) get their own
+    # bucket. They shared `rate` with the 20 Hz position stream, so a burst of
+    # position updates could refuse a Take All with RATE_LIMITED, and a
+    # refused take is undone on the client. 40 tokens cover a Take All of a
+    # full container; 15/s is far above any hand-driven rate.
+    item_rate: RateTracker = field(
+        default_factory=lambda: RateTracker(capacity=40, refill_per_sec=15.0))
 
     # Tracking for validation + debug
     last_pos: Optional[PosStatePayload] = None
@@ -142,6 +156,16 @@ class PeerSession:
     # One-shot: says once, not sixty times a second, that this peer's
     # position is being withheld from the others pending character creation.
     chargen_hidden_logged: bool = False
+    # L5 stage 3a — the checkpoint cadence, per session: the last request
+    # number, when it went out, when the last one was reported written, and
+    # when a deferred one may be asked again.
+    ckpt_seq: int = 0
+    ckpt_last_request_ms: float = 0.0
+    ckpt_last_done_ms: float = 0.0
+    ckpt_retry_at_ms: float = 0.0
+    # L5 stage 3b — the token this session uploads and fetches checkpoint
+    # bytes under (minted for the boot word, see server/custody.py).
+    bulk_token: bytes = b""
 
     def touch(self, now_ms: float) -> None:
         self.last_seen_ms = now_ms
@@ -200,6 +224,63 @@ class ActorWorldState:
 
 
 # B4: world-state replication (quest progress + global variables).
+@dataclass(slots=True)
+class CheckpointRecord:
+    """L5 stage 3a (2026-09-28) — one checkpoint a client reported written.
+
+    The character lives in this file, on the client's disk (custody on the
+    server is stage 3b): name, hash and size are what the next boot is held
+    to. `watermark_lsn` is the journal head when the report arrived: the
+    world the checkpoint saw is the world up to that record, which is what
+    stage 4 replays after it. `status`: provisional until a boot loaded it
+    (confirmed); `boot_failures` counts the boots that could not use it, and
+    two of them take it out of the boot pick.
+    """
+    peer_id: str
+    identity_hex: str = ""
+    seq: int = 0
+    name: str = ""
+    sha256_hex: str = ""
+    size: int = 0
+    digest: int = 0
+    digest_seq: int = 0
+    wall_ms: int = 0
+    received_ms: float = 0.0
+    watermark_lsn: int = 0
+    reason: int = 0
+    status: str = "provisional"
+    boot_failures: int = 0
+    # L5 stage 3b (2026-09-28): the server holds the bytes of this checkpoint
+    # (an upload hashed to sha256_hex); a boot on any machine can fetch them.
+    custody: bool = False
+
+
+CHECKPOINTS_KEPT = 3
+
+
+@dataclass(slots=True)
+class InvDigestRecord:
+    """L5 stage 2 (2026-09-27) — the last inventory digest a peer reported.
+
+    ADVISORY: written by INV_DIGEST, read by nobody yet. Stage 3 compares a
+    checkpoint against it, stage 4's ledger is what will judge an inventory.
+    `count` is how many digests this peer has sent since the record was
+    created, live and replayed alike; `received_ms` is the server clock.
+    """
+    peer_id: str
+    seq: int = 0
+    wall_ms: int = 0
+    digest: int = 0
+    entries: int = 0
+    stacks: int = 0
+    items: int = 0
+    reasons: int = 0
+    flags: int = 0
+    why: int = 0
+    received_ms: float = 0.0
+    count: int = 0
+
+
 @dataclass(slots=True)
 class QuestStageState:
     """Authoritative stage for one quest.
@@ -347,6 +428,108 @@ class ResumeTicket:
     expires_at_ms: float
 
 
+def _token_deadline_ms(ticket: "ResumeTicket") -> float:
+    """When a resume token stops being valid: the stored expiry, never later
+    than issue time plus the TTL. Stage 0 of L5 (2026-09-27): persisted
+    times were on the monotonic clock, so after a reboot a token minted at
+    uptime 90,000 s came back with a deadline the new uptime would not reach
+    for a day. The clamp makes a stored deadline mean what it says whatever
+    clock wrote it; the server clock is wall-clock anchored since the same
+    change, so new tokens compare correctly across restarts."""
+    return min(ticket.expires_at_ms, ticket.issued_at_ms + RESUME_TOKEN_TTL_S * 1000.0)
+
+
+def _token_key(token: bytes) -> bytes:
+    """Resume tokens are bearer credentials, so what the server keeps (in
+    memory, in the snapshot, in the journal) is their SHA-256, never the
+    token: a copy of the world file no longer lets anyone rejoin as
+    somebody else. Stage 1 of L5, 2026-09-27."""
+    return hashlib.sha256(token).digest()
+
+
+# ---------------------------------------------------------------- journal
+#
+# Every mutation of the world that `ServerState` accepts is described to
+# the journal as (method name, arguments) and replayed by calling the same
+# method again (stage 1 of L5, 2026-09-27; see server/journal.py). The
+# arguments are made JSON-safe here: a payload dataclass is tagged with its
+# class name, bytes travel as hex, a dict with integer keys as a list of
+# pairs; lists come back as tuples, which every method here accepts. A
+# method whose replay must not re-derive something (a world spawn's wid, a
+# resume token's hash) has a `_restore_*` twin that takes the derived value.
+
+_JOURNAL_TYPES: dict[str, type] = {
+    cls.__name__: cls
+    for cls in (ContainerOpPayload, ActorEventPayload, ContainerOpAckPayload,
+                EquipModRecord, OutfitEntry)
+}
+
+
+def _jsonable(v: Any) -> Any:
+    if dataclasses.is_dataclass(v) and not isinstance(v, type):
+        return {"__cls__": type(v).__name__,
+                "f": {f.name: _jsonable(getattr(v, f.name))
+                      for f in dataclasses.fields(v)}}
+    if isinstance(v, bytes):
+        return {"__bytes__": v.hex()}
+    if isinstance(v, dict):
+        return {"__dict__": [[_jsonable(k), _jsonable(x)] for k, x in v.items()]}
+    if isinstance(v, (list, tuple, set, frozenset)):
+        return [_jsonable(x) for x in v]
+    if v is None or isinstance(v, (bool, int, float, str)):
+        return v
+    raise TypeError(f"journal cannot encode {type(v).__name__}")
+
+
+def _from_jsonable(v: Any) -> Any:
+    if isinstance(v, dict):
+        if "__cls__" in v:
+            cls = _JOURNAL_TYPES[v["__cls__"]]
+            return cls(**{k: _from_jsonable(x) for k, x in v["f"].items()})
+        if "__bytes__" in v:
+            return bytes.fromhex(v["__bytes__"])
+        if "__dict__" in v:
+            return {_from_jsonable(k): _from_jsonable(x) for k, x in v["__dict__"]}
+        return {k: _from_jsonable(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return tuple(_from_jsonable(x) for x in v)
+    return v
+
+
+# The methods a journal record may name, and what replays them. Anything
+# else in a record is refused with a warning: a record from a newer server
+# names nothing this one can run.
+_JOURNAL_OPS: dict[str, str] = {
+    "record_actor_event": "record_actor_event",
+    "record_container_op": "record_container_op",
+    "create_container": "create_container",
+    "reseed_container": "reseed_container",
+    "forget_container": "forget_container",
+    "remember_container_verdict": "remember_container_verdict",
+    "record_quest_stage": "record_quest_stage",
+    "record_global_var": "record_global_var",
+    "record_inv_digest": "record_inv_digest",
+    "record_checkpoint": "record_checkpoint",
+    "confirm_checkpoint": "confirm_checkpoint",
+    "set_checkpoint_custody": "set_checkpoint_custody",
+    "record_appearance": "record_appearance",
+    "record_lock": "record_lock",
+    "record_world_spawn": "_restore_world_spawn",
+    "remove_world_spawn": "remove_world_spawn",
+    "set_world_spawn_pieces": "set_world_spawn_pieces",
+    "mark_world_spawn_worn": "mark_world_spawn_worn",
+    "return_worn_frame": "return_worn_frame",
+    "record_presence_name": "record_presence_name",
+    "record_presence_equip": "record_presence_equip",
+    "clear_presence_outfit": "clear_presence_outfit",
+    "record_presence_worn_frame": "record_presence_worn_frame",
+    "drop_items_from_outfit": "drop_items_from_outfit",
+    "issue_resume_token": "_restore_resume_token",
+    "retire_resume_tokens": "retire_resume_tokens",
+    "consume_resume_token": "_consume_resume_token_hash",
+}
+
+
 def _peer_id_invalid(peer_id: str) -> bool:
     """The one place that decides whether a peer id is well formed."""
     if not peer_id or len(peer_id) > MAX_CLIENT_ID_LEN:
@@ -432,6 +615,10 @@ class ServerState:
     _quests: dict[int, QuestStageState] = field(default_factory=dict)
     # B4: global variables, keyed by global_form_id.
     _globals: dict[int, GlobalVarState] = field(default_factory=dict)
+    # L5 stage 2: peer_id -> the last inventory digest it reported (advisory).
+    _inv_digests: dict[str, InvDigestRecord] = field(default_factory=dict)
+    # L5 stage 3a: peer_id -> its checkpoints, newest first, CHECKPOINTS_KEPT deep.
+    _checkpoints: dict[str, list[CheckpointRecord]] = field(default_factory=dict)
     # v20 — peer_id -> appearance recipe line. See record_appearance for why
     # the server stores it verbatim and does not parse it.
     _appearances: dict[str, str] = field(default_factory=dict)
@@ -443,11 +630,75 @@ class ServerState:
     # v26 — peer_id -> PeerPresence. Survives the peer leaving, exactly like
     # the appearance recipe above, because that is what a late joiner needs.
     _presence: dict[str, PeerPresence] = field(default_factory=dict)
-    # v26 — resume token (raw 32 bytes) -> ticket. In memory and in the
-    # snapshot, because a server restart must not lock every client out.
+    # v26 — SHA-256 of the resume token -> ticket (hashed since stage 1 of
+    # L5; see _token_key). In memory and in the snapshot, because a server
+    # restart must not lock every client out.
     _resume_tokens: dict[bytes, ResumeTicket] = field(default_factory=dict)
 
+    # Stage 1 of L5 (2026-09-27) — the durable journal, when the server runs
+    # with one (server/journal.py). Every mutation below that returns
+    # success appends a record through _journal(); `applied_lsn` is the LSN
+    # of the last one, live or replayed, and the snapshot carries it so a
+    # boot replays only what came after.
+    journal: Any = field(default=None, repr=False)
+    applied_lsn: int = 0
+    _replaying: bool = field(default=False, repr=False)
+
+    # ---------------------------------------------------------- journal
+
+    def _journal(self, _op: str, **args: Any) -> None:
+        # The name is private so no method argument can collide with it
+        # (record_container_op passes its payload as `op`).
+        if self._replaying or self.journal is None:
+            return
+        self.applied_lsn = self.journal.append(
+            _op, {k: _jsonable(v) for k, v in args.items()})
+
+    def begin_replay(self) -> None:
+        self._replaying = True
+
+    def end_replay(self) -> None:
+        self._replaying = False
+
+    def apply_journal_record(self, op: str, args: dict[str, Any], lsn: int) -> bool:
+        """Run one journal record against this state. False when the record
+        names nothing this server can run or the call raised; the world is
+        left as it was before that record."""
+        method = _JOURNAL_OPS.get(op)
+        if method is None:
+            log.warning("journal record lsn=%d names unknown op %r: skipped", lsn, op)
+            return False
+        try:
+            kwargs = _from_jsonable(args)
+            getattr(self, method)(**kwargs)
+        except Exception as e:  # noqa: BLE001 - one bad record must not stop the boot
+            log.warning("journal record lsn=%d (%s) could not be applied: %s",
+                        lsn, op, e)
+            return False
+        self.applied_lsn = lsn
+        return True
+
     # ---------------------------------------------------------- session mgmt
+
+    def reset_world(self) -> None:
+        """Drop every persisted world record, keeping the live sessions.
+
+        Used by the boot restore when a snapshot copy fails to load half
+        way through, so the next copy starts from a clean state instead of
+        a mixture of two files (stage 0 of L5, 2026-09-27)."""
+        self._world_actors.clear()
+        self._containers.clear()
+        self._container_verdicts.clear()
+        self._quests.clear()
+        self._globals.clear()
+        self._inv_digests.clear()
+        self._checkpoints.clear()
+        self._appearances.clear()
+        self.lock_state.clear()
+        self.world_spawns.clear()
+        self.next_world_spawn_wid = 1
+        self._presence.clear()
+        self._resume_tokens.clear()
 
     def accept_peer(
         self,
@@ -625,6 +876,8 @@ class ServerState:
         actor.last_known_form_id = event.form_id
         actor.last_owner_peer_id = by_peer_id
         actor.last_update_ms = now_ms
+        self._journal("record_actor_event", event=event, by_peer_id=by_peer_id,
+                      now_ms=now_ms)
         return actor
 
     def actor_state(self, base_id: int, cell_id: int) -> Optional[ActorWorldState]:
@@ -705,6 +958,10 @@ class ServerState:
                 new_count = max(0, current - op.count)
         else:  # PUT
             new_count = current + op.count
+            if new_count > COUNT_MAX:
+                # The validator refuses this upstream (COUNT_OVERFLOW); this
+                # is the last guard before a value the wire cannot pack.
+                return None
 
         if new_count == 0:
             container.items.pop(op.item_base_id, None)
@@ -713,6 +970,8 @@ class ServerState:
 
         container.last_owner_peer_id = by_peer_id
         container.last_update_ms = now_ms
+        self._journal("record_container_op", op=op, by_peer_id=by_peer_id,
+                      now_ms=now_ms)
         return container
 
     def container_state(self, form_id: int) -> Optional[ContainerWorldState]:
@@ -742,12 +1001,35 @@ class ServerState:
             return None
         container = ContainerWorldState(
             form_id=form_id, base_id=base_id, cell_id=cell_id,
-            items={iid: cnt for iid, cnt in items.items() if cnt > 0},
+            items={iid: min(int(cnt), COUNT_MAX) for iid, cnt in items.items() if cnt > 0},
             last_owner_peer_id=by_peer_id, last_update_ms=now_ms,
             seeded=True,
         )
         self._containers[form_id] = container
+        self._journal("create_container", form_id=form_id, base_id=base_id,
+                      cell_id=cell_id, items=dict(container.items),
+                      by_peer_id=by_peer_id, now_ms=now_ms)
         return container
+
+    def reseed_container(self, form_id: int, items: dict[int, int],
+                         by_peer_id: str, now_ms: float) -> bool:
+        """Replace the items of an existing record with a client's scan and
+        mark it seeded: the two cases the seed handler allows (a partial
+        record met its first full scan; an emptied record is refilled).
+        False when there is no record. Stage 1 of L5: the one journaled
+        way to overwrite a record's items."""
+        container = self._containers.get(form_id)
+        if container is None:
+            return False
+        container.items = {iid: min(int(cnt), COUNT_MAX)
+                           for iid, cnt in items.items() if cnt > 0}
+        container.seeded = True
+        container.last_owner_peer_id = by_peer_id
+        container.last_update_ms = now_ms
+        self._journal("reseed_container", form_id=form_id,
+                      items=dict(container.items), by_peer_id=by_peer_id,
+                      now_ms=now_ms)
+        return True
 
     def forget_container(self, form_id: int) -> bool:
         """Drop the record of a REFR. Loot rework L4.1 (2026-09-25): a death
@@ -757,7 +1039,10 @@ class ServerState:
         Measured before this: four raiders killed again in a new session
         were aligned to the previous session's looted-out records and their
         fresh loot vanished at the activation. True when a record existed."""
-        return self._containers.pop(form_id, None) is not None
+        existed = self._containers.pop(form_id, None) is not None
+        if existed:
+            self._journal("forget_container", form_id=form_id)
+        return existed
 
     def seeded_containers(self) -> list[ContainerWorldState]:
         """The records a client may be aligned to: the scanned ones."""
@@ -777,6 +1062,10 @@ class ServerState:
         verdicts.move_to_end(client_op_id)
         while len(verdicts) > self.CONTAINER_VERDICTS_KEPT:
             verdicts.popitem(last=False)
+        # Stage 1 of L5: the verdict IS the durable fact the client acts on,
+        # so it is journaled before the ACK that carries it may leave.
+        self._journal("remember_container_verdict", peer_id=peer_id,
+                      client_op_id=client_op_id, ack=ack)
 
     def recall_container_verdict(
         self, peer_id: str, client_op_id: int
@@ -811,6 +1100,8 @@ class ServerState:
         q.stage = stage
         q.last_owner_peer_id = by_peer_id
         q.last_update_ms = now_ms
+        self._journal("record_quest_stage", quest_form_id=quest_form_id,
+                      stage=stage, by_peer_id=by_peer_id, now_ms=now_ms)
         return q
 
     def quest_stage(self, quest_form_id: int) -> Optional[QuestStageState]:
@@ -818,6 +1109,137 @@ class ServerState:
 
     def all_quest_stages(self) -> list[QuestStageState]:
         return list(self._quests.values())
+
+    # ------------------------------------------------ inventory digests (L5 stage 2)
+
+    def record_inv_digest(
+        self, peer_id: str, seq: int, wall_ms: int, digest: int, entries: int,
+        stacks: int, items: int, reasons: int, flags: int, why: int,
+        now_ms: float, count: Optional[int] = None,
+    ) -> Optional[InvDigestRecord]:
+        """Keep the last inventory digest a peer reported. ADVISORY: nothing
+        reads it yet. `count` is given only by the snapshot restore, which
+        carries the running total; a live or replayed record adds one.
+        None for a malformed peer id."""
+        if _peer_id_invalid(peer_id):
+            return None
+        rec = self._inv_digests.get(peer_id)
+        if rec is None:
+            rec = InvDigestRecord(peer_id=peer_id)
+            self._inv_digests[peer_id] = rec
+        rec.seq = int(seq) & 0xFFFFFFFF
+        rec.wall_ms = int(wall_ms) & 0xFFFFFFFFFFFFFFFF
+        rec.digest = int(digest) & 0xFFFFFFFFFFFFFFFF
+        rec.entries = int(entries) & 0xFFFFFFFF
+        rec.stacks = int(stacks) & 0xFFFFFFFF
+        rec.items = int(items) & 0xFFFFFFFF
+        rec.reasons = int(reasons) & 0xFFFFFFFF
+        rec.flags = int(flags) & 0xFF
+        rec.why = int(why) & 0xFF
+        rec.received_ms = float(now_ms)
+        rec.count = int(count) if count is not None else rec.count + 1
+        self._journal("record_inv_digest", peer_id=peer_id, seq=rec.seq,
+                      wall_ms=rec.wall_ms, digest=rec.digest, entries=rec.entries,
+                      stacks=rec.stacks, items=rec.items, reasons=rec.reasons,
+                      flags=rec.flags, why=rec.why, now_ms=float(now_ms))
+        return rec
+
+    def inv_digest(self, peer_id: str) -> Optional[InvDigestRecord]:
+        return self._inv_digests.get(peer_id) if peer_id else None
+
+    def all_inv_digests(self) -> list[InvDigestRecord]:
+        return list(self._inv_digests.values())
+
+    # ---------------------------------------------- checkpoints (L5 stage 3a)
+
+    def record_checkpoint(
+        self, peer_id: str, identity_hex: str, seq: int, name: str, sha256_hex: str,
+        size: int, digest: int, digest_seq: int, wall_ms: int, now_ms: float,
+        watermark_lsn: int, reason: int, status: str = "provisional",
+        boot_failures: int = 0,
+        custody: bool = False,
+    ) -> Optional[CheckpointRecord]:
+        """Keep a checkpoint a client reported written, newest first, the
+        last CHECKPOINTS_KEPT per peer. `watermark_lsn` is decided by the
+        caller (the journal head at receipt) so a replay sees the same
+        number. `status`/`boot_failures` are given by the snapshot restore
+        only. None for a malformed peer id or name."""
+        if _peer_id_invalid(peer_id):
+            return None
+        if not name or len(name) > 47 or not name.isascii():
+            return None
+        rec = CheckpointRecord(
+            peer_id=peer_id, identity_hex=str(identity_hex or ""), seq=int(seq) & 0xFFFFFFFF,
+            name=name, sha256_hex=str(sha256_hex or "").lower(), size=int(size) & 0xFFFFFFFF,
+            digest=int(digest) & 0xFFFFFFFFFFFFFFFF, digest_seq=int(digest_seq) & 0xFFFFFFFF,
+            wall_ms=int(wall_ms) & 0xFFFFFFFFFFFFFFFF, received_ms=float(now_ms),
+            watermark_lsn=int(watermark_lsn), reason=int(reason) & 0xFF,
+            status=str(status), boot_failures=int(boot_failures), custody=bool(custody))
+        lst = self._checkpoints.setdefault(peer_id, [])
+        lst[:] = [r for r in lst if r.name != name]
+        lst.insert(0, rec)
+        del lst[CHECKPOINTS_KEPT:]
+        self._journal("record_checkpoint", peer_id=peer_id, identity_hex=rec.identity_hex,
+                      seq=rec.seq, name=name, sha256_hex=rec.sha256_hex, size=rec.size,
+                      digest=rec.digest, digest_seq=rec.digest_seq, wall_ms=rec.wall_ms,
+                      now_ms=float(now_ms), watermark_lsn=rec.watermark_lsn, reason=rec.reason)
+        return rec
+
+    def confirm_checkpoint(self, peer_id: str, name: str, outcome: int,
+                           now_ms: float) -> Optional[CheckpointRecord]:
+        """A boot answered for `name`: outcome 0 confirms it, 2/3/4 count a
+        failure against it (two take it out of the pick). None when the
+        peer has no such checkpoint."""
+        for rec in self._checkpoints.get(peer_id, []):
+            if rec.name != name:
+                continue
+            if int(outcome) == 0:
+                rec.status = "confirmed"
+            elif int(outcome) in (2, 3, 4):
+                rec.boot_failures += 1
+                if rec.boot_failures >= 2:
+                    rec.status = "failed"
+            self._journal("confirm_checkpoint", peer_id=peer_id, name=name,
+                          outcome=int(outcome), now_ms=float(now_ms))
+            return rec
+        return None
+
+    def set_checkpoint_custody(self, peer_id: str, name: str, sha256_hex: str,
+                               now_ms: float) -> Optional[CheckpointRecord]:
+        """L5 stage 3b — the server holds the bytes of this checkpoint: an
+        upload hashed to the record's sha. None when the peer has no such
+        record or the hash is another's; a record already in custody is
+        returned with nothing journaled."""
+        want = (sha256_hex or "").lower()
+        for rec in self._checkpoints.get(peer_id, []):
+            if rec.name != name:
+                continue
+            if rec.sha256_hex != want:
+                return None
+            if rec.custody:
+                return rec
+            rec.custody = True
+            self._journal("set_checkpoint_custody", peer_id=peer_id, name=name,
+                          sha256_hex=want, now_ms=float(now_ms))
+            return rec
+        return None
+
+    def checkpoint_to_boot(self, peer_id: str) -> Optional[CheckpointRecord]:
+        """The newest checkpoint this peer may boot from: one that fewer than
+        two boots failed on. None = the genesis save."""
+        for rec in self._checkpoints.get(peer_id, []):
+            if rec.boot_failures < 2:
+                return rec
+        return None
+
+    def checkpoints(self, peer_id: str) -> list[CheckpointRecord]:
+        return list(self._checkpoints.get(peer_id, []))
+
+    def all_checkpoints(self) -> list[CheckpointRecord]:
+        out: list[CheckpointRecord] = []
+        for lst in self._checkpoints.values():
+            out.extend(lst)
+        return out
 
     # ---------------------------------------------------------- globals (B4)
 
@@ -841,6 +1263,8 @@ class ServerState:
         g.value = value
         g.last_owner_peer_id = by_peer_id
         g.last_update_ms = now_ms
+        self._journal("record_global_var", global_form_id=global_form_id,
+                      value=value, by_peer_id=by_peer_id, now_ms=now_ms)
         return g
 
     def global_var(self, global_form_id: int) -> Optional[GlobalVarState]:
@@ -875,6 +1299,7 @@ class ServerState:
         if self._appearances.get(peer_id) == recipe:
             return False
         self._appearances[peer_id] = recipe
+        self._journal("record_appearance", peer_id=peer_id, recipe=recipe)
         return True
 
     def appearance(self, peer_id: str) -> Optional[str]:
@@ -902,6 +1327,8 @@ class ServerState:
         rec = self._presence_for(peer_id)
         rec.display_name = display_name
         rec.updated_at_ms = now_ms
+        self._journal("record_presence_name", peer_id=peer_id,
+                      display_name=display_name, now_ms=now_ms)
 
     def record_presence_pos(self, peer_id: str, pos, now_ms: float) -> None:
         """Called from the POS path, AFTER validation, so a rejected update
@@ -925,6 +1352,8 @@ class ServerState:
         else:
             rec.outfit.pop(entry.item_form_id, None)
         rec.updated_at_ms = now_ms
+        self._journal("record_presence_equip", peer_id=peer_id, entry=entry,
+                      equipped=equipped, now_ms=now_ms)
 
     def clear_presence_outfit(self, peer_id: str, now_ms: float) -> int:
         """Forget the stored outfit. Returns how many items it held.
@@ -944,6 +1373,7 @@ class ServerState:
         n = len(rec.outfit)
         rec.outfit.clear()
         rec.updated_at_ms = now_ms
+        self._journal("clear_presence_outfit", peer_id=peer_id, now_ms=now_ms)
         return n
 
     def record_presence_worn_frame(self, peer_id: str, wid: int,
@@ -951,6 +1381,8 @@ class ServerState:
         rec = self._presence_for(peer_id)
         rec.worn_frame_wid = wid
         rec.updated_at_ms = now_ms
+        self._journal("record_presence_worn_frame", peer_id=peer_id, wid=wid,
+                      now_ms=now_ms)
 
     def drop_items_from_outfit(self, peer_id: str, form_ids) -> int:
         """Togli questi oggetti dal vestito memorizzato. Torna quanti erano li'.
@@ -974,9 +1406,14 @@ class ServerState:
         if rec is None:
             return 0
         dropped = 0
+        gone: list[int] = []
         for fid in form_ids:
             if rec.outfit.pop(fid, None) is not None:
                 dropped += 1
+                gone.append(int(fid))
+        if dropped:
+            self._journal("drop_items_from_outfit", peer_id=peer_id,
+                          form_ids=gone)
         return dropped
 
     def presence(self, peer_id: str) -> Optional[PeerPresence]:
@@ -997,18 +1434,34 @@ class ServerState:
         """
         self.retire_resume_tokens(session.peer_id)
         token = secrets.token_bytes(RESUME_TOKEN_LEN)
-        self._resume_tokens[token] = ResumeTicket(
+        key = _token_key(token)
+        self._resume_tokens[key] = ResumeTicket(
             peer_id=session.peer_id,
             identity_hex=session.identity_hex,
             issued_at_ms=now_ms,
             expires_at_ms=now_ms + ttl_s * 1000.0,
         )
+        # The journal gets the hash, exactly what memory holds.
+        self._journal("issue_resume_token", token_hash=key.hex(),
+                      peer_id=session.peer_id, identity_hex=session.identity_hex,
+                      issued_at_ms=now_ms, expires_at_ms=now_ms + ttl_s * 1000.0)
         return token
+
+    def _restore_resume_token(self, token_hash: str, peer_id: str,
+                              identity_hex: str, issued_at_ms: float,
+                              expires_at_ms: float) -> None:
+        """A ticket by its stored hash: the journal replay and the snapshot
+        loader come in here."""
+        self._resume_tokens[bytes.fromhex(token_hash)] = ResumeTicket(
+            peer_id=peer_id, identity_hex=identity_hex,
+            issued_at_ms=float(issued_at_ms), expires_at_ms=float(expires_at_ms))
 
     def retire_resume_tokens(self, peer_id: str) -> int:
         dead = [t for t, tk in self._resume_tokens.items() if tk.peer_id == peer_id]
         for t in dead:
             del self._resume_tokens[t]
+        if dead:
+            self._journal("retire_resume_tokens", peer_id=peer_id)
         return len(dead)
 
     def resume_refusal(self, addr: tuple[str, int], peer_id: str,
@@ -1064,11 +1517,13 @@ class ServerState:
         An EXPIRED token is still removed on sight, for the reason
         consume_resume_token gives: a stale one must not be retried in a loop.
         """
-        ticket = self._resume_tokens.get(token)
+        key = _token_key(token)
+        ticket = self._resume_tokens.get(key)
         if ticket is None:
             return (None, "resume_unknown")
-        if now_ms > ticket.expires_at_ms:
-            del self._resume_tokens[token]
+        if now_ms > _token_deadline_ms(ticket):
+            del self._resume_tokens[key]
+            self._journal("consume_resume_token", token_hash=key.hex())
             return (None, "resume_expired")
         return (ticket, "ok")
 
@@ -1079,16 +1534,21 @@ class ServerState:
         The token is removed whether it was live or expired, so a stale one
         cannot be retried in a loop.
         """
-        ticket = self._resume_tokens.pop(token, None)
+        key = _token_key(token)
+        ticket = self._resume_tokens.pop(key, None)
         if ticket is None:
             return (None, "resume_unknown")
-        if now_ms > ticket.expires_at_ms:
+        self._journal("consume_resume_token", token_hash=key.hex())
+        if now_ms > _token_deadline_ms(ticket):
             return (None, "resume_expired")
         return (ticket, "ok")
 
+    def _consume_resume_token_hash(self, token_hash: str) -> None:
+        self._resume_tokens.pop(bytes.fromhex(token_hash), None)
+
     def prune_resume_tokens(self, now_ms: float) -> int:
         dead = [t for t, tk in self._resume_tokens.items()
-                if now_ms > tk.expires_at_ms]
+                if now_ms > _token_deadline_ms(tk)]
         for t in dead:
             del self._resume_tokens[t]
         return len(dead)
@@ -1097,6 +1557,24 @@ class ServerState:
 
     def all_locks(self) -> list[LockWorldState]:
         return list(self.lock_state.values())
+
+    def record_lock(self, base_id: int, cell_id: int, form_id: int,
+                    locked: bool, timestamp_ms: int) -> bool:
+        """Store a lock transition. False when the state is already what the
+        op says (the handler skips the broadcast then). Stage 1 of L5: the
+        handler used to write the dictionary itself; this is the journaled
+        way in."""
+        key = (base_id, cell_id)
+        prev = self.lock_state.get(key)
+        if prev is not None and prev.locked == bool(locked):
+            return False
+        self.lock_state[key] = LockWorldState(
+            base_id=base_id, cell_id=cell_id, form_id=form_id,
+            locked=bool(locked), timestamp_ms=int(timestamp_ms))
+        self._journal("record_lock", base_id=base_id, cell_id=cell_id,
+                      form_id=form_id, locked=bool(locked),
+                      timestamp_ms=int(timestamp_ms))
+        return True
 
     def record_world_spawn(
         self,
@@ -1127,7 +1605,79 @@ class ServerState:
         )
         if not (flags & 1):
             self.world_spawns[wid] = st
+        # Transient spawns are journaled too, with their wid: the counter
+        # must come out of a replay exactly where it was, or the next wid
+        # minted after a restart would collide with one already in use.
+        self._journal("record_world_spawn", wid=wid, spawner_peer=spawner_peer,
+                      base_form_id=base_form_id, spawner_local_fid=spawner_local_fid,
+                      px=px, py=py, pz=pz, rx=rx, ry=ry, rz=rz, cell_id=cell_id,
+                      flags=flags, timestamp_ms=timestamp_ms, pieces=tuple(pieces))
         return st
+
+    def _restore_world_spawn(
+        self, wid: int, spawner_peer: str, base_form_id: int,
+        spawner_local_fid: int, px: float, py: float, pz: float,
+        rx: float, ry: float, rz: float, cell_id: int, flags: int,
+        timestamp_ms: int, pieces: tuple = (),
+    ) -> None:
+        """Replay twin of record_world_spawn: the wid is given, not minted."""
+        st = WorldSpawnState(
+            wid=int(wid), spawner_peer=spawner_peer, base_form_id=base_form_id,
+            spawner_local_fid=spawner_local_fid,
+            px=px, py=py, pz=pz, rx=rx, ry=ry, rz=rz,
+            cell_id=cell_id, flags=flags, timestamp_ms=timestamp_ms,
+            pieces=tuple(tuple(p) if isinstance(p, (list, tuple)) else p
+                         for p in pieces),
+        )
+        if not (flags & 1):
+            self.world_spawns[st.wid] = st
+        if st.wid >= self.next_world_spawn_wid:
+            self.next_world_spawn_wid = st.wid + 1
+
+    def remove_world_spawn(self, wid: int) -> bool:
+        """Forget a spawned object (it died, or its record was superseded).
+        True when it existed."""
+        if self.world_spawns.pop(wid, None) is None:
+            return False
+        self._journal("remove_world_spawn", wid=wid)
+        return True
+
+    def set_world_spawn_pieces(self, wid: int, pieces) -> bool:
+        """Full-state replace of a PA frame's piece ledger."""
+        st = self.world_spawns.get(wid)
+        if st is None:
+            return False
+        st.pieces = tuple(tuple(p) if isinstance(p, (list, tuple)) else p
+                          for p in pieces)
+        self._journal("set_world_spawn_pieces", wid=wid, pieces=st.pieces)
+        return True
+
+    def mark_world_spawn_worn(self, wid: int, peer_id: str, now_ms: float) -> bool:
+        """Somebody climbed into this frame: kept, marked, not placed for
+        anyone until it is given back."""
+        st = self.world_spawns.get(wid)
+        if st is None:
+            return False
+        st.worn_by_peer_id = peer_id
+        st.worn_since_ms = now_ms
+        self._journal("mark_world_spawn_worn", wid=wid, peer_id=peer_id,
+                      now_ms=now_ms)
+        return True
+
+    def return_worn_frame(self, wid: int, px: float, py: float, pz: float,
+                          cell_id: int) -> bool:
+        """The wearer left: the frame is a world object again, where they
+        last stood."""
+        st = self.world_spawns.get(wid)
+        if st is None:
+            return False
+        st.px, st.py, st.pz = float(px), float(py), float(pz)
+        st.cell_id = int(cell_id)
+        st.worn_by_peer_id = ""
+        st.worn_since_ms = 0.0
+        self._journal("return_worn_frame", wid=wid, px=st.px, py=st.py,
+                      pz=st.pz, cell_id=st.cell_id)
+        return True
 
     def all_world_spawns(self) -> list[WorldSpawnState]:
         return list(self.world_spawns.values())

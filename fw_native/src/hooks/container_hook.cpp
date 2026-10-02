@@ -215,19 +215,6 @@ static void observe(
                    op_tag, cid.form_id, cid.base_id, cid.cell_id);
             return;  // passthrough=true
         }
-        // Loot rework L1 (2026-09-23): the shared identity of a container is
-        // its placed form_id. A runtime ref (0xFF prefix: a corpse of an NPC
-        // spawned at runtime, a dropped item) names another object on every
-        // other client, and the (base, cell) key that used to stand in for
-        // it merged every twin. Until such refs carry an identity of their
-        // own (L4, L6) the engine keeps them local: no seed, no op.
-        if (cid.form_id == 0 || (cid.form_id >> 24) == 0xFF) {
-            FW_DBG("[container] %s on a runtime ref form=0x%X (base=0x%X "
-                   "cell=0x%X) — passthrough, no shared identity yet",
-                   op_tag, cid.form_id, cid.base_id, cid.cell_id);
-            return;  // passthrough=true
-        }
-
         // ====================================================================
         // 2026-08-16 — THE POWER-ARMOR FRAME IS NOT LOOT. Measured cost of
         // treating it as one: the engine's own enter transfer drains the
@@ -251,6 +238,18 @@ static void observe(
         // modded frame base would need the FurnitureTypePowerArmor keyword
         // check instead.
         // ====================================================================
+        // 2026-09-28 — THIS TEST COMES BEFORE THE IDENTITY TEST BELOW. The
+        // loot rework (L1, v0.9.0) put the runtime-ref exit above it, and
+        // every frame this project handles is a runtime ref: a console
+        // spawn, a replica placed by world_spawn, a frame reborn at an exit.
+        // From then on no manual take or put on a frame reached the pieces
+        // report, and no peer saw a frame's pieces change (live test of
+        // 2026-09-28 23:43: five pieces into wid 69, nothing on the wire,
+        // "runtime ref ... no shared identity yet" at every piece). A frame
+        // is identified by its wid through world_spawn, not by the loot
+        // layer's shared identity, so the order is: the frame, then the
+        // identity. A frame that is not ours is dropped by the report with
+        // its own log line ("no wid bound").
         if (cid.base_id == 0x0002079Eu) {
             FW_DBG("[container] %s on a power-armor frame — passthrough, "
                    "frames are not loot", op_tag);
@@ -260,6 +259,19 @@ static void observe(
             out->pa_frame_ref = container;
             out->pa_frame_fid = cid.form_id;
             return;  // passthrough=true, and no seed either
+        }
+
+        // Loot rework L1 (2026-09-23): the shared identity of a container is
+        // its placed form_id. A runtime ref (0xFF prefix: a corpse of an NPC
+        // spawned at runtime, a dropped item) names another object on every
+        // other client, and the (base, cell) key that used to stand in for
+        // it merged every twin. Until such refs carry an identity of their
+        // own (L4, L6) the engine keeps them local: no seed, no op.
+        if (cid.form_id == 0 || (cid.form_id >> 24) == 0xFF) {
+            FW_DBG("[container] %s on a runtime ref form=0x%X (base=0x%X "
+                   "cell=0x%X) — passthrough, no shared identity yet",
+                   op_tag, cid.form_id, cid.base_id, cid.cell_id);
+            return;  // passthrough=true
         }
 
         // Populate output for the submit phase.
@@ -345,6 +357,18 @@ void __fastcall detour_add_object(
     if (tls_applying_remote) {
         FW_DBG("[container] tls_applying_remote=true — passthrough "
                "(dest=%p bound=%p count=%d source=%p)",
+               dest_this, bound_obj, count, source_old);
+        if (g_orig_add) {
+            g_orig_add(dest_this, bound_obj, extra_data_sp, count, source_old, reason);
+        }
+        return;
+    }
+    // Stage 0 of L5 (2026-09-27): a menu deposit into an ACTOR lands here
+    // too (Actor and PlayerCharacter share slot 0x7A), and put_hook has
+    // already reported it. See tls_menu_transfer in the header.
+    if (tls_menu_transfer) {
+        FW_DBG("[container] menu deposit in flight — passthrough, put_hook "
+               "owns it (dest=%p bound=%p count=%d source=%p)",
                dest_this, bound_obj, count, source_old);
         if (g_orig_add) {
             g_orig_add(dest_this, bound_obj, extra_data_sp, count, source_old, reason);
@@ -437,6 +461,7 @@ void __fastcall detour_add_object(
 // NOTE: definition is at non-anonymous namespace scope so put_hook.cpp
 // can see the same storage via the extern declaration in container_hook.h.
 thread_local bool tls_applying_remote = false;
+thread_local bool tls_menu_transfer   = false;
 
 // B1.g / B1.k.2 feedback-loop guard — RAII, nestable (see the header).
 ApplyingRemoteGuard::ApplyingRemoteGuard() : prev_(tls_applying_remote) {

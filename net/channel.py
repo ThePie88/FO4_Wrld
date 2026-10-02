@@ -18,6 +18,7 @@ from typing import Optional
 from protocol import (
     Frame, FrameHeader, MessageType, Payload, AckPayload,
     encode_frame, decode_frame, ProtocolError,
+    encode_payload, encode_frame_from_bytes,
     FLAG_RELIABLE,
 )
 from reliable import SendWindow, ReceiveWindow
@@ -58,8 +59,12 @@ class ReliableChannel:
         """Build and register a reliable frame. Must be re-sent on timeout via tick()."""
         if self.dead:
             raise ChannelError("channel is dead (max retransmits reached)")
+        # Serialize first: an encode that raises must leave the window
+        # untouched. Allocating the sequence before it left a hole in the
+        # stream on every failed encode (stage 0 of L5, 2026-09-27).
+        payload_bytes = encode_payload(payload)
         seq = self.send.allocate_seq()
-        raw = encode_frame(msg_type, seq, payload, reliable=True)
+        raw = encode_frame_from_bytes(msg_type, seq, payload_bytes, reliable=True)
         self.send.register_sent(seq, raw, now_ms)
         return raw
 

@@ -9,6 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <mutex>
 
 #include "../log.h"
 #include "../engine/engine_calls.h"    // get_local_player
@@ -72,6 +73,117 @@ std::uint64_t wall_ms() {
         system_clock::now().time_since_epoch()).count());
 }
 
+// L5 stage 3d — the respawn difference: the apparel worn at the death, and
+// the flag the respawn raises for the tick. g_death_mx guards the list.
+constexpr std::size_t kMaxWorn = 64;
+std::mutex    g_death_mx;
+std::uint32_t g_death_worn[kMaxWorn] = {};
+std::size_t   g_death_worn_n = 0;
+bool          g_death_noted = false;
+std::atomic<bool> g_respawn_pending{false};
+
+struct WornItem { std::uint32_t fid; void* obj; };
+
+// Every apparel form of the local player with an equipped stack, one per
+// form. -1 when the inventory cannot be read; `not_apparel` counts the
+// equipped forms of another type (the weapon), `walked` the entries.
+int collect_worn_apparel(void* player, WornItem* out, std::size_t cap,
+                         unsigned* not_apparel, std::uint32_t* walked) {
+    *not_apparel = 0;
+    *walked = 0;
+    void* list = inv_ptr(player, kInvListOff);
+    if (!list) return -1;
+    const std::uint32_t count = inv_u32(list, kCountOff);
+    void* entries = inv_ptr(list, kEntriesOff);
+    // Only a defence against a count read wrong: a player inventory can
+    // legitimately exceed the 64 the PA dump caps at.
+    if (!entries || count > 4096) return -1;
+    *walked = count;
+    std::size_t n = 0;
+    for (std::uint32_t i = 0; i < count && n < cap; ++i) {
+        void* obj   = inv_ptr(entries, i * kEntryStride);
+        void* stack = inv_ptr(entries, i * kEntryStride + kEntryStackOff);
+        if (!obj || !stack) continue;
+        bool equipped = false;
+        int si = 0;
+        for (void* s = stack; s && si < 16; s = inv_ptr(s, kStackNextOff), ++si) {
+            if (inv_u8(s, kStackFlagsOff) & kEquippedMask) { equipped = true; break; }
+        }
+        if (!equipped) continue;
+        const std::uint32_t fid  = inv_u32(obj, kFormIdOff);
+        const std::uint8_t  type = inv_u8(obj, kFormTypeOff);
+        if (fid == 0) continue;
+        if (type != kFormTypeApparel) { ++*not_apparel; continue; }
+        out[n++] = WornItem{fid, obj};
+    }
+    return static_cast<int>(n);
+}
+
+void send_equip(void* player, const WornItem& w, std::uint64_t now) {
+    fw::net::EquipModRecord mods[fw::net::MAX_EQUIP_MODS] = {};
+    std::uint16_t prio = 0;
+    const std::uint8_t n = read_worn_item_for_wire(
+        player, w.obj, w.fid, mods,
+        static_cast<std::uint8_t>(fw::net::MAX_EQUIP_MODS), &prio);
+    fw::net::client().enqueue_equip_op(
+        w.fid, static_cast<std::uint8_t>(fw::net::EquipOpKind::EQUIP),
+        /*slot_form_id=*/0, /*count=*/1, now, prio,
+        n ? mods : nullptr, n, /*nif_descs=*/nullptr, /*nif_count=*/0);
+}
+
+// The respawn difference (see the header). `equips` false when a full
+// session-start announce runs in the same tick and sends the EQUIPs itself.
+void announce_respawn_diff(void* player, bool equips) {
+    std::uint32_t died[kMaxWorn] = {};
+    std::size_t nd = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_death_mx);
+        nd = g_death_worn_n;
+        for (std::size_t i = 0; i < nd; ++i) died[i] = g_death_worn[i];
+        g_death_worn_n = 0;
+        g_death_noted = false;
+    }
+    WornItem now_items[kMaxWorn] = {};
+    unsigned not_apparel = 0;
+    std::uint32_t walked = 0;
+    const int nn = collect_worn_apparel(player, now_items, kMaxWorn, &not_apparel, &walked);
+    if (nn < 0) {
+        FW_WRN("[equip-announce] respawn: the inventory cannot be read; the ghost of this "
+               "player keeps the outfit of the death");
+        return;
+    }
+    const std::uint64_t now = wall_ms();
+    unsigned off = 0, on = 0, kept = 0;
+    for (std::size_t i = 0; i < nd; ++i) {
+        bool still = false;
+        for (int j = 0; j < nn; ++j) {
+            if (now_items[j].fid == died[i]) { still = true; break; }
+        }
+        if (still) continue;
+        fw::net::client().enqueue_equip_op(
+            died[i], static_cast<std::uint8_t>(fw::net::EquipOpKind::UNEQUIP),
+            /*slot_form_id=*/0, /*count=*/1, now, /*priority=*/0,
+            nullptr, 0, /*nif_descs=*/nullptr, /*nif_count=*/0);
+        ++off;
+        FW_DBG("[equip-announce]   form=0x%08X worn at the death, not now: UNEQUIP", died[i]);
+    }
+    for (int j = 0; j < nn; ++j) {
+        bool before = false;
+        for (std::size_t i = 0; i < nd; ++i) {
+            if (died[i] == now_items[j].fid) { before = true; break; }
+        }
+        if (before) { ++kept; continue; }
+        if (!equips) continue;
+        send_equip(player, now_items[j], now);
+        ++on;
+        FW_DBG("[equip-announce]   form=0x%08X worn now, not at the death: EQUIP",
+               now_items[j].fid);
+    }
+    FW_LOG("[equip-announce] respawn: %u item(s) worn at the death and not now -> UNEQUIP, "
+           "%u worn now and not at the death -> EQUIP%s, %u unchanged",
+           off, on, equips ? "" : " (sent by the session announce)", kept);
+}
+
 } // namespace
 
 void equip_announce_on_session_start() {
@@ -80,14 +192,58 @@ void equip_announce_on_session_start() {
            "announced once the scene has settled");
 }
 
+void equip_announce_note_death() {
+    void* player = fw::engine::get_local_player();
+    WornItem items[kMaxWorn] = {};
+    unsigned not_apparel = 0;
+    std::uint32_t walked = 0;
+    const int n = player ? collect_worn_apparel(player, items, kMaxWorn, &not_apparel, &walked)
+                         : -1;
+    std::lock_guard<std::mutex> lk(g_death_mx);
+    g_death_worn_n = 0;
+    g_death_noted = n >= 0;
+    for (int i = 0; i < n; ++i) g_death_worn[g_death_worn_n++] = items[i].fid;
+    if (n < 0) {
+        FW_WRN("[equip-announce] death: the inventory cannot be read; the respawn will "
+               "announce the whole outfit instead of the difference");
+    } else {
+        FW_LOG("[equip-announce] death: %d worn apparel item(s) noted for the respawn", n);
+    }
+}
+
+void equip_announce_after_respawn() {
+    bool noted;
+    {
+        std::lock_guard<std::mutex> lk(g_death_mx);
+        noted = g_death_noted;
+    }
+    if (noted) {
+        g_respawn_pending.store(true, std::memory_order_release);
+        FW_DBG("[equip-announce] respawn: the outfit difference goes out once the scene has "
+               "settled");
+    } else {
+        g_pending.store(true, std::memory_order_release);
+        FW_LOG("[equip-announce] respawn with no note of the death: the whole outfit is "
+               "announced once the scene has settled");
+    }
+}
+
 void equip_announce_tick() {
-    if (!g_pending.load(std::memory_order_acquire)) return;
+    const bool session = g_pending.load(std::memory_order_acquire);
+    const bool respawn = g_respawn_pending.load(std::memory_order_acquire);
+    if (!session && !respawn) return;
     // The stability gate already requires the player in the world, a cell,
     // no load in flight, and resets if the player's 3D is rebuilt under us —
     // so this never reads the inventory halfway through a power armor enter.
     if (!fw::native::ghost_scene_settled()) return;
     void* player = fw::engine::get_local_player();
     if (!player) return;
+
+    if (respawn) {
+        g_respawn_pending.store(false, std::memory_order_release);
+        announce_respawn_diff(player, /*equips=*/!session);
+        if (!session) return;
+    }
 
     // Lowered BEFORE the walk, not after: a WELCOME that lands while this
     // runs raises it again, and the next tick announces again — which is the

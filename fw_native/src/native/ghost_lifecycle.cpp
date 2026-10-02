@@ -10,6 +10,7 @@
 
 #include "scene_inject.h"
 #include "../log.h"
+#include "../persist/lifecycle.h"   // exiting(): at the exit nothing is freed, everything is left to the process
 
 namespace fw::native::ghost_lifecycle {
 namespace {
@@ -169,6 +170,15 @@ void tick(std::uintptr_t /*module_base*/) {
             // Body, head and geometries are still shared at this stage: they
             // are touched only when the LAST peer leaves.
             const bool last = g_ghosts.empty();
+            // 2026-09-28 — not during OUR exit: the other client leaving
+            // while this one shuts down ran this teardown into an
+            // allocator the engine was already tearing down (B, live).
+            if (fw::persist::exiting()) {
+                FW_LOG("[ghost-life] peer %s left during the exit (was state=%u): "
+                       "its ghost is left to the process, nothing is freed",
+                       e.peer_id.c_str(), static_cast<unsigned>(was));
+                continue;
+            }
             FW_LOG("[ghost-life] peer %s left (was state=%u) — tearing its "
                    "ghost down (%zu still tracked)", e.peer_id.c_str(),
                    static_cast<unsigned>(was), g_ghosts.size());
@@ -286,7 +296,23 @@ void tick(std::uintptr_t /*module_base*/) {
         for (const auto& [id, r] : g_ghosts) {
             if (r.state == State::Alive) { any_alive = true; break; }
         }
-        if (any_alive && fw::native::ghost_body_is_orphaned()) {
+        // 2026-09-28 — NOT at the exit. Measured on both clients, twice: the
+        // exit to the desktop orphans the body like a LoadGame does, this
+        // teardown released the head, the armours and the body into the
+        // engine's small-block allocator while the shutdown was tearing that
+        // allocator down, and 24-46 ms later the process died in its free
+        // path (sub_141663260, write to 0x8). The process is ending: leaking
+        // the ghost is free, freeing it is a crash. The records stay as they
+        // are; a load after an exit to the menu clears the flag and the
+        // ordinary orphan teardown runs then, on nodes our refs kept alive.
+        if (any_alive && fw::persist::exiting()) {
+            static bool s_said = false;
+            if (!s_said) {
+                s_said = true;
+                FW_LOG("[ghost-life] the body's parent went null during the exit: "
+                       "the ghost(s) are left to the process, nothing is freed");
+            }
+        } else if (any_alive && fw::native::ghost_body_is_orphaned()) {
             FW_WRN("[ghost-life] the body's parent went null — a LoadGame "
                    "took the scene node with it. Tearing the ghost(s) down "
                    "and asking for them again; the gate decides when.");

@@ -99,6 +99,9 @@
 #include "lock_hook.h"
 #include "world_spawn_hook.h"
 #include "lifecycle_tripwire.h" // Build 70 Piano B Fase 0: WHO destroys our refs? (observe-only)
+#include "../persist/lifecycle.h" // L5 stage 1: save veto, request filter, load bracket
+#include "../persist/inventory_capture.h" // L5 stage 2: the player's inventory, observe-only
+#include "../persist/inventory_tap.h"     // L5 stage 2: the two inventory cores, observe-only
 #include "pa_pipeline_trace.h"  // Build 70m: log the engine's PA enter/exit pipeline step by step (observe-only)
 #include "npc_ai_suppress.h" // B6.5w4: Actor::Update_PerFrame detour
 #include "ghost_ai_package.h" // B6.5w12 hook #1: TESPackage::EvaluateConditions
@@ -162,6 +165,16 @@ InstallSummary install_all(std::uintptr_t module_base,
     puppet_init(module_base);
 
     s.kill_ok        = install_kill_hook(module_base);
+    // L5 stage 1 — the save/load lifecycle. First, so its seven targets are
+    // taken before any module could be tempted to hook one of them: the
+    // engine's own saves are refused from here, the autosave/quicksave/
+    // quickload requests dropped, and every load bracketed and logged.
+    s.lifecycle_ok   = fw::persist::install_lifecycle(module_base, cfg)
+                       == fw::persist::LIFECYCLE_DETOURS;
+    // L5 stage 2 - the reader runs from the WndProc tick; the tap observes
+    // the two functions every inventory change goes through.
+    fw::persist::inventory::configure(cfg);
+    (void)fw::persist::tap::install(module_base, cfg);
     s.container_ok   = install_container_hook(module_base);
     // B1.k: must run after install_container_hook (shares MinHook manager);
     // captures PUT which vt[0x7A] doesn't see (live test 2026-04-21).

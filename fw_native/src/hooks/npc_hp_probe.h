@@ -42,6 +42,22 @@ void set_hp_clamp_enabled(bool on) noexcept;     // N3 round 2 — toggle the fl
 // MAIN THREAD ONLY.
 void apply_pool_health_to_actor(void* actor, float pool_cur, float pool_max) noexcept;
 
+// L5 stage 3d (2026-09-29) — the respawn heals. The checkpoint the player
+// comes back from keeps the health and the radiation it was written with
+// (the resurrect of stage 3c restored them, a reload does not). Rads first
+// (registry index 58: clearing them raises the maximum health, see
+// sub_1406C9C90), then the damage column of the Health cell back to zero.
+// Both through the ORIGINAL HP funnel, the one radiation and every health
+// change pass through, never through our detour. MAIN THREAD. False when
+// a read or the registry failed; `out` says what was seen either way.
+struct HealReport {
+    float health_damage_before = 0.0f;   // Health cell column 2, <= 0 when hurt
+    float rads_before = 0.0f;
+    float health_damage_after = 0.0f;
+    float rads_after = 0.0f;
+};
+bool heal_local_player(void* player, HealReport* out) noexcept;
+
 // Diagnostics.
 std::uint64_t get_hp_probe_fires()    noexcept;  // # of diagnostic log fires
 std::uint64_t get_hp_probe_captures() noexcept;  // # of damage claims sent to the pool

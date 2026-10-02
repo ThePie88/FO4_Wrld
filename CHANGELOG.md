@@ -5,6 +5,579 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## Persistence, first half: checkpoints, custody and the respawn (2026-10-02) — v0.10.0
+
+Stages 0 to 3 of the L5 plan, every one verified live: no save or load the
+server did not command, a durable journal, mandatory login, the player's
+inventory read the way the save writes it, and the character kept in a
+checkpoint the server commands, holds and moves. A death lands on the
+server's respawn point through one load, from an exterior or an interior,
+in power armour or not; a new character starts there too. Wire proto v33
+(v28: a world piece carries 16 mods, ACK status REJ_UNAVAILABLE = 6, a
+meaning for one bit of the world-spawn flags; v29 the checkpoint messages;
+v30 the last position in the boot word; v31 custody; v32 the respawn point
+and PLAYER_LIFE; v33 CKPT_RESPAWN). Server snapshot v10 (v7: the journal
+LSN it covers, quests, globals, hashed resume tokens; v8 the inventory
+digests; v9 the checkpoints; v10 their custody). 612 pytest, each new test
+failing on the code before it.
+
+### Stage 0: the live bugs the L5 investigation found
+
+- **Server durability** — a failed payload encode consumed a reliable sequence
+  and left a hole the receiver never filled; a container count could grow
+  past the i32 the wire packs and abort every later join bootstrap; the
+  snapshot was written without fsync, an unreadable one started an empty world
+  that overwrote every good copy within a few rotations, and the first write
+  of a run never rotated the previous run's file; persisted times used the
+  monotonic clock, so a resume token from a previous boot could come back
+  valid; server configuration was restored from the world file; an anonymous
+  HELLO could claim an authenticated player's id; item ops shared the position
+  rate bucket, so a burst of positions starved a Take All; one failing
+  bootstrap stage aborted every stage after it. All fixed and pinned.
+- **Kill hook signature** — the engine's Kill takes a float as its third
+  argument and returns a pointer; the detour declared a pointer and returned
+  nothing, so the engine received whatever XMM2 held and one caller got a
+  clobbered return value. Verified in the decomp, corrected.
+- **An essential NPC on the ground is not a corpse** — life state 7 was
+  counted as dead and could get a living actor aligned.
+- **A deposit into an actor was reported twice** — the Actor and
+  PlayerCharacter vtables share slot 0x7A (read from the executable), so a
+  menu deposit into a corpse or a companion reached both the menu hook and
+  the add hook. The menu hook owns it now.
+- **OMOD records cross-checked with the engine's own directory** — the
+  serialiser reads a trailing directory (tag, 24-bit length); the extractor
+  reads the same entry and takes the smaller count.
+- **INI keys that exist** — the launcher wrote bAllowAutosaveFromScript and
+  bAllowAutosaveInCombat, names absent from the executable, and bSaveOn*
+  under a section the engine does not read. It now writes bDisableAutoSave,
+  bAllowScriptedAutosave, bAllowScriptedForceSave, bSaveGameOnQuitToMainMenu
+  and bWorkshopAutoSaveOnExit, and removes the stale ones.
+
+### Stage 1: foundations
+
+- **The save/load lifecycle has one owner** — `fw_native/src/persist/lifecycle.cpp`
+  holds the seven detours (request queue, per-frame task processor, named
+  save, save core, load request, load job, death reload). Every save the
+  engine attempts is refused without a grant and answered with the engine's
+  own "You cannot save right now."; the autosave, manual save, quicksave and
+  quickload requests are dropped before they are queued; the exit saves pass
+  and their write is refused, so the exit proceeds; every load is logged with
+  its caller and thread and bracketed into a load-in-flight signal; the
+  pause menu's Load message is ignored while a world is loaded and the menu
+  is sent back to its main list with the engine's own
+  "PauseMenuBackOutFromLoadGame" message (its handler hides the menu before
+  queuing the load and nothing brings it back when the load does not run,
+  which the first live test showed as a blurred screen with no way out; the
+  SWF then waits for the menu to close, which the second test showed as a
+  dead save list), and any
+  other uncommanded load (the console, a quickload) is refused inside the
+  load job, which is the loader's own "file unreadable" answer, so the world
+  and the death-reload target stay as they were (the same test had a menu
+  load move the player and become the next death's reload target); the
+  death reload is let through and reloads the boot save, since no other load
+  can retarget it. The save settings are forced in memory every frame,
+  after the INI files were read and after the Setting object proved its name.
+  `persist_lifecycle = false` in fw_config.ini leaves the engine vanilla.
+- **A durable journal before any ACK** — `net/server/journal.py`. Every
+  accepted change is appended as (method, arguments), grouped and fsynced by
+  a writer thread; no reliable frame leaves the server before the journal's
+  durable LSN reaches the head at the time of the send, in order. Segments
+  are CRC-framed; a torn tail is truncated, a corrupt record with data after
+  it refuses the boot; the epoch bumps when the journal is found shorter than
+  what was acknowledged. The snapshot is the journal's compaction. A failed
+  journal releases what it held and refuses item ops (REJ_UNAVAILABLE).
+- **Mandatory login** — `start_server.bat` requires an authenticated HELLO;
+  the second local client, which has no launcher to log in through, signs
+  the server's challenge with a stable key in `launcher/.dev_keys/`
+  (`launcher/dev_identity.py`). Resume tokens are stored hashed.
+- **A respawn point is a server option** — `--respawn` (default sanctuary),
+  recorded and logged now, acted on in stage 3.
+- **Not done on purpose** — a load from the main menu is let through (no
+  world to protect there, and the menu expects its loading screen); presence
+  positions are not journaled (the snapshot carries them); the respawn is not
+  on the wire yet. A new identity is asked to create its character before it
+  is shown to anyone (the chargen ritual of v0.7), which is what the dev
+  identity of the second client meets on its first join.
+
+### Stage 2: the inventory read, the boundary tapped, drops on the wire
+
+- **The player's inventory, read the way the save writes it** —
+  `fw_native/src/persist/inventory_capture.cpp` walks the player's
+  BGSInventoryList once a second under the list's read lock, only when the
+  scene has settled, no load is in flight, no container menu or power armor
+  station is open and the list's writer bit is clear: every stack with its
+  count, its flags and the 24 extra types a save keeps per stack (mods,
+  condition, charge, name, favourite, unique id, quest links), each extra
+  node believed only when its vtable is the one the executable's RTTI gives
+  for its type. A capture is reported complete only when every read
+  succeeded and the per-entry sums match the engine's own counts; the last
+  complete one is written to `fw_inventory.json` next to the log. Live: 7 to
+  10 microseconds per capture. `inventory_capture = false` turns it off.
+- **The boundary, tapped** — `persist/inventory_tap.cpp` observes the two
+  engine functions every inventory change of a REFR goes through (the add
+  core and the remove core), for the player only, and records what crossed
+  and why (the caller for an add, the reason for a remove). The capture
+  reconciles its deltas against those events and logs every change the tap
+  did not see: that list is the census of the flows the later stages must
+  cover. Live: two events, both explained.
+- **The proof against the save** — `tools/fos_inventory.py` parses the
+  player's inventory sub-record of a .fos (entries, stacks, the 24 persisted
+  extra payloads) and diffs it against the DLL's JSON. `checkpoint.cpp` arms
+  a test key (F10) that asks for a granted named save `fwck_test_N` at the
+  engine's own save point, with the capture written first, so the pair can
+  be compared. The first live press of F10 did nothing: F10 is a system key
+  and arrives as WM_SYSKEYDOWN, which the handler now accepts. The second
+  press produced the save, and the diff against the DLL's capture said
+  IDENTICAL on every entry and stack (the checkpoint's change forms are
+  zlib-compressed; the tool inflates them).
+- **Mods were read as none** — the first live capture reported every modded
+  weapon with an empty mod list: the instance extra keeps a pointer to its
+  mod block at +0x18, not the block itself. Read through the pointer now.
+- **Items dropped from the Pip-Boy exist for everyone** — no code had ever
+  carried a drop. The remove core's drop branch hands back the handle of the
+  world REFR it created; the tap resolves it after the engine is done and
+  announces the object on the existing world-spawn wire with a new flag bit
+  (self-described): the pieces block, which used to carry a power armor
+  frame's content, carries the item itself, its world count, condition and
+  mods, read from the REFR's own extra list. The other clients place the
+  base as they place any spawn and then dress it: mods through the engine's
+  own reference-level AttachMod (which refreshes the model itself), the
+  condition and the count as extra nodes built the way the loader builds
+  them. The drop is announced once the object rests, which the registry
+  measures from the moment the model exists (havok moves the object only
+  then; the first live drops "rested" at chest height and fell after the
+  announce), with the instance read at that moment; picked up before it
+  rests, nothing is sent. A drop that spans several inventory stacks (five
+  stimpaks: two unique ones and three plain) is several world REFRs, one
+  per stack, created by a worker the remove core calls once per stack and
+  whose last handle is all the core hands back; the tap hooks that worker
+  too, so every REFR of a drop is announced. Picking the copy up anywhere despawns it
+  everywhere: the pickup hook reports it while the REFR is still alive,
+  and the sweep counts a deleted item in a live cell as consumed. The
+  dressing is verified after two and a half seconds by re-reading the
+  instance, and redone if the engine's own roll landed after it. Known
+  limits, said in the log: no ranks on the wire, renamed items travel
+  without their name.
+- **The inventory digest reaches the server** — INV_DIGEST, one reliable
+  38-byte line the client sends when the digest of a complete capture
+  changes (at most every ten seconds), right before a test checkpoint and
+  on the way out: capture number, client clock, digest, entries, stacks,
+  item total, flags and the reason. The server keeps the last one per
+  player with a running count, journaled and in the snapshot (v8), and
+  acts on nothing: it is the record stage 3 will hold a checkpoint
+  against. An incomplete capture never leaves the client, and the server
+  ignores one that claims to be.
+- **No engine work after the exit save request** — at the end of the last
+  live test both clients took a first-chance access violation inside the
+  engine's handle resolver on the way out: the shutdown nulls the handle
+  table first and the world-spawn sweep was still ticking. The lifecycle
+  module now raises an exit flag when it sees the exit save request (after
+  the last digest went out), and the world-spawn tick, the capture and the
+  tripwire's identity check stop until the next load request; the tick
+  also stops whenever the player has no parent cell. From the same
+  moment the whole WndProc tick, every message of ours, the SPAI prewarm,
+  the render-thread bone writer and both ghost teardowns stand still, and
+  the lock hook no longer reports the three doors the teardown re-locks.
+  The access violation that still ends every exit to the desktop is the
+  shutdown teardown crash known since v0.6.1 (a double free committed
+  during play and walked by the mass free at shutdown; shutdown only, no
+  gameplay effect), not a stage-2 regression; the crash handler now prints
+  a real call chain for the day that hunt is reopened.
+- **Runtime form ids are not identities** — the first live test of the
+  drop lost every object five seconds after the drop: the sweep found the
+  spawner's own pistol "vanished" while it lay on the ground. The Pip-Boy
+  keeps a temporary REFR for the 3D preview of the selected item, and its
+  runtime id is handed out again while it lives; the dropped pistol and the
+  next preview shared one id, the destroy tripwire matched the dying
+  preview by id and cleared its no-save flag, and the preview's full
+  unregistration erased the pistol's entry from the form map. The world
+  spawn registry now tracks every object by its engine handle (age-tagged,
+  never reused while the object lives): the placement returns it, the
+  sender notes it before announcing so the echo binds to it, and the sweep,
+  the despawn, the station poll and the rebirth resolve through it; the
+  tripwire confirms "one of ours" by pointer. Form ids stay in the logs and
+  on the wire, where they name the object for the server only.
+- **Dropped items sank into the road** — a world object was placed the way
+  a power-armor frame is: upright, its origin snapped onto the ground under
+  the target. An item's origin is the centre of its collision, and a baton
+  announced at rest one unit above an elevated road was planted with that
+  centre in the asphalt, from where Havok expelled it downwards: eight to
+  ten units under the road, hanging from its beams, on both clients. A
+  dropped item now keeps the pose the sender measured, all three angles and
+  the rested height, and is never snapped; frames are placed as before.
+
+### Stage 3a: the commanded checkpoint, and the boot from it
+
+- **The server commands the save** — every player in the world is asked for
+  a checkpoint on a cadence (`--checkpoint-every`, 300 s by default) and the
+  client writes one on its own when leaving; each is written at the next
+  quiet moment (a world, the scene settled, no load in flight, the engine's
+  own gate) at the engine's save point under a grant, named after the
+  identity (`fwck_<client id>_<date>_<time>`), hashed as written, and
+  reported with name, sha256, size and the inventory digest of the same
+  instant. The last three per identity stay on disk, older ones are deleted.
+  A request that finds no quiet moment inside its deadline is answered
+  "deferred" and asked again a minute later. The F10 test checkpoint goes
+  through the same path and is recorded too.
+- **The server keeps the record** — the last three checkpoints per identity,
+  each with the journal LSN of its receipt as its watermark (what stage 4
+  replays after), journaled and in the snapshot (v9). A report from an
+  anonymous session, under another identity's name or without a hash is
+  refused.
+- **The boot loads the checkpoint** — the first bootstrap stage after
+  WELCOME names the checkpoint to boot from; the client waits for that word
+  (20 s at most), verifies the file on disk against the recorded hash and
+  size, and loads it instead of the genesis save. A missing or altered file,
+  a checkpoint the engine refuses, or no word in time boot the genesis save
+  and say so; two failed boots take a checkpoint out of the pick, a
+  successful one confirms it. The death reload target follows the loaded
+  save, so a death reloads the last checkpoint, not the genesis.
+- **An exit that is not a Quit** — the first live test closed both clients
+  with ALT+F4, which never queues the engine's exit save, and one player
+  came back fifty seconds behind. The window close now writes the exit
+  checkpoint as the Quit does and reports it at once, ahead of the goodbye
+  that ends the session; and the boot carries the server's last known
+  position when it is newer than the checkpoint by more than two seconds,
+  which the client applies once the loaded scene has settled: the fallback
+  for a crash or a kill, where no checkpoint can be written. Items gained
+  in that window are lost, the place is not.
+- **Wire v30** — CKPT_REQUEST, CKPT_DONE, CKPT_BOOT (with the last
+  position), BOOT_RESULT; the launcher's protocol constant follows. 15 new
+  tests, 536 in all.
+- **The saved copies** — a checkpoint save carries every reference the
+  engine has, our world objects included (the TEMPORARY flag stamped after
+  placement keeps nothing out of the save), and a copy restored from it
+  comes back under the same runtime form id: after every reboot each
+  dropped item stood twice, the restored copy and the bootstrap's fresh
+  replica, overlapping in Havok. Every checkpoint now writes a world
+  manifest next to itself (form id, base and position of every object of
+  ours in that save), and every load of a checkpoint hands it back: once
+  the world is up and before any placement, each listed copy is destroyed
+  when it is a reference of that base at that spot and not a live binding.
+  The bootstrap then re-places what still exists, once. The dressing check
+  of a replica now logs where the object stands.
+- **A report twice** — the exit report travels twice on purpose, ahead of
+  the goodbye, and the server recorded it twice. The second copy of a
+  same-named, same-hash report is ignored now.
+- **Not in this half** — death still reloads (stage 3c).
+
+### Stage 3b: the bytes in custody
+
+- **The server keeps the checkpoint bytes** — next to its UDP port it runs a
+  small TCP service: a client uploads every checkpoint right after writing
+  and reporting it, and at the exit waits a few seconds for that upload
+  before the process goes; what did not make it is uploaded at the next
+  session, when the boot word lists the checkpoints the server holds no
+  bytes for. Every transfer is one connection under a token the boot word
+  minted for the session (good for ten minutes after it, for the exit
+  upload), may only name the peer's own checkpoints, and is hashed on
+  arrival and held to the hash it claims. A record whose bytes arrived is
+  marked in custody (journaled, snapshot v10); the last three per player
+  stay on disk with their world manifests.
+- **The boot fetches what this disk lacks** — the checkpoint the server
+  names is loaded from Saves when it matches the record; otherwise it is
+  fetched from the custody, verified against the record and loaded; and if
+  that fails the older candidates are tried, on this disk or fetched, before
+  the genesis save. A character follows its player to another machine.
+- **Wire v31** — CKPT_BOOT carries the bulk port, the token and up to three
+  candidates with their custody; the launcher's protocol constant follows.
+  9 new tests, 545 in all. Verified live: a client whose checkpoints were
+  renamed away fetched its last one from the server in 16 ms and booted
+  where it had left, world manifest included.
+- **Not in this half** — death still reloads (stage 3c).
+
+### Stage 3c: death without a reload
+
+- **The dead player gets up where the server says** — five seconds after a
+  death the engine queues the reload of the last save, which here meant the
+  last checkpoint: the server's world rewound in the player's eyes, and a
+  fresh checkpoint put them back into the fight they had just lost. The
+  lifecycle module now hands that request to the death module first: with a
+  respawn point from the server, the player dead and not in power armour,
+  the reload is swallowed and the next frame resurrects the player through
+  the engine's own Resurrect, watches the life state and the health for up
+  to thirty frames, brings the camera out of the kill-cam, teleports the
+  player to the respawn point and tells the server. Anything that fails,
+  and a death in power armour, re-queue the reload as before. Health and
+  limbs come back; inventory, XP and perks are kept.
+- **The point is the server's** — `--respawn` takes a named point
+  (Sanctuary), coordinates, or off; every client gets it in the boot word.
+  PLAYER_LIFE reports the death, the respawn or the fallback, logged and
+  counted on the server.
+- **The world survives the death** — a death stand-down that ends without a
+  reload leaves every replica in place instead of re-queuing them all.
+- **Wire v32** — CKPT_BOOT with the respawn point, PLAYER_LIFE; the
+  launcher's protocol constant follows. 4 new tests, 549 in all.
+- **What the first live death taught** — the resurrect took at the first
+  frame, but the kill-cam stayed: slow motion, the blur, and no checkpoint
+  could be written afterwards, because the kill-cam is a VATS mode and the
+  save gate refuses while it is on. The death module now leaves it the way
+  the engine's own load path does. The direct move to the respawn point
+  loaded the destination synchronously on the main thread, fifty seconds
+  of a window that did not respond: the move now goes through the engine's
+  fast travel, with its loading screen, and falls back to the direct move
+  only when the fast travel cannot be queued or does not land. A death is
+  reported once, not once per bullet that hits the corpse.
+- **What the second live death taught** — the fast travel queued in the
+  same frame as the resurrect crashed the engine: its execution writes into
+  the player's middle-high AI process, which the fresh process the
+  resurrect makes grows only at the next actor update. The move now waits
+  for that process to be whole. A death in power armour, or a resurrect
+  that fails, reloads the last checkpoint as before, and the fast travel to
+  the respawn point follows once that world is back, so the outcome is the
+  same place. And a commanded checkpoint is no longer written in the middle
+  of a fight, during a death or while a respawn is in progress: one written
+  mid-fight had become the reload's target and put the player back into
+  the fight it had just lost. The exit checkpoint keeps ignoring the
+  fight.
+- **What the third live death taught** — the fresh AI process the
+  resurrect makes never grew its middle-high part on its own, so the move
+  fell back to the direct teleport every time; it grows with the process
+  update of an in-place move, which now precedes the fast travel. The
+  request now names the marker's cell, as the engine's own fast travel
+  does, because the grid lookup refuses cells never loaded in the session.
+  From the resurrect to the landing the player is a ghost to the engine
+  (no damage, no target) and the screen is covered by a curtain drawn by
+  the overlay, because the far move shows the destination being loaded
+  and every peer ghost on it. A power armour frame worn across a save was
+  unknown to the world spawn registry, so climbing out of it produced a
+  frame no one else saw: the exit hook now hands it to the watch and the
+  sweep announces it.
+- **The headless ghost came back with the checkpoint** — a checkpoint boots
+  the player inside the power armour it was saved in, so the face borrows
+  of a session ran in there for the first time. Inside a frame the engine
+  hides the wearer's face by culling the face node itself, and the mask is
+  a clone of that node, flags included: it came out culled, the ghost's copy
+  of it came out culled, and the ghost had no head while every bone
+  measurement said the mask was fine. The mask now sheds every cull bit at
+  the borrow and the dressing sheds them again on the clone, because the
+  mirror path clones the local face directly. What the local player wears
+  was never the peer's business; the ghost's own wardrobe decides what to
+  hide, and the neck meatcap is still re-culled by name.
+- **Every death goes through the reload** — after four live tests the
+  resurrect was still fighting the engine on four fronts: an AI process that
+  never grew back its middle-high part, the kill-cam, a console kill its
+  health check refused, radiation passing through SetGhost. The reload of
+  the last checkpoint resets all of that, and the fast travel to the
+  server's respawn point follows once that world is back, which is the path
+  that landed live. The resurrect stays in the code behind a client switch,
+  off. A reload that never starts no longer leaves the curtain up: after ten
+  seconds without a load the death is closed where the player is.
+- **Power armour pieces moved by hand travel again** — since the loot
+  rework (v0.9.0) no manual take or put on a frame reached the other
+  players. The rework's identity test sends every runtime reference down
+  the "no shared identity yet" path, and it ran before the power armour
+  test; every frame this project handles is a runtime reference (a console
+  spawn, a replica, a frame reborn at an exit). The frame test runs first
+  again in both the take and the deposit hooks. A frame is identified by
+  its wid, not by the loot layer, and one that is not ours is dropped by
+  the pieces report with its own log line.
+
+### Stage 3d: the respawn written by the server
+
+- **The server can move a player inside a checkpoint (stage 3d, first
+  half)** — the respawn point is the founder's choice, and the plan is to
+  land a dead player on it through the reload itself instead of a fast
+  travel after it (live tests kept the engine's loading screen up for 116
+  and 339 seconds after a fast travel, with ten seconds of real loading).
+  `net/server/savepos.py` reads and rewrites the two places a save keeps
+  the player's position: Player Location in the first global data table,
+  and the start of the player's change form, which it inflates, edits,
+  compresses again and puts back while moving every offset of the file
+  location table that points past it. The result is parsed again and must
+  read back the new position with every other byte unchanged; an interior
+  or anything unexpected is refused. `net/server/respawn.py` books the moved
+  copy of the player's boot checkpoint as their newest checkpoint, in
+  custody, with the same inventory digest and journal watermark, and books
+  nothing when a step fails. `tools/respawn_patch.py` does it with the
+  server stopped, for the first live proof. The death and first-entry
+  wiring and the founder's `server.ini` come next.
+- **A death lands on the respawn point through one load (stage 3d, wire
+  v33)** — the server answers a death with CKPT_RESPAWN: the player's boot
+  checkpoint moved onto the point and booked in custody. The client holds
+  the engine's reload, fetches that file on a thread of its own and loads
+  it the way the boot does, so the destination is loaded by the load
+  itself and the fast travel is gone. A checkpoint in power armour is not
+  moved, because the frame is a reference of its own and would stay where
+  it was; that, an interior, a missing custody, no answer within ten
+  seconds or any failed step fall back to the engine's reload and the fast
+  travel. The founder picks the point in `server.ini` (`[spawn] point`, and
+  named `[points]`); `--respawn` on the command line still wins, and the
+  start script no longer passes it. The launcher speaks v33.
+- **The respawn works in power armour, and the frame crash has its cause
+  removed** — a frame the player wears is a reference of its own in the
+  save, and the engine seats the player back into it at load, so the
+  server now moves it with the player. It is found through the player's
+  own ExtraPowerArmor link, not by being disabled: the saves are full of
+  disabled frames, the copies destroyed earlier that the engine keeps
+  writing. The temporary bit my world spawn put on every replica was saved
+  with the frame, and with it the engine looked for a worn frame's cell in
+  extra data the frame did not have: a checkpoint of a player who had
+  carried the frame into another cell read a null cell and left the save
+  locks held, and the next load spun forever. Frames are no longer placed
+  with that bit, a frame the local player enters loses it, and the moved
+  checkpoint clears it in the frame's saved flags.
+- **A respawn starts whole** — the moved checkpoint brings back the health
+  and the radiation it was written with, which the resurrect used to
+  restore and a reload does not. After every respawn the client clears the
+  radiation (the Rads value, index 58 of the engine's registry, the one the
+  maximum health is computed from) and then the damage on the health,
+  through the same engine function every health and radiation change goes
+  through, bypassing my own hook on it.
+- **Pieces another player changes are aligned on the frame, the frame is
+  never replaced** — since v23 a remote change to a frame's pieces
+  destroyed the local frame and placed a new one with the new list, because
+  there was no way to remove an item. On the player who had spawned the
+  frame that destroyed the original: in a live test one player's console
+  spawn was replaced twice by replicas that took over its form id, and every
+  destroyed copy stays in the saves as a disabled frame. The frame now stays
+  where it is. For each item, when the frame already holds exactly the
+  wanted stacks (count, mods, condition) nothing is touched; otherwise every
+  unit of it leaves the frame through the engine's RemoveItem with no
+  destination, which destroys it (read from the decomp; two comments in my
+  code said such items were dropped on the ground), and the wanted stacks
+  are stocked the way a new replica is, with the same code. A worn or
+  disabled frame is left alone, one that no longer resolves is placed again
+  as before, and a menu open on the frame is rebuilt. Aligning the
+  inventory alone left the old pieces on screen (first live test: the data
+  reached both clients, nothing moved): a standing frame draws its pieces
+  from data the engine rebuilds from its inventory only when the frame gets
+  its 3D or after a menu transfer, so the alignment ends with that same
+  rebuild, the engine's reference task 106.
+- **A respawn next to the point no longer freezes the other players** — the
+  death stand-down (every ghost frozen, world spawns paused, checkpoints
+  deferred) closed on a position jump of more than 5000 units or on the
+  health coming back by 25 or more. The moved checkpoint lands the player
+  on the respawn point, often a few steps from where they died, and a death
+  by `player.kill` or by less than 25 damage leaves the health test nothing
+  to see: in a live test three deaths out of four held the stand-down to its
+  90 second ceiling, the other player's ghost frozen and a power armour frame
+  left standing where it had been entered. The death flow now tells the
+  stand-down when the player has landed, on every respawn path, and the
+  usual five second settle follows.
+- **A death in power armour with a checkpoint on foot leaves the frame
+  where the player fell** — the respawn loads a checkpoint, and when that
+  checkpoint was written on foot the player came back on foot while the
+  server kept the frame marked as worn by them: placed for nobody, their
+  own client included, and the other players still saw their ghost in the
+  armour. At the death the server now reads the checkpoint the player comes
+  back from (the player's power armour link in the save): in power armour,
+  the frame goes with them as before; on foot, the frame becomes a world
+  object where they fell when they respawn, for every client, theirs
+  included; unreadable, nothing changes and the frame comes back when they
+  leave. The client notes the apparel worn at the death and, once the
+  respawn has settled, sends only the difference: an unequip for what the
+  checkpoint took away (the armour pieces and the frame), an equip for what
+  it brought back. A load also clears the client's watch for frames coming
+  back to life, whose form ids the load can hand to other objects.
+- **A death in an interior lands on the respawn point too** — a checkpoint
+  written inside an interior was refused, and the death fell back to the
+  engine's reload and a fast travel the engine refuses inside an interior.
+  Measured on five checkpoints written in the Sanctuary cellar by both
+  clients: Player Location keeps the worldspace in its first reference and
+  names the cell in its second, and the player's move data names the same
+  cell. Moving the player out writes the same fields an exterior move
+  writes, so the server now moves those checkpoints too, and the read back
+  checks the second reference as well. A plugin's worldspace, or copies
+  that disagree, are still refused. The place also leaves its sky and its
+  sound in the save: the first live test loaded outdoors with no shadows,
+  the saturation and the gamma off and a purple sky, because the sky entry
+  still said "interior" (mode 1 in every checkpoint written in the cellar,
+  3 in every one written outdoors, 29 bytes of outdoor sky data missing).
+  A checkpoint moved out of an interior now gets the sky and sound entries
+  of the genesis save, which the founder points to in `server.ini`
+  (`[genesis] save`); without it such a death falls back to the engine's
+  reload, as before. A session that starts inside the interior leaves the
+  worldspace reference of Player Location empty; that shape moves out too.
+  On the fallback path a direct teleport from an interior used to write the
+  point's coordinates inside the same cell and report the player landed at
+  the point: it is no longer tried there, and the death is reported where
+  the reload put the player.
+- **A new character starts on the founder's point** — the spawn point of
+  `server.ini` was used only at a death; a new character booted the genesis
+  save wherever it had been written. When an identity with no checkpoint on
+  record and no position ever reported joins, the server now moves the
+  genesis save onto the point, books it as the character's first
+  checkpoint, in custody, and names it in the boot word; the client boots
+  it like any checkpoint. The character creation ritual lifts the player
+  from there and puts them back there. A player whose checkpoints all
+  failed to boot, or one known from before the checkpoints existed, keeps
+  the old behaviour, and so does a server without a genesis save, custody
+  or a point.
+- **A player in character creation stays out of the other worlds** — the
+  server already withheld their positions, but the other clients built the
+  ghost anyway and, with no position, stood it on their own player: the
+  default body next to you for the whole creation, then re-dressed in place
+  when the appearance arrived, with its hair left skinned to your head. A
+  ghost is now built only once a position of that player has arrived; the
+  server sends a joiner the positions of everyone already in the world, so
+  nobody else waits.
+- **The creation camera frames the face wherever the character starts** —
+  its orbit angle is absolute, and its default was found with the genesis
+  character, facing 229.5 degrees; a character started on the spawn point
+  faced 0 and was seen from behind. The ritual turns the player to the
+  calibrated facing while staged and gives the original back on return,
+  and a small list at the top left names the keys: F3 and F4 turn the
+  camera, F5 and F6 zoom in and out.
+- **Leaving power armour writes a checkpoint** — a checkpoint written in
+  power armour, then the player leaves the frame: a death on foot or a boot
+  from that checkpoint put the player back inside the save's copy of the
+  frame, while the frame they had left kept standing in the world. Two
+  armours with the same pieces, and a player back in an armour they had
+  left. The server now asks for a checkpoint the moment a player leaves
+  their frame, and the client writes it in a fight too (the respawn moves
+  the position, which is what the fight gate protects): the last checkpoint
+  has the player on foot and the frame where they left it. For the few
+  seconds before that checkpoint exists, and for a player who quit in power
+  armour and comes back (the server gives the frame back to the world when
+  they leave, their checkpoint has them inside it), the frame the save
+  links is found in the world by the local form id its owner announced it
+  with, and taken back: one armour, never two. A frame someone else is
+  wearing by then is left alone, with a warning.
+- **After a load the player can enter power armour again** — the player's
+  own record in a save names the last frame they used, and at every load
+  the copies of my objects saved inside a checkpoint were destroyed and
+  placed again as fresh replicas, that frame among them. The reference
+  went dead: after a respawn (or a boot) the entry animation played and the
+  engine's enter never ran, and only a player who had used a frame before
+  the checkpoint was hit. The saved copy of a frame is now adopted when the
+  server still has it: bound to its wid instead of a new replica, its
+  position and pieces aligned to the server's record, destroyed only if
+  the server removes it.
+
+### Open
+
+- A crash or a kill from the task manager writes no checkpoint: the player
+  boots from the last one, at their last known position, while the world
+  keeps what happened after it, so a take in that window is lost and a
+  deposit is duplicated. Restoring and replaying after the checkpoint is
+  stage 4.
+- The last residue of stage 0: a deposit into an actor that the server
+  refuses gives back the first stack of that item, not necessarily the one
+  deposited.
+- Inside an interior the ownership sphere sees the NPCs of other cells
+  through their local coordinates: about 450 of them cycle through
+  assignment and release, around 90 changes a second on the server.
+- A ghost built while its viewer is inside an interior shows its nametag
+  and no body.
+- An appearance that reaches a ghost already alive dresses it again with
+  the local player's borrowed parts, and the hair stays tied to the local
+  player's head. The creation path avoids it (a ghost is built only after
+  the peer's first position); a change of appearance would hit it.
+- A boot from a checkpoint inside power armour has no power armour HUD, and
+  the Pip-Boy misbehaves once on foot; leaving and entering the frame again
+  fixes both.
+- The frame reclaim, the fallback for a player who quit in power armour,
+  finds the frame by the local form id its spawner announced: a frame
+  spawned by another peer is not found that way, and whether the adoption
+  of saved copies covers it is untested.
+- When the server cannot move a checkpoint in time, a death falls back to
+  the engine's reload and a teleport to the point; from a checkpoint inside
+  an interior that teleport is skipped and the player stays inside.
+- The server's snapshot keeps a phantom peer, `player_B`.
+
+---
+
 ## Loot rework, first half: containers and corpses (2026-09-26) — v0.9.0
 
 Tag `v0.9.0`, wire proto v27: a container state entry carries the container's

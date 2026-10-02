@@ -191,6 +191,7 @@ std::atomic<bool>  g_staged{false};
 std::atomic<float> g_origin_x{0.0f};
 std::atomic<float> g_origin_y{0.0f};
 std::atomic<float> g_origin_z{0.0f};
+std::atomic<float> g_origin_yaw{0.0f};   // 2026-09-30: the facing given back on return
 
 void* seh_ptr_at(std::uintptr_t at) noexcept {
     if (!at) return nullptr;
@@ -274,6 +275,14 @@ constexpr float DRIFT_TOLERANCE = 60.0f;
 // what began as a calibration aid is now the view control -- it just has a
 // sensible default under it.
 constexpr float ORBIT_START = 0.78539816f;   // 45 degrees, face-on
+// 2026-09-30 — the facing ORBIT_START was found with: the genesis save's
+// character, rot z 4.0053 rad (229.5 degrees). The orbit angle is absolute,
+// so a character facing elsewhere is framed from elsewhere: live test #22
+// started a new character on the server's spawn point, facing 0, and the
+// creation camera showed its back. The staging turns the player to this
+// facing, so 45 degrees is the face whatever the starting point, and the
+// return puts the player's own facing back.
+constexpr float CALIBRATED_FACING = 4.0053f;
 std::atomic<float> g_orbit_angle{ORBIT_START};
 std::atomic<float> g_zoom{ZOOM_START};
 
@@ -640,6 +649,7 @@ bool stage(std::uintptr_t module_base) {
     g_origin_x.store(pos[0], std::memory_order_relaxed);
     g_origin_y.store(pos[1], std::memory_order_relaxed);
     g_origin_z.store(pos[2], std::memory_order_relaxed);
+    g_origin_yaw.store(rot[2], std::memory_order_relaxed);
 
     // Camera BEFORE anything menu-shaped exists — the engine's own switch
     // consults UI::IsMenuOpen and may branch once a menu is up.
@@ -656,8 +666,10 @@ bool stage(std::uintptr_t module_base) {
     const bool coll = set_collision_off(module_base, actor, true);
 
     const float target_z = pos[2] + g_z_offset.load(std::memory_order_relaxed);
+    // Facing CALIBRATED_FACING, the direction the camera's default was found
+    // with (see there); the drift correction keeps whatever facing this sets.
     const bool moved = fw::engine::actor_teleport_handoff(
-        actor, pos[0], pos[1], target_z, rot[2]);
+        actor, pos[0], pos[1], target_z, CALIBRATED_FACING);
     // Again after the move: MoveTo rebuilds enough of the actor that the flag
     // cannot be assumed to have survived, and the setter is idempotent.
     set_collision_off(module_base, actor, true);
@@ -704,6 +716,9 @@ bool stage(std::uintptr_t module_base) {
            "not this, so their ghosts of us stay on the ground.",
            pos[0], pos[1], pos[2], target_z, coll ? 1 : 0,
            g_had_collision_off.load(std::memory_order_relaxed) ? 1 : 0);
+    FW_LOG("[chargen-stage] facing turned from %.4f to %.4f rad, the one the camera's "
+           "45 degrees were calibrated on; given back on return", rot[2],
+           CALIBRATED_FACING);
     return true;
 }
 
@@ -729,11 +744,10 @@ bool unstage(std::uintptr_t module_base) {
     // by the server at its spawn point — the fall being the transition. That
     // needs the server's spawn system, which does not exist yet, so until it does
     // the exit is a plain teleport back to where they were.
-    float rot[3] = {};
-    auto* a = reinterpret_cast<std::uint8_t*>(actor);
-    (void)read_vec3(a + offsets::ROT_OFF, rot);
-    const bool moved = fw::engine::actor_teleport_handoff(actor, ox, oy, oz,
-                                                          rot[2]);
+    // 2026-09-30: the player's own facing, not the calibrated one the
+    // staging turned them to.
+    const bool moved = fw::engine::actor_teleport_handoff(
+        actor, ox, oy, oz, g_origin_yaw.load(std::memory_order_relaxed));
     g_target_z.store(0.0f, std::memory_order_relaxed);
 
     // Clear the staged flag BEFORE restoring collision: the per-frame re-assert

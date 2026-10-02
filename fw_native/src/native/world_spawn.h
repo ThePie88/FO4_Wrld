@@ -78,8 +78,44 @@ std::uint32_t local_fid_for_wid(std::uint32_t wid);
 // no-save flag on our refs the ENGINE destroys (Build 70c crash fix).
 bool is_our_fid(std::uint32_t fid);
 
-// v23 — the wid bound to a local form id, or 0. Any-thread safe.
+// v23 — the wid bound to a local form id, or 0. Any-thread safe. LOG USE
+// ONLY since 2026-09-27: runtime form ids are handed out again while the
+// previous holder lives (offsets.h: RUNTIME FORM IDS ARE NOT IDENTITIES),
+// so a fid names our object only together with its pointer: see
+// is_our_refr / wid_for_refr, which confirm through the handle.
 std::uint32_t wid_for_fid(std::uint32_t fid);
+
+// L5 stage 2 (2026-09-27) — identity by handle.
+//
+// True when `refr` IS one of our bound objects: the fid is a prefilter,
+// the confirmation resolves the binding's handle and compares pointers.
+// Any thread (the handle table is interlocked); `refr` must be alive at
+// the call, which the destroy tripwire guarantees by asking BEFORE the
+// original runs.
+bool is_our_refr(void* refr, std::uint32_t fid);
+std::uint32_t wid_for_refr(void* refr, std::uint32_t fid);
+
+// The sender (hooks/world_spawn_hook.cpp) calls this right before it
+// announces one of OUR objects, so the echo can bind the wid to the handle
+// and not only to the fid. Entries expire on their own.
+void note_self_object(std::uint32_t fid, std::uint32_t handle);
+
+// The pickup hook, BEFORE the engine's own pickup runs: the local player
+// is taking `refr` out of the world. If it is one of our bound objects the
+// death is reported at once as reason 5 (no waiting for the sweep, whose
+// "deleted" verdict cannot tell a pickup from a streaming loss). Any
+// thread: it only marks and queues; the tick sends.
+void on_local_pickup(void* refr);
+
+// A REFR the local player just DROPPED (persist/inventory_tap.cpp resolves
+// the remove core's out handle and hands it here through
+// hooks::report_world_drop). Not announced yet: the object is watched
+// until it rests (the drop falls from chest height; announcing the
+// pre-fall pose made the drift watch despawn and rebirth every drop), then
+// announced self-described with its instance read at that moment. Picked
+// up again before it rests = nothing sent. MAIN THREAD (the drop runs on
+// it), handle required.
+void watch_local_drop(void* refr, std::uint32_t handle, std::int32_t count_hint);
 
 // v23 — network thread: a WORLD_PA_PIECES_BCAST arrived. Queued; the main
 // tick applies it by destroy-and-replace (the streaming-requeue idiom).
@@ -97,5 +133,53 @@ void report_frame_pieces(void* frame_refr, std::uint32_t fid);
 // non-frames / unreadable). MAIN THREAD.
 std::uint8_t capture_frame_pieces(void* refr, std::uint32_t base_id,
                                   fw::net::PaPieceEntry out[12]);
+
+// L5 stage 3 (2026-09-28) — the saved copies.
+//
+// A checkpoint save carries every reference the engine had when it was
+// written, our world objects included: the TEMPORARY flag stamped after
+// placement protects nothing (the change record is written before the
+// stamp), and a copy restored from the save comes back under the SAME
+// runtime form id it had. Measured on 2026-09-28: A's replica of B's baton
+// (fid 0xFF001188, placed 04:35:32, destroyed by the exit teardown at
+// 04:35:44) was destroyed AGAIN by the teardown of the next session, flags
+// 0x8, next to the fresh replica 0xFF001156 the bootstrap had placed: one
+// duplicate per object per reboot, the pair overlapping in Havok.
+//
+// The remedy stays on our side of the line. Every checkpoint writes a world
+// manifest next to itself (snapshot_world_objects: each bound object of
+// ours, its fid, base and position), and when a checkpoint loads (the boot,
+// a death reload) the lifecycle module hands that manifest back
+// (purge_saved_copies). Once the world is back, BEFORE any placement, each
+// stamped fid is looked up and the form that answers is destroyed only when
+// it is a REFR of that base standing near the stamped spot and not a live
+// binding of this session. The server's bootstrap then re-places what still
+// exists, exactly once.
+struct WorldObjectStamp {
+    std::uint32_t fid;       // the runtime form id: the save restores the copy under it
+    std::uint32_t base_id;   // form id of the base object
+    std::uint32_t wid;       // the server's id at the time (log use only)
+    float         pos[3];
+};
+
+// MAIN THREAD, at the save point: every bound object of ours that resolves
+// in this world. Returns the count written to `out`.
+std::size_t snapshot_world_objects(WorldObjectStamp* out, std::size_t cap);
+
+// L5 stage 3c (2026-09-28) — the power armour frame the player climbs out
+// of. A frame entered in this session is on the resurrection watch already
+// (the sweep saw it disabled at the enter); a frame worn ACROSS a save
+// (the checkpoint had the player inside it) is unknown here, and on the
+// second live death its exit put a frame on the wearer's screen that no
+// one else got. The PA exit hook hands the frame over: if it is not one
+// of ours it goes on the watch, and the sweep announces it as a new
+// object once the engine has enabled it. Any thread.
+void watch_unknown_frame(void* frame_refr, std::uint32_t handle);
+
+// Any thread: queues the manifest of the save being loaded; the tick
+// applies it once the world is back, before any placement. n == 0 (a load
+// without a manifest, the genesis save) clears whatever was queued.
+void purge_saved_copies(const WorldObjectStamp* stamps, std::size_t n,
+                        const char* save_name);
 
 }  // namespace fw::native::world_spawn

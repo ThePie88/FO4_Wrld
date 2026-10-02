@@ -3,6 +3,7 @@
 #include "overlay.h"
 
 #include <windows.h>
+#include <cfloat>   // FLT_MAX for the curtain text
 #include <d3d11.h>
 
 #include <atomic>
@@ -16,6 +17,7 @@
 #include "editor_overlay.h"
 #include "chat_overlay.h"
 #include "nametags.h"
+#include "../persist/death.h"   // L5 stage 3c: the respawn curtain
 #include "../log.h"
 #include "../native/appearance_recipe.h"
 
@@ -168,7 +170,12 @@ void on_frame(std::uintptr_t module_base) {
     // cost nothing: checked before ImGui is even brought up.
     const bool chat = chat::wants_frame(module_base);
     const bool tags = nametags::wants_frame(module_base);
-    if (!editing && !chat && !tags) return;
+    // L5 stage 3c — the respawn curtain: from the resurrect to the landing
+    // the screen is ours, because the far move shows the destination being
+    // loaded and every ghost we render on it (measured on the second live
+    // death: a peer's ghost on a white screen).
+    const bool curtain = fw::persist::death::curtain_active();
+    if (!editing && !chat && !tags && !curtain) return;
 
     if (!g_ready.load(std::memory_order_acquire)) {
         if (!try_init()) return;
@@ -182,9 +189,21 @@ void on_frame(std::uintptr_t module_base) {
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
-    if (tags)    nametags::draw(module_base);
+    if (tags && !curtain) nametags::draw(module_base);
     if (chat)    chat::draw(module_base);
     if (editing) editor::draw(module_base);
+    if (curtain) {
+        const ImVec2 size = ImGui::GetIO().DisplaySize;
+        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        dl->AddRectFilled(ImVec2(0.0f, 0.0f), size, IM_COL32(6, 6, 8, 255));
+        ImFont* font = tag_font();
+        const char* text = "Respawning...";
+        const float px = size.y / 30.0f;
+        const ImVec2 ts = (font ? font : ImGui::GetFont())->CalcTextSizeA(px, FLT_MAX, 0.0f, text);
+        dl->AddText(font ? font : ImGui::GetFont(), px,
+                    ImVec2((size.x - ts.x) * 0.5f, (size.y - ts.y) * 0.5f),
+                    IM_COL32(200, 200, 190, 255), text);
+    }
     ImGui::Render();
 
     // Bind the GAME's render target, then let ImGui's backend draw. The backend

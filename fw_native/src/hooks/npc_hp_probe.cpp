@@ -396,6 +396,84 @@ void apply_pool_health_to_actor(void* actor, float pool_cur, float pool_max) noe
     }
 }
 
+namespace {
+
+// Stage 3d — the pieces of heal_local_player, each SEH-caged on its own
+// (no C++ objects in these frames).
+bool seh_av_registry(std::uintptr_t base, void** health, void** rads) noexcept {
+    __try {
+        using AvRegFn = const void* const* (__fastcall*)();
+        const void* const* arr = reinterpret_cast<AvRegFn>(base + AV_REGISTRY_RVA)();
+        if (!arr) return false;
+        *health = const_cast<void*>(arr[27]);   // Health
+        *rads   = const_cast<void*>(arr[58]);   // Rads (sub_1406C9C90 reads [58] for RadHealthMax)
+        return *health != nullptr && *rads != nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_seh.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+}
+
+bool seh_health_damage(const void* actor, float* out) noexcept {
+    __try {
+        *out = reinterpret_cast<const float*>(
+            reinterpret_cast<const std::uint8_t*>(actor) + fw::offsets::ACTOR_HEALTH_CELL_OFF)[2];
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_seh.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+}
+
+bool seh_funnel(HpFunnelFn fn, void* actor, void* av, float delta) noexcept {
+    __try {
+        fn(actor, HEALTH_AP_COLUMN, av, delta, nullptr);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_seh.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+}
+
+} // namespace
+
+bool heal_local_player(void* player, HealReport* out) noexcept {
+    HealReport r{};
+    if (out) *out = r;
+    if (!player) return false;
+    std::uintptr_t base = g_module_base.load(std::memory_order_acquire);
+    if (!base) base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(L"Fallout4.exe"));
+    if (!base) return false;
+    void* health = nullptr;
+    void* rads = nullptr;
+    if (!seh_av_registry(base, &health, &rads)) return false;
+    // The trampoline when our detour is installed (it must not see these
+    // deltas: a negative one on column 2 looks like damage to it), the
+    // engine's function otherwise.
+    HpFunnelFn fn = g_orig ? g_orig
+                           : reinterpret_cast<HpFunnelFn>(base + fw::offsets::ACTOR_HP_FUNNEL_RVA);
+
+    r.rads_before = safe_avo_current_hp(player, rads);
+    if (r.rads_before > 0.001f) {
+        (void)seh_funnel(fn, player, rads, -r.rads_before);
+    }
+    r.rads_after = safe_avo_current_hp(player, rads);
+    if (r.rads_after < -0.001f) {
+        // Never below zero: rads held in another column would leave the
+        // total negative once they expire.
+        (void)seh_funnel(fn, player, rads, -r.rads_after);
+        r.rads_after = safe_avo_current_hp(player, rads);
+    }
+
+    bool ok = seh_health_damage(player, &r.health_damage_before);
+    if (ok && r.health_damage_before < -0.001f) {
+        (void)seh_funnel(fn, player, health, -r.health_damage_before);
+    }
+    ok = seh_health_damage(player, &r.health_damage_after) && ok;
+    if (out) *out = r;
+    return ok && r.rads_before >= 0.0f;
+}
+
 bool install_npc_hp_probe(std::uintptr_t module_base) {
     g_module_base.store(module_base, std::memory_order_release);
     void* target = reinterpret_cast<void*>(

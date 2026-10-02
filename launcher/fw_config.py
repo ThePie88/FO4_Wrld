@@ -77,9 +77,27 @@ ghost_face_clone = {ghost_face_clone}
 # B6.14 - world-object spawn sync. A REFR created in one client's world
 # (console spawn today; power-armor frames, settlement builds later) is
 # reported to the server, which assigns it a logical id, persists it and has
-# every client place a local copy. false = the PlaceAtMe detour is not even
-# installed.
+# every client place a local copy. Since 2026-09-27 the same wire carries
+# items dropped from the Pip-Boy (count, condition and mods included).
+# false = the PlaceAtMe detour is not even installed and drops stay local.
 world_spawn_sync = {world_spawn_sync}
+
+# L5 stage 1 - the save/load lifecycle module. true = the engine's own saves
+# are refused (timed autosave, F5, pause menu, exit saves), the quickload key
+# is dropped, every load is logged with its caller, and the save settings are
+# forced in memory after the INI files were read. false = the seven detours
+# are not installed and the game saves and loads as vanilla; the switch is
+# the fallback for a session that misbehaves around a load.
+persist_lifecycle = {persist_lifecycle}
+
+# L5 stage 2 - the player's inventory read once a second, in observation
+# only: a summary line in fw_native.log when it changes, every stack at
+# debug level. Writes nothing to the engine. false = the reader never runs.
+inventory_capture = {inventory_capture}
+# Virtual-key that asks for a TEST checkpoint: a granted named save
+# (fwck_test_N in Saves) plus fw_inventory_ckpt_N.json in the game dir, the
+# pair tools/fos_inventory.py --diff compares. 0 = off. 0x79 = F10.
+checkpoint_test_key = {checkpoint_test_key}
 
 # Sets the LOCAL player's hair to this colour form once at boot, then forces a
 # rebuild so it shows. Used to make the two sides visually distinguishable in a
@@ -156,6 +174,9 @@ def write_for_side(
     stream_pose_in_first_person: bool = False,
     ghost_face_clone: bool = True,
     world_spawn_sync: bool = True,
+    persist_lifecycle: bool = True,
+    inventory_capture: bool = True,
+    checkpoint_test_key: int = 0x79,
     chargen_selftest: int = 0,
     chargen_selftest_delay: int = 20,
     editor_key: int = 0x71,
@@ -203,6 +224,9 @@ def write_for_side(
             "true" if first_person_graph_drive else "false"),
         ghost_face_clone=("true" if ghost_face_clone else "false"),
         world_spawn_sync=("true" if world_spawn_sync else "false"),
+        persist_lifecycle=("true" if persist_lifecycle else "false"),
+        inventory_capture=("true" if inventory_capture else "false"),
+        checkpoint_test_key=(f"0x{checkpoint_test_key:02X}" if checkpoint_test_key else "0"),
         chargen_selftest=f"0x{chargen_selftest:08X}" if chargen_selftest else "0",
         chargen_selftest_delay=str(chargen_selftest_delay),
         editor_key=(f"0x{editor_key:02X}" if editor_key else "0"),

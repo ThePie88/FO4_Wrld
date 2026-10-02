@@ -125,6 +125,13 @@ public:
     // Any thread, in practice the window's thread.
     void send_goodbye_now(std::uint8_t reason = 0);
 
+    // L5 stage 3a — the exit checkpoint's report, sent AT ONCE on the
+    // caller's thread for the same reason as the goodbye above and BEFORE
+    // it: the goodbye ends the session on the server, and a report that
+    // arrives after it belongs to nobody. Unreliable, repeated, like the
+    // goodbye; the queued reliable copy follows if the worker still runs.
+    void send_ckpt_done_now(const CkptDonePayload& p);
+
     bool is_connected() const noexcept { return connected_.load(); }
     bool is_dead()      const noexcept { return dead_.load(); }
     std::uint32_t session_id() const noexcept { return session_id_.load(); }
@@ -282,6 +289,49 @@ public:
     // B6.14 v22 - report that spawned object `wid` died in this world.
     void enqueue_world_despawn_op(std::uint32_t wid, std::uint8_t reason,
                                   std::uint64_t timestamp_ms);
+
+    // L5 stage 2 - the advisory digest of the player's inventory (reliable,
+    // the server answers nothing). Only complete captures reach here: the
+    // capture module keeps the incomplete ones to itself.
+    void enqueue_inv_digest(const InvDigestPayload& digest);
+
+    // L5 stage 3a - the commanded checkpoint. CKPT_DONE reports a checkpoint
+    // written (or why not); BOOT_RESULT says what the boot loaded. Both
+    // reliable, both answered with nothing.
+    void enqueue_ckpt_done(const CkptDonePayload& p);
+    void enqueue_boot_result(const BootResultPayload& p);
+    // L5 stage 3c - the local player died, respawned, or fell back to the
+    // reload. Reliable, answered with nothing.
+    void enqueue_player_life(const PlayerLifePayload& p);
+
+    // L5 stage 3a - the server's word on the boot (CKPT_BOOT, the first
+    // bootstrap stage of the FIRST session; a resume's copy is ignored, the
+    // world is already loaded by then). 0 = nothing heard yet, 1 = boot from
+    // the genesis save, 2 = `out` names the checkpoint to load.
+    struct BootCheckpoint {
+        std::uint32_t seq = 0;
+        char          name[48] = {};
+        std::uint8_t  sha256[32] = {};
+        std::uint32_t size = 0;
+        std::uint64_t digest = 0;
+        // v30 — the last known position when the server judged it newer
+        // than the checkpoint (filled for both decisions, 1 and 2).
+        bool          has_pos = false;
+        float         pos[3] = {0.0f, 0.0f, 0.0f};
+        float         yaw = 0.0f;
+        std::uint64_t pos_ms = 0;
+        // v31 — custody: the bulk port (0 = none), the session token and
+        // the candidates newest first (the pick is normally the first).
+        std::uint16_t bulk_port = 0;
+        std::uint8_t  token[32] = {};
+        std::uint8_t  n_candidates = 0;
+        CkptCandidate candidates[kCkptCandidates] = {};
+        // v32 — the respawn point, or none.
+        bool          has_respawn = false;
+        float         respawn_pos[3] = {0.0f, 0.0f, 0.0f};
+        float         respawn_yaw = 0.0f;
+    };
+    int boot_decision(BootCheckpoint* out) const;
 
     // B6.6w2: reliable NPC_DISCOVER — sender emits when its
     // npc_ai_suppress detour first auto-tracks a hostile NPC (vanilla
@@ -550,6 +600,11 @@ private:
     std::atomic<bool> connected_{false};
     std::atomic<bool> dead_{false};
     std::atomic<std::uint32_t> session_id_{0};
+    // L5 stage 3a — the boot decision, written once by the worker thread on
+    // the first CKPT_BOOT, read by main_menu_hook's boot worker.
+    mutable std::mutex boot_mx_;
+    int                boot_state_ = 0;
+    BootCheckpoint     boot_ckpt_{};
     // v26 — the credential that lets this client come back without going
     // through the launcher again, whose login proof is single use. Lives
     // only in memory and only on the worker thread: never on disk, never in

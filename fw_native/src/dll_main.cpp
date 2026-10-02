@@ -27,6 +27,10 @@
 #include "version.h"
 #include "hook_manager.h"
 #include "hooks/install_all.h"
+#include "persist/inventory_capture.h"   // L5 stage 2: set_output_dir
+#include "persist/custody.h"             // L5 stage 3b: the checkpoint bytes to and from the server
+#include "persist/death.h"               // L5 stage 3c: the respawn without a reload
+#include "persist/checkpoint.h"          // L5 stage 2: the test checkpoint
 #include "net/client.h"
 #include "engine/engine_calls.h"
 #include "render/present_hook.h"
@@ -66,6 +70,11 @@ DWORD WINAPI init_thread(LPVOID) {
     else if (cfg.log_level == "debug") lvl = fw::log::Level::Debug;
     fw::log::init((dir / L"fw_native.log").wstring(), lvl);
     fw::audit::init(dir.wstring());   // Build 69m mutation ledger
+    // L5 stage 2: fw_inventory.json and the checkpoint manifests land here.
+    fw::persist::inventory::set_output_dir(dir.wstring().c_str());
+    fw::persist::checkpoint::configure(cfg, dir.wstring().c_str());
+    fw::persist::custody::configure(cfg);
+    fw::persist::death::configure(cfg);
     // 2026-08-06 — character-creation catalogue capture. Armed from the ini
     // for one clean vanilla session; a no-op otherwise.
     fw::native::chargen_dump::init(dir.wstring(), cfg.chargen_dump);
@@ -302,6 +311,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID /*reserved*/) {
     }
     case DLL_PROCESS_DETACH:
         fw::net::client().stop();
+        fw::persist::custody::stop();
         fw::ghost::shutdown();
         fw::native::shutdown();               // Strada B M1 cleanup
         fw::render::release_body_resources();

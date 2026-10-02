@@ -541,6 +541,28 @@ void note_local_player_death() noexcept {
            static_cast<unsigned long long>(kHardCeilingMs));
 }
 
+bool local_player_hp_sum(float* out_sum) noexcept {
+    return read_local_player_hp_sum(out_sum);
+}
+
+// L5 stage 3d — see the header. Live test #17 bis (2026-09-29): three deaths
+// next to the respawn point, two by player.kill (hp-sum 0.0 at death) and one
+// at -22.9, left both detectors below dark; each stand-down ran to the 90 s
+// ceiling, with every ghost the client renders frozen, the world spawns
+// paused (a frame entered by the other player stayed standing, a client's
+// own frame was not placed back after its load) and the checkpoint deferred.
+void note_local_player_respawned() noexcept {
+    if (!g_standdown_active.load(std::memory_order_relaxed)) return;
+    if (g_respawn_seen_ms.load(std::memory_order_relaxed) != 0) return;
+    const std::uint64_t now  = GetTickCount64();
+    const std::uint64_t died = g_local_player_died_ms.load(std::memory_order_relaxed);
+    g_respawn_seen_ms.store(now, std::memory_order_relaxed);
+    FW_LOG("[npc-ai-suppress] respawn reported by the death flow %llums after death "
+           "(no jump or health restore needed) - holding stand-down %llums more",
+           static_cast<unsigned long long>(now - died),
+           static_cast<unsigned long long>(kSettleAfterRespawnMs));
+}
+
 namespace {
 
 // Build 69q (2026-08-04) — DEATH-TIME CELL RE-COHERENCE.

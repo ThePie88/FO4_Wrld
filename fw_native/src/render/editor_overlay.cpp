@@ -376,6 +376,31 @@ void draw_panel(std::uintptr_t base) {
     ImGui::End();
 }
 
+// 2026-09-30 — the camera keys, top left, for as long as the panel is up.
+// The creation camera turns and zooms on keys (main_menu_hook: F3/F4 an eighth
+// of a turn, F5 in and F6 out), which nothing on screen said: the first
+// player created on the server's spawn point tried the mouse and saw only
+// the character's back. Not interactive: it takes no input from the panel.
+void draw_camera_keys() {
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + 16.0f, vp->Pos.y + 16.0f));
+    ImGui::SetNextWindowBgAlpha(0.60f);
+    const ImGuiWindowFlags flags =
+        ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+        ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoMove;
+    if (!ImGui::Begin("##fw_camera_keys", nullptr, flags)) {
+        ImGui::End();
+        return;
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, kGreen);
+    ImGui::TextUnformatted("CAMERA");
+    ImGui::PopStyleColor();
+    ImGui::TextUnformatted("F3 / F4   rotate");
+    ImGui::TextUnformatted("F5 / F6   zoom in / out");
+    ImGui::End();
+}
+
 }  // namespace
 
 void apply_style() { apply_style_tokens(); }
@@ -643,6 +668,7 @@ void prepare_frame(std::uintptr_t module_base) {
 
 void draw(std::uintptr_t module_base) {
     draw_panel(module_base);
+    draw_camera_keys();
 }
 
 }  // namespace fw::render::editor

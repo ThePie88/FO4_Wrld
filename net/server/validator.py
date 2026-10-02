@@ -21,6 +21,7 @@ from protocol import (  # noqa: E402
     PosStatePayload, ActorEventPayload, ContainerOpPayload, ContainerOpKind,
     is_runtime_form_id,
     identities_conflict,
+    COUNT_MAX,
 )
 from server.state import PeerSession, ContainerWorldState  # noqa: E402
 
@@ -56,6 +57,7 @@ class RejectReason(IntEnum):
     INSUFFICIENT_ITEMS       = 14  # TAKE more than the container has (upstream check)
     RUNTIME_REF              = 15  # container op on a 0xFF______ ref: its id aliases across processes
     IDENTITY_MISMATCH        = 16  # known REFR with another (base, cell): load-order drift
+    COUNT_OVERFLOW           = 17  # PUT would push a line past the i32 the wire packs
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,7 +196,9 @@ def validate_container_op(
     PUT is always permissive (beyond basic checks) — adding items to a
     container shared with others is legitimate.
     """
-    if not session.rate.consume(now_ms, amount=1.0):
+    # Stage 0 of L5 (2026-09-27): item ops meter their own bucket, not the
+    # one the 20 Hz position stream drains (see PeerSession.item_rate).
+    if not session.item_rate.consume(now_ms, amount=1.0):
         return ValidationResult.reject(RejectReason.RATE_LIMITED)
 
     if (op.container_form_id == 0 or op.container_base_id == 0
@@ -272,6 +276,19 @@ def validate_container_op(
             return ValidationResult.reject(
                 RejectReason.INSUFFICIENT_ITEMS,
                 f"take {op.count}, container has {have} of item 0x{op.item_base_id:X}",
+            )
+
+    # Stage 0 of L5 (2026-09-27): a line can never grow past what the wire
+    # packs. Two console deposits of 2e9 caps made a 4e9 record whose ACK and
+    # CONTAINER_STATE raised inside the join bootstrap for every joiner.
+    if op.kind == int(ContainerOpKind.PUT):
+        have = (container_state.items.get(op.item_base_id, 0)
+                if container_state is not None else 0)
+        if have + op.count > COUNT_MAX:
+            return ValidationResult.reject(
+                RejectReason.COUNT_OVERFLOW,
+                f"put {op.count} on {have} of item 0x{op.item_base_id:X} "
+                f"exceeds {COUNT_MAX}",
             )
 
     return ValidationResult.accept()

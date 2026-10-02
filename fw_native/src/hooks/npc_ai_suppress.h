@@ -55,6 +55,21 @@ void note_local_player_death() noexcept;
 // path must consult this too — the per-frame detour bails on its own.
 bool in_local_death_standdown() noexcept;
 
+// L5 stage 3c — the local player's health cell (Actor+0x444, the three
+// modifiers whose sum is 0 at full health), the reading the stand-down's
+// own respawn detector uses. False when unreadable. Any thread.
+bool local_player_hp_sum(float* out_sum) noexcept;
+
+// L5 stage 3d (2026-09-29) — the THIRD respawn detector, the only one that is
+// not a guess: the death flow says the player has landed (persist/death.cpp,
+// report_respawned, every respawn path). The stand-down then closes after its
+// usual settle. The respawn of stage 3d is the load of the server's moved
+// checkpoint: no position jump when the player died near the respawn point,
+// and no health restore when the death left the health cell at 0
+// (player.kill) or less than 25 below it. Main thread; a no-op when no
+// stand-down is open or a respawn was already seen.
+void note_local_player_respawned() noexcept;
+
 // Build 69r (2026-08-04) — A/B lever for the Build 69q death-recohere sweep,
 // default OFF (see config.h `death_recohere_sweep` for the full post-mortem:
 // decomp proved the MoveTo(cell=NULL) does NO cell re-file and instead plants

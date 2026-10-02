@@ -6,11 +6,14 @@
 #include <mutex>
 #include <unordered_set>
 
+#include <cstdio>
+
 #include "../hook_manager.h"
 #include "../engine/engine_calls.h"
 #include "../native/world_spawn.h"
 #include "../net/client.h"
 #include "../offsets.h"
+#include "../persist/inventory_capture.h"   // read_refr_instance (the drop descriptor)
 #include "../ref_identity.h"
 #include "../log.h"
 
@@ -76,9 +79,45 @@ void* seh_ptr_at(std::uintptr_t at) noexcept {
     __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
 }
 
+// The announce itself, shared by every path that has decided a REFR is
+// world state: pose, the TEMPORARY flag, the wire, one log line. The
+// handle goes to the registry first, so the echo binds the wid to the
+// object and not only to a fid the engine may hand out again.
+void announce(void* refr, std::uint32_t handle, const fw::RefIdentity& id,
+              std::uint8_t flags, const fw::net::PaPieceEntry* pieces,
+              std::uint8_t pn, const char* what) {
+    if (handle == 0) handle = fw::engine::refr_get_handle(refr);
+    fw::native::world_spawn::note_self_object(id.form_id, handle);
+    float pos[3] = {0}, rot[3] = {0};
+    auto* rb = reinterpret_cast<std::uint8_t*>(refr);
+    (void)seh_read_vec3(rb + fw::offsets::POS_OFF, pos);
+    (void)seh_read_vec3(rb + fw::offsets::ROT_OFF, rot);
+
+    // TEMPORARY from this moment: the server owns the object's lifetime now,
+    // and a save that kept the original would duplicate it against the join
+    // replay next session. Same flag, same reason as the ghost donor.
+    const bool tmp_ok = seh_or_u32(rb + fw::offsets::FLAGS_OFF,
+                                   fw::offsets::REFR_FLAG_TEMPORARY);
+
+    fw::net::client().enqueue_world_spawn_op(
+        id.base_id, id.form_id, pos, rot, id.cell_id, flags,
+        static_cast<std::uint64_t>(GetTickCount64()),
+        pn ? pieces : nullptr, pn);
+
+    FW_LOG("[world-spawn-tx] observed %s: base=0x%08X local fid=0x%08X "
+           "handle=0x%08X cell=0x%08X at (%.1f, %.1f, %.1f) -> WORLD_SPAWN_OP "
+           "sent (flags 0x%02X, %u piece(s), TEMPORARY %s)",
+           what, id.base_id, id.form_id, handle, id.cell_id,
+           pos[0], pos[1], pos[2], unsigned(flags), unsigned(pn),
+           tmp_ok ? "patched" : "PATCH FAILED");
+}
+
 // One reporter for every creation path. `via` names the path in the log so
-// the filter-widening decisions stay data-driven.
-void report_spawn(void* refr, void* anchor_refr, const char* via) {
+// the filter-widening decisions stay data-driven. `handle` = the REFR's
+// handle when the path has it (the console worker returns one), else 0 and
+// the announce asks the engine for it.
+void report_spawn(void* refr, void* anchor_refr, const char* via,
+                  std::uint32_t handle) {
     if (!refr) return;
     if (fw::engine::in_internal_place()) return;   // our own call
 
@@ -104,33 +143,15 @@ void report_spawn(void* refr, void* anchor_refr, const char* via) {
         if (!g_seen.insert(id.form_id).second) return;   // double fire
     }
 
-    float pos[3] = {0}, rot[3] = {0};
-    auto* rb = reinterpret_cast<std::uint8_t*>(refr);
-    (void)seh_read_vec3(rb + fw::offsets::POS_OFF, pos);
-    (void)seh_read_vec3(rb + fw::offsets::ROT_OFF, rot);
-
-    // TEMPORARY from this moment: the server owns the object's lifetime now,
-    // and a save that kept the original would duplicate it against the join
-    // replay next session. Same flag, same reason as the ghost donor.
-    const bool tmp_ok = seh_or_u32(rb + fw::offsets::FLAGS_OFF,
-                                   fw::offsets::REFR_FLAG_TEMPORARY);
-
     // v23 — a PA frame's announce carries its content (a fresh console
     // spawn is empty, but a re-announce of a stocked frame must not lose
     // its pieces).
     fw::net::PaPieceEntry pieces[12] = {};
     const std::uint8_t pn = fw::native::world_spawn::capture_frame_pieces(
         refr, id.base_id, pieces);
-    fw::net::client().enqueue_world_spawn_op(
-        id.base_id, id.form_id, pos, rot, id.cell_id, /*flags=*/0,
-        static_cast<std::uint64_t>(GetTickCount64()),
-        pn ? pieces : nullptr, pn);
-
-    FW_LOG("[world-spawn-tx] observed player-anchored spawn via %s: "
-           "base=0x%08X local fid=0x%08X cell=0x%08X at (%.1f, %.1f, %.1f) "
-           "-> WORLD_SPAWN_OP sent (TEMPORARY %s)",
-           via, id.base_id, id.form_id, id.cell_id, pos[0], pos[1], pos[2],
-           tmp_ok ? "patched" : "PATCH FAILED");
+    char what[96];
+    std::snprintf(what, sizeof(what), "player-anchored spawn via %s", via);
+    announce(refr, handle, id, /*flags=*/0, pieces, pn, what);
 }
 
 void* detour_place_at_me(void* vm, std::uint32_t stack_id, void** form_pair,
@@ -138,7 +159,7 @@ void* detour_place_at_me(void* vm, std::uint32_t stack_id, void** form_pair,
                          std::uint64_t persistent) {
     void* refr = g_orig(vm, stack_id, form_pair, anchor_refr, count,
                         persistent);
-    report_spawn(refr, anchor_refr, "Papyrus PlaceAtMe");
+    report_spawn(refr, anchor_refr, "Papyrus PlaceAtMe", 0);
     return refr;
 }
 
@@ -152,12 +173,57 @@ std::uint32_t* detour_console_place(std::uint32_t* out_handle,
     // from the N2 aggro fix turns it into the REFR.
     if (out_handle && *out_handle != 0 && *out_handle != 0xFFFFFFFFu) {
         void* refr = fw::engine::resolve_refhandle(out_handle);
-        report_spawn(refr, target_refr, "console PlaceAtMe");
+        report_spawn(refr, target_refr, "console PlaceAtMe", *out_handle);
     }
     return ret;
 }
 
 }  // namespace
+
+void report_world_drop(void* refr, std::uint32_t handle, std::int32_t count_hint) {
+    if (!refr) return;
+    if (fw::engine::in_internal_place()) return;   // our own placement, never a drop
+    const std::uintptr_t base = g_base.load(std::memory_order_relaxed);
+    if (!base) return;   // world_spawn_sync=false: nothing armed, nothing sent
+
+    const auto id = fw::read_ref_identity(refr);
+    if (id.form_id == 0 || id.base_id == 0) {
+        FW_WRN("[world-spawn-tx] drop: the new REFR has no readable identity "
+               "(fid=0x%08X base=0x%08X), not announced", id.form_id, id.base_id);
+        return;
+    }
+    if (handle == 0 || handle == 0xFFFFFFFFu) handle = fw::engine::refr_get_handle(refr);
+    if (handle == 0) {
+        FW_WRN("[world-spawn-tx] drop: no handle for fid=0x%08X base=0x%08X, "
+               "not announced (the registry tracks objects by handle)",
+               id.form_id, id.base_id);
+        return;
+    }
+    // No dedup by fid here on purpose: the remove core fires once per REFR,
+    // and a fid can already belong to a live object of ours while the
+    // engine hands it to this one (offsets.h: RUNTIME FORM IDS ARE NOT
+    // IDENTITIES). The registry watches the object until it rests and
+    // announces it then, with the instance read at that moment.
+    FW_LOG("[world-spawn-tx] Pip-Boy drop: base=0x%08X fid=0x%08X handle=0x%08X "
+           "x%d -> watched until it rests", id.base_id, id.form_id, handle,
+           count_hint);
+    fw::native::world_spawn::watch_local_drop(refr, handle, count_hint);
+}
+
+void announce_world_refr(void* refr, std::uint32_t handle, std::uint8_t flags,
+                         const fw::net::PaPieceEntry* pieces, std::uint8_t pn,
+                         const char* what) {
+    if (!refr) return;
+    const std::uintptr_t base = g_base.load(std::memory_order_relaxed);
+    if (!base) return;
+    const auto id = fw::read_ref_identity(refr);
+    if (id.form_id == 0 || id.base_id == 0) {
+        FW_WRN("[world-spawn-tx] %s: no readable identity (fid=0x%08X base=0x%08X), "
+               "not announced", what ? what : "?", id.form_id, id.base_id);
+        return;
+    }
+    announce(refr, handle, id, flags, pieces, pn, what ? what : "announce");
+}
 
 bool install_world_spawn_hook(std::uintptr_t module_base) {
     if (!module_base) return false;

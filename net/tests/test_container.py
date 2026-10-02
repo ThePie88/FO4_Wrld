@@ -358,7 +358,11 @@ class TestPersistence:
         path = tmp_path / "snap.json"
         snapshot(src, path)
         data = json.loads(path.read_text())
-        assert data["version"] == SNAPSHOT_FORMAT_VERSION == 6
+        # v7 (L5 stage 1) keeps the v6 container layout; the version bump
+        # added the journal mark, quests, globals and hashed tokens; v8 (L5
+        # stage 2) adds the inventory digests; v9 (L5 stage 3a) the checkpoints;
+        # v10 (L5 stage 3b) their custody.
+        assert data["version"] == SNAPSHOT_FORMAT_VERSION == 10
         assert len(data["containers"]) == 2
         c = next(x for x in data["containers"] if x["form_id"] == f"0x{TRUNK_FID:X}")
         assert c["base_id"] == f"0x{TRUNK_BASE:X}"

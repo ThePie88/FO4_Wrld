@@ -143,6 +143,17 @@ fw_native/assets/raw/Textures/
 
 # -- Server runtime state snapshots (regenerable, contains in-game state) ----
 net/state_snapshot.json*
+# L5 stage 1: the durable journal next to the snapshot (world state, per run)
+net/state_snapshot_journal/
+net/*_journal/
+# L5 stage 3b: the checkpoint bytes in the server's custody (per run)
+net/state_checkpoints/
+# L5 stage 3d: the server's copy of the genesis save (server.ini [genesis]).
+net/genesis/
+
+# L5 stage 1: private keys of the local dev identities (anyone holding one IS
+# that player)
+launcher/.dev_keys/
 
 # -- Personal design memos / scratch docs (live across sessions, not public) -
 NPCs.md

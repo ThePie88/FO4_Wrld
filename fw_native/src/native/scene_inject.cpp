@@ -52,6 +52,7 @@
 #include "../net/client.h"
 #include "../offsets.h"   // M9 wedge 2: TESObjectARMO/ARMA + lookup_by_form_id RVAs
 #include "../engine/engine_calls.h"  // c.37.0: lookup_by_form_id (mirror resolution)
+#include "../persist/lifecycle.h"    // 2026-09-28: exiting(), the bone writer stops with the world
 
 namespace fw::native {
 
@@ -5273,6 +5274,44 @@ static bool ghost_dress_face(void* face_source, void* head,
                 reinterpret_cast<long*>(fb + NIAV_REFCOUNT_OFF));
         }
 
+        // 2026-09-28 — THE CLONE MUST NOT INHERIT THE SOURCE'S CULLING.
+        //
+        // Both sources are clones of a LIVE face node, flags included: the
+        // peer's mask was cloned off the local player wearing the peer's
+        // recipe, and the mirror IS the local player's face. Inside a power
+        // armour the engine hides the wearer's face by setting kAppCulled on
+        // the BSFaceGenNiNode itself (PA-enter dump: flags ...F **CULLED**
+        // inside the frame, ...E outside). A checkpoint boots the player
+        // inside the frame, so every face built in there came out culled and
+        // the ghost wore a hidden head. The mask is un-culled at the borrow
+        // as well (face_borrow.cpp, uncull_mask); this is the fallback for
+        // the mirror path and for a mask built by an older DLL. The neck
+        // meatcap is re-culled by name right below, as before.
+        int unculled = 0;
+        {
+            auto* rf = reinterpret_cast<std::uint64_t*>(fb + NIAV_FLAGS_OFF);
+            if (*rf & NIAV_FLAG_APP_CULLED) {
+                *rf &= ~NIAV_FLAG_APP_CULLED;
+                ++unculled;
+            }
+            const std::uint16_t ucn = *reinterpret_cast<std::uint16_t*>(
+                fb + NINODE_CHILDREN_CNT_OFF);
+            void** uk = *reinterpret_cast<void***>(
+                fb + NINODE_CHILDREN_PTR_OFF);
+            if (uk && ucn > 0 && ucn <= 64) {
+                for (std::uint16_t i = 0; i < ucn; ++i) {
+                    void* kid = uk[i];
+                    if (!kid) continue;
+                    auto* kf = reinterpret_cast<std::uint64_t*>(
+                        reinterpret_cast<char*>(kid) + NIAV_FLAGS_OFF);
+                    if (*kf & NIAV_FLAG_APP_CULLED) {
+                        *kf &= ~NIAV_FLAG_APP_CULLED;
+                        ++unculled;
+                    }
+                }
+            }
+        }
+
         g_r.attach_child_direct(head, fc, 0);
 
         // Cull every OTHER child of head. This is what hides the loaded
@@ -5321,8 +5360,12 @@ static bool ghost_dress_face(void* face_source, void* head,
         }
 
         FW_LOG("[face-clone] %s: %p -> %p, skin swap=%d, attached under head "
-               "%p, %d sibling(s) culled, %d meatcap(s) dropped",
-               why, face_source, fc, sw, head, culled, gore);
+               "%p, %d sibling(s) culled, %d meatcap(s) dropped, %d cull bit(s) "
+               "cleared on the clone%s",
+               why, face_source, fc, sw, head, culled, gore, unculled,
+               unculled ? " (the source was hidden on the local player: a "
+                          "power armour or a hat)"
+                        : "");
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         FW_ERR("[face-clone] %s: SEH during attach/cull", why);
@@ -13958,6 +14001,10 @@ bool bone_is_attached(void* bone) noexcept {
 
 bool write_local_3x3(void* bone, const float mat3[9]) {
     if (!bone) return false;
+    // 2026-09-28 — nothing is written into a scene the engine is tearing
+    // down: the attached-check below cannot see a node whose block the
+    // shutdown has already recycled.
+    if (fw::persist::exiting()) return false;
     // Build 68.4 — never write into a detached node. This is the guard that
     // makes the whole crash class inert: a detached bone is either an orphan we
     // pinned (harmless, but pointless to drive) or — without a pin — a freed
@@ -16528,6 +16575,28 @@ bool ghost_create_if_ready(const char* peer_id) {
     // The verdict, not the counter: the streak is advanced by
     // ghost_scene_settle_tick once per tick and nowhere else.
     if (!g_scene_settled.load(std::memory_order_acquire)) return false;
+    // 2026-09-30 (live test #22) — no body before the peer's first position.
+    // The server withholds the positions of a peer still in character
+    // creation, and the body used to be built anyway, on the LOCAL player (the
+    // test-mode fallback of the injection below): the other clients saw the
+    // default nude body standing on themselves for the whole ritual, and the
+    // face borrowed when the recipe finally arrived was dressed onto a live
+    // ghost, which left its hair skinned to the local player's head. The
+    // server sends a joiner the last known position of everyone already here
+    // (the presence bootstrap), so a peer in the world never waits on this.
+    {
+        static std::unordered_set<std::string> s_waiting;   // main thread only
+        const std::string id = peer_id ? peer_id : "";
+        if (!fw::net::client().get_remote_snapshot(id).has_state) {
+            if (s_waiting.insert(id).second) {
+                FW_LOG("[ghost-create] peer=%s: no position received yet (character "
+                       "creation on their side, or nothing sent yet): the body waits "
+                       "for the first one", peer_id ? peer_id : "?");
+            }
+            return false;
+        }
+        s_waiting.erase(id);
+    }
     FW_LOG("[ghost-create] peer=%s: the world has been stable for %u tick(s) "
            "— building the body now", peer_id ? peer_id : "?",
            kStableTicksNeeded);

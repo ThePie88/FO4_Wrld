@@ -4,12 +4,23 @@ Fallout4Custom.ini lives at:
     %USERPROFILE%\Documents\My Games\Fallout4\Fallout4Custom.ini
 
 Settings applied:
-  - Autosave disabled on every trigger (timed, rest, wait, travel, pause).
-    Rationale: during multiplayer testing an autosave bakes in-memory state
-    into the .fos file. If the in-memory state is transiently corrupt (mid
-    Frida apply, peer disconnect, etc) the .fos becomes corrupt too. We
-    disable autosave entirely — the user saves manually when they want.
+  - The engine's own saves switched off where the INI can reach them: the
+    timed autosave, the scripted autosave and force-save, the save on quit
+    to the main menu, the workshop autosave on exit. Rationale: the world is
+    the server's and a client never saves on its own; a stray save also
+    becomes the target the engine reloads after a death (mgr+0x60). The INI
+    is the courtesy layer: the native DLL forces the same values in memory
+    every frame and refuses every save the engine attempts (L5 stage 1,
+    fw_native/src/persist/lifecycle.cpp), because Fallout4Prefs.ini keeps
+    its own copies of some of these and F5 or the pause menu never read
+    an INI at all.
   - bAlwaysActive=1 preserves the alt-tab fix we already rely on.
+
+Only names the executable actually reads are written. Until 2026-09-27 this
+file wrote bAllowAutosaveFromScript and bAllowAutosaveInCombat, which do not
+exist in Fallout4.exe 1.11.191, and bSaveOnTravel/Wait/Rest/Pause under
+[GamePlay], which is not where the engine keeps them (they are the Settings
+menu toggles, forced in memory by the DLL instead).
 
 Idempotent: if a key already exists with the desired value, nothing is
 written. If it exists with a different value, it's overwritten.
@@ -36,13 +47,16 @@ MANAGED_MARKER = "; FalloutWorld launcher managed — delete this line to opt ou
 
 # Sections + keys we enforce. Values are strings (INI format).
 #
-# Fallout 4 autosave triggers covered:
-#   - fAutoSaveEveryXMins: timed rolling autosave (disabled by huge number)
-#   - bAllowAutosaveFromScript: script-triggered autosave (story beats)
-#   - bAllowAutosaveInCombat: autosave at combat end
-#   - bSaveOnTravel: fast travel
-#   - bSaveOnWait / bSaveOnRest: wait / sleep menus
-#   - bSaveOnPause: pause-menu save
+# Save triggers covered, with the names the executable reads (each one
+# verified against the string table of Fallout4.exe 1.11.191 on 2026-09-27):
+#   - [SaveGame] bDisableAutoSave=1: the timed autosave never fires
+#   - [SaveGame] fAutosaveEveryXMins: kept huge as a second lock on the same
+#   - [SaveGame] bAllowScriptedAutosave=0 / bAllowScriptedForceSave=0: the
+#     Papyrus RequestAutoSave / RequestSave paths
+#   - [General] bSaveGameOnQuitToMainMenu=0: the exit save to the main menu
+#   - [Workshop] bWorkshopAutoSaveOnExit=0: the save when leaving build mode
+# F5, F9, the pause-menu Save/Load, the exit-to-desktop save and the
+# Settings-menu bSaveOn* toggles are handled by the DLL, not by any INI.
 #
 # B3 intro-skip (added 2026-04-20):
 #   - sIntroSequence="": suppresses the Bethesda/GameBryo pre-main-menu
@@ -60,18 +74,25 @@ MANAGED_KEYS: dict[str, dict[str, str]] = {
         "bSkipSplash": "1",
         "bShowCompanionAppMain": "0",
         "uCompanionAppWarnings": "0",
+        "bSaveGameOnQuitToMainMenu": "0",
     },
     "SaveGame": {
+        "bDisableAutoSave": "1",
         "fAutosaveEveryXMins": "999999",
-        "bAllowAutosaveFromScript": "0",
-        "bAllowAutosaveInCombat": "0",
+        "bAllowScriptedAutosave": "0",
+        "bAllowScriptedForceSave": "0",
     },
-    "GamePlay": {
-        "bSaveOnTravel": "0",
-        "bSaveOnWait": "0",
-        "bSaveOnRest": "0",
-        "bSaveOnPause": "0",
+    "Workshop": {
+        "bWorkshopAutoSaveOnExit": "0",
     },
+}
+
+# Keys this launcher used to write and that mean nothing to the executable
+# (or sit in the wrong section). Removed from the file when found, so the
+# INI stops documenting settings that never existed.
+STALE_KEYS: dict[str, tuple[str, ...]] = {
+    "SaveGame": ("bAllowAutosaveFromScript", "bAllowAutosaveInCombat"),
+    "GamePlay": ("bSaveOnTravel", "bSaveOnWait", "bSaveOnRest", "bSaveOnPause"),
 }
 
 
@@ -161,6 +182,14 @@ def apply(path: Path = DEFAULT_INI_PATH) -> tuple[int, bool]:
             if current != desired:
                 cp.set(section, key, desired)
                 changed += 1
+    for section, keys in STALE_KEYS.items():
+        if not cp.has_section(section):
+            continue
+        for key in keys:
+            if cp.remove_option(section, key):
+                changed += 1
+        if not cp.options(section):
+            cp.remove_section(section)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     # Atomic write: temp then rename.

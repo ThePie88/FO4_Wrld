@@ -10,6 +10,8 @@
 #include "../offsets.h"
 #include "../ref_identity.h"
 #include "../log.h"
+#include "../engine/engine_calls.h"   // resolve_refhandle
+#include "../native/world_spawn.h"   // L5 stage 3c: watch_unknown_frame at the PA exit
 
 namespace fw::hooks {
 
@@ -424,6 +426,22 @@ void dump_refr_inventory_impl(const char* tag, void* refr) {
 
 // ---- detours ----------------------------------------------------------------
 
+// L5 stage 3d — the frame the local player enters loses the temporary bit
+// before the engine's enter runs (see offsets::PA_FRAME_FURNITURE_BASE).
+// 1 = cleared, 0 = it did not have it, -1 = a fault reading or writing.
+int seh_clear_temporary(void* frame, std::uint32_t* before) noexcept {
+    __try {
+        auto* flags = reinterpret_cast<std::uint32_t*>(
+            static_cast<std::uint8_t*>(frame) + offsets::FLAGS_OFF);
+        *before = *flags;
+        if (!(*before & offsets::REFR_FLAG_TEMPORARY)) return 0;
+        *flags = *before & ~offsets::REFR_FLAG_TEMPORARY;
+        return 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
 void* __fastcall detour_pa_enter(void* actor, void* frame, char mode) {
     const std::uintptr_t base = g_base.load(std::memory_order_relaxed);
     const auto aid = fw::read_ref_identity(actor);
@@ -433,6 +451,18 @@ void* __fastcall detour_pa_enter(void* actor, void* frame, char mode) {
            "frame=0x%08X base=0x%08X, mode=%d) ============",
            aid.form_id, fid.form_id, fid.base_id, int(mode));
     log_actor_pa_state("ENTER pre ", base, actor);
+    if (aid.form_id == 0x14u && frame && fid.base_id == offsets::PA_FRAME_FURNITURE_BASE) {
+        std::uint32_t before = 0;
+        const int rc = seh_clear_temporary(frame, &before);
+        if (rc == 1) {
+            FW_LOG("[pa-trace] frame 0x%08X carried the temporary bit (flags 0x%08X): cleared "
+                   "before the enter, so a checkpoint of the player wearing it finds its cell",
+                   fid.form_id, before);
+        } else if (rc < 0) {
+            FW_WRN("[pa-trace] frame 0x%08X: SEH reading its flags; the temporary bit is left "
+                   "as it is", fid.form_id);
+        }
+    }
     // E0 — the standing frame's inventory IS the state we must replicate:
     // pre-enter shows the mounted set, post-enter shows what the native
     // transfer (DEEP step 15d) drained and what it left behind.
@@ -455,6 +485,16 @@ void* __fastcall detour_pa_exit_req(void* actor, void* a2) {
     log_actor_pa_state("EXIT pre  ", base, actor);
     void* r = g_orig_exit_req(actor, a2);
     log_actor_pa_state("EXIT post ", base, actor);
+    // L5 stage 3c — the frame the local player climbs out of, to the world
+    // spawn watch (a frame worn across a save is unknown there).
+    if (aid.form_id == 0x14u) {
+        const PaExtra x = seh_read_pa_extra(base, actor);
+        if (x.present && x.handle != 0 && x.handle != 0xFFFFFFFFu) {
+            std::uint32_t h = x.handle;
+            void* frame = fw::engine::resolve_refhandle(&h);
+            if (frame) fw::native::world_spawn::watch_unknown_frame(frame, x.handle);
+        }
+    }
     return r;
 }
 
@@ -533,6 +573,11 @@ void __fastcall detour_pa_reload_b(void* proc, void* actor, int flag) {
 
 std::uint64_t last_local_pa_transition_ms() {
     return g_last_player_pa_ms.load(std::memory_order_relaxed);
+}
+
+void forget_player_process() {
+    g_player_proc.store(nullptr, std::memory_order_relaxed);
+    g_player_actor.store(nullptr, std::memory_order_relaxed);
 }
 
 bool force_local_pa_model_reload() {

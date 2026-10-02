@@ -59,6 +59,12 @@ add_library(fw_native SHARED
     src/hooks/lock_hook.cpp         # B6.3: ForceUnlock + ForceLock detours
     src/hooks/world_spawn_hook.cpp  # B6.14: PlaceAtMe detour (spawn sender)
     src/hooks/lifecycle_tripwire.cpp # Build 70: destroy+unpersist observers (Piano B Fase 0)
+    src/persist/lifecycle.cpp       # L5 stage 1: the save/load lifecycle, one owner for its seven detours
+    src/persist/inventory_capture.cpp # L5 stage 2: the player's inventory, read as the save writes it (observe-only)
+    src/persist/inventory_tap.cpp     # L5 stage 2: the two inventory cores observed for the player (cause per event)
+    src/persist/checkpoint.cpp        # L5 stage 2/3: the commanded save (test form on F10) at the engine's save point
+    src/persist/custody.cpp           # L5 stage 3b: the checkpoint bytes to and from the server (TCP bulk)
+    src/persist/death.cpp             # L5 stage 3c: the respawn without a reload (resurrect, camera, teleport)
     src/hooks/workbench_hook.cpp    # v26: PA station apply-mod + repair -> pieces report
     src/hooks/pa_pipeline_trace.cpp  # Build 70m: PA enter/exit engine pipeline tracer
     src/hooks/npc_ai_suppress.cpp   # B6.5w4: Actor::Update_PerFrame suppression for tracked NPCs
@@ -195,7 +201,7 @@ target_compile_definitions(fw_native PRIVATE
 # IDXGI* usage in present_hook.cpp is via COM vtable (vtable[8]
 # extraction) — no static symbols from the dxgi import library are
 # referenced. D3D11CreateDeviceAndSwapChain is in d3d11.lib.
-target_link_libraries(fw_native PRIVATE kernel32 user32 version d3d11 d3dcompiler)
+target_link_libraries(fw_native PRIVATE kernel32 user32 version d3d11 d3dcompiler bcrypt)
 
 # Visible build summary
 add_custom_command(TARGET fw_native POST_BUILD

@@ -20,6 +20,7 @@ namespace fw::hooks {
 
 struct InstallSummary {
     bool kill_ok        = false;
+    bool lifecycle_ok   = false;    // L5 stage 1: all seven save/load detours in
     bool container_ok   = false;
     bool put_ok         = false;    // B1.k: ContainerMenu::TransferItem
     bool workbench_ok   = false;    // v26: PA station apply-mod + repair -> pieces report
@@ -43,6 +44,7 @@ struct InstallSummary {
 
     [[nodiscard]] std::size_t success_count() const noexcept {
         return (kill_ok ? 1u : 0u)
+             + (lifecycle_ok ? 1u : 0u)
              + (container_ok ? 1u : 0u)
              + (put_ok ? 1u : 0u)
              + (workbench_ok ? 1u : 0u)

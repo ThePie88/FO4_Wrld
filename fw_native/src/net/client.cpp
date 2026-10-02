@@ -31,6 +31,8 @@
 #include "../native/scene_inject.h"
 #include "../native/ghost_lifecycle.h"
 #include "../native/face_cache.h"
+#include "../persist/checkpoint.h"     // L5 stage 3a: the server's checkpoint request
+#include "../persist/death.h"        // L5 stage 3c: the respawn point from the boot word
 #include "../native/world_spawn.h"   // v20: land peer recipes off the wire
 #include "../native/appearance_recipe.h"  // v21: the entry ritual raises the
                                           // editing flag from WELCOME
@@ -127,6 +129,17 @@ void Client::send_goodbye_now(std::uint8_t reason) {
     FW_LOG("net: goodbye sent (reason=%u, %d/3 datagrams out) — the others "
            "lose our ghost now instead of in five seconds",
            static_cast<unsigned>(reason), sent);
+}
+
+void Client::send_ckpt_done_now(const CkptDonePayload& p) {
+    if (!connected_.load(std::memory_order_acquire)) return;
+    int sent = 0;
+    for (int i = 0; i < 2; ++i) {
+        auto frame = channel_.send_unreliable(MessageType::CKPT_DONE, &p, sizeof(p));
+        if (frame.empty()) break;
+        if (socket_.send(frame.data(), frame.size())) ++sent;
+    }
+    FW_LOG("net: CKPT_DONE sent at once (%d/2 datagrams out), ahead of the goodbye", sent);
 }
 
 // ---------------------------------------------------------------- enqueue
@@ -463,6 +476,54 @@ void Client::enqueue_world_despawn_op(std::uint32_t wid, std::uint8_t reason,
     q.payload_bytes.resize(sizeof(p));
     std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
     push_queued(std::move(q));
+}
+
+void Client::enqueue_inv_digest(const InvDigestPayload& digest) {
+    if (!accepting_enqueue()) return;
+    if (!(digest.flags & kInvDigestFlagComplete)) return;   // never a half-read inventory
+
+    QueuedSend q;
+    q.msg_type = MessageType::INV_DIGEST;
+    q.reliable = true;
+    q.payload_bytes.resize(sizeof(digest));
+    std::memcpy(q.payload_bytes.data(), &digest, sizeof(digest));
+    push_queued(std::move(q));
+}
+
+void Client::enqueue_ckpt_done(const CkptDonePayload& p) {
+    if (!accepting_enqueue()) return;
+    QueuedSend q;
+    q.msg_type = MessageType::CKPT_DONE;
+    q.reliable = true;
+    q.payload_bytes.resize(sizeof(p));
+    std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
+    push_queued(std::move(q));
+}
+
+void Client::enqueue_boot_result(const BootResultPayload& p) {
+    if (!accepting_enqueue()) return;
+    QueuedSend q;
+    q.msg_type = MessageType::BOOT_RESULT;
+    q.reliable = true;
+    q.payload_bytes.resize(sizeof(p));
+    std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
+    push_queued(std::move(q));
+}
+
+void Client::enqueue_player_life(const PlayerLifePayload& p) {
+    if (!accepting_enqueue()) return;
+    QueuedSend q;
+    q.msg_type = MessageType::PLAYER_LIFE;
+    q.reliable = true;
+    q.payload_bytes.resize(sizeof(p));
+    std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
+    push_queued(std::move(q));
+}
+
+int Client::boot_decision(BootCheckpoint* out) const {
+    std::lock_guard<std::mutex> lk(boot_mx_);
+    if (boot_state_ != 0 && out) *out = boot_ckpt_;
+    return boot_state_;
 }
 
 void Client::enqueue_peer_ghost_register(std::uint32_t ghost_form_id) {
@@ -2238,6 +2299,80 @@ void Client::dispatch(const Delivered& d) {
         break;
     }
 
+    case static_cast<std::uint16_t>(MessageType::CKPT_RESPAWN): {
+        // v33 (L5 stage 3d) - the server's answer to our death: the checkpoint
+        // it moved onto the respawn point, or none. The death module decides
+        // on the main thread.
+        if (d.payload.size() < sizeof(CkptRespawnPayload)) break;
+        CkptRespawnPayload r{};
+        std::memcpy(&r, d.payload.data(), sizeof(r));
+        r.name[sizeof(r.name) - 1] = '\0';
+        fw::persist::death::on_respawn_checkpoint(r.has != 0, r.name, r.sha256, r.size);
+        break;
+    }
+    case static_cast<std::uint16_t>(MessageType::CKPT_BOOT): {
+        // L5 stage 3a - the server's word on the boot. The first one of the
+        // process decides; a resume repeats the bootstrap into a world that
+        // is already loaded, and that copy is ignored.
+        if (d.payload.size() < sizeof(CkptBootPayload)) break;
+        CkptBootPayload b{};
+        std::memcpy(&b, d.payload.data(), sizeof(b));
+        const std::uint8_t ncand = b.n_candidates > kCkptCandidates
+            ? static_cast<std::uint8_t>(kCkptCandidates) : b.n_candidates;
+        // v31 - the custody word, taken on EVERY session (the token is per
+        // session, a resume gets a fresh one): the transport learns port and
+        // token, the checkpoint module uploads what this disk holds and the
+        // server does not.
+        fw::persist::checkpoint::note_custody_word(b.bulk_port, b.token, b.candidates, ncand);
+        // v32 - the respawn point, taken on every session as well (a server
+        // restarted with another point hands it out at the resume).
+        fw::persist::death::set_respawn_point(b.has_respawn != 0, b.respawn_pos, b.respawn_yaw);
+        std::lock_guard<std::mutex> lk(boot_mx_);
+        if (boot_state_ != 0) {
+            FW_DBG("net: CKPT_BOOT after the boot decision (a resume): ignored");
+            break;
+        }
+        // v30 — the position rides along for both decisions.
+        boot_ckpt_.has_pos = b.has_pos != 0;
+        boot_ckpt_.pos[0] = b.pos[0]; boot_ckpt_.pos[1] = b.pos[1]; boot_ckpt_.pos[2] = b.pos[2];
+        boot_ckpt_.yaw    = b.yaw;
+        boot_ckpt_.pos_ms = b.pos_ms;
+        if (b.has) {
+            boot_state_ = 2;
+            boot_ckpt_.seq = b.seq;
+            std::memcpy(boot_ckpt_.name, b.name, sizeof(boot_ckpt_.name));
+            boot_ckpt_.name[sizeof(boot_ckpt_.name) - 1] = '\0';
+            std::memcpy(boot_ckpt_.sha256, b.sha256, sizeof(boot_ckpt_.sha256));
+            boot_ckpt_.size   = b.size;
+            boot_ckpt_.digest = b.digest;
+            boot_ckpt_.bulk_port    = b.bulk_port;
+            std::memcpy(boot_ckpt_.token, b.token, sizeof(boot_ckpt_.token));
+            boot_ckpt_.n_candidates = ncand;
+            std::memcpy(boot_ckpt_.candidates, b.candidates, sizeof(boot_ckpt_.candidates));
+            boot_ckpt_.has_respawn = b.has_respawn != 0;
+            std::memcpy(boot_ckpt_.respawn_pos, b.respawn_pos, sizeof(boot_ckpt_.respawn_pos));
+            boot_ckpt_.respawn_yaw = b.respawn_yaw;
+            FW_LOG("net: CKPT_BOOT: the server names checkpoint '%s' (seq %u, %u bytes)%s",
+                   boot_ckpt_.name, b.seq, b.size,
+                   boot_ckpt_.has_pos ? " and a newer last position" : "");
+        } else {
+            boot_state_ = 1;
+            FW_LOG("net: CKPT_BOOT: no checkpoint on record for this identity, the genesis save boots%s",
+                   boot_ckpt_.has_pos ? " (with the last known position)" : "");
+        }
+        break;
+    }
+
+    case static_cast<std::uint16_t>(MessageType::CKPT_REQUEST): {
+        // L5 stage 3a - the server asks for a checkpoint; the save point on
+        // the main thread serves it.
+        if (d.payload.size() < sizeof(CkptRequestPayload)) break;
+        CkptRequestPayload r{};
+        std::memcpy(&r, d.payload.data(), sizeof(r));
+        fw::persist::checkpoint::request_commanded(r.seq, r.reason, r.deadline_s);
+        break;
+    }
+
     case static_cast<std::uint16_t>(MessageType::WORLD_SPAWN_BCAST): {
         // B6.14 v22 - a spawned world object (live or join bootstrap). Only
         // queued here: the placement is engine work and belongs to the main
@@ -2361,8 +2496,11 @@ void Client::dispatch(const Delivered& d) {
         fw::dispatch::enqueue_container_apply(settle);
         {
             char msg[160];
+            const bool unavailable = ack.status ==
+                static_cast<std::uint8_t>(ContainerOpAckStatus::REJ_UNAVAILABLE);
             std::snprintf(msg, sizeof(msg),
-                          !take        ? "(the server refused your deposit: %d item(s) returned to you)"
+                          unavailable  ? "(the server cannot record changes right now: %d item(s) put back)"
+                          : !take      ? "(the server refused your deposit: %d item(s) returned to you)"
                           : insufficient ? "(someone took it first: %d item(s) removed from your inventory)"
                                          : "(the server refused your take: %d item(s) put back)",
                           op->count);

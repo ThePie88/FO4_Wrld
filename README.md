@@ -37,9 +37,9 @@ ghost.
 ┌────────────────────────────────────────────────────────────────────────┐
 │                     Python Server (asyncio UDP)                        │
 │  authoritative state · keyed by placed form_id · validator             │
-│  reliable channel (SACK + retransmit) · JSON snapshot persistence      │
+│  reliable channel (SACK + retransmit) · durable journal + snapshot     │
 └─────────────────────────┬──────────────────────────────────────────────┘
-                          │ binary protocol v27 (44B POS_BCAST · reliable channel · appearance recipes · world objects · session lifecycle · container reconvergence)
+                          │ binary protocol v28 (44B POS_BCAST · reliable channel · appearance recipes · world objects · session lifecycle · container reconvergence)
             ┌─────────────┼─────────────┐
             │             │             │
        ┌────▼─────┐  ┌────▼─────┐  ┌────▼─────┐
@@ -68,7 +68,7 @@ ghost.
 | `fw_native/docs/` | Internal docs + tools list |
 | `launcher/` | Python orchestrator (FO4 INI mgmt, side A/B startup, fw_config.ini) |
 | `fw_launcher/` | C++ launcher wrapper (`FoM.exe`) |
-| `net/` | Python server (asyncio UDP, validator, persistence, snapshot v6) |
+| `net/` | Python server (asyncio UDP, validator, journal, snapshot v8) |
 | `frida/` | Frida JS scripts + Python attach helpers (RE / live tracing) |
 | `re/` | Reverse-engineering dossiers + IDA Python scripts |
 | `tools/` | Maintenance scripts: Frida traces, decode helpers |
@@ -114,10 +114,10 @@ ghost.
 | ↳ **N1** NPC actor pos + pose sync (owner-driven) | 🟡 REOPENED partial (v0.6.2) — **major hardening in v0.6.3** (2026-07-29): the owner-state batch was capped at 17 entries with no rotation, so 12 of 29 owned NPCs never received a position at all (measured drift where data DID arrive: 0.0 on 4,591/5,133 samples) — now multi-batch, everyone at full 10 Hz; the engine's NATIVE position (AI char-controller proxy) is snapped via `sub_141894670` so it tracks the owner instead of diverging; locomotion is derived from the position delta and relayed (`anim=1/2 → SpeedSampled 100/200`), fixing the "slides like a log" mirrors; the bone cache is now refcount-pinned (+0x08) with a parent-detach probe, which closed the whole stale-pointer crash class. STILL OPEN: creature (non-humanoid) pose bleeds through a 1-name-match gate — a mole rat was seen stretched toward a map coordinate, needs a skeleton-schema gate, TODO in `scene_inject.cpp`; POST-mortem corpse hardening; leveled-list divergence means the same REFR can be a different NPC per client. |
 | ↳ **N2** NPC combat target + aggro + death sync (owner-driven threat table) | ✅ done (v0.6.0, 2026-06-01) — the Python server holds a threat table and elects the owner from whoever the raiders natively aggro (engine-native: noise / line of sight), with hysteresis anti-thrash; live aggro hand-off; bidirectional death-sync (corpse + ragdoll at the synced pos, either client's kill propagates). Scope: hostile raiders. **v0.6.3 fixed three defects that made ownership effectively immovable**: the engage signal was stamped once per NPC and decayed to zero forever (across 1,711 evaluations the challenger threat never exceeded 1.0, so only damage could move aggro — combat observes now refresh at 1.5 s); `Actor+0x380` is an ObjectRefHandle and not a form id, so the "I am fighting this NPC" signal was a permanent false negative (now resolved through the handle table); and the proximity tie-break was mathematically inert (weight 1.0 vs a required delta of 3.0 — raised to 6.0 so it can break the engage tie two fighting clients produce). Deaths are also remembered server-side and replayed to peers that were out of range when they fired. |
 | ↳ **N3** Shared authoritative HP / damage | ✅ done (v0.6.2, 2026-06-06) — both clients deplete ONE server-held HP pool (damage captured at the engine HP-write funnel `sub_140CC9650`, FINAL post-resist; DLL floor-1 clamp stops either client soloing the kill; server fires the kill at pool=0). v0.6.2 closed it: the enemy-health HUD now shows the LIVE combined pool on both clients (the non-owner's local Health is driven to the pool fraction so the vanilla bar reads it — `max = GetCurrent − cell`, since the AVO GetMax leaf mis-reads), the aggro/first shot is no longer lost (claimed pre-tracking, server-buffered until the NPC registers), and multi-feeder + server-driven death are confirmed. The HUD bar is GREEN (non-hostile color — handy as a "this client has no aggro" tell); a RED color is TODO. Wire proto v18. |
-| ↳ **N4** Player death + respawn sync | ✅ done (v0.6.2, 2026-06-06) — a client's death is vanilla: it ragdolls + respawns at Sanctuary, and the raiders re-aggro the surviving client (the threat table re-elects on the death). **v0.6.4 closed the death transition properly**: the respawn-load crash is fixed (see N row), and the aggro flip is now a message, not a timeout: one reliable NPC_UNLOAD per owned NPC at death, so the raiders turn on the survivor within a frame instead of after 8 s. |
+| ↳ **N4** Player death + respawn sync | ✅ done (v0.6.2, 2026-06-06) — a client's death is vanilla: it ragdolls + respawns at Sanctuary, and the raiders re-aggro the surviving client (the threat table re-elects on the death). **v0.6.4 closed the death transition properly**: the respawn-load crash is fixed (see N row), and the aggro flip is now a message, not a timeout: one reliable NPC_UNLOAD per owned NPC at death, so the raiders turn on the survivor within a frame instead of after 8 s. **v0.10.0 moved the respawn to the server**: a death is answered with the player's checkpoint moved onto the founder's respawn point and loaded once (11.7 s from 31,000 units away in the live test, against 2 to 6 minutes for a fast travel after the vanilla reload), the player healed, from an exterior or an interior, in power armour or not. |
 | **CG1** Character creation + appearance identity *(new epic, my first custom in-game UI)* | 🟡 v1 shipped (v0.7.0, 2026-08-12), deliberately unfinished. Forced first-entry ritual (server flag), sky staging + pinned auto-vanity camera, runtime catalogs (filtered head parts, 32 hair colours, 9 tint groups from race CharGenData), live editing of hair / eyes / beard / teeth / brows / skin tone / marks through the engine's own apply calls, recipe v2 (parts + tints, wire v21) stored per identity on the server, adopted at join and replicated onto the ghost with private composite textures and engine-computed body skin. Open: morph sculpting, body build, sex switch, Markings tab placement, per-peer ghost cache; the ImGui panel is a placeholder for the final UI |
 | **S1** Session lifecycle *(join / leave / disconnect / rejoin / late join)* | ✅ closed (v0.8.1, 2026-09-23) — phases 0-2 in v0.8.0: the ghost is born from PEER_JOIN and torn down on PEER_LEAVE instead of from a 30 s timer that never re-armed, a registry keyed by peer id replaces the single body pointer and the census of single-peer globals in the ghost path is empty; presence that outlives the session, resume tokens for a rejoin without the launcher, reject reasons on the wire, eviction with notice, a queued join bootstrap, a reconnection loop with backoff, a goodbye on ALT+F4. Phases 3-4 in v0.8.1: the worn outfit is read from the inventory and announced at every session start, global chat, nametags above the ghosts, the three reconnection holes closed with tests. Residue: matrix tests T4/T6/T7/T8 not run, a second remote ghost refused until a third client exists, a 100 ms race on a live container op, weapons not announced at session start |
-| **L** Loot sync rework *(containers, corpses, player inventory, world items)* | 🟡 L1-L4 done (v0.9.0, 2026-09-26) — containers keyed by the placed reference, optimistic ops with rollback, the server view pushed and applied to every engine with a real-time menu redraw, corpses of placed NPCs. Open: L5, the player's own inventory (planned as a hybrid of server-commanded saves and a server ledger), and L6, world items |
+| **L** Loot sync rework *(containers, corpses, player inventory, world items)* | 🟡 L1-L4 done (v0.9.0, 2026-09-26) — containers keyed by the placed reference, optimistic ops with rollback, the server view pushed and applied to every engine with a real-time menu redraw, corpses of placed NPCs. L5 stages 0-3 done (v0.10.0, 2026-10-02): no save or load the server did not command, a durable journal, mandatory login, the player's inventory read and its boundary tapped, the character in a checkpoint the server commands, keeps in custody and moves for the respawn and the first entry. Open: L5 stages 4-5 (restore and replay after the checkpoint, the save barrier) and L6, world items |
 | **B7** Rust server port | ⏳ |
 
 ## Major RE achievements
@@ -139,6 +139,12 @@ ghost.
   but a **direct pointer-to-matrix cache** (= `bones_fb[i]+0x70`). The GPU
   reads matrices via SRV indirection through this cache. Documented in
   `re/M8P3_skin_instance_dossier.txt`.
+- **Moving a player inside a save** — the server rewrites a `.fos` that the
+  engine then loads as its own: the Player Location global (two spaces, the
+  grid, a position local to the cell inside an interior), the player's move
+  data, and for a player taken out of an interior the sky (mode 1 inside, 3
+  outside, followed by 29 bytes of outdoor state) and the acoustic space,
+  transplanted from an exterior save. `net/server/savepos.py`.
 - **Model-DB entry root shape** — a NIF loaded with the fade-wrap flag is
   stored with a `BSFadeNode` root, and the engine's biped build silently
   produces no geometry from such an entry. The engine never loads
@@ -158,6 +164,25 @@ ghost.
 
 Latest 3 patches summarized below. **Full version history in
 [CHANGELOG.md](CHANGELOG.md).**
+
+### v0.10.0 (2026-10-02) — persistence, first half: checkpoints, custody and the respawn
+
+Tag v0.10.0, wire proto v33, server snapshot v10. Stages 0 to 3 of the
+inventory-persistence plan. Every save the engine attempts without the server's
+command is refused by one lifecycle module in the DLL, the quicksave and quickload keys are dropped,
+an uncommanded load is refused; the server appends every accepted change to
+a durable journal and sends no reliable frame before its fsync; login is
+mandatory, with a local key for the second test client. The DLL reads the
+player's inventory the way the save writes it and taps the two engine
+functions every inventory change goes through; items dropped from the
+Pip-Boy exist for everyone. The character lives in a checkpoint the server
+commands (at a quiet moment, on every exit, and the moment a player leaves
+their power armour), keeps in custody and hands back at the next boot, on
+any machine. A death is answered with the player's checkpoint moved onto the
+founder's respawn point (`server.ini`): one load, no fast travel, the player
+healed, from an exterior or an interior; a frame worn at the death goes
+with the player or stays where they fell, never in two copies. A new
+character starts on the same point. Detail in [CHANGELOG.md](CHANGELOG.md).
 
 ### v0.9.0 (2026-09-26) — loot rework, first half: containers and corpses
 
@@ -201,48 +226,6 @@ Tag v0.8.1, wire proto v26 unchanged.
   copy on every (re)join.
 - **The three reconnection holes** of v0.8.0 are closed, each with a test
   that failed on the old code.
-
-Full detail in [CHANGELOG.md](CHANGELOG.md).
-
-### v0.8.0 (2026-09-19) — session lifecycle: the ghost belongs to a peer
-
-Tag v0.8.0, wire proto v26 (reject reason and resume token in WELCOME,
-display name in PEER_JOIN, new `HELLO_RESUME`).
-
-- **The ghost is born from a join and dies with a leave** — a registry keyed
-  by peer id replaces the thirty-second timer that never re-armed and the
-  PEER_LEAVE handler that only logged. Events queue on the network thread, a
-  main-thread tick injects once the scene is proven stable (120 ticks and two
-  real seconds, with loads bracketed because `LoadGame` blocks for six), and
-  teardown follows the order law from the bottom of the wardrobe up.
-- **The single pointer is gone** — `g_injected_cube` was read from thirty
-  places; body, head, bones, geometries, cull contributors, power-armor graft
-  and saved binds now live in a per-peer record, the pose and crouch slots are
-  deleted outright because the handlers iterate the registry, and the ghost
-  skeleton is a private deep clone that dies with its body. Only the canonical
-  joint names stay global, because they are the wire's bone index order.
-- **The face that rotted after a power armor** — a rejoin gave the ghost a
-  stretched sheet anchored to the local player's frame, or no head with the
-  eyes left hanging. Seven explanations were killed by measurement. The
-  master was always intact: it keeps raw pointers to the LIVE player's bone
-  nodes, and entering or leaving power armor rebuilds that rig, so the re-bind
-  read names out of recycled memory. The master is anchored to a reference
-  skeleton this DLL owns at the one moment its pointers are still valid.
-- **The power armor a joiner could not see** — the pending equip queue held
-  two fields and dropped the OMOD list, so six empty placeholders attached and
-  the frame stayed naked. A power-armor piece keeps its whole mesh on the
-  model OMOD.
-- **Reconnection** — a session loop with backoff, resume tokens, reject
-  reasons that decide between retrying and giving up, and a dead-server
-  detector. A goodbye on ALT+F4, so a peer who closes the game stops standing
-  in everyone else's world.
-- **Presence** — a late joiner is shown where everyone is and what they wear,
-  the arriving peer's outfit is announced to those already there, and a worn
-  power-armor frame is handed back to the world when its wearer disappears.
-- **Not finished** — three reconnection holes left open on purpose, a second
-  remote ghost still refused until there is a third client to test with, and
-  the outfit still only as complete as the equip events the server saw, which
-  is phase 3.
 
 Full detail in [CHANGELOG.md](CHANGELOG.md).
 
@@ -299,20 +282,19 @@ that should be most reusable for anyone else attempting the same thing.
 - **Network rate-limited to 20Hz** — works smoothly on LAN, untested
   over real-world internet routes; receiver-side interpolation between
   POSE_BROADCAST frames is open work.
-- **The player's own inventory is not persisted** — containers and corpses
-  are server-authoritative since v0.9.0, and the open container menu follows
-  every peer's take and deposit in real time, but what a player carries
-  resets to the save at every launch. A take or a deposit therefore survives
-  only on the world's side. This is the next step of the loot epic.
-- **Peer ghosts spawn naked at startup until the peer actively equips
-  something** — side effect of disabling B8 force-equip-cycle in
-  v0.5.4 (bridge crash fix). Items already worn at save load don't
-  fire engine equip events, so the M9 visual-sync pipeline never sees
-  them. Items the peer actively equips/draws during the session show
-  up correctly (modded weapons, swapped armor, clothes changes — all
-  visible). A non-engine-call apparel bootstrap broadcast is
-  scaffolded in `fw_native/src/hooks/equip_announce.{h,cpp}` for
-  future implementation when the BipedAnim layout is RE'd.
+- **A crash rewinds the player to the last checkpoint** — since v0.10.0 the
+  character lives in a checkpoint the server commands and keeps (written at
+  a quiet moment on a timer, at every exit, and the moment a player leaves
+  their power armour) and hands back at the next boot. A crash or a kill
+  from the task manager writes none: the player comes back as the last one
+  left them, at their last known position, while the world keeps what
+  happened after it, so a take in that window is lost and a deposit is
+  duplicated. Replaying after the checkpoint is the next stage.
+- **A weapon equipped when the save loads is not shown on the ghost until
+  the peer equips or draws one** — since v0.8.1 every piece of apparel worn
+  at load is read from the inventory and announced at session start, so a
+  ghost no longer starts naked; weapons are left to their own equip path on
+  purpose and are not announced.
 - **Non-humanoid pose replication is unsafe** — ownership and sync are no
   longer limited to hostile raiders: the proximity sphere picks up any
   actor within its radius, so settlers, animals and creatures all enter
@@ -341,8 +323,11 @@ that should be most reusable for anyone else attempting the same thing.
   for everyone: v0.8.0 marks the record worn instead of deleting it and hands
   the frame back at its last known position on a graceful leave, an eviction
   or a timeout, taking the plates out of the stored outfit so the rejoining
-  peer is not wearing an empty shell. Covered by unit tests; the live test
-  with a wearer killed from the task manager (T7) has not been run yet.
+  peer is not wearing an empty shell. Since v0.10.0 the checkpoint written at
+  the quit brings the player back inside the frame, and the boot takes the
+  standing frame back from the world: one armour, not two. Covered by unit
+  tests; neither that boot nor the test with a wearer killed from the task
+  manager (T7) has been run live yet.
 - **Power-armor headlamps do not light up on the ghost** — the lamp mesh is
   an engine add-on point whose glow effect is bookkept globally, which is
   the crash class closed in v0.7.6; the ghost skips it.

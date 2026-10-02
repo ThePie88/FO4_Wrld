@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <windows.h>  // GetTickCount64 — Build 65.c.22 staleness check
+#include <cstring>     // strrchr: the module name of a foreign RIP
 
 #include "engine/engine_calls.h"
 #include "hooks/container_hook.h"   // ApplyingRemoteGuard + tls_applying_remote
@@ -1778,16 +1779,35 @@ DWORD WINAPI wd_thread_main(LPVOID) {
         }
 
         const std::uintptr_t rip = static_cast<std::uintptr_t>(ctx.Rip);
-        char where[64];
+        char where[96];
         if (gsize && rip >= gbase && rip < gbase + gsize)
             snprintf(where, sizeof(where), "FO4+0x%llX",
                      static_cast<unsigned long long>(rip - gbase));
         else if (fsize && rip >= fbase && rip < fbase + fsize)
             snprintf(where, sizeof(where), "FW+0x%llX",
                      static_cast<unsigned long long>(rip - fbase));
-        else
-            snprintf(where, sizeof(where), "EXT:0x%llX",
-                     static_cast<unsigned long long>(rip));
+        else {
+            // L5 stage 3c — the module's name: a stall inside ntdll's wait
+            // and one inside a driver read differently, and the first live
+            // death produced both.
+            char mod[64] = "";
+            HMODULE hm = nullptr;
+            if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                                       | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   reinterpret_cast<LPCWSTR>(rip), &hm) && hm) {
+                char path[MAX_PATH] = "";
+                if (GetModuleFileNameA(hm, path, sizeof(path))) {
+                    const char* slash = strrchr(path, '\\');
+                    snprintf(mod, sizeof(mod), "%s+0x%llX", slash ? slash + 1 : path,
+                             static_cast<unsigned long long>(rip - reinterpret_cast<std::uintptr_t>(hm)));
+                }
+            }
+            if (mod[0])
+                snprintf(where, sizeof(where), "EXT:%s", mod);
+            else
+                snprintf(where, sizeof(where), "EXT:0x%llX",
+                         static_cast<unsigned long long>(rip));
+        }
         FW_ERR("[mt-watchdog] CAPTURE #%d: main-thread STALL %llums — "
                "RIP=%s RSP=0x%llX RBP=0x%llX RCX=0x%llX RDX=0x%llX",
                captures, static_cast<unsigned long long>(stall), where,

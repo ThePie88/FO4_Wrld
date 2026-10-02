@@ -12,6 +12,7 @@
 #include "../ref_identity.h"
 #include "../net/client.h"
 #include "../net/protocol.h"
+#include "../native/world_spawn.h"   // L5 stage 2: on_local_pickup
 
 namespace fw::hooks {
 
@@ -130,6 +131,12 @@ void __fastcall detour_inv_add_from_world(
     observe_pickup(dst_actor, src_refr, count, &r);
 
     if (r.emit) {
+        // L5 stage 2 — a spawned object of ours leaving the world into the
+        // local player's inventory is a world event, said NOW, while the
+        // REFR is still alive (the engine destroys it inside the original
+        // and marks it deleted, which the sweep could not tell from a
+        // streaming loss).
+        fw::native::world_spawn::on_local_pickup(src_refr);
         fw::net::client().enqueue_actor_event(r.aep);
         FW_LOG("[pickup] WORLD_PICKUP form=0x%X base=0x%X cell=0x%X "
                "pos=(%.1f %.1f %.1f) count=%u",

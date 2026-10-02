@@ -67,6 +67,11 @@ def main() -> int:
     ap.add_argument("--no-auto-load", action="store_true",
                     help="disable B3.b auto-load — main menu shows normally "
                          "(useful for Frida tracing of fresh PC::Load3D)")
+    ap.add_argument("--no-dev-identity", action="store_true",
+                    help="do not mint a local identity when --auth is absent: "
+                         "join anonymously, which a --require-auth server "
+                         "refuses. Default: a stable key in launcher/.dev_keys/"
+                         "<side>.key signs the server's challenge (L5 stage 1)")
     ap.add_argument("--python", default=sys.executable,
                     help="python executable for child processes")
     args = ap.parse_args()
@@ -88,20 +93,58 @@ def main() -> int:
         connect_api.emit("starting", server=args.connect)
         if connect_api.preflight(args.connect) is None:
             return 1        # preflight already emitted the precise error
+
+    # L5 stage 1: the server requires an authenticated HELLO, and a client
+    # started from its .bat (FoM.exe --side B --connect ..., or start_B.bat)
+    # has no launcher to log in through. A local key stands in: stable
+    # across launches, so the character filed under it persists like anyone
+    # else's. The challenge is signed over the address actually dialed,
+    # which is what the server checks. MENU_PRINCIPALE passes --auth and is
+    # untouched. First live test (2026-09-27): this block sat after the
+    # --connect return above, so B went anonymous and was refused.
+    auth_blob = args.auth
+    client_id = args.client_id
+    player_name = args.name
+    if not auth_blob and not args.no_dev_identity:
+        from launcher import dev_identity
+        if args.connect:
+            host, _, port_s = args.connect.rpartition(":")
+            dial_host, dial_port = host, int(port_s)
+        else:
+            dial_host, dial_port = config.SERVER_HOST, config.SERVER_PORT
+        try:
+            auth_blob, dev_id = dev_identity.mint(side.name, dial_host, dial_port)
+        except Exception as e:  # noqa: BLE001 - the game must still start
+            auth_blob, dev_id = None, None
+            print(f"[launcher] dev identity failed ({e}): joining anonymously",
+                  file=sys.stderr, flush=True)
+        if auth_blob:
+            client_id = client_id or dev_id
+            player_name = player_name or f"DEV-{side.name}"
+            print(f"[launcher] dev identity for side {side.name}: {dev_id} "
+                  f"(key {dev_identity.key_path(side.name).name})",
+                  file=sys.stderr, flush=True)
+        else:
+            auth_blob = ""
+            print(f"[launcher] no login challenge from {dial_host}:{dial_port}: "
+                  "joining anonymously (a --require-auth server will refuse)",
+                  file=sys.stderr, flush=True)
+
+    if args.connect:
         return orchestrator.run(side, start_server=False,
                                 python_exe=args.python,
                                 connect_addr=args.connect,
-                                auth_blob=args.auth,
-                                player_name=args.name,
-                                client_id=args.client_id,
+                                auth_blob=auth_blob,
+                                player_name=player_name,
+                                client_id=client_id,
                                 suppress_mirror_combat=not args.no_mirror_suppress,
                                 stream_pose_in_first_person=args.stream_pose_1p)
 
     return orchestrator.run(side, start_server=args.with_server,
                             python_exe=args.python,
-                            auth_blob=args.auth,
-                            player_name=args.name,
-                            client_id=args.client_id,
+                            auth_blob=auth_blob,
+                            player_name=player_name,
+                            client_id=client_id,
                             suppress_mirror_combat=not args.no_mirror_suppress,
                             stream_pose_in_first_person=args.stream_pose_1p)
 

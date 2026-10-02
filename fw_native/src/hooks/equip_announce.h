@@ -81,6 +81,20 @@ void equip_announce_on_session_start();
 // asked for an announce AND the stability gate says the scene has settled
 // (player in the world, a cell, no load in flight, no 3D rebuild under us),
 // then walks the inventory once and sends one EQUIP per worn apparel item.
+// It also serves the respawn difference below, under the same gate.
 void equip_announce_tick();
+
+// L5 stage 3d (2026-09-29) — the outfit across a respawn. A respawn loads a
+// checkpoint: what the player wears afterwards is what the checkpoint wore,
+// and no engine equip event says so. The ghost the others render kept the
+// outfit of the death (live test #18: A died in power armour, came back on
+// foot from a checkpoint written on foot, and B still saw A in the armour).
+// At the death the worn apparel is noted; after the respawn, once the scene
+// has settled, the difference is sent: one UNEQUIP per item worn at the death
+// and not now, one EQUIP (with its OMODs) per item worn now and not at the
+// death. Unchanged items are not sent again. Without a note of the death the
+// respawn falls back to the session-start announce. MAIN THREAD, both.
+void equip_announce_note_death();
+void equip_announce_after_respawn();
 
 } // namespace fw::hooks

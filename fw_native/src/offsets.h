@@ -477,7 +477,11 @@ constexpr std::uintptr_t FORM_CACHE_SINGLETON_RVA  = 0x030E1370;   // qword_1430
 //       uint32_t count,
 //       uint8_t  flag,             // "show message" flag — 0 = silent
 //       void*    dest_refr,        // where items go (any REFR: the player, a
-//                                  //   container); nullptr = drop in world
+//                                  //   container); nullptr = DESTROYED, not
+//                                  //   dropped (2026-09-29, read from the
+//                                  //   decomp: the remove reason is 4 with a
+//                                  //   destination, 0 without, and no drop
+//                                  //   point is passed to vt[109])
 //       uint8_t  flag2,            // "silent" flag — 0 = normal
 //       uint32_t vm_id,            // 0 = no VM context
 //       void*    vm_state);        // nullptr OK
@@ -488,6 +492,22 @@ constexpr std::uintptr_t FORM_CACHE_SINGLETON_RVA  = 0x030E1370;   // qword_1430
 // rework L2 rollback passes the player or the container as dest_refr.
 constexpr std::uintptr_t ENGINE_ADD_ITEM_RVA    = 0x011735A0;
 constexpr std::uintptr_t ENGINE_REMOVE_ITEM_RVA = 0x011825A0;
+
+// 2026-09-29 — the power armour frame's visual sync. A standing frame draws
+// its pieces from an ObjectInstanceExtra that sub_14098C120(frame,
+// update_3d, extra, flag) rebuilds from the frame's inventory, then updates
+// the 3D. The engine runs it at Set3D (sub_14050D2A0 -> sub_14098C100) and,
+// after a ContainerMenu transfer on a frame, as reference task 106 queued by
+// the tail of sub_140988980. An AddItem or RemoveItem on a frame whose 3D is
+// loaded goes through neither: the inventory changes and the frame keeps
+// drawing the old pieces (live test #17). The builder sub_140C4B370(queue,
+// frame, 1, null, 0, 0) runs the task at once on the main thread and queues
+// it otherwise; its first argument is the reference-task queue,
+// qword_1430DBF78[274672]. sub_140988980 itself is NOT the call to make: a
+// piece put on a frame sends any other piece of its slot to the PLAYER
+// (sub_140992CA0 is a RemoveItem to the player singleton).
+constexpr std::uintptr_t PA_FRAME_SYNC_TASK_RVA  = 0x00C4B370;  // sub_140C4B370
+constexpr std::uintptr_t REFR_TASK_QUEUE_PTR_RVA = 0x032F46F8;  // qword_1430DBF78[274672]
 
 // --- B6 wedge 1: door open/close ---
 //
@@ -736,6 +756,17 @@ constexpr std::uintptr_t CONSOLE_PLACE_WORKER_RVA = 0x005E05D0;
 // refs. Destruction (DestroyByHandle) still works — the two 0x4000 tests in
 // sub_140C23EC0 only skip notifications (read in full, funcs_0296.md).
 constexpr std::uint32_t REFR_FLAG_TEMPORARY = 0x00004000;
+
+// L5 stage 3d (2026-09-29) — the power armour frame furniture. A frame this
+// DLL places never gets REFR_FLAG_TEMPORARY, and a frame the local player
+// enters loses it: with the bit, the save looks for a worn frame's cell in
+// extra data the frame does not have (GetSaveParentCell, slot 190,
+// sub_140516FF0 tests 0x4400), and the checkpoint of a player who carried
+// the frame into another cell read a null cell at RVA 0xBF6F9D, left the
+// save/load locks held, and the next load spun forever (live tests #11
+// and #12). The bit was saved with the frame (form flags 0x00404C0A in the
+// checkpoint), so it survived loads too.
+constexpr std::uint32_t PA_FRAME_FURNITURE_BASE = 0x0002079E;
 
 // ============================================================================
 // Build 70 (Piano B Fase 0) — lifecycle tripwire targets. Both READ END TO
@@ -1372,7 +1403,9 @@ constexpr std::size_t BSEXTRADATALIST_HEAD_OFF            = 0x08;
 //     +0x10 BSTSmartPointer<Stack> nextStack    ← this is the NEXT pointer
 //     +0x18 BSExtraDataList* extra              ← this is the EXTRAS pointer
 //     +0x20 i32 count
-//     +0x24 u32 flags
+//     +0x24 u16 flags   (bits 0-2 equipped, bit 5 transient; the stage 2
+//                        reader and Stack::SaveGame sub_140349150 write and
+//                        read 16 bits: an older note here said u32)
 //   }
 constexpr std::size_t INV_STACK_NEXT_OFF                  = 0x10;
 constexpr std::size_t INV_STACK_EXTRAS_OFF                = 0x18;
@@ -3044,5 +3077,252 @@ constexpr std::uintptr_t COMBATCTRL_GROUP_RECONCILE_RVA   = 0x00ED2490;  // sub_
 // [ctrl+0x78]+0x28). Guard validates *(ctrl+0x78) before forwarding.
 constexpr std::uintptr_t COMBATCTRL_UPDATE_TARGET_REC_RVA = 0x00E959E0;  // sub_140E959E0
 constexpr std::size_t    COMBATCTRL_TARGET_MAP_OFF        = 0x78;        // sub-obj ptr
+
+// Stage 1 of L5 (2026-09-27) — the save/load lifecycle, owned by
+// persist/lifecycle.cpp and by nothing else (MinHook takes one detour per
+// target). All read in the decomp of 1.11.191 the same day; the load request
+// sub_140BF93B0 is LOAD_GAME_FN_RVA above, hooked and called through.
+constexpr std::uintptr_t SAVELOAD_QUEUE_RVA       = 0x00BFE4C0;  // sub_140BFE4C0(mgr, flag): OR into mgr+0x40
+constexpr std::uintptr_t SAVELOAD_PROCESS_RVA     = 0x00BFE820;  // sub_140BFE820(mgr): once per frame from Main::Update (0x140C3394E)
+constexpr std::uintptr_t SAVE_NAMED_RVA           = 0x00BF8E10;  // sub_140BF8E10(mgr, name, -1, 0, zlib): every save path
+constexpr std::uintptr_t SAVE_CORE_RVA            = 0x00BF9010;  // sub_140BF9010: freezes VM + job list, writes, stores mgr+0x60
+constexpr std::uintptr_t LOAD_JOB_RVA             = 0x00C01E80;  // sub_140C01E80(job) on the loader thread -> sub_140BF9460
+constexpr std::uintptr_t DEATH_RELOAD_RVA         = 0x00BFD3C0;  // sub_140BFD3C0(mgr): LoadGame(mgr+0x60) after fPlayerDeathReloadTime
+constexpr std::uintptr_t SAVELOAD_EVENT_POST_RVA  = 0x00C02500;  // sub_140C02500(&{i32 type, u8}): SaveLoadMessageTypeEvent
+constexpr std::uintptr_t SAVELOAD_RENDER_CAPTURE_RVA = 0x00BFE3C0; // sub_140BFE3C0(mgr): the header screenshot, called by the console before a save
+constexpr std::uintptr_t SAVE_GATE_RVA            = 0x00BFAE80;  // bool sub_140BFAE80(mgr): the engine's own "can save now"
+constexpr std::size_t    SAVELOAD_MGR_PENDING_FLAGS_OFF = 0x40;  // pending request bits (1 autosave, 2 manual, 4 death, 8 quicksave, 0x10 quickload, 0x40 menu load, 0x4000/0x10000 exit)
+constexpr std::size_t    SAVELOAD_MGR_RELOAD_NAME_OFF   = 0x60;  // char*: the last save written or loaded with a5=1
+// The pause menu's Scaleform message handler, sub_140AD2BA0 (a virtual: the
+// slot at 0x142533050 holds it). Message type u32 at message+0x30: 9 = save
+// to a slot (sub_141085100 / sub_1410850D0), 0xB = load the save at an
+// index (hides the menu, sets a transition flag, then sub_141085130 queues
+// bit 0x40 with the descriptor at mgr+0x48). Read in the decomp 2026-09-27
+// after the first live test left that hidden menu on screen for good.
+constexpr std::uintptr_t PAUSE_MENU_PROCESS_MESSAGE_RVA = 0x00AD2BA0;
+constexpr std::size_t    UI_MESSAGE_TYPE_OFF             = 0x30;
+constexpr std::uint32_t  PAUSE_MENU_MSG_SAVE_GAME        = 0x9;
+constexpr std::uint32_t  PAUSE_MENU_MSG_LOAD_GAME        = 0xB;
+// sub_140C08280(): the engine's own way back from a load that will not
+// happen. If the PauseMenu is open it queues the UI message
+// "PauseMenuBackOutFromLoadGame" to it (the menu's UI-message handler
+// sub_140AD2050 then invokes the SWF's BackOutFromLoadGame, which returns
+// the save list to the main list); otherwise the main menu's equivalent.
+// The save-load manager calls it when the missing-content dialog is
+// declined. No arguments, main thread.
+constexpr std::uintptr_t PAUSE_MENU_BACK_OUT_FROM_LOAD_RVA = 0x00C08280;
+
+// Setting objects are {vtable, value at +8, name at +0x10}: each RVA below
+// is the VALUE, and the name pointer at value+8 is checked against the
+// expected string before the first write (the xrefs of the name strings
+// gave the objects; fPlayerDeathReloadTime at 0x142F033B0 confirmed the
+// layout).
+constexpr std::uintptr_t SETTING_DISABLE_AUTOSAVE_RVA         = 0x02F26998;  // bDisableAutoSave:SaveGame
+constexpr std::uintptr_t SETTING_ALLOW_SCRIPTED_AUTOSAVE_RVA  = 0x02F268A8;  // bAllowScriptedAutosave:SaveGame
+constexpr std::uintptr_t SETTING_ALLOW_SCRIPTED_FORCESAVE_RVA = 0x02F268C0;  // bAllowScriptedForceSave:SaveGame
+constexpr std::uintptr_t SETTING_SAVE_ON_REST_RVA             = 0x02F22E88;  // bSaveOnRest
+constexpr std::uintptr_t SETTING_SAVE_ON_WAIT_RVA             = 0x02F22EA0;  // bSaveOnWait
+constexpr std::uintptr_t SETTING_SAVE_ON_TRAVEL_RVA           = 0x02F22EB8;  // bSaveOnTravel
+constexpr std::uintptr_t SETTING_SAVE_ON_PAUSE_RVA            = 0x02F22ED0;  // bSaveOnPause
+constexpr std::uintptr_t SETTING_SAVE_ON_QUIT_TO_MENU_RVA     = 0x02F22608;  // bSaveGameOnQuitToMainMenu:General
+constexpr std::uintptr_t SETTING_WORKSHOP_AUTOSAVE_EXIT_RVA   = 0x02F23898;  // bWorkshopAutoSaveOnExit:Workshop
+constexpr std::uintptr_t SETTING_PLAYER_DEATH_RELOAD_TIME_RVA = 0x02F033B0;  // fPlayerDeathReloadTime (float, 5.0)
+
+// L5 stage 3c (2026-09-28) — the death's presentation and the respawn move,
+// all read in the decomp after the first live death:
+// - The kill-cam is VATS mode 1: the death update enters it through
+//   sub_140E59410 -> sub_140E57E20(vats, 1). The VATS singleton is
+//   qword_1430DBF78[9707] (the save gate sub_140BFAE80 refuses to save while
+//   its +0x40 mode is not 0); the load path sub_140C001F0 leaves the mode
+//   with sub_140E59580(vats, 1, 0, 0) + sub_140E57E20(vats, 0) +
+//   sub_14165B6C0(&qword_1430DBF78[356469], 1.0, 1) (the global time
+//   multiplier object, back to 1.0).
+constexpr std::uintptr_t VATS_SINGLETON_RVA     = 0x030EEED0;   // qword_1430DBF78[9707]
+constexpr std::size_t    VATS_MODE_OFF          = 0x40;         // 0 off, 1 the kill-cam / a VATS target queue
+constexpr std::uintptr_t VATS_RESET_TARGETS_RVA = 0x00E59580;   // (vats, char, char, char)
+constexpr std::uintptr_t VATS_SET_MODE_RVA      = 0x00E57E20;   // (vats, int mode)
+constexpr std::uintptr_t TIME_MULT_OBJECT_RVA   = 0x03394320;   // &qword_1430DBF78[356469]
+constexpr std::uintptr_t TIME_MULT_SET_RVA      = 0x0165B6C0;   // (obj, float mult, char immediate)
+// - The fast travel: Game.FastTravel (sub_1411212A0) -> sub_140D587D0(player,
+//   &markerHandle, 0) builds an 89-byte request {exterior cell, interior
+//   cell, 0, pos[3], rot[3], 0, 0, 0, null handle, marker handle, 0, 1, flag,
+//   0, 0, 1} and hands it to sub_140D574A0(player, &request), which copies it
+//   to player+0x8E8; the player's update then runs it with the loading
+//   screen. The null-handle value is the global dword_1430DA180.
+constexpr std::uintptr_t PLAYER_QUEUE_FAST_TRAVEL_RVA = 0x00D574A0;
+// - The fast travel's execution (sub_140D57E10) writes into the player's
+//   middle-high AI process unguarded: sub_140C5C830(actor) = the process at
+//   +0x300 -> sub_140D342A0 (its middle-high part), null right after a
+//   Resurrect (the override makes a fresh process). B's first live death:
+//   AV at RVA 0xD57FBF, a write at NULL+0x304, 12 ms after the queue.
+constexpr std::uintptr_t ACTOR_GET_MIDDLE_HIGH_PROCESS_RVA = 0x00C5C830;   // (actor, 0, 0)
+// - IsInCombat on the player: sub_140D8A3B0 = (player+0xDFF & 2) != 0.
+constexpr std::size_t    PLAYER_IN_COMBAT_FLAG_OFF = 0xDFF;
+constexpr std::uintptr_t NULL_HANDLE_VALUE_RVA        = 0x030DA180;
+constexpr std::uint32_t  XMARKER_HEADING_BASE         = 0x00000034;   // the editor's heading marker (STAT)
+
+// L5 stage 2 (2026-09-27) — the player's inventory, read the way the save
+// writes it (persist/inventory_capture.cpp). Every constant below was read
+// in the decomp of 1.11.191 and every vtable checked against the RTTI of
+// the executable on disk the same day.
+//
+// BGSInventoryList (0x80 at REFR+0xF8): +0x58 entries, +0x68 u32 count,
+// +0x78 BSReadWriteLock {u32 owner tid, u32 counter, bit31 = a writer holds
+// it}. Read lock sub_141658FE0 (re-entrant for readers, spins with Sleep
+// only while bit31 is set), read unlock sub_1416592B0: the existing
+// INVLIST_MUTEX_* names above ARE those two. Entry stride 0x10 = {object*,
+// Stack* head}; an entry's count is the sum of its stacks (sub_140349B30 =
+// INVITEM_GET_COUNT_RVA).
+constexpr std::size_t    INVLIST_LOCK_COUNTER_OFF  = 0x7C;          // u32, bit31 = writer
+constexpr std::uintptr_t INV_STACK_VTABLE_RVA      = 0x02472168;    // BGSInventoryItem::Stack
+constexpr std::size_t    INV_STACK_COUNT_OFF       = 0x20;          // i32
+constexpr std::size_t    INV_STACK_FLAGS_OFF       = 0x24;          // u16 (bits 0-2 equipped, bit 5 transient)
+constexpr std::uint16_t  INV_STACK_FLAG_EQUIPPED   = 0x0007;
+constexpr std::uint16_t  INV_STACK_FLAG_TRANSIENT  = 0x0020;        // set by sub_140502840 (menu inspect), purged by sub_140503620
+// BSExtraDataList (0x28): +0x08 head, +0x18 presence bitmap, +0x20 lock
+// {owner, counter} like the list's. Node: +0x08 next, +0x10 u16 header
+// flags, +0x12 type byte. EXTRALIST_LOCK_OFF / BSEXTRADATALIST_HEAD_OFF /
+// BSEXTRADATA_NEXT_OFF / BSEXTRADATA_TYPE_BYTE_OFF above are these.
+constexpr std::size_t    EXTRALIST_LOCK_COUNTER_OFF = 0x24;
+constexpr std::size_t    BSEXTRADATA_FLAGS_OFF      = 0x10;         // u16; bit 0 on 0x99 = player rename
+constexpr std::size_t    REFR_EXTRA_LIST_OFF        = 0x100;        // TESObjectREFR::extraList (ExtraPowerArmor 0xBB lives here)
+// The 24 extra types a save keeps per stack (bit 0x400 in dword_142ECED90,
+// ExtraDataList::SaveGame sub_140292D70), with the payload offsets of the
+// ones decoded, and the vtables (RVA) that prove a node's type byte.
+constexpr std::uint8_t   EXTRA_TYPE_REFERENCE_HANDLES = 0x1C;
+constexpr std::uint8_t   EXTRA_TYPE_OWNERSHIP         = 0x21;
+constexpr std::uint8_t   EXTRA_TYPE_GLOBAL            = 0x22;
+constexpr std::uint8_t   EXTRA_TYPE_RANK              = 0x23;
+constexpr std::uint8_t   EXTRA_TYPE_COUNT             = 0x24;
+constexpr std::uint8_t   EXTRA_TYPE_TIME_LEFT         = 0x27;
+constexpr std::uint8_t   EXTRA_TYPE_CHARGE            = 0x28;
+constexpr std::uint8_t   EXTRA_TYPE_LEVELED_ITEM      = 0x2E;
+constexpr std::uint8_t   EXTRA_TYPE_SCALE             = 0x2F;
+constexpr std::uint8_t   EXTRA_TYPE_OIE               = 0x35;
+constexpr std::uint8_t   EXTRA_TYPE_CANNOT_WEAR       = 0x3D;
+constexpr std::uint8_t   EXTRA_TYPE_POISON            = 0x3E;
+constexpr std::uint8_t   EXTRA_TYPE_STARTING_WORLD    = 0x48;
+constexpr std::uint8_t   EXTRA_TYPE_FAVORITE          = 0x49;
+constexpr std::uint8_t   EXTRA_TYPE_ALIAS_INSTANCES   = 0x88;
+constexpr std::uint8_t   EXTRA_TYPE_OUTFIT_ITEM       = 0x8E;
+constexpr std::uint8_t   EXTRA_TYPE_FROM_ALIAS        = 0x95;
+constexpr std::uint8_t   EXTRA_TYPE_TEXT_DISPLAY      = 0x99;
+constexpr std::uint8_t   EXTRA_TYPE_ENCHANTMENT       = 0x9B;
+constexpr std::uint8_t   EXTRA_TYPE_SOUL              = 0x9C;
+constexpr std::uint8_t   EXTRA_TYPE_UNIQUE_ID         = 0x9F;
+constexpr std::uint8_t   EXTRA_TYPE_FLAGS             = 0xA0;
+constexpr std::uint8_t   EXTRA_TYPE_MOD_RANK          = 0xC9;
+constexpr std::uint8_t   EXTRA_TYPE_POWER_ARMOR       = 0xBB;       // on the REFR list, not persisted
+constexpr std::uintptr_t EXTRA_VT_HEALTH_RVA          = 0x02468160; // ExtraHealth: float +0x18 (-1 = full)
+constexpr std::uintptr_t EXTRA_VT_CHARGE_RVA          = 0x024681A0; // ExtraCharge: float +0x18
+constexpr std::uintptr_t EXTRA_VT_OIE_RVA             = 0x02462298; // BGSObjectInstanceExtra: inner +0x18, u16 +0x20
+constexpr std::uintptr_t EXTRA_VT_FAVORITE_RVA        = 0x02468200; // ExtraFavorite: u8 +0x18 (0xFF none)
+constexpr std::uintptr_t EXTRA_VT_TEXT_DISPLAY_RVA    = 0x02468700; // ExtraTextDisplayData: see below
+constexpr std::uintptr_t EXTRA_VT_UNIQUE_ID_RVA       = 0x024687C0; // ExtraUniqueID: u16 +0x18, u32 +0x1C
+constexpr std::uintptr_t EXTRA_VT_ALIAS_INSTANCES_RVA = 0x02469DD8; // ExtraAliasInstanceArray
+constexpr std::uintptr_t EXTRA_VT_ENCHANTMENT_RVA     = 0x024683C0; // ExtraEnchantment: u16 +0x18, form* +0x20
+constexpr std::uintptr_t EXTRA_VT_POISON_RVA          = 0x024683A0;
+constexpr std::uintptr_t EXTRA_VT_OWNERSHIP_RVA       = 0x024680E0;
+constexpr std::uintptr_t EXTRA_VT_COUNT_RVA           = 0x02468140;
+constexpr std::uintptr_t EXTRA_VT_TIME_LEFT_RVA       = 0x02468180;
+constexpr std::uintptr_t EXTRA_VT_FLAGS_RVA           = 0x024687E0;
+constexpr std::uintptr_t EXTRA_VT_CANNOT_WEAR_RVA     = 0x024696B8;
+constexpr std::uintptr_t EXTRA_VT_SCALE_RVA           = 0x024681C0;
+constexpr std::size_t    EXTRA_PAYLOAD_OFF            = 0x18;       // first field of every decoded extra
+constexpr std::size_t    EXTRA_UNIQUE_ID_OWNER_OFF    = 0x1C;
+constexpr std::size_t    EXTRA_TEXT_NAME_OFF          = 0x18;       // BSFixedString
+constexpr std::size_t    EXTRA_TEXT_MESSAGE_OFF       = 0x20;       // BGSMessage*
+constexpr std::size_t    EXTRA_TEXT_QUEST_OFF         = 0x28;       // TESQuest*
+constexpr std::size_t    EXTRA_TEXT_OWNER_OFF         = 0x30;       // i32, -2 = literal name set
+constexpr std::size_t    EXTRA_TEXT_NAME_LEN_OFF      = 0x40;       // u16
+constexpr std::size_t    EXTRA_ENCHANT_FORM_OFF       = 0x20;
+constexpr std::size_t    OIE_TEMPLATE_INDEX_OFF       = 0x20;       // u16, 0xFFFF = none
+constexpr std::uintptr_t XLIST_IS_QUEST_ITEM_RVA      = 0x0028F070; // bool sub_14028F070(list*): follows 0x1C, tests 0x88
+constexpr std::uintptr_t XLIST_GET_HEALTH_RVA         = 0x0027FDA0; // float sub_14027FDA0(list*): 0x25 or -1
+constexpr std::uintptr_t BSFIXEDSTRING_CSTR_RVA       = 0x0167CA00; // const char* sub_14167CA00(BSFixedString* field)
+constexpr std::uintptr_t EXTRALIST_READ_LOCK_RVA      = 0x01658FE0; // same lock class as the inventory list
+constexpr std::uintptr_t EXTRALIST_READ_UNLOCK_RVA    = 0x016592B0;
+
+// L5 stage 2 — the two functions every inventory change of a REFR goes
+// through (persist/inventory_tap.cpp observes them for the player only):
+//   add core sub_140502940(refr, base, sp<ExtraDataList>*, u32 count,
+//     oldContainer, levelInfo, worldRef): 31 callers, among them
+//     Actor::AddObjectToContainer sub_1405007B0 (from the hooked vt[0x7A]),
+//     the world pickup sub_140500430, the Papyrus AddItem worker
+//     sub_140522B00, the REFR vt[0x7A] sub_140509250, the workbench
+//     sub_140988080/sub_140989A40, cooking/crafting sub_140A57FC0, the
+//     workshop scrap sub_140A5EF20.
+//   remove core sub_140500870(refr, u32* outHandle, RemoveItemData*): one
+//     caller, Actor::RemoveItem sub_140C9A7B0 (vt[0x6D]). RemoveItemData:
+//     +0x20 object, +0x28 count, +0x2C reason (0 consume, 1 steal, 2
+//     barter, 3 drop, 4 container, 5 companion), +0x30 otherContainer,
+//     +0x38 drop location.
+constexpr std::uintptr_t INV_ADD_CORE_RVA             = 0x00502940;
+constexpr std::uintptr_t INV_REMOVE_CORE_RVA          = 0x00500870;
+// The drop worker the remove core calls ONCE PER SOURCE STACK of a drop
+// (measured 2026-09-27: 5 stimpaks dropped from three stacks, x1 unique,
+// x1 unique, x5 plain, became three world REFRs x1, x1, x3, and the core's
+// out handle held only the last). It creates the world REFR out of the
+// stack (NEW_REFR_DATA + sub_1402E4DF0), writes its handle into *outHandle
+// and, for count > 1, adds the ExtraCount (sub_14027B210):
+//   int* sub_140501700(TESObjectREFR* owner, u32* outHandle, TESForm* obj,
+//                      int count, ExtraDataList* extra, NiPoint3* dropAt,
+//                      NiPoint3* rotation, BSExtraDataList* refcounted)
+// owner == the player singleton takes the view-based drop position.
+constexpr std::uintptr_t INV_DROP_WORKER_RVA          = 0x00501700;
+constexpr std::size_t    REMOVE_ITEM_DATA_OBJECT_OFF  = 0x20;
+constexpr std::size_t    REMOVE_ITEM_DATA_COUNT_OFF   = 0x28;
+constexpr std::size_t    REMOVE_ITEM_DATA_REASON_OFF  = 0x2C;
+constexpr std::size_t    REMOVE_ITEM_DATA_OTHER_OFF   = 0x30;
+
+// L5 stage 2 (2026-09-27) — dropped items travel as world spawns.
+//
+// The remove core's drop branch (reason 3) creates the world REFR through
+// sub_140501700 and writes its HANDLE into *outHandle before returning
+// (decomp: `*a2 = *(_DWORD *)sub_140501700(...)`; the core zeroes *a2 on
+// entry, so every caller passes a real slot). The tap resolves the handle
+// after the original returns and announces the drop like a console spawn,
+// with the REFR's own instance data (world count, condition, mods) as
+// pieces[0] and flags bit1 set (see kWorldSpawnFlagSelfDescribed).
+//
+// The receiver dresses its placed copy through the engine's own REFR-level
+// mod attach, the function behind Papyrus ObjectReference.AttachMod
+// (sub_141153480 -> sub_140248F40 when the script object is a world REFR):
+//   bool sub_140248F40(TESObjectREFR* refr, BGSMod::Attachment::Mod* mod,
+//                      u8 rank, u8 attach)
+// It takes the REFR's ExtraDataList (+0x100), gets or creates the
+// BGSObjectInstanceExtra (0x35), records the mod (sub_1402480F0), then
+// RELEASES the loaded 3D (vt[136]) and queues the reload (sub_1402C62B0)
+// itself, so the model on the ground shows the mods with no further call.
+// Main thread, like every 3D mutation.
+constexpr std::uintptr_t REFR_ATTACH_MOD_RVA        = 0x00248F40;
+// ExtraCount (0x24): the world count of a dropped stack ("Stimpak (5)").
+//   mem = sub_1401E0000(0x20); sub_1402A3B90(mem, i16 count): type byte
+//   0x24, next 0, flags 0, vtable, u16 count at +0x18. Then the same
+//   write-lock / add / unlock as ExtraHealth (EXTRALIST_* above).
+constexpr std::uintptr_t EXTRACOUNT_CTOR_RVA        = 0x002A3B90;
+constexpr std::size_t    EXTRACOUNT_SIZE            = 0x20;
+constexpr std::size_t    EXTRACOUNT_VALUE_OFF       = 0x18;
+// TESObjectREFR::loaded3D (NiAVObject*): sub_140248F40 tests it before
+// releasing and re-queuing the model after a mod attach. Read only, for the
+// log: whether a replica was dressed before or after its model existed.
+constexpr std::size_t    REFR_LOADED_3D_OFF         = 0xF0;
+
+// RUNTIME FORM IDS ARE NOT IDENTITIES (measured 2026-09-27, both clients).
+// The Pip-Boy keeps a temporary REFR for the 3D preview of the selected
+// item (torn down by sub_14105C100: Release3D vt[136], GetHandle
+// sub_140519190, DestroyByHandle sub_140C23EC0). Its runtime id is handed
+// out again while it still lives: a dropped 10mm got 0xFF001369, the
+// baton's preview created right after got the SAME id, and when the
+// Pip-Boy closed the preview's destructor unregistered that id from the
+// form map: the dropped pistol was still on the ground but
+// lookup_by_form_id(0xFF001369) returned null from then on, the sweep
+// called it "vanished" and every replica was destroyed. The tripwire had
+// matched the dying preview by fid too and cleared its no-save flag, which
+// is what routed its destructor into the full unregistration. The world
+// spawn registry therefore tracks its objects by HANDLE (age-tagged, the
+// engine's own identity for live REFRs): GetHandle sub_140519190(refr,
+// u32* out) mints or returns it, sub_14021E230 resolves it, and a released
+// handle never resolves again, whoever holds the id now.
 
 } // namespace fw::offsets

@@ -37,6 +37,16 @@ bool install_container_hook(std::uintptr_t module_base);
 // so both translation units see the same TLS variable.
 extern thread_local bool tls_applying_remote;
 
+// Stage 0 of L5 (2026-09-27): a ContainerMenu DEPOSIT is in flight on this
+// thread (put_hook.cpp sets it around the engine's TransferItem). The Actor
+// and PlayerCharacter vtables share slot 0x7A (sub_140C7A500, read from the
+// executable), so a deposit into an actor's inventory (a corpse, a
+// companion) reaches the add detour with dest=actor and source=player and
+// was reported a second time as a PUT there. The deposit belongs to
+// put_hook; the add detour passes an op through while this is set. A menu
+// WITHDRAW never sets it: that one is the add detour's TAKE, as before.
+extern thread_local bool tls_menu_transfer;
+
 // Nestable since loot rework L3 (2026-09-24): the flag is restored to what
 // it was, not cleared, so a guard inside the dispatch drain's guard does not
 // switch the drain's remaining ops back to "emit to the network".
