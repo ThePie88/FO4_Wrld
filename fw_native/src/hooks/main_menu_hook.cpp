@@ -21,6 +21,8 @@
 #include "../hook_manager.h"
 #include "../log.h"
 #include "../native/world_spawn.h"
+#include "../native/map_marker.h"      // L5 D2 experiment (2026-10-15): the test key
+#include "../native/map_markers.h"     // L5 realtime D2 (2026-10-15): death crates and players on the map
 #include "../native/ghost_lifecycle.h"
 #include "../net/client.h"   // the goodbye when the window closes
 #include "../main_thread_dispatch.h"
@@ -33,6 +35,8 @@
 #include "../render/chat_overlay.h"    // phase 4: Enter opens the chat, the chat takes the keyboard
 #include "../native/chargen_stage.h"     // 2026-08-08: stage the player for creation
 #include "../persist/inventory_capture.h" // L5 stage 2: the player's inventory, read once a second
+#include "../persist/inventory_restore.h" // L5 realtime R2: the record back into the game after a load
+#include "../persist/player_stats.h"      // L5 realtime R4: the character's numbers
 #include "../persist/checkpoint.h"        // L5 stage 2: the test checkpoint key
 #include "../persist/lifecycle.h"         // 2026-09-28: exiting(), the whole tick stops with the world
 #include "../native/face_borrow.h"       // v20: build peers' faces locally
@@ -118,6 +122,7 @@ void boot_position_tick() {
 // needs at init. 0 = the key is not configured.
 std::uint32_t g_editor_key = 0;
 std::uint32_t g_checkpoint_key = 0;   // L5 stage 2: asks for a test checkpoint
+std::uint32_t g_map_marker_key = 0;   // L5 D2 experiment: a map marker made at runtime
 
 // ----------------------------------------------------------------- WndProc subclass
 //
@@ -238,6 +243,15 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         !fw::render::chat::typing() && g_checkpoint_key != 0 &&
         static_cast<std::uint32_t>(wp) == g_checkpoint_key) {
         fw::persist::checkpoint::request_test("key");
+        return 0;
+    }
+    // L5 D2 experiment (2026-10-15): the map marker test key, same shape
+    // (both messages, no repeat, not while typing, swallowed). The engine
+    // calls run here, on the main thread the window is pumped by.
+    if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && (lp & 0x40000000) == 0 &&
+        !fw::render::chat::typing() && g_map_marker_key != 0 &&
+        static_cast<std::uint32_t>(wp) == g_map_marker_key) {
+        fw::native::map_marker::on_test_key();
         return 0;
     }
 
@@ -462,6 +476,18 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // L5 stage 2: the player's inventory, read as the save writes it,
         // once a second, in observation only.
         fw::persist::inventory::tick(s_base);
+        // L5 realtime R2: once the load after a boot or a death is over, the
+        // player gets the server's record of the inventory back.
+        fw::persist::restore::tick(s_base);
+        // L5 realtime R4: XP, level, perks and SPECIAL, sent when they change.
+        fw::persist::charstats::tick(s_base);
+        // L5 realtime D2: the death crates and the other players on the map
+        // and the compass (once a second inside).
+        fw::native::map_markers::tick(s_base);
+        // 2026-10-05: a player on foot left with the power armour race by a
+        // death inside a frame gets the human race back (the Pip-Boy opened
+        // blurred with no device at the wrist, every boot of that save).
+        fw::engine::power_armor_race_watch();
     }
     // The heartbeat stops here: the tick block above has already consumed
     // it, and the game knows nothing about this timer.
@@ -961,6 +987,7 @@ bool install_main_menu_hook(std::uintptr_t module_base,
     g_genesis_name = cfg.auto_load_save;
     g_editor_key = cfg.editor_key;
     g_checkpoint_key = cfg.checkpoint_test_key;
+    g_map_marker_key = cfg.map_marker_test_key;
     if (g_editor_key) {
         FW_LOG("[editor] toggle key armed: virtual-key 0x%02X", g_editor_key);
     }

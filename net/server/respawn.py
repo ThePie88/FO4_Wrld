@@ -25,6 +25,7 @@ import hashlib
 import logging
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from server.custody import CustodyStore, name_is_sane
@@ -138,7 +139,8 @@ def make_first_checkpoint(state: ServerState, store: CustodyStore, peer_id: str,
     store.store(peer_id, name, moved, b"# fwworld 1 " + name.encode("ascii") + b"\n", sha)
     rec = state.record_checkpoint(
         peer_id, identity_hex, 0, name, sha, len(moved), 0, 0, int(now_ms), now_ms,
-        int(state.applied_lsn), CKPT_REASON_FIRST_ENTRY)
+        int(state.applied_lsn), CKPT_REASON_FIRST_ENTRY,
+        world_ms=0.0)   # 2026-10-20: the genesis world, no op of anyone in it
     if rec is None:
         store.delete(peer_id, name)
         raise RespawnError(f"the record for '{name}' was refused")
@@ -151,33 +153,82 @@ def make_first_checkpoint(state: ServerState, store: CustodyStore, peer_id: str,
 
 def make_respawn_checkpoint(state: ServerState, store: CustodyStore, peer_id: str,
                             point: RespawnPoint, now_ms: float,
-                            exterior_globals: Optional[dict[int, bytes]] = None
-                            ) -> CheckpointRecord:
-    """Book a copy of the player's boot checkpoint moved onto `point` as the
-    player's newest checkpoint, its bytes in custody. A power armour frame
-    the player wears in it moves with them (savepos); a checkpoint written in
-    an interior gets the sky of `exterior_globals` (savepos.exterior_sky of the
-    genesis save) and is refused without it. RespawnError when the
-    source is not in custody, does not match its record, is not a save
-    savepos can move, or its frame disagrees with the inventory digest;
-    nothing is written or booked then."""
-    src: Optional[CheckpointRecord] = state.checkpoint_to_boot(peer_id)
+                            exterior_globals: Optional[dict[int, bytes]] = None,
+                            genesis_path: Optional[Path] = None,
+                            identity_hex: str = "") -> CheckpointRecord:
+    """Book a copy of a checkpoint of the player moved onto `point` as the
+    player's newest checkpoint, its bytes in custody.
+
+    L5 realtime D1 (2026-10-04, the owner's rule): a death leaves a worn
+    frame where the player fell, complete, and the player comes back ON
+    FOOT, so the source is the newest checkpoint that has them on foot: the
+    record's flag (in_pa, from the inventory digest sent with it) says,
+    the save's bytes when the flag is unknown; one in a frame, not in
+    custody, not on disk, not matching its record or unreadable is passed
+    over. With none on foot the genesis save (`genesis_path`, the server's)
+    moved onto the point stands in: the record brings the inventory and the
+    numbers back (R1-R4), what that save held besides them starts over. A
+    checkpoint written in an interior gets the sky of `exterior_globals`
+    (savepos.exterior_sky of the genesis save) and is refused without it.
+    RespawnError when nothing can be moved; nothing is written or booked
+    then."""
+    cands = [r for r in state.checkpoints(peer_id) if r.boot_failures < 2]
+    src: Optional[CheckpointRecord] = None
+    data = manifest = b""
+    passed: list[str] = []
+    for r in cands:
+        if r.in_pa is True:
+            passed.append(f"'{r.name}' has them in power armour")
+            continue
+        if not r.custody:
+            passed.append(f"'{r.name}' is not in custody")
+            continue
+        got = store.read(peer_id, r.name)
+        if got is None:
+            passed.append(f"'{r.name}' is booked in custody but not on disk")
+            continue
+        if hashlib.sha256(got[0]).hexdigest() != r.sha256_hex:
+            passed.append(f"'{r.name}' on disk does not match its record")
+            continue
+        if r.in_pa is None:
+            try:
+                worn = read_worn_frame(got[0])
+            except SaveFormatError as e:
+                passed.append(f"'{r.name}' cannot be read: {e}")
+                continue
+            if worn is not None:
+                passed.append(f"'{r.name}' has them in power armour (the save says)")
+                continue
+        src, (data, manifest) = r, got
+        break
+    why = "; ".join(passed) if passed else "no checkpoint at all"
     if src is None:
-        raise RespawnError(f"{peer_id} has no checkpoint to move")
-    if not src.custody:
-        raise RespawnError(f"'{src.name}' of {peer_id} is not in custody")
-    got = store.read(peer_id, src.name)
-    if got is None:
-        raise RespawnError(f"'{src.name}' of {peer_id} is booked in custody but not on disk")
-    data, manifest = got
-    if hashlib.sha256(data).hexdigest() != src.sha256_hex:
-        raise RespawnError(f"'{src.name}' of {peer_id} on disk does not match its record")
-    try:
-        moved = move_player(data, point.x, point.y, point.z, point.yaw, point.worldspace,
-                            expect_worn_frame=checkpoint_in_power_armour(state, peer_id),
-                            exterior_globals=exterior_globals)
-    except SaveFormatError as e:
-        raise RespawnError(f"'{src.name}' of {peer_id} cannot be moved: {e}") from e
+        if genesis_path is None:
+            raise RespawnError(f"no checkpoint of {peer_id} has them on foot ({why}) and this "
+                               "server has no genesis save")
+        try:
+            genesis = genesis_path.read_bytes()
+            moved = move_player(genesis, point.x, point.y, point.z, point.yaw, point.worldspace,
+                                expect_worn_frame=False)
+        except (OSError, SaveFormatError) as e:
+            raise RespawnError(f"no checkpoint of {peer_id} has them on foot ({why}) and the "
+                               f"genesis save cannot stand in: {e}") from e
+        newest = cands[0] if cands else None
+        ident = identity_hex or (newest.identity_hex if newest is not None else "")
+        seq, digest, digest_seq, wall_ms = 0, 0, 0, int(now_ms)
+        watermark = int(state.applied_lsn)
+        manifest = b"# fwworld 1 genesis\n"
+        source = "the genesis save"
+    else:
+        try:
+            moved = move_player(data, point.x, point.y, point.z, point.yaw, point.worldspace,
+                                expect_worn_frame=False, exterior_globals=exterior_globals)
+        except SaveFormatError as e:
+            raise RespawnError(f"'{src.name}' of {peer_id} cannot be moved: {e}") from e
+        ident = src.identity_hex
+        seq, digest, digest_seq, wall_ms = src.seq, src.digest, src.digest_seq, src.wall_ms
+        watermark = src.watermark_lsn
+        source = f"'{src.name}'"
 
     taken = {r.name for r in state.checkpoints(peer_id)} | set(store.names(peer_id))
     name = _name_for(peer_id, now_ms, taken)
@@ -186,15 +237,23 @@ def make_respawn_checkpoint(state: ServerState, store: CustodyStore, peer_id: st
     sha = hashlib.sha256(moved).hexdigest()
     store.store(peer_id, name, moved, manifest, sha)
     rec = state.record_checkpoint(
-        peer_id, src.identity_hex, src.seq, name, sha, len(moved), src.digest,
-        src.digest_seq, src.wall_ms, now_ms, src.watermark_lsn, CKPT_REASON_RESPAWN)
+        peer_id, ident, seq, name, sha, len(moved), digest, digest_seq, wall_ms, now_ms,
+        watermark, CKPT_REASON_RESPAWN, in_pa=False,
+        # 2026-10-20: the copy carries the source's world (the genesis: none).
+        world_ms=src.world_ms if src is not None else 0.0)
     if rec is None:
         store.delete(peer_id, name)
         raise RespawnError(f"the record for '{name}' was refused")
     state.set_checkpoint_custody(peer_id, name, sha, now_ms)
     gone = store.keep_only(peer_id, {r.name for r in state.checkpoints(peer_id)})
-    log.info("respawn: '%s' of %s moved to (%.1f, %.1f, %.1f) yaw %.2f -> '%s' (%d bytes, "
-             "sha %s...), booked as the newest checkpoint, in custody; %d old file(s) pruned",
-             src.name, peer_id, point.x, point.y, point.z, point.yaw, name, len(moved),
-             sha[:12], gone)
+    if src is None:
+        log.warning("respawn: no checkpoint of %s has them on foot (%s): the genesis save moved "
+                    "onto the point stands in as '%s' (%d bytes, sha %s...); the record brings "
+                    "the inventory and the numbers back, the rest of that save starts over; %d "
+                    "old file(s) pruned", peer_id, why, name, len(moved), sha[:12], gone)
+    else:
+        log.info("respawn: %s of %s%s moved to (%.1f, %.1f, %.1f) yaw %.2f -> '%s' (%d bytes, "
+                 "sha %s...), booked as the newest checkpoint, in custody; %d old file(s) pruned",
+                 source, peer_id, f" (passed over: {why})" if passed else "",
+                 point.x, point.y, point.z, point.yaw, name, len(moved), sha[:12], gone)
     return rec

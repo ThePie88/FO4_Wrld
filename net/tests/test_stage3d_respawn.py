@@ -31,10 +31,12 @@ POINT = RespawnPoint(-55911.7, 101867.7, 8542.9, 0.25)
 
 
 def _book(state: ServerState, store: CustodyStore, name: str, data: bytes, *,
-          custody: bool = True, now: float = NOW, digest: int = 0xABC, lsn: int = 77) -> None:
+          custody: bool = True, now: float = NOW, digest: int = 0xABC, lsn: int = 77,
+          in_pa=None) -> None:
     sha = hashlib.sha256(data).hexdigest()
     store.store(PEER, name, data, b"# fwworld 1 " + name.encode() + b"\n", sha)
-    state.record_checkpoint(PEER, "id" * 16, 3, name, sha, len(data), digest, 9, 123, now, lsn, 0)
+    state.record_checkpoint(PEER, "id" * 16, 3, name, sha, len(data), digest, 9, 123, now, lsn, 0,
+                            in_pa=in_pa)
     if custody:
         assert state.set_checkpoint_custody(PEER, name, sha, now) is not None
 
@@ -61,6 +63,52 @@ def test_keeps_the_last_three(tmp_path):
     names = [r.name for r in state.checkpoints(PEER)]
     assert names[0] == rec.name and len(names) == CHECKPOINTS_KEPT
     assert sorted(store.names(PEER)) == sorted(names)
+
+
+def test_the_newest_checkpoint_on_foot_outlives_the_last_three_in_power_armour(tmp_path):
+    # L5 realtime D1 (2026-10-04): a death puts the player back on foot, so
+    # the respawn needs a checkpoint on foot; the newest one is kept past
+    # the last CHECKPOINTS_KEPT while every newer one has them in a frame.
+    state, store = ServerState(), CustodyStore(tmp_path)
+    foot = "fwck_%s_20260929_010000" % PEER
+    _book(state, store, foot, build_save(), in_pa=False)
+    for i in range(1, CHECKPOINTS_KEPT + 1):
+        _book(state, store, "fwck_%s_20260929_01000%d" % (PEER, i), build_save(frame=True),
+              now=NOW + i, in_pa=True)
+    names = [r.name for r in state.checkpoints(PEER)]
+    assert len(names) == CHECKPOINTS_KEPT + 1 and names[-1] == foot
+    rec = make_respawn_checkpoint(state, store, PEER, POINT, NOW + 60_000)
+    assert rec.in_pa is False and read_worn_frame(store.read(PEER, rec.name)[0]) is None
+    names = [r.name for r in state.checkpoints(PEER)]
+    assert names[0] == rec.name and len(names) == CHECKPOINTS_KEPT   # the copy on foot lets the old one go
+    assert sorted(store.names(PEER)) == sorted(names)
+
+
+def test_the_flag_survives_the_snapshot_and_the_journal(tmp_path):
+    from server.journal import Journal
+    from server.persistence import load_into, snapshot
+    j = Journal.open(tmp_path / "journal")
+    a = ServerState()
+    a.journal = j
+    a.record_checkpoint(PEER, "id" * 16, 1, "fwck_%s_1" % PEER, "ab" * 32, 9, 0, 0, 1, 1.0, 1, 0,
+                        in_pa=True)
+    a.record_checkpoint(PEER, "id" * 16, 2, "fwck_%s_2" % PEER, "cd" * 32, 9, 0, 0, 2, 2.0, 2, 0,
+                        in_pa=False)
+    a.record_checkpoint(PEER, "id" * 16, 3, "fwck_%s_3" % PEER, "ef" * 32, 9, 0, 0, 3, 3.0, 3, 0)
+    j.flush()
+    j.close()
+    snap = tmp_path / "snap.json"
+    snapshot(a, snap)
+    for b in (ServerState(), ServerState()):
+        if b is not a:
+            pass
+    b = ServerState()
+    load_into(b, snap)
+    c = ServerState()
+    Journal.open(tmp_path / "journal").replay(c, after_lsn=0)
+    for s in (b, c):
+        flags = {r.name[-1]: r.in_pa for r in s.checkpoints(PEER)}
+        assert flags == {"1": True, "2": False, "3": None}
 
 
 def _unchanged(state, store, before_names, before_files):
@@ -134,6 +182,7 @@ def test_no_checkpoint_at_all(tmp_path):
 from protocol import (  # noqa: E402
     CkptRespawnPayload, INV_DIGEST_FLAG_COMPLETE, INV_DIGEST_FLAG_IN_POWER_ARMOR, MessageType,
     PlayerLifePayload, decode_frame,
+    FP_PLAIN, FP_UNKNOWN, INV_ENTRY_EQUIPPED, INV_STATE_FLAG_COMPLETE,
 )
 from server.main import RESPAWN_POINTS, ServerProtocol, read_server_ini  # noqa: E402
 
@@ -200,8 +249,7 @@ def test_a_death_is_answered_with_the_moved_checkpoint(tmp_path):
 
 @pytest.mark.parametrize("kwargs", [
     dict(point=False), dict(custody=False),
-    dict(pa=True),                       # the digest says power armour, the save links no frame
-    dict(frame=True),                    # the save links a frame, the digest says no power armour
+    dict(frame=True),                    # the only checkpoint has them in a frame, no genesis
 ])
 def test_no_moved_checkpoint_says_so_and_books_nothing(tmp_path, kwargs):
     state, proto, session, store = _server(tmp_path, **kwargs)
@@ -234,15 +282,46 @@ def test_server_ini(tmp_path):
     assert read_server_ini(ini) == ("off", {})
 
 
-def test_a_death_in_power_armour_moves_the_frame_too(tmp_path):
-    state, proto, session, store = _server(tmp_path, pa=True, frame=True)
+# L5 realtime D1 (2026-10-04, the owner's rule): a death in power armour
+# leaves the frame where they fell, complete, next to the crate, and the
+# player comes back ON FOOT: the respawn checkpoint is the newest one that
+# has them on foot, the genesis save moved onto the point when none does.
+def test_a_death_in_power_armour_is_answered_with_the_newest_checkpoint_on_foot(tmp_path):
+    state, proto, session, store = _server(tmp_path)                     # on foot, the older
+    _book(state, store, "fwck_%s_20260929_010100" % PEER, build_save(frame=True), now=NOW + 1,
+          in_pa=True)
+    assert read_worn_frame(store.read(PEER, state.checkpoint_to_boot(PEER).name)[0]) is not None
     proto._handle_player_life(session, PlayerLifePayload(0, (1.0, 2.0, 3.0), 10), NOW + 60_000)
     (ans,) = _answers(proto, session)
     assert ans.has
     data = store.read(PEER, ans.name)[0]
-    wf = read_worn_frame(data)
-    assert wf is not None and wf.move.pos[0] == pytest.approx(RESPAWN_POINTS["sanctuary"][0], abs=0.01)
-    assert not wf.form_flags & 0x4000
+    assert read_worn_frame(data) is None
+    assert read_position(data)[1].pos[0] == pytest.approx(RESPAWN_POINTS["sanctuary"][0], abs=0.01)
+    assert state.checkpoint_to_boot(PEER).in_pa is False
+
+
+def test_the_save_decides_when_the_flag_is_unknown(tmp_path):
+    state, proto, session, store = _server(tmp_path)
+    _book(state, store, "fwck_%s_20260929_010100" % PEER, build_save(frame=True), now=NOW + 1)
+    proto._handle_player_life(session, PlayerLifePayload(0, (1.0, 2.0, 3.0), 10), NOW + 60_000)
+    (ans,) = _answers(proto, session)
+    assert ans.has and read_worn_frame(store.read(PEER, ans.name)[0]) is None
+
+
+def test_with_every_checkpoint_in_power_armour_the_genesis_stands_in(tmp_path):
+    state, proto, session, store = _server(tmp_path, pa=True, frame=True)
+    g = tmp_path / "world_base.fos"
+    g.write_bytes(build_save(pos=(1.0, 2.0, 3.0)))
+    proto.genesis_path = g
+    proto._handle_player_life(session, PlayerLifePayload(0, (1.0, 2.0, 3.0), 10), NOW + 60_000)
+    (ans,) = _answers(proto, session)
+    assert ans.has
+    rec = state.checkpoint_to_boot(PEER)
+    assert rec.name == ans.name and rec.reason == CKPT_REASON_RESPAWN and rec.in_pa is False
+    assert rec.custody and rec.identity_hex == session.identity_hex
+    data = store.read(PEER, ans.name)[0]
+    assert read_worn_frame(data) is None
+    assert read_position(data)[1].pos[0] == pytest.approx(RESPAWN_POINTS["sanctuary"][0], abs=0.01)
 
 
 def test_a_death_in_an_interior_is_moved_out_with_the_genesis_sky(tmp_path):
@@ -374,30 +453,17 @@ def test_worn_frame_fid():
     assert worn_frame_fid(rwf(build_save(frame=True))) == SAVED_FRAME_FID
 
 
-def test_a_death_on_foot_inside_the_checkpoints_frame_takes_it_back(tmp_path):
-    state, proto, session, store = _server(tmp_path, pa=True, frame=True)
+def test_a_death_on_foot_leaves_the_standing_frame_alone(tmp_path):
+    # D1 (2026-10-04): the player comes back on foot whatever the newest
+    # checkpoint says, so the frame they left keeps standing.
+    state, proto, session, store = _server(tmp_path)
+    _book(state, store, "fwck_%s_20260929_010100" % PEER, build_save(frame=True), now=NOW + 1,
+          in_pa=True)
     other, _ = state.accept_peer(("127.0.0.1", 6), OTHER, (1, 0), 0.0)
     wid = _standing_frame(state)
     proto._handle_player_life(session, PlayerLifePayload(0, (1.0, 2.0, 3.0), 10), NOW + 60_000)
     (ans,) = _answers(proto, session)
-    assert ans.has
-    assert state.world_spawns[wid].worn_by_peer_id == "" and _despawns(proto) == []
-    proto._handle_player_life(session, PlayerLifePayload(1, (4.0, 5.0, 6.0), 10), NOW + 70_000)
-    assert state.world_spawns[wid].worn_by_peer_id == PEER
-    sent = _despawns(proto)
-    assert {a for a, _ in sent} == {session.addr, other.addr}
-    assert all(p.wid == wid and p.peer_id == "server" for _, p in sent)
-    proto._handle_player_life(session, PlayerLifePayload(1, (4.0, 5.0, 6.0), 10), NOW + 71_000)
-    assert len(_despawns(proto)) == 2       # once
-
-
-@pytest.mark.parametrize("kwargs", [dict(spawner="fw0000000000b0b"),   # OTHER, defined below
-                                    dict(local_fid=0xFF00AAAA)])
-def test_only_the_checkpoints_own_frame_is_taken(tmp_path, kwargs):
-    state, proto, session, store = _server(tmp_path, pa=True, frame=True)
-    state.accept_peer(("127.0.0.1", 6), OTHER, (1, 0), 0.0)
-    wid = _standing_frame(state, **kwargs)
-    proto._handle_player_life(session, PlayerLifePayload(0, (1.0, 2.0, 3.0), 10), NOW + 60_000)
+    assert ans.has and read_worn_frame(store.read(PEER, ans.name)[0]) is None
     proto._handle_player_life(session, PlayerLifePayload(1, (4.0, 5.0, 6.0), 10), NOW + 70_000)
     assert state.world_spawns[wid].worn_by_peer_id == "" and _despawns(proto) == []
 
@@ -418,6 +484,23 @@ def test_a_boot_inside_the_checkpoints_frame_takes_it_back(tmp_path):
     proto._send_checkpoint_boot(session, NOW)
     assert state.world_spawns[wid].worn_by_peer_id == PEER
     assert [p.wid for _, p in _despawns(proto)] == [wid]
+
+
+def test_a_boot_inside_the_frame_puts_its_pieces_back_into_the_record(tmp_path):
+    # D1 (2026-10-04): the record lost the pieces when the frame was given
+    # back; the boot puts the player inside the save's copy, which has them,
+    # so the record gets them back as lines nobody read (the restore keeps
+    # what the save has of each base, builds and removes nothing of them).
+    state, proto, session, store = _server(tmp_path, pa=True, frame=True)
+    wid = _standing_frame(state)
+    state.record_player_inventory(PEER, 0x1234, 1, 0, 0x12, INV_STATE_FLAG_COMPLETE, 0,
+                                  ((0x21B3B, FP_PLAIN, 1, INV_ENTRY_EQUIPPED),), 0.0)
+    proto._send_checkpoint_boot(session, NOW)
+    assert state.world_spawns[wid].worn_by_peer_id == PEER
+    rec = state.player_inventory(PEER)
+    assert rec.lines == {(0x21B3B, FP_PLAIN): 1, (0x154AC5, FP_UNKNOWN): 1,
+                         (0x154AC8, FP_UNKNOWN): 1}
+    assert (0x154AC5, FP_UNKNOWN) in rec.equipped
 
 
 def test_a_boot_on_foot_takes_nothing(tmp_path):
@@ -455,13 +538,6 @@ def test_read_genesis_path(tmp_path):
     assert read_genesis_path(ini) == "net/genesis/world_base.fos"
     ini.write_text("[spawn]\npoint = sanctuary\n", encoding="utf-8")
     assert read_genesis_path(ini) is None
-
-
-def test_an_unknown_digest_lets_the_save_decide(tmp_path):
-    state, proto, session, store = _server(tmp_path, digest_matches=False, frame=True)
-    proto._handle_player_life(session, PlayerLifePayload(0, (1.0, 2.0, 3.0), 10), NOW + 60_000)
-    (ans,) = _answers(proto, session)
-    assert ans.has and read_worn_frame(store.read(PEER, ans.name)[0]) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -528,22 +604,62 @@ def test_a_death_in_power_armour_on_foot_leaves_the_frame_where_they_fell(tmp_pa
     assert len(_spawns(proto)) == 2
 
 
-def test_a_death_in_power_armour_with_a_checkpoint_in_power_armour_keeps_it_worn(tmp_path):
-    state, proto, session, store = _server(tmp_path, pa=True, frame=True)
+@pytest.mark.parametrize("kwargs", [
+    dict(pa=True, frame=True),           # the only checkpoint has them inside: the reload runs
+    dict(custody=False),                 # nothing can be read
+])
+def test_a_death_in_power_armour_gives_the_frame_back_whatever_the_checkpoint_says(tmp_path,
+                                                                                   kwargs):
+    # D1 (2026-10-04): the frame stays where they fell, complete, even when
+    # no checkpoint on foot can be moved and the engine's reload runs.
+    state, proto, session, store = _server(tmp_path, **kwargs)
     wid, other = _wearing(state)
     proto._handle_player_life(session, PlayerLifePayload(0, (1.0, 2.0, 3.0), 10), NOW + 60_000)
+    (ans,) = _answers(proto, session)
+    assert ans.has is False
+    assert state.world_spawns[wid].worn_by_peer_id == PEER and _spawns(proto) == []
     proto._handle_player_life(session, PlayerLifePayload(1, (4.0, 5.0, 6.0), 10), NOW + 70_000)
-    assert state.world_spawns[wid].worn_by_peer_id == PEER
-    assert _spawns(proto) == []
+    st = state.world_spawns[wid]
+    assert st.worn_by_peer_id == "" and (st.px, st.py, st.pz) == (1.0, 2.0, 3.0)
+    sent = _spawns(proto)
+    assert {addr for addr, _ in sent} == {session.addr, other.addr}
+    assert all([q[0] for q in p.pieces] == [0x154AC5, 0x154AC8] for _, p in sent)
 
 
-def test_an_unreadable_checkpoint_keeps_the_frame_worn(tmp_path):
-    state, proto, session, store = _server(tmp_path, custody=False)
+def test_the_pieces_leave_the_record_when_the_frame_is_given_back(tmp_path):
+    # D1 (2026-10-04): what is mounted on the frame is the frame's. The
+    # record (what the restore puts back on the player) loses the mounted
+    # pieces and the wearable the engine equips on entering; a spare of the
+    # same base in the backpack stays.
+    state, proto, session, store = _server(tmp_path)
     wid, other = _wearing(state)
-    proto._handle_player_life(session, PlayerLifePayload(0, (1.0, 2.0, 3.0), 10), NOW + 60_000)
+    state.record_player_inventory(PEER, 0x1234, 1, 0, 0x12, INV_STATE_FLAG_COMPLETE, 0, (
+        (0x21B3B, FP_PLAIN, 1, INV_ENTRY_EQUIPPED), (0x154AC5, 0x77, 1, INV_ENTRY_EQUIPPED),
+        (0x154AC5, 0x78, 1, 0), (0x154AC8, 0x79, 1, INV_ENTRY_EQUIPPED),
+        (0x3E577, FP_PLAIN, 1, INV_ENTRY_EQUIPPED)), 0.0)
+    proto._handle_player_life(session, PlayerLifePayload(0, (7.0, 8.0, 9.0), 10), NOW + 60_000)
     proto._handle_player_life(session, PlayerLifePayload(1, (4.0, 5.0, 6.0), 10), NOW + 70_000)
-    assert state.world_spawns[wid].worn_by_peer_id == PEER
-    assert _spawns(proto) == []
+    rec = state.player_inventory(PEER)
+    assert rec.lines == {(0x21B3B, FP_PLAIN): 1, (0x154AC5, 0x78): 1}
+    assert rec.equipped == {(0x21B3B, FP_PLAIN)}
+
+
+def test_leaving_power_armour_takes_its_pieces_out_of_the_record(tmp_path):
+    # The exit puts the pieces back on the frame natively; the capture that
+    # follows says so within a quarter of a second, and the server says it
+    # at once from the re-announce, for the crash in between.
+    state, proto, session, store = _server(tmp_path)
+    wid, other = _wearing(state)
+    state.record_player_inventory(PEER, 0x1234, 1, 0, 0x12, INV_STATE_FLAG_COMPLETE, 0, (
+        (0x21B3B, FP_PLAIN, 1, INV_ENTRY_EQUIPPED), (0x154AC5, 0x77, 1, INV_ENTRY_EQUIPPED),
+        (0x3E577, FP_PLAIN, 1, INV_ENTRY_EQUIPPED)), 0.0)
+    from protocol import WorldSpawnOpPayload
+    op = WorldSpawnOpPayload(base_form_id=0x2079E, local_form_id=0xFF001DEE, px=1.0, py=2.0,
+                             pz=3.0, rx=0.0, ry=0.0, rz=0.0, cell_id=0xDD60, flags=0,
+                             timestamp_ms=0, pieces=((0x154AC5, 1, (0x1681EA,), 0.9),))
+    proto._handle_world_spawn_op(session, op, NOW + 60_000)
+    assert wid not in state.world_spawns
+    assert state.player_inventory(PEER).lines == {(0x21B3B, FP_PLAIN): 1}
 
 
 def test_leaving_before_the_respawn_gives_it_back_once(tmp_path):

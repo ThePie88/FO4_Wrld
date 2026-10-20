@@ -16509,6 +16509,11 @@ bool ghost_scene_is_stable() {
     const char* why = nullptr;
     if (in_load) {
         why = "the engine is inside LoadGame";
+    } else if (fw::engine::loading_menu_open()) {
+        // 2026-10-04: a door, a fast travel. The player had a cell two
+        // seconds into the loading screen of the cellar door and the tick
+        // ran inside the engine's load for five minutes (live test).
+        why = "the loading menu is open";
     } else if (gen != g_streak_gen) {
         why = "a LoadGame started or finished";
     } else if (!cell) {

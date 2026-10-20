@@ -15,6 +15,7 @@
 
 #include "../config.h"
 #include "../engine/engine_calls.h"   // get_pc_parent_cell
+#include "../native/map_markers.h"     // suspend_for_save / resume_after_save (2026-10-16)
 #include "../log.h"
 #include "../native/scene_inject.h"   // ghost_scene_settled
 #include "../native/world_spawn.h"    // the world manifest: snapshot and purge
@@ -321,7 +322,10 @@ void write_checkpoint(void* mgr, std::uintptr_t base, Outcome* o) {
         return;
     }
     seh_render_capture(base, mgr);
+    // D2's marker REFRs leave the world for the save (map_markers.h).
+    fw::native::map_markers::suspend_for_save();
     const std::int64_t rc = granted_named_save(base, mgr, o->name);
+    fw::native::map_markers::resume_after_save();
     const std::wstring path = expected_save_path(o->name);
     std::uint64_t size = 0;
     const bool hashed = !path.empty() && sha256_file(path.c_str(), o->sha, &size);

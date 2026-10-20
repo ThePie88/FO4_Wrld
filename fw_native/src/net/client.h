@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -196,6 +197,21 @@ public:
     // shutting down and nothing was queued.
     std::uint32_t submit_container_op(ContainerOpPayload op);
 
+    // L5 realtime R1b (2026-10-05): the world item ops (a Pip-Boy drop that
+    // rested, a pickup from the world), in the same id sequence as the
+    // container ops. begin_world_item_op hands out the id the moment the
+    // engine moves the item (the drop's worker, the pickup hook) and counts
+    // it as in flight, so no capture is taken over the move; submit sends
+    // the op under that id (the engine has already moved the item;
+    // `ref_handle` is the dropped REFR's handle, what a refused drop is
+    // undone through, 0 for a pickup); cancel burns the id of a drop picked
+    // up again before it rested. begin returns 0 and submit false when the
+    // client is stopping: the caller falls back to the legacy path. ANY
+    // THREAD.
+    std::uint32_t begin_world_item_op();
+    bool submit_world_item_op(WorldItemOpPayload op, std::uint32_t ref_handle);
+    void cancel_world_item_op(std::uint32_t op_id);
+
     // --- loot rework L3 (2026-09-24): the engine follows the server ---
     // True when the server's view of this container is held here (the
     // bootstrap or a live push carried it). ANY THREAD.
@@ -235,6 +251,50 @@ public:
                                 std::uint32_t base_id, std::uint32_t cell_id,
                                 const ContainerStateEntry* entries,
                                 std::size_t num_entries);
+
+    // L5 stage 4b (2026-10-03): INSTANCE_DEFS to the server, chunked,
+    // reliable: the descriptors of the instance lines of a seed, sent before
+    // it. ANY THREAD.
+    void enqueue_instance_defs(const InstanceDefEntry* entries, std::size_t n);
+
+    // L5 stage 4b: the descriptor of an instance, from every source that
+    // names one (INSTANCE_DEFS from the server, a BCAST of a deposit, our own
+    // captures). A descriptor that does not make its fingerprint is refused
+    // with a warning. ANY THREAD.
+    void remember_instance(std::uint32_t base, std::uint64_t fp, const InstanceDesc& d);
+    bool instance_desc(std::uint64_t fp, InstanceDesc* out);
+
+    // L5 realtime R1 (2026-10-03): the player's inventory to the server.
+    //
+    // enqueue_inv_state sends one capture as INV_STATE chunks (reliable). A
+    // capture still queued and not yet sent is superseded by the new one:
+    // only the latest inventory matters, and a long drop must not pile up
+    // copies of it. enqueue_player_instance_defs sends, before the capture,
+    // the descriptors of its named instances the server has not had from
+    // this process yet. ANY THREAD.
+    void enqueue_inv_state(const InvStateHeader& header, const InvStateEntry* entries,
+                           std::size_t n);
+    void enqueue_player_instance_defs(const InstanceDefEntry* entries, std::size_t n);
+    // What a capture's watermark is made of. True while an op of ours has no
+    // verdict yet or a verdict is being turned into its undo (an INV_STATE
+    // taken then could carry the effect of an op the server refused).
+    bool container_ops_in_flight();
+
+    // L5 realtime R2 (2026-10-03): the restore after a load. Reliable, ANY
+    // THREAD; the answer (PLAYER_INV) goes to persist::restore.
+    void enqueue_restore_request(const RestoreRequestPayload& p);
+    void enqueue_restore_done(const RestoreDonePayload& p);
+    // L5 realtime R5 (2026-10-16): a place discovered, the server asks a
+    // checkpoint for it. Reliable, ANY THREAD.
+    void enqueue_location_discovered(const LocationDiscoveredPayload& p);
+    // L5 realtime R4: the character's numbers, chunked (the numbers in every
+    // chunk, a slice of the perks after them). A capture still queued and not
+    // sent is superseded by the new one. ANY THREAD.
+    void enqueue_stats_state(const PlayerStatsHeader& header, const PerkRankEntry* perks,
+                             std::size_t n);
+    std::uint32_t last_op_id() const noexcept { return last_op_id_.load(); }
+    std::uint16_t op_epoch() const noexcept { return op_epoch_; }
+    std::uint32_t capture_session() const noexcept { return capture_session_; }
 
     // B4.d: reliable GLOBAL_VAR_SET — fire-and-forget. Server broadcasts to
     // other peers; sender applies optimistically via the engine hook itself.
@@ -580,6 +640,17 @@ private:
     // and they must not be the ones a full queue drops.
     bool push_queued(QueuedSend&& q);
 
+    // 2026-10-20: the control messages of the character's life are never
+    // the ones the ceiling drops. PLAYER_LIFE, RESTORE_REQUEST/DONE,
+    // CKPT_DONE, BOOT_RESULT, INV_DIGEST, LOCATION_DISCOVERED: a handful
+    // per event, and losing one costs a death, a restore or a checkpoint.
+    // At the ceiling with no snapshot left to sacrifice they go in past
+    // it. Live 2026-10-20: the death release queued 637 NPC_UNLOAD ahead
+    // of the PLAYER_LIFE "died", the ceiling dropped the death, the server
+    // never heard of it and the client fell back to the engine's reload of
+    // a checkpoint four minutes old.
+    static bool is_critical(MessageType t) noexcept;
+
     // Ceiling of the outgoing queue. The largest message is a full pose,
     // about 1.3 KB, so the ceiling stays under a megabyte. Before phase 1
     // there was no limit at all: the only thing keeping the queue short was
@@ -645,11 +716,22 @@ private:
     // on partial records as well, and a view built from one op would empty
     // the container of everything else. A container present here with no
     // items is KNOWN EMPTY (the sentinel entry): its local copy is emptied.
+    // L5 stage 4b: a line is (item, instance fingerprint) -> count, as on
+    // the server.
+    using LineKey = std::pair<std::uint32_t, std::uint64_t>;
     struct MirrorContainer {
         std::uint32_t base_id = 0;
         std::uint32_t cell_id = 0;
-        std::unordered_map<std::uint32_t, std::int32_t> items;
+        std::map<LineKey, std::int32_t> items;
     };
+    // The server's take order over a mirror bucket (ServerState
+    // ContainerWorldState.take_order): a named instance draws from its own
+    // line then the item's unknown line; an unknown one from the unknown
+    // line, the plain one, then the others in fingerprint order.
+    static void mirror_take(std::map<LineKey, std::int32_t>& bucket, std::uint32_t item,
+                            std::uint64_t fp, std::int32_t count);
+    std::mutex instance_defs_mutex_;
+    std::unordered_map<std::uint64_t, std::pair<std::uint32_t, InstanceDesc>> instance_defs_;
     std::mutex container_mirror_mutex_;
     std::unordered_map<std::uint32_t, MirrorContainer> container_mirror_;
     // The containers named by the CONTAINER_STATE chunks of one sequence,
@@ -721,8 +803,29 @@ private:
     // previous process. 0 is never issued (fire-and-forget on the wire).
     std::uint16_t op_epoch_ = 0;                // set in the constructor
     std::atomic<std::uint32_t> next_op_seq_{1};
+    // L5 realtime R1: the id of the last op sent (an INV_STATE's watermark),
+    // the ACKs being handled right now (between taking an op out of the
+    // pending map and queuing its undo), the random id of this process's
+    // captures, and the descriptors the server already had from it.
+    std::atomic<std::uint32_t> last_op_id_{0};
+    std::atomic<std::uint32_t> acks_in_progress_{0};
+    std::uint32_t capture_session_ = 0;         // set in the constructor
+    std::mutex player_defs_mutex_;
+    std::unordered_set<std::uint64_t> player_defs_sent_;
     std::mutex pending_ops_mutex_;
     std::unordered_map<std::uint32_t, ContainerOpPayload> pending_container_ops_;
+    // L5 realtime R1b (2026-10-05): the world item ops. `open` = ids handed
+    // out by begin_world_item_op and not yet submitted or cancelled (a drop
+    // still falling); the map = submitted, waiting for the verdict, with the
+    // REFR's handle a refused drop is undone through. Both count as in
+    // flight for the captures (container_ops_in_flight), where a watchdog
+    // frees an `open` count stuck for 30 s: a lost watch must never hold the
+    // captures forever.
+    struct PendingWorldItemOp { WorldItemOpPayload op; std::uint32_t ref_handle; };
+    std::atomic<std::uint32_t> world_item_ops_open_{0};
+    std::atomic<std::uint64_t> world_item_open_since_ms_{0};
+    std::unordered_map<std::uint32_t, PendingWorldItemOp> pending_world_item_ops_;
+    void release_world_item_open_();
 
     // --- the remote peers' snapshot ---
     //

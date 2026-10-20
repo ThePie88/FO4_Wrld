@@ -186,7 +186,34 @@ constexpr std::uint8_t  PROTOCOL_MAGIC    = 0xFA;
 //     the placed REFR's form_id instead of (base_id, cell_id), which merged
 //     every ref of one base in one cell into one record. Runtime refs (0xFF
 //     prefix) are never sent: their ids alias across processes.
-constexpr std::uint8_t  PROTOCOL_VERSION  = 33;  // v33: CKPT_RESPAWN, the server's moved checkpoint after a death (stage 3d)
+// v34 (2026-10-03): L5 stage 4b. Container lines carry the instance of what
+//     they hold: CONTAINER_OP 148 bytes and CONTAINER_BCAST 160 (fingerprint
+//     + descriptor), CONTAINER_OP_ACK 29 (fingerprint), ContainerStateEntry 28
+//     (fingerprint, 49 per chunk); INSTANCE_DEFS (0x0205) carries the
+//     descriptors of the lines a STATE or a SEED names; ACK REJ_INSTANCE (7).
+// v35 (2026-10-03): L5 realtime persistence, R1. INV_STATE (0x02B1, client ->
+//     server): the player's whole inventory by instance at every change,
+//     chunked (30-byte header, 17 bytes per line, 80 per frame); the server
+//     keeps it as the player's record with its accepted container ops on top.
+// v36 (2026-10-03): L5 realtime persistence, R2. RESTORE_REQUEST (0x02B2, 12 B),
+//     PLAYER_INV (0x02B3, 20-byte header + 17-byte lines, 81 per frame) and
+//     RESTORE_DONE (0x02B4, 24 B): the record goes back into the game after
+//     every load; a new process's captures are refused until its RESTORE_DONE.
+// v37 (2026-10-03): L5 realtime persistence, R4. STATS_STATE (0x02B5, client ->
+//     server) and PLAYER_STATS (0x02B6, server -> client, in the restore
+//     answer): XP, level, perk points, SPECIAL base values, health, AP, rads
+//     and the perks held (64-byte header + 5-byte perks, 267 per frame);
+//     RESTORE_REQUEST grows to 16 bytes (last_stats_seq).
+// v38 (2026-10-03): L5 realtime persistence, D1. A world spawn with flag
+//     kWorldSpawnFlagContainer (0x04) is a container of the server's (the
+//     death crate): its content travels by the container protocol under the
+//     key 0xFF000000 | wid. No layout changes.
+// v39 (2026-10-05): L5 realtime persistence, R1b. WORLD_ITEM_OP (0x02B7,
+//     client -> server, 170 B) and WORLD_ITEM_ACK (0x02B8, server -> sender,
+//     26 B): a Pip-Boy drop that has come to rest and a pickup from the world
+//     as ops of the record, numbered in the container ops' sequence. No other
+//     layout change.
+constexpr std::uint8_t  PROTOCOL_VERSION  = 43;  // v43: NPC_UNLOAD with form_id 0 releases every NPC the sender owns (the death release in one message)
 constexpr std::size_t   HEADER_SIZE       = 12;
 constexpr std::size_t   MAX_PAYLOAD_SIZE  = 1400;
 constexpr std::size_t   MAX_FRAME_SIZE    = HEADER_SIZE + MAX_PAYLOAD_SIZE;
@@ -250,6 +277,7 @@ enum class MessageType : std::uint16_t {
     CONTAINER_BCAST = 0x0202,
     CONTAINER_SEED  = 0x0203,   // v3: client -> server full inventory dump
     CONTAINER_OP_ACK = 0x0204,  // v3: server -> sender verdict
+    INSTANCE_DEFS    = 0x0205,  // v34: both ways, the descriptors of the instances a STATE or a SEED names
     DOOR_OP         = 0x0230,   // B6.0: client -> server door activated
     DOOR_BCAST      = 0x0231,   // B6.0: server -> other peers door activated
 
@@ -266,6 +294,16 @@ enum class MessageType : std::uint16_t {
     WORLD_PA_PIECES_OP    = 0x02A4, // v23: client -> server: full piece list for wid (manual take/put)
     WORLD_PA_PIECES_BCAST = 0x02A5, // v23: server -> OTHER clients: replace replica content for wid
     INV_DIGEST            = 0x02B0, // L5 stage 2 (v28): client -> server: advisory digest of the player's inventory (reliable, no answer)
+    INV_STATE             = 0x02B1, // L5 realtime R1 (v35): client -> server: the player's whole inventory by instance (reliable, chunked, no answer)
+    RESTORE_REQUEST       = 0x02B2, // L5 realtime R2 (v36): client -> server: a load is coming, send the record (reliable)
+    PLAYER_INV            = 0x02B3, // L5 realtime R2 (v36): server -> client: the record to align the player to (reliable, chunked)
+    RESTORE_DONE          = 0x02B4, // L5 realtime R2 (v36): client -> server: the player is aligned (reliable, no answer)
+    STATS_STATE           = 0x02B5, // L5 realtime R4 (v37): client -> server: XP, level, perks, SPECIAL... (reliable, chunked)
+    PLAYER_STATS          = 0x02B6, // L5 realtime R4 (v37): server -> client: the stats of the record, in the restore answer
+    WORLD_ITEM_OP         = 0x02B7, // L5 realtime R1b (v39): client -> server: a Pip-Boy drop that rested / a pickup from the world, as an op of the record (reliable)
+    WORLD_ITEM_ACK        = 0x02B8, // L5 realtime R1b (v39): server -> sender: the verdict of a WORLD_ITEM_OP
+    DEATH_CRATES          = 0x02B9, // L5 realtime D2 (v40): server -> owner: their death crates still in the world (reliable)
+    LOCATION_DISCOVERED   = 0x02BA, // L5 realtime R5 (v42): client -> server: a map marker turned visible (reliable); the server asks a checkpoint
     CKPT_REQUEST          = 0x02C0, // L5 stage 3 (v29): server -> client: write a checkpoint at your next quiet moment
     CKPT_DONE             = 0x02C1, // L5 stage 3 (v29): client -> server: the checkpoint written (or why not)
     CKPT_BOOT             = 0x02C2, // L5 stage 3 (v29): server -> client, first bootstrap stage: boot from this checkpoint
@@ -354,6 +392,8 @@ enum class ContainerOpAckStatus : std::uint8_t {
     // L5 stage 1: the server's journal failed, nothing can be made durable;
     // refused like any other verdict, nothing was applied on the server.
     REJ_UNAVAILABLE  = 6,
+    // L5 stage 4b (v34): the op's descriptor does not make its fingerprint.
+    REJ_INSTANCE     = 7,
 };
 
 // -------------------------------------------------------------- header
@@ -660,7 +700,37 @@ struct ActorEventPayload {
 };
 static_assert(sizeof(ActorEventPayload) == 32, "ActorEventPayload size");
 
-// CONTAINER_OP (client → server). Python v5: I I I I i Q I I = 36 bytes.
+// L5 stage 4b (v34) — the instance of a stack. The fingerprint is FNV-1a 64
+// over u32 base | u8 has_oie | [u16 template | u8 n | n x (u32 form, u8
+// attach, u8 rank), sorted] | u8 has_health | [i32 health * 1000, rounded half
+// away from zero]; 0 = PLAIN (no OIE, no Health extra), all ones = UNKNOWN (a
+// line nobody can rebuild), a hash on either value becomes 1. Same bytes as
+// net/protocol.py instance_fp; persist/instance_fp.cpp computes it and
+// checks a shared vector at startup. The descriptor is what rebuilds it.
+constexpr std::uint64_t kFpPlain         = 0;
+constexpr std::uint64_t kFpUnknown       = ~0ull;
+constexpr std::size_t   kInstanceMaxMods = 16;
+constexpr std::uint8_t  kInstanceFlagOie    = 0x01;
+constexpr std::uint8_t  kInstanceFlagHealth = 0x02;
+
+struct InstanceMod {
+    std::uint32_t form;     // the OMOD (formType 0x90)
+    std::uint8_t  attach;   // record byte +4
+    std::uint8_t  rank;     // record byte +5
+};
+static_assert(sizeof(InstanceMod) == 6, "InstanceMod size");
+
+// Python InstanceDescriptor: H B B f + 16 x (I B B) = 104 bytes.
+struct InstanceDesc {
+    std::uint16_t tmpl;     // OIE+0x20, the object template index (0xFFFF none)
+    std::uint8_t  flags;    // kInstanceFlagOie | kInstanceFlagHealth
+    std::uint8_t  mod_n;    // <= kInstanceMaxMods
+    float         health;   // ExtraHealth, with kInstanceFlagHealth
+    InstanceMod   mods[kInstanceMaxMods];
+};
+static_assert(sizeof(InstanceDesc) == 104, "InstanceDesc size");
+
+// CONTAINER_OP (client → server). Python v34: I I I I i Q I I Q + desc = 148 bytes.
 // `client_op_id` (v3) — monotonic per client, echoed back in CONTAINER_OP_ACK.
 // Sender waits on a condvar keyed on that id to decide allow/block the
 // engine-level AddObjectToContainer before it mutates inventory.
@@ -677,10 +747,12 @@ struct ContainerOpPayload {
     std::uint64_t timestamp_ms;
     std::uint32_t client_op_id;        // v3
     std::uint32_t container_form_id;   // v5
+    std::uint64_t item_fp;             // v34: the instance moved (kFpPlain / kFpUnknown)
+    InstanceDesc  instance;            // v34: how to rebuild it
 };
-static_assert(sizeof(ContainerOpPayload) == 36, "ContainerOpPayload size");
+static_assert(sizeof(ContainerOpPayload) == 148, "ContainerOpPayload size");
 
-// CONTAINER_OP_ACK (server → sender only). Python v3: I B I I I i = 21 bytes.
+// CONTAINER_OP_ACK (server → sender only). Python v34: I B I I I i Q = 29 bytes.
 // Identified by `client_op_id` that echoes back to the sender.
 struct ContainerOpAckPayload {
     std::uint32_t client_op_id;
@@ -688,9 +760,10 @@ struct ContainerOpAckPayload {
     std::uint32_t container_base_id;
     std::uint32_t container_cell_id;
     std::uint32_t item_base_id;
-    std::int32_t  final_count;         // post-op server snapshot count
+    std::int32_t  final_count;         // post-op count of the (item, fp) line (v34)
+    std::uint64_t item_fp;             // v34: the line the count is about
 };
-static_assert(sizeof(ContainerOpAckPayload) == 21, "ContainerOpAckPayload size");
+static_assert(sizeof(ContainerOpAckPayload) == 29, "ContainerOpAckPayload size");
 
 // v4: QUEST_STAGE_SET (client → server). Python <IHQ = 14 bytes.
 struct QuestStageSetPayload {
@@ -739,8 +812,10 @@ struct ContainerBroadcastPayload {
     std::int32_t  count;
     std::uint64_t timestamp_ms;
     std::uint32_t container_form_id;   // v5
+    std::uint64_t item_fp;             // v34, as in ContainerOpPayload
+    InstanceDesc  instance;            // v34
 };
-static_assert(sizeof(ContainerBroadcastPayload) == 48, "ContainerBroadcastPayload size");
+static_assert(sizeof(ContainerBroadcastPayload) == 160, "ContainerBroadcastPayload size");
 
 // B6.1 — DOOR_OP / DOOR_BCAST. Toggle semantics; receiver re-invokes
 // engine Activate worker (sub_140514180) on the matching local REFR.
@@ -850,6 +925,16 @@ static_assert(sizeof(PaPieceEntry) == 77, "PaPieceEntry size");
 //          bump: the byte and the pieces block already existed.
 constexpr std::uint8_t kWorldSpawnFlagTransient     = 0x01;
 constexpr std::uint8_t kWorldSpawnFlagSelfDescribed = 0x02;
+// L5 realtime D1 (v38): a container of the server's (the death crate). Its
+// content is a container record keyed wid_container_key(wid); only the
+// server ends it (when emptied), a client never reports it dead.
+constexpr std::uint8_t kWorldSpawnFlagContainer     = 0x04;
+constexpr std::uint32_t wid_container_key(std::uint32_t wid) noexcept {
+    return 0xFF000000u | (wid & 0x00FFFFFFu);
+}
+constexpr bool is_wid_container_key(std::uint32_t key) noexcept {
+    return (key & 0xFF000000u) == 0xFF000000u && (key & 0x00FFFFFFu) != 0;
+}
 
 struct WorldSpawnOpPayload {
     std::uint32_t base_form_id;    // what was placed (base form)
@@ -926,6 +1011,94 @@ struct WorldDespawnOpPayload {
 };
 static_assert(sizeof(WorldDespawnOpPayload) == 13, "WorldDespawnOpPayload size");
 
+// L5 realtime R1b (2026-10-05) — WORLD_ITEM_OP / WORLD_ITEM_ACK.
+//
+// A Pip-Boy drop that has come to rest, or a pickup from the world, as an op
+// of the record: until R1b the record learned them from the next capture
+// only, and a crash in that window lost the item (the world had moved it,
+// the record had not). `client_op_id` is in the same sequence as the
+// container ops' (op_epoch << 16 | seq), handed out the moment the engine
+// moves the item and counted as in flight until the verdict, so no capture
+// ever carries an op the server has not applied. The server applies the
+// world side and the record side in one journal record and answers with
+// the ack; a refusal is undone on the main thread (a drop: the REFR goes
+// and the item comes back; a pickup: the item is destroyed, someone else
+// took it first). Python: <BIIiQIII6fBQ + the 104 B descriptor = 170 B;
+// the ack <IBBIIQi = 26 B.
+constexpr std::uint8_t kWorldItemDrop   = 1;
+constexpr std::uint8_t kWorldItemPickup = 2;
+
+struct WorldItemOpPayload {
+    std::uint8_t  kind;            // kWorldItemDrop / kWorldItemPickup
+    std::uint32_t client_op_id;    // the container ops' sequence
+    std::uint32_t item_base_id;
+    std::int32_t  count;           // > 0
+    std::uint64_t item_fp;         // kFpPlain / kFpUnknown / a fingerprint
+    std::uint32_t ref_form_id;     // DROP: the new REFR (the echo binds the wid to it); PICKUP: the REFR taken
+    std::uint32_t wid;             // PICKUP of an object of the server's: its wid; else 0
+    std::uint32_t cell_id;
+    float         pos[3];
+    float         rot[3];
+    std::uint8_t  flags;           // DROP: spawn flags (the server sets self-described)
+    std::uint64_t timestamp_ms;
+    InstanceDesc  instance;        // how to rebuild the instance
+};
+static_assert(sizeof(WorldItemOpPayload) == 170, "WorldItemOpPayload size");
+
+struct WorldItemAckPayload {
+    std::uint32_t client_op_id;
+    std::uint8_t  status;          // ContainerOpAckStatus
+    std::uint8_t  kind;
+    std::uint32_t wid;             // DROP: the wid minted; PICKUP: the wid removed (0 for a REFR of the save)
+    std::uint32_t item_base_id;
+    std::uint64_t item_fp;
+    std::int32_t  record_count;    // the record's line after the op
+};
+static_assert(sizeof(WorldItemAckPayload) == 26, "WorldItemAckPayload size");
+
+// L5 realtime D2 (2026-10-15) - DEATH_CRATES, server -> the owner, reliable:
+// the owner's death marks still standing, oldest first: the death crates in
+// the world (wid != 0) and the SPOTS of the deaths that left no crate (wid
+// 0: a marker for 15 minutes where they died with nothing to drop, the
+// owner's decision of the fourth live test). Each carries the ordinal of its
+// death (1, 2, 3... per peer, durable on the server), its age in ms at send
+// time (the two clocks never meet: the client turns it into its own
+// expiry), where it stands and in which cell. `death_count` is how many
+// deaths the peer had. The client names them by recency: the newest mark is
+// "LATEST DEATH" (map and compass), the ones before it "CORPSE #2", "#3"...
+// (map only). Sent after the record (boot and death), after a crate goes
+// and after a spot expires (native/map_markers.cpp). Python: <HHI = 8
+// bytes, entries <IIQfffI = 32 bytes.
+struct DeathCratesHeader {
+    std::uint16_t count;
+    std::uint16_t flags;
+    std::uint32_t death_count;
+};
+static_assert(sizeof(DeathCratesHeader) == 8, "DeathCratesHeader size");
+struct DeathCrateEntry {
+    std::uint32_t wid;         // 0 = a spot (a death without a crate)
+    std::uint32_t ordinal;
+    std::uint64_t age_ms;      // ms since that death, at send time
+    float         px;
+    float         py;
+    float         pz;
+    std::uint32_t cell_id;
+};
+static_assert(sizeof(DeathCrateEntry) == 32, "DeathCrateEntry size");
+constexpr std::size_t DEATH_CRATES_MAX =
+    (MAX_PAYLOAD_SIZE - sizeof(DeathCratesHeader)) / sizeof(DeathCrateEntry);   // 43
+
+// L5 realtime R5 (2026-10-16) - LOCATION_DISCOVERED, client -> server,
+// reliable: a map marker of the world just turned visible on this player's
+// map (native/map_markers.cpp watches the visible bit of every native
+// marker once a second). R5 stays vanilla: the server keeps no places, it
+// asks a checkpoint so a crash does not undo the discovery. Python: <I64s.
+struct LocationDiscoveredPayload {
+    std::uint32_t marker_form_id;
+    char          name[64];      // NUL-terminated, for the log
+};
+static_assert(sizeof(LocationDiscoveredPayload) == 68, "LocationDiscoveredPayload size");
+
 // L5 stage 2 (2026-09-27) — INV_DIGEST. The player's inventory as the
 // client's capture (persist/inventory_capture.cpp) saw it, in one line: the
 // digest, the counts and why it was sent. ADVISORY: the server records the
@@ -953,6 +1126,126 @@ constexpr std::uint8_t kInvDigestWhyChange     = 0;   // the digest changed (the
 constexpr std::uint8_t kInvDigestWhyCheckpoint = 1;   // right before a commanded save
 constexpr std::uint8_t kInvDigestWhyExit       = 2;   // the exit save request was seen
 constexpr std::uint8_t kInvDigestWhyFirst      = 3;   // the first complete capture of the session
+
+// L5 realtime R1 (2026-10-03) - INV_STATE. The player's whole inventory by
+// instance, as one complete capture saw it: the server keeps it as the
+// player's record, with the container ops it accepted after `watermark` on
+// top (the owner's decision of 2026-10-03: Alt+F4, a crash and a death lose
+// nothing). Sent at every change, only from a complete capture, only with
+// no container op in flight (every op up to `watermark` had its verdict
+// applied) and only once the record is open for this process. One capture
+// spans `total_chunks` frames sharing (session, seq); the server applies it
+// whole. Python: <IIIHBBQHHH = 30 bytes, then lines of <IQiB = 17 bytes.
+struct InvStateHeader {
+    std::uint32_t session;       // random per process, never 0
+    std::uint32_t seq;           // the capture's number in this process
+    std::uint32_t watermark;     // id of the last container op sent before it, 0 = none
+    std::uint16_t op_epoch;      // the high half of this process's op ids
+    std::uint8_t  flags;         // kInvStateFlag*
+    std::uint8_t  pad;
+    std::uint64_t digest;        // the capture's digest
+    std::uint16_t num_entries;
+    std::uint16_t chunk_index;
+    std::uint16_t total_chunks;
+};
+static_assert(sizeof(InvStateHeader) == 30, "InvStateHeader size");
+struct InvStateEntry {
+    std::uint32_t item_base_id;
+    std::uint64_t item_fp;       // kFpPlain, kFpUnknown or a fingerprint
+    std::int32_t  count;         // > 0
+    std::uint8_t  flags;         // kInvEntry*
+};
+static_assert(sizeof(InvStateEntry) == 17, "InvStateEntry size");
+constexpr std::uint8_t kInvStateFlagComplete     = 0x01;
+constexpr std::uint8_t kInvStateFlagInPowerArmor = 0x02;
+constexpr std::uint8_t kInvEntryEquipped         = 0x01;
+constexpr std::size_t  INV_STATE_MAX_ENTRIES_PER_FRAME =
+    (MAX_PAYLOAD_SIZE - sizeof(InvStateHeader)) / sizeof(InvStateEntry);   // 80
+
+// L5 realtime R2 (2026-10-03) - the record back into the game after a load.
+// RESTORE_REQUEST: a load is coming (the boot, the reload after a death),
+// send me my record; `last_seq` is the last INV_STATE this process sent and
+// `last_stats_seq` (v37) the last STATS_STATE, the server answers once it
+// holds both (or after a wait, marked behind). Python: <IIIB3x = 16 bytes.
+struct RestoreRequestPayload {
+    std::uint32_t session;          // this process's INV_STATE session
+    std::uint32_t last_seq;         // the last inventory capture sent, 0 = none
+    std::uint32_t last_stats_seq;   // the last stats capture sent, 0 = none
+    std::uint8_t  reason;           // kRestoreReason*
+    std::uint8_t  pad[3];
+};
+static_assert(sizeof(RestoreRequestPayload) == 16, "RestoreRequestPayload size");
+constexpr std::uint8_t kRestoreReasonBoot  = 0;
+constexpr std::uint8_t kRestoreReasonDeath = 1;
+constexpr std::uint8_t kRestoreReasonRetry = 2;
+
+// PLAYER_INV: the record, after INSTANCE_DEFS with the descriptors of its
+// named instances; lines as in INV_STATE. Python: <IIIBBHHH = 20 bytes.
+struct PlayerInvHeader {
+    std::uint32_t session;      // the request's
+    std::uint32_t record_seq;   // the capture the record stands on
+    std::uint32_t captures;
+    std::uint8_t  status;       // kPlayerInv*
+    std::uint8_t  pad;
+    std::uint16_t num_entries;
+    std::uint16_t chunk_index;
+    std::uint16_t total_chunks;
+};
+static_assert(sizeof(PlayerInvHeader) == 20, "PlayerInvHeader size");
+constexpr std::uint8_t kPlayerInvRecord = 0;   // current up to the last capture sent
+constexpr std::uint8_t kPlayerInvNone   = 1;   // nothing to align to
+constexpr std::uint8_t kPlayerInvBehind = 2;   // the last capture never arrived
+
+// RESTORE_DONE: what the alignment did; any outcome but failed opens the
+// record to this process. Python: <IIBBHHHQ = 24 bytes.
+struct RestoreDonePayload {
+    std::uint32_t session;
+    std::uint32_t record_seq;
+    std::uint8_t  outcome;      // kRestore*
+    std::uint8_t  pad;
+    std::uint16_t removed;      // lines whose surplus was removed
+    std::uint16_t added;        // lines whose shortfall was built
+    std::uint16_t unresolved;   // lines still not as the record says
+    std::uint64_t digest;       // the capture after the alignment
+};
+static_assert(sizeof(RestoreDonePayload) == 24, "RestoreDonePayload size");
+// L5 realtime R4 (2026-10-03) - the character's numbers. STATS_STATE
+// (client -> server, flags bit0 complete) and PLAYER_STATS (server -> client,
+// `status` a kPlayerInv* code) share the layout: the numbers in every chunk,
+// a slice of the perks after them. XP is the current Experience actor value,
+// `special` the base values (Strength..Luck), health/AP/rads the current
+// ones. Python: <IIBBHfBB7ffffHHH = 64 bytes, perks <IB = 5 bytes.
+struct PlayerStatsHeader {
+    std::uint32_t session;
+    std::uint32_t seq;
+    std::uint8_t  status;
+    std::uint8_t  flags;          // kStatsFlag*
+    std::uint16_t level;
+    float         xp;
+    std::uint8_t  perk_points;
+    std::uint8_t  pad;
+    float         special[7];
+    float         health;
+    float         action_points;
+    float         rads;
+    std::uint16_t num_perks;
+    std::uint16_t chunk_index;
+    std::uint16_t total_chunks;
+};
+static_assert(sizeof(PlayerStatsHeader) == 64, "PlayerStatsHeader size");
+struct PerkRankEntry {
+    std::uint32_t perk_form_id;
+    std::uint8_t  rank;
+};
+static_assert(sizeof(PerkRankEntry) == 5, "PerkRankEntry size");
+constexpr std::uint8_t kStatsFlagComplete = 0x01;
+constexpr std::size_t  STATS_MAX_PERKS_PER_FRAME =
+    (MAX_PAYLOAD_SIZE - sizeof(PlayerStatsHeader)) / sizeof(PerkRankEntry);   // 267
+
+constexpr std::uint8_t kRestoreAligned = 0;
+constexpr std::uint8_t kRestorePartial = 1;
+constexpr std::uint8_t kRestoreNothing = 2;
+constexpr std::uint8_t kRestoreFailed  = 3;
 
 // L5 stage 3a (2026-09-28) — THE COMMANDED CHECKPOINT.
 //
@@ -1429,6 +1722,14 @@ struct NPCUnloadPayload {
 };
 static_assert(sizeof(NPCUnloadPayload) == 26,
               "NPCUnloadPayload size (Build 65)");
+// v43 (2026-10-20): an NPC_UNLOAD with this form_id releases EVERY NPC the
+// sender owns, in one message (ownership_manager.cpp, the death release).
+// One per owned NPC was 637 messages at the live death of 2026-10-20 (in
+// an interior the client observes, and owns, the NPCs of other cells too),
+// a burst that filled the outbound queue and dropped the PLAYER_LIFE queued
+// behind it: the server never heard of the death. With it `epoch` carries
+// how many were owned here, for the server's log; the rest is unused.
+constexpr std::uint32_t NPC_UNLOAD_ALL_OWNED = 0;
 
 // 0x0284 — NPC_OWNER_HEARTBEAT. Body = u16 count + u16 reserved + N entries.
 struct NPCOwnerHeartbeatEntry {
@@ -1811,7 +2112,7 @@ struct WorldActorEntry {
 };
 static_assert(sizeof(WorldActorEntry) == 13, "WorldActorEntry size");
 
-// CONTAINER_STATE / CONTAINER_SEED entry. Python v27: I I I I i = 20 bytes.
+// CONTAINER_STATE / CONTAINER_SEED entry. Python v34: I I I I i Q = 28 bytes.
 // `container_form_id` is the placed REFR, the identity the server keys on;
 // base and cell are the check the receiver runs on its own REFR.
 struct ContainerStateEntry {
@@ -1820,8 +2121,17 @@ struct ContainerStateEntry {
     std::uint32_t container_cell_id;
     std::uint32_t item_base_id;
     std::int32_t  count;
+    std::uint64_t item_fp;             // v34: the instance of the line
 };
-static_assert(sizeof(ContainerStateEntry) == 20, "ContainerStateEntry size");
+static_assert(sizeof(ContainerStateEntry) == 28, "ContainerStateEntry size");
+
+// INSTANCE_DEFS entry (v34). Python: I Q + descriptor = 116 bytes.
+struct InstanceDefEntry {
+    std::uint32_t base_id;
+    std::uint64_t fp;
+    InstanceDesc  instance;
+};
+static_assert(sizeof(InstanceDefEntry) == 116, "InstanceDefEntry size");
 
 // Chunked-payload header (shared by WORLD_STATE and CONTAINER_STATE).
 // Python: H H H = 6 bytes (num_entries, chunk_index, total_chunks)
@@ -1835,7 +2145,9 @@ static_assert(sizeof(ChunkHeader) == 6, "ChunkHeader size");
 constexpr std::size_t WORLD_STATE_MAX_ENTRIES_PER_FRAME =
     (MAX_PAYLOAD_SIZE - sizeof(ChunkHeader)) / sizeof(WorldActorEntry); // 107
 constexpr std::size_t CONTAINER_STATE_MAX_ENTRIES_PER_FRAME =
-    (MAX_PAYLOAD_SIZE - sizeof(ChunkHeader)) / sizeof(ContainerStateEntry); // 69
+    (MAX_PAYLOAD_SIZE - sizeof(ChunkHeader)) / sizeof(ContainerStateEntry); // 49 (v34)
+constexpr std::size_t INSTANCE_DEFS_MAX_ENTRIES_PER_FRAME =
+    (MAX_PAYLOAD_SIZE - sizeof(ChunkHeader)) / sizeof(InstanceDefEntry);    // 12
 
 #pragma pack(pop)
 

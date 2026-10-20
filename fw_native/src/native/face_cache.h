@@ -65,6 +65,11 @@ void set_master(const std::string& key, std::uint64_t recipe_hash,
 // how an appearance change invalidates a stale face.
 void* get_master(const std::string& key, std::uint64_t recipe_hash) noexcept;
 
+// 2026-10-04: the same question without the handout and without its log
+// line, for the scan that asks it every frame for every recipe (the borrow
+// queue). get_master's line was 1,700 lines a second on the live test.
+bool has_master(const std::string& key, std::uint64_t recipe_hash) noexcept;
+
 // Any master for `key`, regardless of hash. For diagnostics and teardown.
 void* peek_master(const std::string& key) noexcept;
 

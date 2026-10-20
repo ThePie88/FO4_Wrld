@@ -54,5 +54,14 @@ void report_world_drop(void* refr, std::uint32_t handle, std::int32_t count_hint
 void announce_world_refr(void* refr, std::uint32_t handle, std::uint8_t flags,
                          const fw::net::PaPieceEntry* pieces, std::uint8_t pn,
                          const char* what);
+// L5 realtime R1b (2026-10-05) — a rested Pip-Boy drop as an op of the
+// record (WORLD_ITEM_OP, `op_id` handed out at the drop): the same pose,
+// TEMPORARY flag and registry note as announce_world_refr, but the line
+// (count, fingerprint, descriptor) read from the REFR's own record, and the
+// server does the world side and the record side together; its echo
+// (WORLD_SPAWN_BCAST) binds the wid as before. An unreadable identity
+// cancels the op. MAIN THREAD.
+void announce_world_drop(void* refr, std::uint32_t handle, std::uint32_t op_id,
+                         std::int32_t count_hint, const char* what);
 
 }  // namespace fw::hooks

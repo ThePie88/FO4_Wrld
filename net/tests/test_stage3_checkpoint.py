@@ -322,7 +322,7 @@ class TestDurability:
         snap = tmp_path / "snap.json"
         snapshot(a, snap)
         data = json.loads(snap.read_text())
-        assert data["version"] == SNAPSHOT_FORMAT_VERSION == 10
+        assert data["version"] == SNAPSHOT_FORMAT_VERSION == 15   # v15: partial-record ops, checkpoint world, world base per peer (2026-10-20)
         assert data["checkpoints"][0]["name"].endswith("0200")
         b = ServerState()
         load_into(b, snap)

@@ -5,10 +5,12 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <vector>
 
 #include "../engine/engine_calls.h"
+#include "../engine/instance_writers.h"     // L5 stage 4b: the seed scan by instance
 #include "../hook_manager.h"
 #include "../log.h"
 #include "../offsets.h"
@@ -16,10 +18,22 @@
 #include "../native/world_spawn.h"
 #include "../net/client.h"
 #include "../net/protocol.h"
+#include "../persist/instance_fp.h"         // L5 stage 4b: the instance a take moves
+#include "../persist/inventory_capture.h"   // read_list_record
 
 namespace fw::hooks {
 
 namespace {
+
+std::uintptr_t g_module_base = 0;   // L5 stage 4b: for the list decoder
+
+// L5 stage 4b: *sp of the sp<ExtraDataList> a transfer hands over, null when
+// unreadable (the instance is then unknown, never guessed).
+void* seh_deref(void* pp) noexcept {
+    if (!pp) return nullptr;
+    __try { return *reinterpret_cast<void**>(pp); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
 
 using AddObjectFn = void (*)(
     void* dest_this,
@@ -68,6 +82,13 @@ std::atomic<std::uint64_t> g_fire_count{0};
 // Note: we no longer "optimistically" insert before sending — that was the
 // B1.h pre-fix bug where a pre-PUT empty scan would mark the container as
 // seeded forever, so we'd never re-seed after the PUT materialized items.
+// 2026-10-20: the watch of a container to seed from the tick (defined with
+// the activation watch below): at the open of its menu, or again on the next
+// frames after a scan the engine refused.
+enum SeedWatchKind : int { kWatchAlignWhenListed = 0, kWatchSeedAtOpen = 1, kWatchSeedRetry = 2 };
+void watch_container_seed(std::uint32_t form_id, std::uint32_t base_id,
+                          std::uint32_t cell_id, int kind);
+
 void seed_container_impl(
     void* container_ref, std::uint32_t form_id,
     std::uint32_t base_id, std::uint32_t cell_id)
@@ -86,25 +107,38 @@ void seed_container_impl(
     FW_DBG("[container] pre-scan materialize: %s",
            mat_ok ? "ok (list populated)" : "skipped / failed");
 
-    // Scan up to N entries. 128 spans two CONTAINER_SEED chunks at most
-    // (69 entries/chunk since v27; scan returns at most MAX). Most
-    // containers are <30 items.
+    // L5 stage 4b (2026-10-03): the scan folds the stacks by instance, and
+    // the descriptor of every named line goes first (INSTANCE_DEFS), so the
+    // server can tell the other clients how to build it. A stack the walk
+    // cannot read is an UNKNOWN line: counted, never built.
     constexpr std::size_t MAX = 128;
-    std::uint32_t ids[MAX];
-    std::int32_t  cnts[MAX];
-    bool faulted = false;
-    const std::size_t n = fw::engine::scan_container_inventory(
-        container_ref, ids, cnts, MAX, &faulted);
+    fw::engine::instances::Line lines[MAX];
+    std::size_t n = 0;
+    std::uint32_t reasons = 0;
+    const bool scanned = fw::engine::instances::scan_lines(container_ref, 0, lines, MAX, &n,
+                                                           &reasons);
+    const bool faulted = !scanned;
     if (n == 0) {
         if (!mat_ok || faulted || !fw::engine::inventory_list_present(container_ref)) {
-            // No list to scan, or a walk that faulted: unknown, not empty.
-            // Not marked, the next touch retries; the server lazy-creates a
-            // partial record from the op that follows.
+            // No list to scan, or a scan the engine refused: unknown, not
+            // empty. Not marked; the server lazy-creates a partial record
+            // from the op that follows. 2026-10-20: the tick retries on the
+            // next frames (watch_container_seed), outside the engine's
+            // lock: inside the take detour the engine holds the list's
+            // write lock on this very thread, so every scan of a Take All
+            // was refused and the next touch found the lock held again (the
+            // toolbox of 2026-10-20: 17 takes, 17 refusals, a partial
+            // record, its content twice after the reload).
+            const char* why = !faulted ? "clean"
+                : (reasons & fw::persist::inventory::REASON_WRITER_HELD) ? "refused: the engine holds the write lock"
+                : (reasons & fw::persist::inventory::REASON_NO_LIST) ? "refused: no list"
+                : "refused";
             FW_DBG("[container] seed: nothing scanned for form=0x%X "
                    "(base=0x%X cell=0x%X, list %s, walk %s) — not marked, the "
-                   "next touch retries",
+                   "tick retries on the next frames",
                    form_id, base_id, cell_id,
-                   mat_ok ? "present" : "absent", faulted ? "faulted" : "clean");
+                   mat_ok ? "present" : "absent", why);
+            watch_container_seed(form_id, base_id, cell_id, kWatchSeedRetry);
             return;
         }
         // The list exists and holds nothing: a known-empty container. The
@@ -123,20 +157,33 @@ void seed_container_impl(
     }
 
     std::vector<fw::net::ContainerStateEntry> entries(n);
+    std::vector<fw::net::InstanceDefEntry> defs;
     for (std::size_t i = 0; i < n; ++i) {
         entries[i].container_form_id = form_id;
         entries[i].container_base_id = base_id;
         entries[i].container_cell_id = cell_id;
-        entries[i].item_base_id      = ids[i];
-        entries[i].count             = cnts[i];
+        entries[i].item_base_id      = lines[i].base;
+        entries[i].count             = lines[i].count;
+        entries[i].item_fp           = lines[i].fp;
+        if (lines[i].fp != fw::net::kFpPlain && lines[i].fp != fw::net::kFpUnknown) {
+            fw::net::InstanceDefEntry d{};
+            d.base_id = lines[i].base;
+            d.fp      = lines[i].fp;
+            if (fw::engine::instances::describe(container_ref, lines[i].base, lines[i].fp,
+                                                &d.instance)) {
+                defs.push_back(d);
+                c.remember_instance(d.base_id, d.fp, d.instance);
+            }
+        }
     }
+    if (!defs.empty()) c.enqueue_instance_defs(defs.data(), defs.size());
     c.enqueue_container_seed(form_id, base_id, cell_id,
                              entries.data(), entries.size());
 
     // Only mark in flight AFTER the send.
     (void)c.seed_in_flight(form_id, /*mark=*/true);
-    FW_LOG("[container] SEED sent form=0x%X (base=0x%X cell=0x%X) entries=%zu",
-           form_id, base_id, cell_id, n);
+    FW_LOG("[container] SEED sent form=0x%X (base=0x%X cell=0x%X) entries=%zu, %zu "
+           "instance descriptor(s)", form_id, base_id, cell_id, n, defs.size());
 }
 
 // Outcome of the SEH-gated observation phase. Plain-old-data so the caller
@@ -208,7 +255,7 @@ static void observe(
         } __except (EXCEPTION_EXECUTE_HANDLER) {}
 
         // Container identity (form_id, base_id, cell_id)
-        const auto cid = read_ref_identity(container);
+        auto cid = read_ref_identity(container);   // D1: the key of a crate replaces its runtime id
         if (cid.base_id == 0 || cid.cell_id == 0) {
             FW_WRN("[container] %s but container identity incomplete "
                    "(form=0x%X base=0x%X cell=0x%X) — skipping",
@@ -267,7 +314,16 @@ static void observe(
         // other client, and the (base, cell) key that used to stand in for
         // it merged every twin. Until such refs carry an identity of their
         // own (L4, L6) the engine keeps them local: no seed, no op.
-        if (cid.form_id == 0 || (cid.form_id >> 24) == 0xFF) {
+        // L5 realtime D1: a container of the server's (the death crate) is a
+        // runtime ref here too, but it has a shared identity, its wid: the
+        // op travels under the key 0xFF000000 | wid.
+        if (cid.form_id != 0 && (cid.form_id >> 24) == 0xFF) {
+            const std::uint32_t key =
+                fw::native::world_spawn::container_key_for_refr(container, cid.form_id);
+            if (key != 0) cid.form_id = key;
+        }
+        if (cid.form_id == 0
+                || ((cid.form_id >> 24) == 0xFF && !fw::net::is_wid_container_key(cid.form_id))) {
             FW_DBG("[container] %s on a runtime ref form=0x%X (base=0x%X "
                    "cell=0x%X) — passthrough, no shared identity yet",
                    op_tag, cid.form_id, cid.base_id, cid.cell_id);
@@ -385,6 +441,17 @@ void __fastcall detour_add_object(
            r.op_tag, r.item_id, r.base_id, r.cell_id);
 
     if (r.should_submit) {
+        // L5 stage 4b (2026-10-03): the instance this transfer moves, read off
+        // the list the engine hands over, before g_orig_add consumes it.
+        void* moved = seh_deref(extra_data_sp);
+        fw::persist::inventory::StackRecord rec{};
+        const bool read_ok = fw::persist::inventory::read_list_record(
+            g_module_base, moved, r.item_id, &rec);
+        r.opp.item_fp = read_ok
+            ? fw::persist::instance::fp_of_record(rec, &r.opp.instance)
+            : fw::net::kFpUnknown;
+        if (r.opp.item_fp == fw::net::kFpUnknown) std::memset(&r.opp.instance, 0, sizeof(r.opp.instance));
+        fw::net::client().remember_instance(r.item_id, r.opp.item_fp, r.opp.instance);
         // B1.e: seed the container's ground truth before the op reaches the
         // server. seed_container_if_unknown is idempotent per session
         // (Client::seed_in_flight) and does not mark a container whose list
@@ -426,9 +493,10 @@ void __fastcall detour_add_object(
         const std::uint32_t op_id = fw::net::client().submit_container_op(r.opp);
         if (op_id != 0) {
             FW_LOG("[container] %s applied, op_id=%u sent for a verdict "
-                   "container=0x%X (base=0x%X cell=0x%X) item=0x%X count=%d",
+                   "container=0x%X (base=0x%X cell=0x%X) item=0x%X count=%d fp=%016llX",
                    r.op_tag, op_id, r.opp.container_form_id,
-                   r.base_id, r.cell_id, r.item_id, count);
+                   r.base_id, r.cell_id, r.item_id, count,
+                   static_cast<unsigned long long>(r.opp.item_fp));
         } else {
             FW_WRN("[container] %s applied but NOT sent: the client is "
                    "shutting down (container=0x%X item=0x%X count=%d)",
@@ -487,21 +555,62 @@ void seed_container_if_unknown(void* container_ref, std::uint32_t form_id,
 // message queue). Each entry is polled by container_activation_tick until
 // the list exists, then aligned once more, or dropped at the deadline with
 // a warning. Main thread only in practice; the mutex costs nothing.
+// 2026-10-20: the same watch seeds a container the server does not know,
+// from the tick (SeedWatchKind):
+//   kWatchSeedAtOpen  - put there by the activation; the seed runs as soon
+//                       as the engine says a ContainerMenu is open (the list
+//                       built, the leveled items resolved: the concern that
+//                       kept the seed at the first op until now), BEFORE the
+//                       first take, so the ops that follow meet a canonical
+//                       record and a partial one is never made;
+//   kWatchSeedRetry   - put there by a scan the engine refused (the write
+//                       lock held inside the take detour); the next frames
+//                       scan outside the lock and send what the ops already
+//                       applied left, which the server takes as the first
+//                       full view.
+// Both stop when the seed left (Client::seed_in_flight) or the server's
+// view arrived (container_known), or at the deadline; the first op still
+// seeds as before, nothing here replaces it.
 namespace {
 struct ActivationWatch {
     std::uint32_t form_id;
     std::uint32_t base_id;
     std::uint32_t cell_id;
     std::uint64_t deadline_ms;
+    int           kind;    // SeedWatchKind
 };
 std::mutex g_activation_watch_mtx;
 std::vector<ActivationWatch> g_activation_watch;
 constexpr std::uint64_t kActivationWatchMs = 2000;
+constexpr std::uint64_t kSeedWatchMs = 3000;
 
 std::uint64_t wall_ms_now() {
     using namespace std::chrono;
     return static_cast<std::uint64_t>(
         duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
+}
+
+// Adds a seed watch; an entry already there keeps its deadline (a retry
+// that refreshed it would never end) and takes the stronger kind.
+void watch_container_seed(std::uint32_t form_id, std::uint32_t base_id,
+                          std::uint32_t cell_id, int kind)
+{
+    if (form_id == 0 || (form_id >> 24) == 0xFF) return;   // a runtime key is the server's own
+    std::lock_guard lk(g_activation_watch_mtx);
+    for (auto& w : g_activation_watch) {
+        if (w.form_id == form_id) {
+            if (w.kind == kWatchAlignWhenListed) {
+                w.kind = kind;
+                w.deadline_ms = wall_ms_now() + kSeedWatchMs;
+            } else if (kind == kWatchSeedRetry) {
+                w.kind = kWatchSeedRetry;   // an open-seed that was refused: retried as such
+            }
+            return;
+        }
+    }
+    if (g_activation_watch.size() >= 64) return;  // never unbounded
+    g_activation_watch.push_back(ActivationWatch{
+        form_id, base_id, cell_id, wall_ms_now() + kSeedWatchMs, kind});
 }
 } // namespace
 
@@ -509,13 +618,23 @@ void on_container_activation(void* refr, std::uint32_t form_id,
                              std::uint32_t base_id, std::uint32_t cell_id)
 {
     if (!refr || form_id == 0 || base_id == 0 || cell_id == 0) return;
-    if ((form_id >> 24) == 0xFF) return;        // runtime ref: local only (L1)
+    if ((form_id >> 24) == 0xFF) {
+        // A runtime ref is local only (L1), unless it is a container of the
+        // server's (L5 realtime D1): then its key is the wid's.
+        form_id = fw::native::world_spawn::container_key_for_refr(refr, form_id);
+        if (form_id == 0) return;
+    }
     if (base_id == 0x0002079Eu) return;         // the power-armor frame is not loot
     auto& c = fw::net::client();
     if (!c.container_known(form_id)) {
+        // 2026-10-20: seeded from the tick as soon as its menu is open,
+        // before the first take (see the watch below); the first op still
+        // seeds if the menu never opens (a lock, a trap, a delay).
         FW_DBG("[container] activation of 0x%X (base=0x%X cell=0x%X): the "
-               "server does not know it yet, the first take will seed it",
+               "server does not know it yet, seeded when its menu opens "
+               "(or by the first take)",
                form_id, base_id, cell_id);
+        watch_container_seed(form_id, base_id, cell_id, kWatchSeedAtOpen);
         return;
     }
     c.reconverge_container(form_id);
@@ -533,7 +652,7 @@ void on_container_activation(void* refr, std::uint32_t form_id,
     }
     if (g_activation_watch.size() >= 64) return;  // never unbounded
     g_activation_watch.push_back(ActivationWatch{
-        form_id, base_id, cell_id, wall_ms_now() + kActivationWatchMs});
+        form_id, base_id, cell_id, wall_ms_now() + kActivationWatchMs, kWatchAlignWhenListed});
 }
 
 void container_activation_tick() {
@@ -546,6 +665,38 @@ void container_activation_tick() {
     const std::uint64_t now = wall_ms_now();
     std::vector<std::uint32_t> done;
     for (const auto& w : due) {
+        if (w.kind == kWatchSeedAtOpen || w.kind == kWatchSeedRetry) {
+            // 2026-10-20: the seed from the tick (see the watch's comment).
+            auto& c = fw::net::client();
+            if (c.container_known(w.form_id) || c.seed_in_flight(w.form_id, /*mark=*/false)) {
+                done.push_back(w.form_id);   // seeded, or the server's view arrived
+                continue;
+            }
+            if (now >= w.deadline_ms) {
+                FW_DBG("[container] 0x%X (base=0x%X cell=0x%X): %s within %llu ms; "
+                       "the first op seeds it, as before",
+                       w.form_id, w.base_id, w.cell_id,
+                       w.kind == kWatchSeedAtOpen ? "its menu did not open, or every scan was refused,"
+                                                  : "every scan was refused",
+                       static_cast<unsigned long long>(kSeedWatchMs));
+                done.push_back(w.form_id);
+                continue;
+            }
+            if (w.kind == kWatchSeedAtOpen && !fw::persist::inventory::container_menu_is_open()) {
+                continue;   // not yet: the activation opens the menu through the UI queue
+            }
+            void* refr = fw::engine::lookup_by_form_id(w.form_id);
+            if (!refr) continue;   // not resolvable this frame; the deadline ends it
+            seed_container_impl(refr, w.form_id, w.base_id, w.cell_id);
+            if (c.seed_in_flight(w.form_id, /*mark=*/false)) {
+                FW_LOG("[container] 0x%X (base=0x%X cell=0x%X): seeded from the tick (%s)",
+                       w.form_id, w.base_id, w.cell_id,
+                       w.kind == kWatchSeedAtOpen ? "at the open of its menu, before the first take"
+                                                  : "a scan the engine refused, read again outside its lock");
+                done.push_back(w.form_id);
+            }
+            continue;
+        }
         void* refr = fw::engine::lookup_by_form_id(w.form_id);
         if (refr && fw::engine::inventory_list_present(refr)) {
             FW_LOG("[container] 0x%X (base=0x%X cell=0x%X): runtime list built "
@@ -574,6 +725,7 @@ void container_activation_tick() {
 }
 
 bool install_container_hook(std::uintptr_t module_base) {
+    g_module_base = module_base;
     // Resolve the virtual slot: vtable is at fixed RVA, slot index 0x7A,
     // 8 bytes per entry on x64 → vtable[0x7A * 8] = the function pointer.
     const auto vtable_addr = module_base + offsets::TESOBJECTREFR_VTABLE_RVA;

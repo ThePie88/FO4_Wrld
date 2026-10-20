@@ -28,6 +28,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from channel import ChannelError  # noqa: E402
 from protocol import (
+    LocationDiscoveredPayload,
+    DeathCratesPayload, DeathCrateEntry, DEATH_CRATES_MAX,
+    WorldItemAckPayload, WorldItemOpPayload, WORLD_ITEM_DROP,
     WorldPaPiecesBroadcastPayload,
     WorldPaPiecesOpPayload,
     WorldSpawnOpPayload,
@@ -36,8 +39,16 @@ from protocol import (
     WorldDespawnBroadcastPayload,  # noqa: E402
     InvDigestPayload, INV_DIGEST_WHY, INV_DIGEST_FLAG_COMPLETE,
     INV_DIGEST_FLAG_IN_POWER_ARMOR,
+    InvStatePayload, INV_ENTRY_EQUIPPED, InvStateEntry,
+    RestoreRequestPayload, PlayerInvPayload, RestoreDonePayload,
+    PLAYER_INV_RECORD, PLAYER_INV_NONE, PLAYER_INV_BEHIND, PLAYER_INV_STATUS,
+    RESTORE_REASON, RESTORE_OUTCOME, RESTORE_FAILED,
+    PlayerStatsPayload, PerkEntry, SPECIAL_COUNT,
+    RESTORE_REASON_DEATH, RESTORE_REASON_BOOT, WORLD_SPAWN_FLAG_CONTAINER, wid_container_key,
+    PA_FRAME_WEARABLES,
     CkptRequestPayload, CkptDonePayload, CkptBootPayload, BootResultPayload,
     CkptCandidate, CKPT_CANDIDATES_MAX, PlayerLifePayload, PLAYER_LIFE_EVENTS,
+    NPC_UNLOAD_ALL_OWNED,
     CkptRespawnPayload,
     CKPT_REASON, CKPT_STATUS, BOOT_OUTCOME,
     MessageType, ProtocolError, PROTOCOL_VERSION,
@@ -51,6 +62,7 @@ from protocol import (
     ContainerOpPayload, ContainerBroadcastPayload,
     ContainerStatePayload, ContainerStateEntry,
     ContainerSeedPayload, ContainerOpAckPayload, ContainerOpAckStatus,
+    InstanceDefsPayload, InstanceDefEntry, FP_UNKNOWN,
     is_runtime_form_id,
     identities_conflict,
     NPC_DEATH_FLAG_REPLAY,
@@ -93,16 +105,19 @@ from protocol import (
 )
 from server.state import (  # noqa: E402
     ServerState, PeerSession, SessionState, LockWorldState, OutfitEntry,
+    reconcile_scan,
 )
 from server.auth import (  # noqa: E402
     ChallengeRegistry, verify_hello_auth, sanitize_display_name,
 )
 from server.validator import (  # noqa: E402
+    validate_world_item_op,
     validate_pos_state, validate_actor_event, validate_container_op, RejectReason,
+    validate_inv_state, validate_stats_state,
 )
 from server.journal import Journal, JournalCorrupt  # noqa: E402
 from server.respawn import (  # noqa: E402
-    CKPT_REASON_FIRST_ENTRY, RespawnError, RespawnPoint, checkpoint_in_power_armour,
+    CKPT_REASON_FIRST_ENTRY, RespawnError, RespawnPoint,
     checkpoint_wears_frame, checkpoint_worn_frame, make_first_checkpoint,
     make_respawn_checkpoint, worn_frame_fid,
 )
@@ -196,6 +211,7 @@ class Config:
         checkpoint_every_s: float = 300.0,
         bulk_port: int = 0,
         custody_dir: Optional[Path] = None,
+        death_crate_base: int = 0,
     ) -> None:
         self.host = host
         self.port = port
@@ -225,6 +241,9 @@ class Config:
         # service (0 = the UDP port's number, on TCP).
         self.bulk_port = int(bulk_port)
         self.custody_dir = custody_dir
+        # L5 realtime D1: the death crate's base form (0 = a death keeps the
+        # inventory), from server.ini [death] crate.
+        self.death_crate_base = int(death_crate_base)
         self.tick_rate_hz = tick_rate_hz
         self.snapshot_path = snapshot_path
         self.snapshot_interval_s = snapshot_interval_s
@@ -306,6 +325,29 @@ class ServerProtocol(asyncio.DatagramProtocol):
         # L5 stage 2 — INV_DIGEST: when each peer last had one recorded
         # (one per second per peer is plenty for an advisory line).
         self._inv_digest_last_ms: dict[str, float] = {}
+        # L5 realtime R1 - INV_STATE: the capture each peer is sending, by
+        # chunk, until every chunk of it is in. peer_id -> {"key": (session,
+        # seq), "total": n, "chunks": {index: payload}}.
+        self._inv_state_parts: dict[str, dict] = {}
+        # L5 realtime R2 - a RESTORE_REQUEST waiting for the capture it named
+        # (peer_id -> (payload, deadline_ms)), and the processes already told
+        # their captures are refused until their restore (peer_id, session).
+        self._restore_waits: dict[str, tuple] = {}
+        self._inv_state_refused_logged: set = set()
+        # L5 realtime R4 - STATS_STATE chunks, as INV_STATE's.
+        self._stats_parts: dict[str, dict] = {}
+        # L5 realtime D1 - the death crate's base form (a CONT); 0 = no crate,
+        # a death keeps the inventory. run_server sets it from server.ini.
+        self.death_crate_base: int = 0
+        # L5 realtime D1 - where each player was when their death request
+        # arrived: the crate's spot. The answer may wait for the last capture
+        # (RESTORE_WAIT_MS), and by then the reload of the death may have put
+        # the player on the respawn point.
+        self._death_spots: dict[str, object] = {}
+        # L5 realtime D2 (2026-10-15, the fourth live test): the spots of the deaths that
+        # left no crate, per peer: (ordinal, death_ms, x, y, z, cell_id), newest last.
+        # Runtime only (a restart forgets them), DEATH_SPOTS_MAX each, DEATH_SPOT_TTL_MS long.
+        self._death_marks: dict[str, list[tuple]] = {}
         # L5 stage 3a — the checkpoint cadence, set by run_server from the
         # Config (0 = never asked).
         self.checkpoint_every_ms: float = 300_000.0
@@ -333,10 +375,6 @@ class ServerProtocol(asyncio.DatagramProtocol):
         # In memory only: a peer who leaves first gets the frame back through
         # the disconnect path, at the same spot.
         self._frame_drops: dict[str, tuple[float, float, float, int]] = {}
-        # L5 stage 3d (2026-09-30) — the opposite: a player who died on foot
-        # and whose checkpoint has them inside the frame they had left takes
-        # that frame back from the world at the respawn. peer_id -> wid.
-        self._frame_reclaims: dict[str, int] = {}
         self._counters = {
             "rx_frames": 0,
             "tx_frames": 0,
@@ -573,6 +611,9 @@ class ServerProtocol(asyncio.DatagramProtocol):
         if mtype == MessageType.CONTAINER_SEED:
             self._handle_container_seed(session, payload, now_ms)
             return
+        if mtype == MessageType.INSTANCE_DEFS:
+            self._handle_instance_defs(session, payload, now_ms)
+            return
         if mtype == MessageType.QUEST_STAGE_SET:
             self._handle_quest_stage_set(session, payload, now_ms)
             return
@@ -597,8 +638,26 @@ class ServerProtocol(asyncio.DatagramProtocol):
         if mtype == MessageType.WORLD_PA_PIECES_OP:
             self._handle_world_pa_pieces_op(session, payload, now_ms)
             return
+        if mtype == MessageType.WORLD_ITEM_OP:
+            self._handle_world_item_op(session, payload, now_ms)
+            return
         if mtype == MessageType.INV_DIGEST:
             self._handle_inv_digest(session, payload, now_ms)
+            return
+        if mtype == MessageType.INV_STATE:
+            self._handle_inv_state(session, payload, now_ms)
+            return
+        if mtype == MessageType.RESTORE_REQUEST:
+            self._handle_restore_request(session, payload, now_ms)
+            return
+        if mtype == MessageType.RESTORE_DONE:
+            self._handle_restore_done(session, payload, now_ms)
+            return
+        if mtype == MessageType.LOCATION_DISCOVERED:
+            self._handle_location_discovered(session, payload, now_ms)
+            return
+        if mtype == MessageType.STATS_STATE:
+            self._handle_stats_state(session, payload, now_ms)
             return
         if mtype == MessageType.CKPT_DONE:
             self._handle_ckpt_done(session, payload, now_ms)
@@ -1031,6 +1090,17 @@ class ServerProtocol(asyncio.DatagramProtocol):
             existing = self.state.peer_join_for(other)
             raw = session.channel.send_reliable(MessageType.PEER_JOIN, existing, now_ms)
             self._send(addr, raw)
+        # 2026-10-04: the joiner's stored recipe goes to the others with the
+        # join. Until now they had it only if their own bootstrap had replayed
+        # it (every recipe on record, the joiner's included, whether or not
+        # the joiner was online): that replay now covers the peers online
+        # only, so the join must carry it.
+        recipe = self.state.appearance(session.peer_id)
+        if recipe:
+            bcast = AppearanceBroadcastPayload(peer_id=session.peer_id, recipe=recipe)
+            for other in self.state.other_sessions(addr):
+                raw = other.channel.send_reliable(MessageType.APPEARANCE_BCAST, bcast, now_ms)
+                self._send(other.addr, raw)
         # The mirror — the joiner's own outfit, announced to those already
         # here — is no longer the server's job. See the tombstone where
         # _announce_joiner_outfit used to be.
@@ -1061,6 +1131,13 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 continue
             # Never reveal a peer that the chargen gate is still hiding.
             if not self.state.ghost_visible(rec.peer_id):
+                continue
+            # 2026-10-04: nor a peer who is not here. A presence outlives its
+            # session (that is what a resume and a boot position are for),
+            # and replaying it made every client build a ghost of each peer
+            # long gone (three of them on the live test of 2026-10-04,
+            # standing still forever, their faces scanned every frame).
+            if self.state.get_by_peer_id(rec.peer_id) is None:
                 continue
             if rec.last_pos is not None:
                 pos = PosBroadcastPayload(
@@ -1177,15 +1254,37 @@ class ServerProtocol(asyncio.DatagramProtocol):
                     count=0,
                 ))
                 continue
-            for item_id, count in c.items.items():
+            for (item_id, fp), count in sorted(c.items.items()):
                 entries.append(ContainerStateEntry(
                     container_form_id=c.form_id,
                     container_base_id=c.base_id,
                     container_cell_id=c.cell_id,
                     item_base_id=item_id,
                     count=count,
+                    item_fp=fp,
                 ))
         return entries
+
+    def _send_instance_defs(self, sessions, defs, now_ms: float, *, why: str) -> None:
+        """INSTANCE_DEFS for `defs` ((fp, item, descriptor) triples) to every
+        session in `sessions`, chunked, reliable (L5 stage 4b). Sent ahead of
+        the lines that name them; the receiver keeps a line whose descriptor
+        is late and builds it when it lands."""
+        if not defs:
+            return
+        entries = [InstanceDefEntry(base_id=item, fp=fp, instance=d) for fp, item, d in defs]
+        max_per = InstanceDefsPayload.MAX_ENTRIES_PER_FRAME
+        total_chunks = (len(entries) + max_per - 1) // max_per
+        log.info("instance defs (%s): %d descriptor(s) in %d chunk(s) to %s",
+                 why, len(entries), total_chunks,
+                 ", ".join(s.peer_id for s in sessions) or "nobody")
+        for session in sessions:
+            for chunk_idx in range(total_chunks):
+                payload = InstanceDefsPayload(
+                    entries=tuple(entries[chunk_idx * max_per:(chunk_idx + 1) * max_per]),
+                    chunk_index=chunk_idx, total_chunks=total_chunks)
+                raw = session.channel.send_reliable(MessageType.INSTANCE_DEFS, payload, now_ms)
+                self._send(session.addr, raw)
 
     def _send_container_state(self, sessions, containers, now_ms: float,
                               *, why: str) -> None:
@@ -1200,6 +1299,10 @@ class ServerProtocol(asyncio.DatagramProtocol):
         max_per = ContainerStatePayload.MAX_ENTRIES_PER_FRAME
         total_chunks = (len(entries) + max_per - 1) // max_per
         sessions = list(sessions)
+        # L5 stage 4b: how to build every named instance these lines hold,
+        # first.
+        self._send_instance_defs(sessions, self.state.instance_defs_for(containers),
+                                 now_ms, why=why)
         log.info("container state (%s): %d entries in %d chunk(s) to %s",
                  why, len(entries), total_chunks,
                  ", ".join(s.peer_id for s in sessions) or "nobody")
@@ -1391,6 +1494,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 container_cell_id=payload.container_cell_id,
                 item_base_id=payload.item_base_id,
                 final_count=final_count,
+                item_fp=payload.item_fp,
             )
             if remember:
                 self.state.remember_container_verdict(
@@ -1408,7 +1512,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 log.error("CONTAINER_OP from %s refused: the journal has failed "
                           "and the server is read-only for item ops",
                           session.peer_id)
-            have = existing.items.get(payload.item_base_id, 0) if existing else 0
+            have = self._line_count(existing, payload)
             _send_ack(ContainerOpAckStatus.REJ_UNAVAILABLE, have, remember=False)
             return
 
@@ -1428,10 +1532,11 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 RejectReason.COUNT_OVERFLOW:     ContainerOpAckStatus.REJ_COUNT,
                 RejectReason.INVALID_KIND:       ContainerOpAckStatus.REJ_KIND,
                 RejectReason.INSUFFICIENT_ITEMS: ContainerOpAckStatus.REJ_INSUFFICIENT,
+                RejectReason.INSTANCE_MISMATCH:  ContainerOpAckStatus.REJ_INSTANCE,
             }
             ack_status = status_map.get(
                 RejectReason(result.reason), ContainerOpAckStatus.REJ_KIND)
-            have = existing.items.get(payload.item_base_id, 0) if existing else 0
+            have = self._line_count(existing, payload)
             _send_ack(ack_status, have)
             return
 
@@ -1441,7 +1546,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
 
         # Lookup post-op count for the ACK
         updated = self.state.container_state_for_op(payload)
-        final_count = updated.items.get(payload.item_base_id, 0) if updated else 0
+        final_count = self._line_count(updated, payload)
         _send_ack(ContainerOpAckStatus.ACCEPTED, final_count)
 
         # Broadcast to other peers as CONTAINER_BCAST (reliable, with peer_id)
@@ -1457,14 +1562,54 @@ class ServerProtocol(asyncio.DatagramProtocol):
             count=payload.count,
             timestamp_ms=payload.timestamp_ms,
             container_form_id=payload.container_form_id,
+            item_fp=payload.item_fp,
+            instance=payload.instance,
         )
         for other in self.state.other_sessions(session.addr):
             raw = other.channel.send_reliable(MessageType.CONTAINER_BCAST, broadcast, now_ms)
             self._send(other.addr, raw)
 
+        # L5 realtime D1: the last take out of a crate of the server's makes
+        # it go.
+        if updated is not None and updated.wid and not updated.items:
+            self._remove_crate(updated.wid, now_ms)
+
         log.debug("container op kind=%d container=0x%X/0x%X item=0x%X count=%d by %s",
                   payload.kind, payload.container_base_id, payload.container_cell_id,
                   payload.item_base_id, payload.count, session.peer_id)
+
+    @staticmethod
+    def _line_count(container, op) -> int:
+        """The count an ACK reports: the op's own (item, instance) line, or
+        every line of the item for an op that could not name its instance
+        (L5 stage 4b)."""
+        if container is None:
+            return 0
+        if op.item_fp == FP_UNKNOWN:
+            return container.base_total(op.item_base_id)
+        return container.count_of(op.item_base_id, op.item_fp)
+
+    def _handle_instance_defs(self, session: PeerSession, payload, now_ms: float) -> None:
+        """Descriptors a client names for the instance lines of its seeds
+        (L5 stage 4b). Each one is kept only if it makes its fingerprint;
+        the rest are counted and dropped, and the lines that name them stay
+        lines nobody can build until a true descriptor arrives."""
+        if not isinstance(payload, InstanceDefsPayload):
+            return
+        kept = refused = 0
+        for e in payload.entries:
+            if self.state.record_instance_def(e.base_id, e.fp, e.instance):
+                kept += 1
+            else:
+                refused += 1
+        session.touch(now_ms)
+        if refused:
+            log.warning("instance defs from %s: %d kept, %d REFUSED (a descriptor that "
+                        "does not make its fingerprint), chunk %u/%u", session.peer_id,
+                        kept, refused, payload.chunk_index + 1, payload.total_chunks)
+        else:
+            log.info("instance defs from %s: %d kept, chunk %u/%u", session.peer_id,
+                     kept, payload.chunk_index + 1, payload.total_chunks)
 
     def _handle_container_seed(self, session: PeerSession, payload, now_ms: float) -> None:
         """Record the client's ground-truth inventory scan for a container.
@@ -1503,7 +1648,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
         # are skipped: form_id 0, a runtime ref (its id names another object
         # on every other client), base or cell 0, or a (base, cell) that
         # disagrees with the group's first entry.
-        by_container: dict[int, tuple[int, int, dict[int, int]]] = {}
+        by_container: dict[int, tuple[int, int, dict[tuple[int, int], int]]] = {}
         # Loot rework L3.4 (2026-09-24): a scan of a container the client
         # KNOWS is empty (runtime list present, no lines) travels as the
         # sentinel entry (item 0, count 0), the shape CONTAINER_STATE uses
@@ -1526,7 +1671,8 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 n_skipped_identity += 1
                 continue
             if e.count > 0:
-                group[2][e.item_base_id] = min(e.count, COUNT_MAX)
+                # L5 stage 4b: a line is (item, instance).
+                group[2][(e.item_base_id, e.item_fp)] = min(e.count, COUNT_MAX)
             elif e.item_base_id == 0 and e.count == 0:
                 asserted_empty.add(e.container_form_id)
             # Other count==0 entries are silently dropped: they don't
@@ -1592,13 +1738,25 @@ class ServerProtocol(asyncio.DatagramProtocol):
             elif not existing.seeded:
                 # A record inferred from a first op, never scanned: this
                 # scan is the first full view, it replaces the inference.
-                self.state.reseed_container(fid, items, session.peer_id, now_ms)
+                # 2026-10-20: with the scanner's own ops newer than the save
+                # its world runs on applied over it again, because its engine
+                # does not hold them (reconcile_scan): a toolbox taken whole,
+                # then scanned again after the reload of an older checkpoint,
+                # is empty, not full a second time.
+                world_base = self.state.world_base(session.peer_id)
+                n_seen = len(existing.pre_seed_ops)
+                lines, n_again = reconcile_scan(existing, items, session.peer_id, world_base)
+                self.state.reseed_container(fid, lines, session.peer_id, now_ms)
                 push_all.append(existing)
                 n_created += 1
                 log.info(
                     "container SEED from %s: partial record form=0x%X "
-                    "(base=0x%X cell=0x%X) replaced by the scan, %d item(s)",
-                    session.peer_id, fid, base, cell, len(items))
+                    "(base=0x%X cell=0x%X) replaced by the scan: %d item(s) scanned, "
+                    "%d of the %d op(s) it saw applied over the scan (the scanner's "
+                    "own, newer than its save and older than its load%s), %d line(s) now",
+                    session.peer_id, fid, base, cell, len(items), n_again, n_seen,
+                    "" if world_base is not None else "; no load of the scanner known, none applied",
+                    len(lines))
             elif not existing.items:
                 # Refill an empty container. Preserve the existing record
                 # (keeps history), just fill in items.
@@ -1779,6 +1937,12 @@ class ServerProtocol(asyncio.DatagramProtocol):
         """
         sent = 0
         for peer_id, recipe in self.state.all_appearances():
+            # 2026-10-04: the recipes of the peers online, and the joiner's
+            # own. A recipe on record for a peer who is not here gave the
+            # client a face to scan every frame for a ghost it should never
+            # have had (see _send_presence_bootstrap).
+            if peer_id != session.peer_id and self.state.get_by_peer_id(peer_id) is None:
+                continue
             payload = AppearanceBroadcastPayload(peer_id=peer_id, recipe=recipe)
             self._queue_bootstrap(session, MessageType.APPEARANCE_BCAST, payload)
             sent += 1
@@ -1850,6 +2014,13 @@ class ServerProtocol(asyncio.DatagramProtocol):
                       session.peer_id)
             return
         transient = bool(payload.flags & 1)
+        # L5 realtime D1: only the server makes a container of its own (the
+        # death crate). A client's spawn that says it is one would be an
+        # object no client may ever end: the flag is dropped.
+        flags = int(payload.flags) & ~WORLD_SPAWN_FLAG_CONTAINER
+        if flags != payload.flags:
+            log.warning("world_spawn_op from %s claims the crate flag (flags 0x%X): dropped, "
+                        "only the server makes a crate", session.peer_id, payload.flags)
         if not transient and len(self.state.world_spawns) >= 1024:
             log.warning("world_spawn_op from %s REFUSED: 1024 persistent "
                         "objects already stored", session.peer_id)
@@ -1874,6 +2045,15 @@ class ServerProtocol(asyncio.DatagramProtocol):
                              "re-announced: the old record is superseded",
                              old_wid, session.peer_id)
             self.state.record_presence_worn_frame(session.peer_id, 0, now_ms)
+            if left_armour:
+                # D1: the exit put the pieces back on the frame natively; the
+                # capture that follows says so within a quarter of a second,
+                # the record says it now, for a crash in between.
+                left = self.state.record_pieces_to_frame(
+                    session.peer_id, self._frame_contents(payload.pieces), now_ms)
+                if left:
+                    log.info("%s left their power armour: %d item(s) of the frame out of their "
+                             "record", session.peer_id, left)
 
         st = self.state.record_world_spawn(
             spawner_peer=session.peer_id,
@@ -1882,7 +2062,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
             px=payload.px, py=payload.py, pz=payload.pz,
             rx=payload.rx, ry=payload.ry, rz=payload.rz,
             cell_id=payload.cell_id,
-            flags=payload.flags,
+            flags=flags,
             timestamp_ms=payload.timestamp_ms,
             pieces=payload.pieces,
         )
@@ -1907,7 +2087,7 @@ class ServerProtocol(asyncio.DatagramProtocol):
                  "-> %d peer(s)", st.wid, st.base_form_id, session.peer_id,
                  st.px, st.py, st.pz,
                  (" [transient]" if transient else "")
-                 + (" [item]" if payload.flags & 2 else ""),
+                 + (" [item]" if flags & 2 else ""),
                  sent)
         if left_armour:
             # L5 stage 3d (2026-09-30) — the player is on foot now, and the
@@ -1935,6 +2115,13 @@ class ServerProtocol(asyncio.DatagramProtocol):
                       "already removed or transient", payload.wid,
                       session.peer_id)
             return
+        # L5 realtime D1: a container of the server's (the death crate) ends
+        # only on the server, when it is emptied; a client's copy that died
+        # locally is that client's business (it places it again).
+        if st.flags & WORLD_SPAWN_FLAG_CONTAINER:
+            log.info("world_despawn_op wid=%d (a crate) from %s reason=%d: ignored, only "
+                     "the server ends a crate", payload.wid, session.peer_id, payload.reason)
+            return
 
         # v26 — SOMEBODY CLIMBED INTO IT, it did not die.
         #
@@ -1955,6 +2142,11 @@ class ServerProtocol(asyncio.DatagramProtocol):
             log.info("world spawn wid=%d (PA frame) marked WORN by %s — kept "
                      "with its %d piece(s) instead of deleted",
                      st.wid, session.peer_id, len(st.pieces))
+            # 2026-10-15: a checkpoint now, as the exit asks for one, so the
+            # newest checkpoint has them inside THIS frame (in_pa_wid) within
+            # seconds: a crash from here on brings them back inside it, not
+            # beside a second copy of it.
+            self._demand_checkpoint(session, now_ms, "entered their power armour")
         else:
             self.state.remove_world_spawn(payload.wid)
         bcast = WorldDespawnBroadcastPayload(
@@ -1972,6 +2164,142 @@ class ServerProtocol(asyncio.DatagramProtocol):
         log.info("world despawn wid=%d (base=0x%X) reported by %s reason=%d "
                  "-> %d peer(s)", payload.wid, st.base_form_id,
                  session.peer_id, payload.reason, sent)
+
+    def _handle_world_item_op(self, session: PeerSession, payload, now_ms: float) -> None:
+        """L5 realtime R1b (2026-10-05) - a Pip-Boy drop that has come to rest,
+        or a pickup from the world, as an op of the record.
+
+        The world side and the record side go into ONE journal record
+        (record_world_drop, record_world_pickup); the verdict goes back to
+        the sender in WORLD_ITEM_ACK, remembered by op id so a repeat (an ACK
+        lost in a session drop, the op sent again on the rejoin) gets the
+        same answer without a second application. A refusal makes the client
+        undo the drop (the REFR goes, the item comes back) or destroy the
+        picked-up item (someone else took it first). The others learn it the
+        way they already know: WORLD_SPAWN_BCAST (the sender's echo binds the
+        wid to its REFR), WORLD_DESPAWN_BCAST reason 5, ACTOR_EVENT DISABLE
+        for a REFR of the save. No rate bucket (validate_world_item_op).
+        """
+        if not isinstance(payload, WorldItemOpPayload):
+            return
+        peer = session.peer_id
+        what = "drop" if payload.kind == WORLD_ITEM_DROP else "pickup"
+        if payload.client_op_id != 0:
+            seen = self.state.recall_world_item_verdict(peer, payload.client_op_id)
+            if seen is not None:
+                self._counters["container_op_repeats"] += 1
+                log.info("WORLD_ITEM_OP %s op_id=%d from %s seen before: verdict %d sent "
+                         "again, not applied twice", what, payload.client_op_id, peer,
+                         seen.status)
+                raw = session.channel.send_reliable(MessageType.WORLD_ITEM_ACK, seen, now_ms)
+                self._send(session.addr, raw)
+                return
+
+        def _send_ack(status: ContainerOpAckStatus, wid: int = 0, record_count: int = 0,
+                      remember: bool = True) -> None:
+            if payload.client_op_id == 0:
+                return
+            ack = WorldItemAckPayload(
+                client_op_id=payload.client_op_id, status=int(status), kind=payload.kind,
+                wid=wid, item_base_id=payload.item_base_id, item_fp=payload.item_fp,
+                record_count=record_count)
+            if remember:
+                self.state.remember_world_item_verdict(peer, payload.client_op_id, ack)
+            raw = session.channel.send_reliable(MessageType.WORLD_ITEM_ACK, ack, now_ms)
+            self._send(session.addr, raw)
+
+        # L5 stage 1: with the journal down nothing can be made durable, so
+        # nothing is accepted; the verdict is not remembered because it is
+        # not one.
+        if self.state.journal is not None and not self._journal_healthy:
+            self._counters["container_ops_unavailable"] += 1
+            if now_ms - self._last_unavailable_log_ms > 30_000.0:
+                self._last_unavailable_log_ms = now_ms
+                log.error("WORLD_ITEM_OP from %s refused: the journal has failed and the "
+                          "server is read-only for item ops", peer)
+            _send_ack(ContainerOpAckStatus.REJ_UNAVAILABLE, remember=False)
+            return
+
+        spawn = self.state.world_spawns.get(payload.wid) if payload.wid else None
+        result = validate_world_item_op(payload, spawn, len(self.state.world_spawns))
+        if not result.ok:
+            self._counters["rejections"] += 1
+            log.info("reject WORLD_ITEM_OP %s op_id=%d from %s: %s %s", what,
+                     payload.client_op_id, peer, RejectReason(result.reason).name,
+                     result.detail)
+            status_map = {
+                RejectReason.MISSING_IDENTITY:   ContainerOpAckStatus.REJ_IDENTITY,
+                RejectReason.IDENTITY_MISMATCH:  ContainerOpAckStatus.REJ_IDENTITY,
+                RejectReason.INVALID_COUNT:      ContainerOpAckStatus.REJ_COUNT,
+                RejectReason.COUNT_OVERFLOW:     ContainerOpAckStatus.REJ_COUNT,
+                RejectReason.INVALID_KIND:       ContainerOpAckStatus.REJ_KIND,
+                RejectReason.INSUFFICIENT_ITEMS: ContainerOpAckStatus.REJ_INSUFFICIENT,
+                RejectReason.INSTANCE_MISMATCH:  ContainerOpAckStatus.REJ_INSTANCE,
+            }
+            _send_ack(status_map.get(RejectReason(result.reason),
+                                     ContainerOpAckStatus.REJ_KIND))
+            return
+
+        def _record_line() -> int:
+            rec = self.state.player_inventory(peer)
+            return rec.lines.get((payload.item_base_id, payload.item_fp), 0) if rec else 0
+
+        if payload.kind == WORLD_ITEM_DROP:
+            st = self.state.record_world_drop(peer, payload, now_ms)
+            if st is None:
+                _send_ack(ContainerOpAckStatus.REJ_IDENTITY)
+                return
+            session.total_events += 1
+            line = _record_line()
+            _send_ack(ContainerOpAckStatus.ACCEPTED, st.wid, line)
+            bcast = WorldSpawnBroadcastPayload(
+                peer_id=peer, wid=st.wid, base_form_id=st.base_form_id,
+                spawner_local_fid=st.spawner_local_fid,
+                px=st.px, py=st.py, pz=st.pz, rx=st.rx, ry=st.ry, rz=st.rz,
+                cell_id=st.cell_id, flags=st.flags, timestamp_ms=st.timestamp_ms,
+                pieces=st.pieces)
+            sent = 0
+            for other in self.state.all_sessions():
+                raw = other.channel.send_reliable(MessageType.WORLD_SPAWN_BCAST, bcast, now_ms)
+                self._send(other.addr, raw)
+                sent += 1
+            log.info("world drop wid=%d: %d x 0x%X fp=%016X by %s at (%.0f, %.0f, %.0f) -> %d "
+                     "peer(s); the record holds %d", st.wid, payload.count,
+                     payload.item_base_id, payload.item_fp, peer, st.px, st.py, st.pz, sent,
+                     line)
+            return
+
+        res = self.state.record_world_pickup(peer, payload, now_ms)
+        if res is None:
+            _send_ack(ContainerOpAckStatus.REJ_INSUFFICIENT)
+            return
+        removed, disabled = res
+        session.total_events += 1
+        line = _record_line()
+        _send_ack(ContainerOpAckStatus.ACCEPTED, removed, line)
+        sent = 0
+        if removed:
+            bcast = WorldDespawnBroadcastPayload(peer_id=peer, wid=removed, reason=5,
+                                                 timestamp_ms=payload.timestamp_ms)
+            for other in self.state.all_sessions():
+                raw = other.channel.send_reliable(MessageType.WORLD_DESPAWN_BCAST, bcast, now_ms)
+                self._send(other.addr, raw)
+                sent += 1
+        elif disabled:
+            ev = ActorEventPayload(kind=3, form_id=payload.ref_form_id,
+                                   actor_base_id=payload.item_base_id,
+                                   x=payload.px, y=payload.py, z=payload.pz, extra=0,
+                                   cell_id=payload.cell_id)
+            for other in self.state.other_sessions(session.addr):
+                raw = other.channel.send_reliable(MessageType.ACTOR_EVENT, ev, now_ms)
+                self._send(other.addr, raw)
+                sent += 1
+        log.info("world pickup by %s: %d x 0x%X fp=%016X, %s -> %d peer(s); the record holds %d",
+                 peer, payload.count, payload.item_base_id, payload.item_fp,
+                 ("wid=%d removed" % removed) if removed
+                 else ("REFR 0x%08X of the save disabled" % payload.ref_form_id) if disabled
+                 else ("REFR 0x%08X nobody knows, trusted" % payload.ref_form_id),
+                 sent, line)
 
     def _handle_inv_digest(self, session: PeerSession, payload,
                            now_ms: float) -> None:
@@ -2009,6 +2337,409 @@ class ServerProtocol(asyncio.DatagramProtocol):
                  INV_DIGEST_WHY.get(payload.why, f"why={payload.why}"),
                  " in power armor" if payload.flags & INV_DIGEST_FLAG_IN_POWER_ARMOR else "",
                  rec.count)
+
+    def _handle_inv_state(self, session: PeerSession, payload, now_ms: float) -> None:
+        """L5 realtime R1 - one chunk of a capture of the peer's inventory.
+
+        The chunks of one capture share (session, seq); the record changes
+        only when all of them are in, so a capture is never half applied. A
+        chunk of another capture starts over (the reliable channel may
+        deliver a newer capture's chunk before an older one's last: the
+        older one is then stale and the state refuses it anyway). Answered
+        with nothing: the client sends the next capture at the next change.
+        """
+        if not isinstance(payload, InvStatePayload):
+            return
+        result = validate_inv_state(payload)
+        if not result.ok:
+            self._counters["rejections"] += 1
+            log.debug("reject INV_STATE from %s: %s %s", session.peer_id,
+                      result.reason.name, result.detail)
+            return
+        key = (payload.session, payload.seq)
+        parts = self._inv_state_parts.get(session.peer_id)
+        if parts is None or parts["key"] != key or parts["total"] != payload.total_chunks:
+            parts = {"key": key, "total": payload.total_chunks, "chunks": {}}
+            self._inv_state_parts[session.peer_id] = parts
+        parts["chunks"][payload.chunk_index] = payload
+        if len(parts["chunks"]) < parts["total"]:
+            return
+        del self._inv_state_parts[session.peer_id]
+        if not self.state.player_inventory_open_to(session.peer_id, payload.session):
+            key = (session.peer_id, payload.session)
+            if key not in self._inv_state_refused_logged:
+                self._inv_state_refused_logged.add(key)
+                log.info("INV_STATE from %s refused: process %08X has not had its record "
+                         "back yet (RESTORE_DONE); its captures would write the past "
+                         "over the record", session.peer_id, payload.session)
+            return
+        entries = tuple((e.item_base_id, e.item_fp, e.count, e.flags)
+                        for i in range(parts["total"])
+                        for e in parts["chunks"][i].entries)
+        rec = self.state.record_player_inventory(
+            session.peer_id, payload.session, payload.seq, payload.watermark,
+            payload.op_epoch, payload.flags, payload.digest, entries, now_ms)
+        if rec is None:
+            log.debug("INV_STATE from %s capture #%d not recorded (stale or invalid)",
+                      session.peer_id, payload.seq)
+            return
+        # R2: a restore that was waiting for this capture can be answered.
+        self._answer_restore_wait(session, now_ms)
+        session.total_events += 1
+        items = sum(rec.lines.values())
+        log.info("inventory record of %s: capture #%d, %d line(s), %d item(s), "
+                 "%d equipped, %d op(s) on top, digest %016X", session.peer_id,
+                 payload.seq, len(rec.lines), items, len(rec.equipped),
+                 len(rec.pending), payload.digest)
+
+    # L5 realtime R2 - how long a restore waits for the capture it named.
+    RESTORE_WAIT_MS: float = 5000.0
+
+    def _handle_restore_request(self, session: PeerSession, payload, now_ms: float) -> None:
+        """L5 realtime R2 - a load is coming: the record goes back to the
+        client. A record of the same process that does not hold the last
+        capture the client sent yet waits for it (RESTORE_WAIT_MS at most:
+        then the client gets what there is, marked behind)."""
+        if not isinstance(payload, RestoreRequestPayload) or payload.session == 0:
+            return
+        if payload.reason == RESTORE_REASON_DEATH:
+            presence = self.state.presence(session.peer_id)
+            self._death_spots[session.peer_id] = (presence.last_pos if presence is not None
+                                                  else None)
+        if payload.reason in (RESTORE_REASON_BOOT, RESTORE_REASON_DEATH):
+            # 2026-10-20: the save the peer's world runs on from here: the
+            # newest checkpoint it may boot from (what CKPT_BOOT named, or
+            # the copy the death booked), the genesis when there is none.
+            # BOOT_RESULT and the death answer say it again, more exactly.
+            loaded = self.state.checkpoint_to_boot(session.peer_id)
+            self.state.note_world_base(session.peer_id,
+                                       loaded.world_ms if loaded is not None else 0.0, now_ms)
+        rec = self.state.player_inventory(session.peer_id)
+        log.info("restore requested by %s (process %08X, %s, last capture #%d)",
+                 session.peer_id, payload.session,
+                 RESTORE_REASON.get(payload.reason, f"reason={payload.reason}"),
+                 payload.last_seq)
+        if rec is None or rec.captures == 0:
+            self._send_player_inv(session, payload, PLAYER_INV_NONE, now_ms)
+            return
+        if not self._restore_ready(session.peer_id, payload):
+            self._restore_waits[session.peer_id] = (payload, now_ms + self.RESTORE_WAIT_MS)
+            st = self.state.player_stats(session.peer_id)
+            log.info("restore of %s waits for capture #%d / stats #%d (the record holds "
+                     "#%d / #%d)", session.peer_id, payload.last_seq, payload.last_stats_seq,
+                     rec.seq, st.seq if st is not None else 0)
+            return
+        self._send_player_inv(session, payload, PLAYER_INV_RECORD, now_ms)
+
+    def _restore_ready(self, peer_id: str, req) -> bool:
+        """Does the record hold the last inventory and stats captures the
+        request names (for the same process; another process's numbers do
+        not compare)?"""
+        rec = self.state.player_inventory(peer_id)
+        if rec is not None and rec.session == req.session and rec.seq < req.last_seq:
+            return False
+        st = self.state.player_stats(peer_id)
+        if req.last_stats_seq and (st is None or (st.session == req.session
+                                                  and st.seq < req.last_stats_seq)):
+            return False
+        return True
+
+    def _answer_restore_wait(self, session: PeerSession, now_ms: float) -> None:
+        wait = self._restore_waits.get(session.peer_id)
+        if wait is not None and self._restore_ready(session.peer_id, wait[0]):
+            del self._restore_waits[session.peer_id]
+            self._send_player_inv(session, wait[0], PLAYER_INV_RECORD, now_ms)
+
+    def _handle_stats_state(self, session: PeerSession, payload, now_ms: float) -> None:
+        """L5 realtime R4 - one chunk of a stats capture; the record changes
+        when every chunk of it is in (as INV_STATE)."""
+        if not isinstance(payload, PlayerStatsPayload):
+            return
+        result = validate_stats_state(payload)
+        if not result.ok:
+            self._counters["rejections"] += 1
+            log.debug("reject STATS_STATE from %s: %s %s", session.peer_id,
+                      result.reason.name, result.detail)
+            return
+        key = (payload.session, payload.seq)
+        parts = self._stats_parts.get(session.peer_id)
+        if parts is None or parts["key"] != key or parts["total"] != payload.total_chunks:
+            parts = {"key": key, "total": payload.total_chunks, "chunks": {}}
+            self._stats_parts[session.peer_id] = parts
+        parts["chunks"][payload.chunk_index] = payload
+        if len(parts["chunks"]) < parts["total"]:
+            return
+        del self._stats_parts[session.peer_id]
+        perks = tuple((pe.perk_form_id, pe.rank)
+                      for i in range(parts["total"]) for pe in parts["chunks"][i].perks)
+        rec = self.state.record_player_stats(
+            session.peer_id, payload.session, payload.seq, payload.level, payload.xp,
+            payload.perk_points, payload.special, payload.health, payload.action_points,
+            payload.rads, perks, now_ms)
+        if rec is None:
+            log.debug("STATS_STATE from %s #%d not recorded (stale, invalid or not open)",
+                      session.peer_id, payload.seq)
+            return
+        session.total_events += 1
+        log.info("stats record of %s: #%d, level %d, XP %.0f, %d perk point(s), %d perk(s), "
+                 "SPECIAL %s, health %.0f, AP %.0f, rads %.0f", session.peer_id, payload.seq,
+                 rec.level, rec.xp, rec.perk_points, len(rec.perks),
+                 "/".join(f"{v:.0f}" for v in rec.special), rec.health, rec.action_points,
+                 rec.rads)
+        self._answer_restore_wait(session, now_ms)
+
+    def _expire_restore_waits(self, now_ms: float) -> None:
+        for peer_id, (payload, deadline) in list(self._restore_waits.items()):
+            if now_ms < deadline:
+                continue
+            del self._restore_waits[peer_id]
+            session = self.state.get_by_peer_id(peer_id)
+            if session is None:
+                continue
+            log.warning("restore of %s: capture #%d never arrived; the record is sent "
+                        "as it is (behind)", peer_id, payload.last_seq)
+            self._send_player_inv(session, payload, PLAYER_INV_BEHIND, now_ms)
+
+    def _send_player_stats(self, session: PeerSession, req, status: int, now_ms: float) -> None:
+        """PLAYER_STATS with the stats record of `session`'s peer (none when
+        there is none, or the inventory answer is none)."""
+        st = self.state.player_stats(session.peer_id)
+        if st is None or st.captures == 0:
+            status = PLAYER_INV_NONE
+        perks = [PerkEntry(form, rank) for form, rank in sorted(st.perks.items())] \
+            if status != PLAYER_INV_NONE and st is not None else []
+        per = PlayerStatsPayload.MAX_PERKS_PER_FRAME
+        total = max(1, (len(perks) + per - 1) // per)
+        for i in range(total):
+            payload = PlayerStatsPayload(
+                session=req.session, seq=st.seq if st is not None else 0, status=status, flags=0,
+                level=st.level if st is not None else 0, xp=st.xp if st is not None else 0.0,
+                perk_points=st.perk_points if st is not None else 0,
+                special=st.special if st is not None else (0.0,) * SPECIAL_COUNT,
+                health=st.health if st is not None else 0.0,
+                action_points=st.action_points if st is not None else 0.0,
+                rads=st.rads if st is not None else 0.0,
+                perks=tuple(perks[i * per:(i + 1) * per]), chunk_index=i, total_chunks=total)
+            raw = session.channel.send_reliable(MessageType.PLAYER_STATS, payload, now_ms)
+            self._send(session.addr, raw)
+        if status != PLAYER_INV_NONE and st is not None:
+            log.info("stats sent to %s: #%d, level %d, XP %.0f, %d perk(s)", session.peer_id,
+                     st.seq, st.level, st.xp, len(perks))
+
+    # L5 realtime D1: the one item a death leaves on the player. Without the
+    # Pip-Boy the game cannot open its menu.
+    PIPBOY_FORM_ID: int = 0x00021B3B
+    DEATH_SPOT_TTL_MS: int = 15 * 60 * 1000   # a death without a crate is marked this long
+    DEATH_SPOTS_MAX: int = 8                  # per peer, the newest kept
+
+    def _note_death_spot(self, peer_id: str, nth: int, lp, now_ms: float, why: str) -> None:
+        """L5 realtime D2 - a death that leaves no crate still gets a mark on
+        the owner's map, for DEATH_SPOT_TTL_MS, where they died."""
+        if lp is None:
+            return
+        marks = self._death_marks.setdefault(peer_id, [])
+        marks.append((int(nth), int(now_ms), float(lp.x), float(lp.y), float(lp.z), int(lp.cell_id)))
+        del marks[:-self.DEATH_SPOTS_MAX]
+        log.info("death #%d of %s: no crate (%s): a spot at (%.0f, %.0f, %.0f) cell 0x%X for %d min",
+                 nth, peer_id, why, lp.x, lp.y, lp.z, lp.cell_id, self.DEATH_SPOT_TTL_MS // 60000)
+
+    def _make_death_crate(self, session: PeerSession, now_ms: float, spot=None) -> None:
+        """L5 realtime D1 - the owner's decision of 2026-10-03: at a death
+        the whole inventory but the Pip-Boy goes into a crate at the death
+        point (the last position the server had), the character respawns
+        naked. The crate is a world spawn of the server's whose content is a
+        container keyed by its wid; every client places it and aligns it. No
+        crate (and the inventory kept) without a crate base or a position.
+        `spot`: the position when the death request arrived (the last one
+        the server has otherwise)."""
+        # D2: every death counts, crate or not (the last crate becomes a
+        # corpse on the map even when this death leaves nothing).
+        nth = self.state.record_death(session.peer_id, now_ms)
+        log.info("death #%d of %s", nth, session.peer_id)
+        presence = self.state.presence(session.peer_id)
+        lp = spot if spot is not None else (presence.last_pos if presence is not None else None)
+        base = self.death_crate_base
+        if not base:
+            self._note_death_spot(session.peer_id, nth, lp, now_ms, "no crate base")
+            return
+        if lp is None:
+            log.warning("death of %s: no last position on record, no crate: the inventory "
+                        "stays on the player", session.peer_id)
+            return
+        # D1 (2026-10-04, the owner's rule): a death in power armour leaves
+        # the frame where they fell, COMPLETE: what is mounted on it (its
+        # ledger) and the wearable are the frame's, not the crate's.
+        worn = [st for st in self.state.world_spawns.values()
+                if st.worn_by_peer_id == session.peer_id]
+        frame_pieces = tuple(p for st in worn for p in self._frame_contents(st.pieces))
+        made = self.state.record_death_crate(
+            session.peer_id, self.state.next_world_spawn_wid, base, lp.cell_id,
+            lp.x, lp.y, lp.z, lp.rz, (self.PIPBOY_FORM_ID,), now_ms,
+            frame_pieces=frame_pieces, death_ordinal=nth)
+        if made is None:
+            if worn:
+                log.info("death of %s: nothing for a crate besides the Pip-Boy and the frame "
+                         "they wore (wid %s)", session.peer_id,
+                         ", ".join(str(st.wid) for st in worn))
+            self._note_death_spot(session.peer_id, nth, lp, now_ms, "nothing to drop")
+            return
+        spawn, crate = made
+        bcast = WorldSpawnBroadcastPayload(
+            peer_id="", wid=spawn.wid, base_form_id=spawn.base_form_id,
+            spawner_local_fid=0, px=spawn.px, py=spawn.py, pz=spawn.pz,
+            rx=spawn.rx, ry=spawn.ry, rz=spawn.rz, cell_id=spawn.cell_id,
+            flags=spawn.flags, timestamp_ms=spawn.timestamp_ms, pieces=(),
+        )
+        everyone = self.state.all_sessions()
+        for s in everyone:
+            raw = s.channel.send_reliable(MessageType.WORLD_SPAWN_BCAST, bcast, now_ms)
+            self._send(s.addr, raw)
+        self._send_instance_defs(everyone, self.state.instance_defs_for([crate]), now_ms,
+                                 why="death crate")
+        self._send_container_state(everyone, [crate], now_ms, why="death crate")
+        log.info("death of %s: crate wid=%d (base 0x%X) at (%.0f, %.0f, %.0f) cell 0x%X with "
+                 "%d line(s), %d item(s); the player keeps the Pip-Boy%s", session.peer_id,
+                 spawn.wid, base, spawn.px, spawn.py, spawn.pz, spawn.cell_id,
+                 len(crate.items), sum(crate.items.values()),
+                 "; what is mounted on frame wid %s stays with it" %
+                 ", ".join(str(st.wid) for st in worn) if worn else "")
+
+    def _frame_contents(self, pieces) -> tuple:
+        """(form, count) of a frame's piece ledger plus the wearable the engine
+        equips on entering (D1): what the player's record loses when the
+        frame is given back, and gets back when they boot inside it."""
+        out = []
+        for p in pieces or ():
+            try:
+                form, count = int(p[0]), int(p[1]) if len(p) > 1 else 1
+            except (TypeError, ValueError, IndexError):
+                continue
+            if form and count > 0:
+                out.append((form, count))
+        # The frame's body armour (ArmorPoweredFrame*) is no longer listed
+        # here: since 2026-10-05 it is never inventory on any side.
+        return tuple(out)
+
+    def sweep_empty_crates(self, now_ms: float) -> int:
+        """L5 realtime D2 - a crate of the server's with nothing in it goes,
+        whatever emptied it (the last take is answered on the spot; what the
+        first live test found were crates of weeks ago, emptied before that
+        answer existed, still on everyone's map). Every ten seconds from the
+        stats logger. The number removed."""
+        empty = [c.wid for c in self.state.all_containers() if c.wid and not c.items]
+        for wid in empty:
+            log.info("crate wid=%d is empty: swept", wid)
+            self._remove_crate(wid, now_ms)
+        # D2: the spots of the deaths without a crate expire.
+        for peer_id, marks in list(self._death_marks.items()):
+            kept = [mk for mk in marks if now_ms - mk[1] < self.DEATH_SPOT_TTL_MS]
+            if len(kept) != len(marks):
+                if kept:
+                    self._death_marks[peer_id] = kept
+                else:
+                    del self._death_marks[peer_id]
+                log.info("death spots of %s: %d expired", peer_id, len(marks) - len(kept))
+                self._send_death_crates(peer_id, now_ms, "a death spot expired")
+        return len(empty)
+
+    def _remove_crate(self, wid: int, now_ms: float) -> None:
+        """An emptied crate goes, for everyone (D1); its owner gets the list
+        of their crates again (D2), so the map forgets it."""
+        crate = self.state.container_state(wid_container_key(wid))
+        owner = crate.death_owner if crate is not None else ""
+        if not self.state.remove_wid_container(wid):
+            return
+        bcast = WorldDespawnBroadcastPayload(peer_id="", wid=wid, reason=0,
+                                             timestamp_ms=int(now_ms))
+        for s in self.state.all_sessions():
+            raw = s.channel.send_reliable(MessageType.WORLD_DESPAWN_BCAST, bcast, now_ms)
+            self._send(s.addr, raw)
+        log.info("crate wid=%d emptied: removed for everyone", wid)
+        if owner:
+            self._send_death_crates(owner, now_ms, "crate wid=%d gone" % wid)
+
+    def _send_player_inv(self, session: PeerSession, req, status: int, now_ms: float) -> None:
+        """PLAYER_STATS, then PLAYER_INV with the record of `session`'s peer
+        (none: no lines), after the descriptors of its named instances. The
+        answer to a death moves the inventory into the crate first (D1)."""
+        spot = self._death_spots.pop(session.peer_id, None)
+        if getattr(req, "reason", None) == RESTORE_REASON_DEATH and status != PLAYER_INV_NONE:
+            self._make_death_crate(session, now_ms, spot)
+        self._send_player_stats(session, req, status, now_ms)
+        rec = self.state.player_inventory(session.peer_id)
+        entries: list = []
+        if status != PLAYER_INV_NONE and rec is not None:
+            defs = []
+            # 2026-10-05: a record written before the rule never names the
+            # frame's body armour to a client.
+            kept = {k: v for k, v in rec.lines.items() if k[0] not in PA_FRAME_WEARABLES}
+            for (item, fp) in sorted(kept):
+                known = self.state.instance_def(fp)
+                if known is not None:
+                    defs.append((fp, known[0], known[1]))
+            self._send_instance_defs([session], defs, now_ms, why="record")
+            entries = [InvStateEntry(item, fp, count,
+                                     INV_ENTRY_EQUIPPED if (item, fp) in rec.equipped else 0)
+                       for (item, fp), count in sorted(kept.items())]
+        per = PlayerInvPayload.MAX_ENTRIES_PER_FRAME
+        total = max(1, (len(entries) + per - 1) // per)
+        for i in range(total):
+            payload = PlayerInvPayload(
+                session=req.session,
+                record_seq=rec.seq if rec is not None else 0,
+                captures=rec.captures if rec is not None else 0,
+                status=status, entries=tuple(entries[i * per:(i + 1) * per]),
+                chunk_index=i, total_chunks=total)
+            raw = session.channel.send_reliable(MessageType.PLAYER_INV, payload, now_ms)
+            self._send(session.addr, raw)
+        log.info("record sent to %s: %s, %d line(s), %d item(s), capture #%d",
+                 session.peer_id, PLAYER_INV_STATUS.get(status, status), len(entries),
+                 sum(e.count for e in entries), rec.seq if rec is not None else 0)
+        self._send_death_crates(session.peer_id, now_ms, "after the record")
+
+    def _send_death_crates(self, peer_id: str, now_ms: float, why: str) -> None:
+        """L5 realtime D2 - DEATH_CRATES to every session of `peer_id`: their
+        death crates still in the world (oldest first) and how many their
+        deaths made, from which the client names them (the newest "LATEST
+        DEATH", the others "CORPSE #n"). Nothing when the peer is not
+        connected; at most DEATH_CRATES_MAX entries, the newest, and a
+        warning for what was left out."""
+        sessions = [s for s in self.state.all_sessions() if s.peer_id == peer_id]
+        if not sessions:
+            return
+        now_i = int(now_ms)
+        marks = []
+        for (wid, ordinal, death_ms, px, py, pz, cell_id) in self.state.death_crates_of(peer_id):
+            age = max(0, now_i - int(death_ms)) if death_ms > 0 else 0
+            marks.append(DeathCrateEntry(wid, ordinal, age, px, py, pz, cell_id))
+        n_crates = len(marks)
+        for (ordinal, death_ms, px, py, pz, cell_id) in self._death_marks.get(peer_id, ()):
+            marks.append(DeathCrateEntry(0, ordinal, max(0, now_i - death_ms), px, py, pz, cell_id))
+        marks.sort(key=lambda e: (e.ordinal, e.wid))
+        if len(marks) > DEATH_CRATES_MAX:
+            log.warning("death marks of %s: %d standing, only the newest %d sent (%s)",
+                        peer_id, len(marks), DEATH_CRATES_MAX, why)
+            marks = marks[-DEATH_CRATES_MAX:]
+        payload = DeathCratesPayload(death_count=self.state.death_count(peer_id), crates=tuple(marks))
+        for s in sessions:
+            raw = s.channel.send_reliable(MessageType.DEATH_CRATES, payload, now_ms)
+            self._send(s.addr, raw)
+        log.info("death marks of %s: %d crate(s) and %d spot(s) sent (%d deaths so far; %s)", peer_id,
+                 n_crates, len(marks) - n_crates, payload.death_count, why)
+
+    def _handle_restore_done(self, session: PeerSession, payload, now_ms: float) -> None:
+        """L5 realtime R2 - the client aligned its player to the record (or
+        could not): any outcome but failed opens the record to the process."""
+        if not isinstance(payload, RestoreDonePayload) or payload.session == 0:
+            return
+        log.info("restore of %s: %s (process %08X, record #%d): %d line(s) removed, "
+                 "%d built, %d unresolved, digest %016X", session.peer_id,
+                 RESTORE_OUTCOME.get(payload.outcome, f"outcome={payload.outcome}"),
+                 payload.session, payload.record_seq, payload.removed, payload.added,
+                 payload.unresolved, payload.digest)
+        if payload.outcome == RESTORE_FAILED:
+            return
+        self.state.record_player_restored(session.peer_id, payload.session, now_ms)
 
     # ------------------------------------------------ L5 stage 3a: checkpoints
 
@@ -2118,6 +2849,26 @@ class ServerProtocol(asyncio.DatagramProtocol):
         self._counters["first_entries"] += 1
         return rec
 
+    LOCATION_CKPT_COALESCE_MS: float = 30_000.0
+
+    def _handle_location_discovered(self, session: PeerSession, payload, now_ms: float) -> None:
+        """L5 realtime R5 (2026-10-16) - a place discovered. The server keeps
+        no places (vanilla, the owner's decision): it asks a checkpoint so a
+        crash a minute later does not undo the discovery. Places found in a
+        row share one request per LOCATION_CKPT_COALESCE_MS: the one being
+        written at the next quiet moment covers them."""
+        if not isinstance(payload, LocationDiscoveredPayload):
+            return
+        name = payload.name or "?"
+        last = session.location_ckpt_ms
+        if last > 0 and now_ms - last < self.LOCATION_CKPT_COALESCE_MS:
+            log.info("location discovered by %s: '%s' (0x%X): the checkpoint asked %.0f s ago covers it",
+                     session.peer_id, name, payload.marker_form_id, (now_ms - last) / 1000.0)
+            return
+        session.location_ckpt_ms = now_ms
+        log.info("location discovered by %s: '%s' (0x%X)", session.peer_id, name, payload.marker_form_id)
+        self._demand_checkpoint(session, now_ms, "discovered '%s'" % name)
+
     def _demand_checkpoint(self, session: PeerSession, now_ms: float, why: str) -> None:
         """L5 stage 3d (2026-09-30) — a checkpoint now, outside the cadence
         (reason 1, "on demand"), because the character changed in a way the
@@ -2193,11 +2944,28 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 log.debug("checkpoint '%s' from %s already on record: duplicate report ignored",
                           payload.name, session.peer_id)
                 return
+        # L5 realtime D1: whether this checkpoint has them in power armour,
+        # from the inventory digest sent with it (the one of its capture).
+        inv = self.state.inv_digest(session.peer_id)
+        in_pa = (bool(inv.flags & INV_DIGEST_FLAG_IN_POWER_ARMOR)
+                 if inv is not None and inv.seq == payload.digest_seq else None)
+        # 2026-10-15: the frame they wear now is the one this checkpoint has
+        # them inside (the enter is reported within a second, and the enter
+        # asks for a checkpoint): a departure keeps that frame worn and the
+        # boot takes it back by this wid, whatever form id the save knows it
+        # by (_checkpoint_has_them_inside, _frame_left_by).
+        in_pa_wid = 0
+        if in_pa:
+            worn = sorted(w.wid for w in self.state.world_spawns.values()
+                          if w.worn_by_peer_id == session.peer_id)
+            presence = self.state.presence(session.peer_id)
+            said = int(presence.worn_frame_wid) if presence is not None else 0
+            in_pa_wid = said if said in worn else (worn[0] if len(worn) == 1 else 0)
         rec = self.state.record_checkpoint(
             session.peer_id, session.identity_hex, payload.seq, payload.name,
             payload.sha256.hex(), payload.size, payload.digest, payload.digest_seq,
             payload.wall_ms, now_ms, watermark_lsn=int(self.state.applied_lsn),
-            reason=0 if payload.seq else 2)
+            reason=0 if payload.seq else 2, in_pa=in_pa, in_pa_wid=in_pa_wid)
         if rec is None:
             self._counters["rejections"] += 1
             return
@@ -2228,6 +2996,9 @@ class ServerProtocol(asyncio.DatagramProtocol):
         if not isinstance(payload, BootResultPayload):
             return
         outcome = BOOT_OUTCOME.get(payload.outcome, f"outcome={payload.outcome}")
+        if payload.outcome != 0:
+            # 2026-10-20: a genesis boot runs on the vanilla world.
+            self.state.note_world_base(session.peer_id, 0.0, now_ms)
         if not session.identity_hex or not payload.name:
             log.info("boot result from %s: %s", session.peer_id, outcome)
             return
@@ -2237,6 +3008,9 @@ class ServerProtocol(asyncio.DatagramProtocol):
             log.info("boot result from %s: %s ('%s' is not on record)",
                      session.peer_id, outcome, payload.name)
             return
+        if payload.outcome == 0:
+            # 2026-10-20: the world the client actually loaded.
+            self.state.note_world_base(session.peer_id, rec.world_ms, now_ms)
         log.info("boot result from %s: %s -> '%s' is %s (%d failed boot(s))",
                  session.peer_id, outcome, rec.name, rec.status, rec.boot_failures)
 
@@ -2283,71 +3057,49 @@ class ServerProtocol(asyncio.DatagramProtocol):
             try:
                 rec = make_respawn_checkpoint(self.state, self.custody, session.peer_id,
                                               RespawnPoint(rp[0], rp[1], rp[2], rp[3]), now_ms,
-                                              exterior_globals=self.exterior_globals)
+                                              exterior_globals=self.exterior_globals,
+                                              genesis_path=self.genesis_path,
+                                              identity_hex=session.identity_hex)
             except RespawnError as e:
                 why = str(e)
         if rec is not None:
             self._counters["respawn_checkpoints"] += 1
+            # 2026-10-20: the world they come back in is the copy's source.
+            self.state.note_world_base(session.peer_id, rec.world_ms, now_ms)
             payload = CkptRespawnPayload(True, rec.name, bytes.fromhex(rec.sha256_hex), rec.size)
-            pa = checkpoint_in_power_armour(self.state, session.peer_id)
-            log.info("respawn: %s died -> '%s' (the boot checkpoint moved onto the point%s) goes "
-                     "to the client instead of the engine's reload", session.peer_id, rec.name,
-                     ", the worn power armour frame with it" if pa else "")
+            log.info("respawn: %s died -> '%s' (a checkpoint on foot moved onto the point) goes "
+                     "to the client instead of the engine's reload", session.peer_id, rec.name)
         else:
             payload = CkptRespawnPayload(False, "", b"", 0)
+            # 2026-10-20: the engine reloads the last checkpoint instead.
+            loaded = self.state.checkpoint_to_boot(session.peer_id)
+            self.state.note_world_base(session.peer_id,
+                                       loaded.world_ms if loaded is not None else 0.0, now_ms)
             log.info("respawn: %s died -> no moved checkpoint (%s): the engine's reload and the "
                      "fast travel run", session.peer_id, why)
-        self._plan_frame_drop(session.peer_id, rec, death_pos)
+        self._plan_frame_drop(session.peer_id, death_pos)
         raw = session.channel.send_reliable(MessageType.CKPT_RESPAWN, payload, now_ms)
         self._send(session.addr, raw)
 
-    def _plan_frame_drop(self, peer_id: str, rec, death_pos: Optional[tuple]) -> None:
-        """L5 stage 3d — a death in power armour with a checkpoint on foot.
-
-        The frame a player wears is marked worn here (kept, placed for
-        nobody). The checkpoint the player comes back from decides where the
-        player is: inside a frame (savepos moves it with them, live test #15)
-        or on foot. On foot, the frame stays where they fell and is given back
-        to the world when they respawn. Before this it stayed marked worn by a
-        player who no longer wore it, placed for nobody (their own client
-        included), and the others kept seeing their ghost in it (live test
-        #18). When the save cannot be read nothing changes: the frame comes
-        back when they leave, as before.
-        """
+    def _plan_frame_drop(self, peer_id: str, death_pos: Optional[tuple]) -> None:
+        """L5 stage 3d, rewritten for L5 realtime D1 (2026-10-04, the owner's
+        rule): a death in power armour leaves the frame where the player
+        fell, COMPLETE (its piece ledger), next to the crate of the rest,
+        and the player comes back on foot (the respawn checkpoint is chosen
+        on foot, make_respawn_checkpoint). The frame is given back when they
+        respawn (_give_back_frame_after_respawn), or when they leave before
+        that (_reannounce_worn_frames). Where they fell: the death report's
+        position, the last one the server has otherwise; with neither the
+        frame stays worn and is given back when they leave. Until stage 3d
+        the checkpoint decided (inside it: the frame went with them), and a
+        death on foot could take a standing frame back when the checkpoint
+        had them inside: the checkpoint no longer wins over the world."""
         self._frame_drops.pop(peer_id, None)
-        self._frame_reclaims.pop(peer_id, None)
         worn = sorted(st.wid for st in self.state.world_spawns.values()
                       if st.worn_by_peer_id == peer_id)
-        src = rec if rec is not None else self.state.checkpoint_to_boot(peer_id)
         if not worn:
-            # 2026-09-30 — on foot at the death, and the checkpoint may have
-            # them inside the frame they left after it was written: the
-            # reload puts them back in the save's copy, and the frame they
-            # left must not keep standing in the world.
-            # Since the checkpoint on demand at every exit this is the few
-            # seconds between leaving the frame and that checkpoint being
-            # written: the only checkpoint still has them inside. One armour,
-            # not two: the standing one is taken back.
-            st = self._frame_left_by(peer_id, src, "died on foot")
-            if st is not None:
-                self._frame_reclaims[peer_id] = st.wid
-                log.warning("respawn: %s died on foot before the checkpoint asked for when they "
-                            "left their frame was written: they come back inside it, and the "
-                            "frame standing as wid %d is taken back when they respawn (one "
-                            "armour, not two)", peer_id, st.wid)
             return
-        wears = checkpoint_wears_frame(self.custody, peer_id, src)
         wids = ", ".join(str(w) for w in worn)
-        name = src.name if src is not None else "no checkpoint"
-        if wears is None:
-            log.info("respawn: %s died wearing frame wid %s; whether '%s' has them in power "
-                     "armour cannot be read: the frame stays worn (given back when they leave)",
-                     peer_id, wids, name)
-            return
-        if wears:
-            log.info("respawn: %s died wearing frame wid %s and '%s' has them in power armour: "
-                     "the frame goes with them", peer_id, wids, name)
-            return
         presence = self.state.presence(peer_id)
         last = presence.last_pos if presence is not None else None
         cell = int(last.cell_id) if last is not None else 0
@@ -2356,22 +3108,18 @@ class ServerProtocol(asyncio.DatagramProtocol):
         elif last is not None:
             x, y, z = float(last.x), float(last.y), float(last.z)
         else:
-            log.info("respawn: %s died wearing frame wid %s and comes back on foot, but where "
-                     "they fell is unknown: the frame stays worn (given back when they leave)",
-                     peer_id, wids)
+            log.info("respawn: %s died wearing frame wid %s, but where they fell is unknown: "
+                     "the frame stays worn (given back when they leave)", peer_id, wids)
             return
         self._frame_drops[peer_id] = (x, y, z, cell)
-        log.info("respawn: %s died wearing frame wid %s but '%s' has them on foot: the frame "
-                 "stays where they fell (%.0f, %.0f, %.0f), given back to the world when they "
-                 "respawn", peer_id, wids, name, x, y, z)
+        log.info("respawn: %s died wearing frame wid %s: the frame stays where they fell "
+                 "(%.0f, %.0f, %.0f), complete, given back to the world when they respawn; "
+                 "they come back on foot", peer_id, wids, x, y, z)
 
     def _give_back_frame_after_respawn(self, session: PeerSession, now_ms: float) -> None:
         """L5 stage 3d — the respawn of a player _plan_frame_drop left on
         foot: the frame they wore becomes a world object where they fell, for
         every client, theirs included (its world was reloaded without it)."""
-        wid = self._frame_reclaims.pop(session.peer_id, None)
-        if wid is not None:
-            self._take_frame_back(session.peer_id, wid, now_ms, "respawned inside it")
         at = self._frame_drops.pop(session.peer_id, None)
         if at is None:
             return
@@ -2387,6 +3135,25 @@ class ServerProtocol(asyncio.DatagramProtocol):
         the checkpoint on foot or unreadable, no such record (the newest wins
         when a form id came back), or a record someone else wears (logged:
         two frames until one of them is left)."""
+        # 2026-10-15: the record names the frame (in_pa_wid, from the
+        # CKPT_DONE): by wid, whatever form id the save knows it by. An
+        # adopted copy is bound to a fid the server never saw: that was the
+        # double frame of the kill inside a frame (the fid key below found
+        # nothing, the bootstrap placed the frame next to the player inside
+        # the save's copy, and the restore stripped its pieces).
+        named = int(getattr(rec, "in_pa_wid", 0) or 0)
+        if named:
+            st = self.state.world_spawns.get(named)
+            if st is not None and st.base_form_id == self._PA_FRAME_BASE:
+                if not st.worn_by_peer_id:
+                    return st
+                if st.worn_by_peer_id != peer_id:
+                    log.warning("frame: %s %s and comes back inside wid %d, which %s wears now: "
+                                "left alone, there are two frames until one is left", peer_id,
+                                why, st.wid, st.worn_by_peer_id)
+                return None
+            log.info("frame: the checkpoint of %s names wid %d, which no longer stands: the "
+                     "save's own form id decides", peer_id, named)
         known, frame = checkpoint_worn_frame(self.custody, peer_id, rec)
         if not known or frame is None:
             return None
@@ -2417,6 +3184,9 @@ class ServerProtocol(asyncio.DatagramProtocol):
             return
         self.state.mark_world_spawn_worn(wid, peer_id, now_ms)
         self.state.record_presence_worn_frame(peer_id, wid, now_ms)
+        # D1: the save has the pieces on the player; the record gets them
+        # back as lines nobody read, so the restore leaves them alone.
+        back = self.state.record_pieces_from_frame(peer_id, self._frame_contents(st.pieces), now_ms)
         bcast = WorldDespawnBroadcastPayload(peer_id="server", wid=wid, reason=2,
                                              timestamp_ms=int(now_ms))
         sent = 0
@@ -2425,7 +3195,8 @@ class ServerProtocol(asyncio.DatagramProtocol):
             self._send(other.addr, raw)
             sent += 1
         log.info("frame: wid %d taken back from the world, %s %s (their checkpoint has them "
-                 "inside it): worn again, despawned on %d client(s)", wid, peer_id, why, sent)
+                 "inside it): worn again, despawned on %d client(s); %d item(s) of it back in "
+                 "their record", wid, peer_id, why, sent, back)
 
     def _reclaim_frame_at_boot(self, peer_id: str, rec, now_ms: float) -> None:
         """L5 stage 3d (2026-09-30) — a boot inside a frame that stands in
@@ -2996,6 +3767,21 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 "until respawn jump (or +25s)", session.peer_id,
             )
         session.combat_dead_until_ms = now_ms + 25000.0
+        if payload.form_id == NPC_UNLOAD_ALL_OWNED:
+            # v43 (2026-10-20): the death release in ONE message. The client
+            # says how many it owned (epoch, for this line only); the
+            # records decide what is released. Each release still goes out
+            # as its own PHASE_2, as before.
+            changes = self.ownership.release_all_owned(
+                session.peer_id, now_ms, "death-release")
+            for change in changes:
+                self._emit_ownership_change(change, now_ms)
+            log.info(
+                "ownership: death release from %s: %d NPC(s) released here "
+                "(the client owned %d)", session.peer_id, len(changes),
+                payload.epoch,
+            )
+            return
         change = self.ownership.on_unload(payload, session.peer_id, now_ms)
         if change is not None:
             self._emit_ownership_change(change, now_ms)
@@ -3973,6 +4759,8 @@ class ServerProtocol(asyncio.DatagramProtocol):
         """Called at tick_rate_hz. Drives retransmits, acks, timeouts."""
         # L5 stage 3a — the checkpoint cadence.
         self._schedule_checkpoints(now_ms)
+        # L5 realtime R2 - restores that waited too long for a capture.
+        self._expire_restore_waits(now_ms)
         self.bulk_tokens.expire(now_ms)
         # Per-session retransmit + ACK flush
         for session in self.state.all_sessions():
@@ -4078,18 +4866,53 @@ class ServerProtocol(asyncio.DatagramProtocol):
         # gets it back here, at the last position they sent: where they fell.
         # One who was to take a frame back no longer does: their next boot does.
         self._frame_drops.pop(peer_id, None)
-        self._frame_reclaims.pop(peer_id, None)
-        self._give_back_worn_frames(peer_id, now_ms)
+        self._give_back_worn_frames(peer_id, now_ms, keep_inside=True)
+
+    def _frame_kept_inside(self, peer_id: str) -> int:
+        """2026-10-15 — the wid of the worn frame the checkpoint `peer_id`
+        boots from next has them inside, 0 when none: its in_pa_wid when
+        that frame is worn by them; or, when it has them in power armour (the
+        digest's flag, the save's bytes when the flag never came) without
+        naming a frame (a record from before in_pa_wid, or a checkpoint
+        written in the second between the enter and its report), the only
+        frame they wear. Decided once, before any frame is given back: a
+        second worn frame must not become "the only one" halfway through."""
+        rec = self.state.checkpoint_to_boot(peer_id)
+        if rec is None or rec.reason == CKPT_REASON_FIRST_ENTRY:
+            return 0
+        inside = rec.in_pa
+        if inside is None:
+            inside = checkpoint_wears_frame(self.custody, peer_id, rec)
+        if not inside:
+            return 0
+        worn = sorted(w.wid for w in self.state.world_spawns.values()
+                      if w.worn_by_peer_id == peer_id)
+        named = int(getattr(rec, "in_pa_wid", 0) or 0)
+        if named:
+            return named if named in worn else 0
+        return worn[0] if len(worn) == 1 else 0
 
     def _give_back_worn_frames(self, peer_id: str, now_ms: float, *,
                                at: Optional[tuple] = None, include_self: bool = False,
-                               why: str = "who just left") -> None:
+                               why: str = "who just left", keep_inside: bool = False) -> None:
         """The body of the give-back. `at` (x, y, z, cell_id) overrides the
         last known position; `include_self` tells the peer itself too (L5
-        stage 3d: a respawn, not a departure)."""
+        stage 3d: a respawn, not a departure). `keep_inside` (a departure,
+        2026-10-15): the frame the newest checkpoint has them inside stays
+        worn, its pieces stay in their record, and they come back inside it;
+        giving it back doubled it (the boot put them inside the save's copy
+        next to the standing one, and the restore stripped its pieces)."""
         presence = self.state.presence(peer_id)
+        keep_wid = self._frame_kept_inside(peer_id) if keep_inside else 0
+        kept_worn = False
         for st in list(self.state.world_spawns.values()):
             if st.worn_by_peer_id != peer_id:
+                continue
+            if keep_wid and st.wid == keep_wid:
+                kept_worn = True
+                log.info("wid=%d stays worn by %s %s: their newest checkpoint has them inside "
+                         "it, they come back inside it (its %d piece(s) stay theirs)",
+                         st.wid, peer_id, why, len(st.pieces))
                 continue
             if at is not None:
                 self.state.return_worn_frame(st.wid, at[0], at[1], at[2], at[3])
@@ -4116,8 +4939,11 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 (p[0] if isinstance(p, (tuple, list)) else p)
                 for p in st.pieces
             }
-            returned.add(self._PA_FRAME_WEARABLE)
+            returned.update(PA_FRAME_WEARABLES)
             dropped = self.state.drop_items_from_outfit(peer_id, returned)
+            # D1: and out of the record the restore puts back on the player.
+            left = self.state.record_pieces_to_frame(peer_id, self._frame_contents(st.pieces),
+                                                     now_ms)
             bcast = WorldSpawnBroadcastPayload(
                 peer_id="server",
                 wid=st.wid,
@@ -4139,11 +4965,12 @@ class ServerProtocol(asyncio.DatagramProtocol):
                 self._send(other.addr, raw)
                 sent += 1
             log.info("wid=%d was worn by %s %s: re-announced at %s to %d peer(s); "
-                     "%d piece(s) went back to the frame and out of their stored outfit",
+                     "%d piece(s) went back to the frame and out of their stored outfit, "
+                     "%d item(s) out of their record",
                      st.wid, peer_id, why,
                      "where they fell" if at is not None else "their last position",
-                     sent, dropped)
-        if presence is not None:
+                     sent, dropped, left)
+        if presence is not None and not kept_worn:
             presence.worn_frame_wid = 0
 
     def _remove_and_notify(self, session: PeerSession, *, reason: int, now_ms: float) -> None:
@@ -4461,6 +5288,10 @@ async def _stats_logger(protocol: ServerProtocol, interval_s: float = 10.0) -> N
     while True:
         await asyncio.sleep(interval_s)
         n_peers = len(protocol.state.all_sessions())
+        try:
+            protocol.sweep_empty_crates(_now_ms())
+        except Exception as e:                      # never kill the server
+            log.warning("empty crate sweep failed: %s", e)
         log.info("peers=%d stats=%s", n_peers, protocol.stats())
 
 
@@ -4655,6 +5486,10 @@ async def run_server(cfg: Config) -> None:
     # L5 stage 3a — the checkpoint cadence (seconds in the Config, ms here).
     protocol.checkpoint_every_ms = cfg.checkpoint_every_s * 1000.0
     protocol.respawn_point = respawn_point   # L5 stage 3c, parsed and logged above
+    protocol.death_crate_base = cfg.death_crate_base   # L5 realtime D1
+    log.info("death: %s", ("the inventory goes into a crate (base 0x%X) at the death point, "
+                           "the player respawns with the Pip-Boy only" % cfg.death_crate_base)
+             if cfg.death_crate_base else "no crate, the inventory stays on the player")
     protocol.exterior_globals = exterior_globals   # L5 stage 3d, read and logged above
     protocol.genesis_path = Path(genesis) if exterior_globals is not None else None
     log.info("checkpoints: %s", ("every %.0f s for every player in the world" % cfg.checkpoint_every_s)
@@ -4797,6 +5632,41 @@ def read_genesis_path(path: Path) -> Optional[str]:
         return None
     value = cp.get("genesis", "save", fallback=None)
     return value.strip() if value and value.strip() else None
+
+
+# L5 realtime D1: the death crate when server.ini says nothing. An EMPTY
+# container: DN156_StarlightFootLocker01 (Props\FootLocker01.nif) has no
+# content, no script, no keyword and does not respawn. The first choice, the
+# suitcase of the loot tests (Loot_Prewar_Suitcase_Clothes, 0x64A3C), rolls
+# three leveled lists of clothes into every new copy, runs
+# lockExtraLootSCRIPT and respawns its content; the workshop crate
+# (0x2381BA) carries WorkshopContainerKeyword, which the workshop mode of a
+# settlement may store with its content.
+DEFAULT_DEATH_CRATE_BASE = 0x1D0FB
+
+
+def read_death_crate(path: Path) -> int:
+    """L5 realtime D1 - [death] crate of the founder's settings: a CONT
+    form id (hex), "off" (0: a death keeps the inventory), or the default
+    when the file or the key is missing."""
+    if not path.is_file():
+        return DEFAULT_DEATH_CRATE_BASE
+    cp = configparser.ConfigParser(inline_comment_prefixes=(";", "#"))
+    try:
+        cp.read(path, encoding="utf-8")
+    except (configparser.Error, UnicodeDecodeError):
+        return DEFAULT_DEATH_CRATE_BASE
+    value = (cp.get("death", "crate", fallback="") or "").strip().lower()
+    if not value:
+        return DEFAULT_DEATH_CRATE_BASE
+    if value in ("off", "none", "0"):
+        return 0
+    try:
+        return int(value, 16)
+    except ValueError:
+        log.warning("server.ini [death] crate = %r is not a form id: the default 0x%X",
+                    value, DEFAULT_DEATH_CRATE_BASE)
+        return DEFAULT_DEATH_CRATE_BASE
 
 
 def parse_respawn(spec: Optional[str]) -> Optional[tuple[float, float, float, float]]:
@@ -4987,6 +5857,7 @@ def parse_args() -> Config:
         genesis_save=genesis_save,
         checkpoint_every_s=args.checkpoint_every,
         bulk_port=args.bulk_port, custody_dir=custody_dir,
+        death_crate_base=read_death_crate(args.config),
         snapshot_interval_s=args.snapshot_interval_s,
         log_level=args.log_level,
         waypoints_dir=args.waypoints_dir,

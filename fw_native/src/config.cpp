@@ -245,6 +245,71 @@ Settings load(const std::filesystem::path& path) {
                 FW_WRN("config: bad 'checkpoint_test_key' value: %s (want a "
                        "virtual-key code 0..255, e.g. 0x79 for F10)", v.c_str());
             }
+        } else if (key == "map_marker_test_key") {
+            const auto& v = value;
+            char* end = nullptr;
+            const unsigned long long parsed = std::strtoull(v.c_str(), &end, 0);
+            if (end && end != v.c_str() && parsed <= 0xFFull) {
+                s.map_marker_test_key = static_cast<std::uint32_t>(parsed);
+            } else {
+                FW_WRN("config: bad 'map_marker_test_key' value: %s (want a "
+                       "virtual-key code 0..255, e.g. 0x77 for F8)", v.c_str());
+            }
+        } else if (key == "map_markers") {
+            const auto& v = value;
+            if (v == "1" || v == "true" || v == "yes" || v == "on" ||
+                v == "TRUE" || v == "YES" || v == "ON") {
+                s.map_markers = true;
+            } else if (v == "0" || v == "false" || v == "no" || v == "off" ||
+                       v == "FALSE" || v == "NO" || v == "OFF") {
+                s.map_markers = false;
+            } else {
+                FW_WRN("config: bad 'map_markers' value: %s", v.c_str());
+            }
+        } else if (key == "loader_flush_owner_spoof" || key == "loader_owner_priority" ||
+                   key == "loading_vsync_off") {
+            const auto& v = value;
+            bool* flag = (key == "loader_flush_owner_spoof") ? &s.loader_flush_owner_spoof
+                       : (key == "loader_owner_priority")    ? &s.loader_owner_priority
+                                                             : &s.loading_vsync_off;
+            if (v == "1" || v == "true" || v == "yes" || v == "on" ||
+                v == "TRUE" || v == "YES" || v == "ON") {
+                *flag = true;
+            } else if (v == "0" || v == "false" || v == "no" || v == "off" ||
+                       v == "FALSE" || v == "NO" || v == "OFF") {
+                *flag = false;
+            } else {
+                FW_WRN("config: bad '%s' value: %s", key.c_str(), v.c_str());
+            }
+        } else if (key == "map_marker_death_type" || key == "map_marker_player_type") {
+            const auto& v = value;
+            char* end = nullptr;
+            const unsigned long long parsed = std::strtoull(v.c_str(), &end, 0);
+            if (end && end != v.c_str() && parsed <= 0xFFFFull) {
+                if (key == "map_marker_death_type") s.map_marker_death_type = static_cast<std::uint32_t>(parsed);
+                else s.map_marker_player_type = static_cast<std::uint32_t>(parsed);
+            } else {
+                FW_WRN("config: bad '%s' value: %s (want 0..65535)", key.c_str(), v.c_str());
+            }
+        } else if (key == "map_marker_rebuild_ms") {
+            const auto& v = value;
+            char* end = nullptr;
+            const unsigned long long parsed = std::strtoull(v.c_str(), &end, 0);
+            if (end && end != v.c_str() && parsed >= 500ull && parsed <= 60000ull) {
+                s.map_marker_rebuild_ms = static_cast<std::uint32_t>(parsed);
+            } else {
+                FW_WRN("config: bad 'map_marker_rebuild_ms' value: %s (want 500..60000)", v.c_str());
+            }
+        } else if (key == "map_marker_test_type") {
+            const auto& v = value;
+            char* end = nullptr;
+            const unsigned long long parsed = std::strtoull(v.c_str(), &end, 0);
+            if (end && end != v.c_str() && parsed <= 0xFFFFull) {
+                s.map_marker_test_type = static_cast<std::uint32_t>(parsed);
+            } else {
+                FW_WRN("config: bad 'map_marker_test_type' value: %s (want 0..65535)",
+                       v.c_str());
+            }
         } else if (key == "editor_key") {
             // A virtual-key code. Hex (0x71 = F2) or decimal.
             const auto& v = value;
@@ -305,6 +370,17 @@ Settings load(const std::filesystem::path& path) {
                 s.inventory_capture = false;
             } else {
                 FW_WRN("config: bad 'inventory_capture' value: %s", v.c_str());
+            }
+        } else if (key == "instance_probe") {
+            const auto& v = value;
+            if (v == "1" || v == "true" || v == "yes" || v == "on" ||
+                v == "TRUE" || v == "YES" || v == "ON") {
+                s.instance_probe = true;
+            } else if (v == "0" || v == "false" || v == "no" || v == "off" ||
+                       v == "FALSE" || v == "NO" || v == "OFF") {
+                s.instance_probe = false;
+            } else {
+                FW_WRN("config: bad 'instance_probe' value: %s", v.c_str());
             }
         } else if (key == "persist_lifecycle") {
             const auto& v = value;

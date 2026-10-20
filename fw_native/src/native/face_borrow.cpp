@@ -185,7 +185,7 @@ std::string next_peer_needing_a_face(const std::string& our_line,
                                      std::string* recipe_out) {
     for (const auto& [peer, recipe] : face_cache::all_recipes()) {
         const std::uint64_t h = face_cache::hash_recipe(recipe);
-        if (face_cache::get_master(peer, h)) continue;   // already built
+        if (face_cache::has_master(peer, h)) continue;   // already built (asked every frame: no handout, no log)
 
         // A peer wearing OUR EXACT appearance needs no borrow. The ghost's
         // fallback face source is the local player's own live face node

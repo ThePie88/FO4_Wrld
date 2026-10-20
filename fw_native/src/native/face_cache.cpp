@@ -119,6 +119,12 @@ void* get_master(const std::string& key, std::uint64_t recipe_hash) noexcept {
     return it->second.node;
 }
 
+bool has_master(const std::string& key, std::uint64_t recipe_hash) noexcept {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    const auto it = g_masters.find(key);
+    return it != g_masters.end() && it->second.hash == recipe_hash && it->second.node != nullptr;
+}
+
 void* peek_master(const std::string& key) noexcept {
     std::lock_guard<std::mutex> lk(g_mtx);
     const auto it = g_masters.find(key);

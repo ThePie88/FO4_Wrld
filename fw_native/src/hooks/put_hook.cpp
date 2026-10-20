@@ -4,6 +4,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 
 #include "container_hook.h"   // extern tls_applying_remote + ApplyingRemoteGuard
 #include "../engine/engine_calls.h"
@@ -14,6 +16,8 @@
 #include "../native/world_spawn.h"
 #include "../net/client.h"
 #include "../net/protocol.h"
+#include "../persist/instance_probe.h"   // L5 stage 4a: the stacks around a transfer
+#include "../engine/instance_writers.h"   // L5 stage 4b: which instance a deposit moved
 
 namespace fw::hooks {
 
@@ -246,7 +250,7 @@ static void observe_transfer(
         }
 
         // Container identity (form_id, base_id, cell_id).
-        const auto cid = fw::read_ref_identity(container_refr);
+        auto cid = fw::read_ref_identity(container_refr);   // D1: the key of a crate replaces its runtime id
         if (cid.base_id == 0 || cid.cell_id == 0) {
             FW_WRN("[put] container identity incomplete "
                    "(form=0x%X base=0x%X cell=0x%X item=0x%X) — skipping",
@@ -273,7 +277,15 @@ static void observe_transfer(
 
         // Loot rework L1: a runtime ref (0xFF prefix) has no shared identity
         // yet; the deposit stays local. Mirror of the container_hook check.
-        if (cid.form_id == 0 || (cid.form_id >> 24) == 0xFF) {
+        // L5 realtime D1: a container of the server's (the death crate):
+        // the deposit travels under the key 0xFF000000 | wid.
+        if (cid.form_id != 0 && (cid.form_id >> 24) == 0xFF) {
+            const std::uint32_t key =
+                fw::native::world_spawn::container_key_for_refr(container_refr, cid.form_id);
+            if (key != 0) cid.form_id = key;
+        }
+        if (cid.form_id == 0
+                || ((cid.form_id >> 24) == 0xFF && !fw::net::is_wid_container_key(cid.form_id))) {
             FW_DBG("[put] PUT into a runtime ref form=0x%X (base=0x%X cell=0x%X) "
                    "— passthrough, no shared identity yet",
                    cid.form_id, cid.base_id, cid.cell_id);
@@ -308,6 +320,63 @@ static void observe_transfer(
         out->should_submit = false;
         out->passthrough   = true;
     }
+}
+
+// L5 stage 4a (2026-10-02) — what the instance probe dumps around a menu
+// transfer: the menu's container, the player, and the base of the row being
+// moved on either side (the same decoding as observe_transfer, which only
+// reads deposits). Borrowed pointers, valid for this call. SEH-caged: an
+// unreadable field stays 0 and only narrows the dump.
+struct ProbeTarget {
+    void*         container;
+    void*         player;
+    std::uint32_t item_base;
+};
+
+static void probe_target(void* this_menu, std::int32_t inv_idx, std::uint8_t side,
+                         ProbeTarget* out)
+{
+    out->container = nullptr;
+    out->player    = nullptr;
+    out->item_base = 0;
+    __try {
+        const auto* b = static_cast<const std::uint8_t*>(this_menu);
+        out->container = fw::engine::resolve_refhandle(
+            const_cast<std::uint8_t*>(b + offsets::CMENU_CONTAINER_HANDLE_OFF));
+        out->player = fw::engine::get_local_player();
+        const bool deposit = (side == offsets::CMENU_SIDE_DEPOSIT);
+        const std::uint32_t rows = *reinterpret_cast<const std::uint32_t*>(
+            b + (deposit ? offsets::CMENU_PLAYER_COUNT_OFF : offsets::CMENU_CONTAINER_COUNT_OFF));
+        void* arr = *reinterpret_cast<void* const*>(
+            b + (deposit ? offsets::CMENU_PLAYER_ARRAY_OFF : offsets::CMENU_CONTAINER_ARRAY_OFF));
+        if (!arr || inv_idx < 0 || static_cast<std::uint32_t>(inv_idx) >= rows) return;
+        void* entry = static_cast<std::uint8_t*>(arr)
+                      + static_cast<std::size_t>(inv_idx) * offsets::CMENU_ENTRY_STRIDE;
+        void* raw = fw::engine::resolve_inventory_entry_form(entry);
+        if (!raw) return;
+        // The decoder returns a wrapper whose first qword is the form (see
+        // the B1.k.3.3 note in observe_transfer); a REFR row goes to its base.
+        const auto* form = *reinterpret_cast<const std::uint8_t* const*>(raw);
+        if (!form) return;
+        if (*(form + offsets::FORMTYPE_OFF) == 0x3F) {
+            const auto* base = *reinterpret_cast<const std::uint8_t* const*>(form + offsets::BASE_FORM_OFF);
+            if (base) form = base;
+        }
+        out->item_base = *reinterpret_cast<const std::uint32_t*>(form + offsets::FORMID_OFF);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out->item_base = 0;
+    }
+}
+
+static void probe_transfer(const ProbeTarget& pt, std::uint8_t side, const char* when)
+{
+    char tag[32];
+    std::snprintf(tag, sizeof(tag), "%s-%s",
+                  side == offsets::CMENU_SIDE_DEPOSIT ? "deposit" : "withdraw", when);
+    fw::persist::probe::dump(pt.container, 0, tag);
+    // The player's side for the moved base only: the whole inventory is the
+    // capture's job. An unreadable row means no player dump at all.
+    if (pt.player && pt.item_base) fw::persist::probe::dump(pt.player, pt.item_base, tag);
 }
 
 std::int64_t __fastcall detour_transfer_item(
@@ -368,12 +437,46 @@ std::int64_t __fastcall detour_transfer_item(
     // cleared, so a nested transfer keeps the outer one's state. Withdraws
     // leave it alone: those are the add detour's TAKEs.
     const bool deposit = (side == offsets::CMENU_SIDE_DEPOSIT);
+    // L5 stage 4a: both sides of the transfer, before and after the engine
+    // moves the stack. Observe-only; nothing when the probe is off.
+    ProbeTarget pt{};
+    if (fw::persist::probe::enabled()) {
+        probe_target(this_menu, inv_idx, side, &pt);
+        FW_LOG("[probe] menu %s: row %d, %u x 0x%08X", deposit ? "deposit" : "withdraw",
+               inv_idx, count, pt.item_base);
+        if (pt.container) probe_transfer(pt, side, "before");
+    }
+    // L5 stage 4b (2026-10-03): which instances the deposit moves. The
+    // player's stacks of the item, folded by instance, before and after the
+    // engine's transfer; every instance that went down is one op, with its
+    // descriptor read while the stack was still there. The menu row says
+    // which item, not which stack of it.
+    constexpr std::size_t kLines = 32;
+    fw::engine::instances::Line before[kLines];
+    fw::net::InstanceDesc before_desc[kLines] = {};
+    bool undescribed[kLines] = {};
+    std::size_t n_before = 0;
+    void* player = r.should_submit ? fw::engine::get_local_player() : nullptr;
+    const bool have_before = player &&
+        fw::engine::instances::scan_lines(player, r.item_id, before, kLines, &n_before);
+    if (have_before) {
+        for (std::size_t i = 0; i < n_before; ++i) {
+            // A named instance whose descriptor cannot be read now is sent as
+            // unknown (counted, never built), not with an empty descriptor the
+            // server would refuse, undoing the deposit.
+            undescribed[i] = before[i].fp != fw::net::kFpPlain &&
+                             before[i].fp != fw::net::kFpUnknown &&
+                             !fw::engine::instances::describe(player, r.item_id, before[i].fp,
+                                                              &before_desc[i]);
+        }
+    }
     const bool prev_menu_transfer = tls_menu_transfer;
     if (deposit) tls_menu_transfer = true;
     const auto rc = g_orig_transfer(this_menu, inv_idx, count, side);
     tls_menu_transfer = prev_menu_transfer;
     FW_DBG("[put] g_orig_transfer returned %lld",
            static_cast<long long>(rc));
+    if (pt.container) probe_transfer(pt, side, "after");
 
     // Loot rework L2 (2026-09-23): the deposit has happened; the op goes out
     // with no wait and a refusal comes back as a rollback on the main thread.
@@ -385,16 +488,48 @@ std::int64_t __fastcall detour_transfer_item(
     // mean "nothing moved" has not been reverse-engineered, so the op is
     // sent regardless, as it was before the rework.
     if (r.should_submit) {
-        const std::uint32_t op_id = fw::net::client().submit_container_op(r.opp);
-        if (op_id != 0) {
-            FW_LOG("[put] PUT applied, op_id=%u sent for a verdict "
-                   "container=0x%X (base=0x%X cell=0x%X) item=0x%X count=%d",
-                   op_id, r.container_form_id, r.base_id, r.cell_id,
-                   r.item_id, r.opp.count);
-        } else {
-            FW_WRN("[put] PUT applied but NOT sent: the client is shutting down "
-                   "(container=0x%X item=0x%X count=%d)",
-                   r.container_form_id, r.item_id, r.opp.count);
+        // One op per instance that left the player; an unreadable scan sends
+        // the whole deposit as an unknown instance, counted but never built.
+        fw::engine::instances::Line after[kLines];
+        std::size_t n_after = 0;
+        const bool have_after = have_before &&
+            fw::engine::instances::scan_lines(player, r.item_id, after, kLines, &n_after);
+        int sent = 0;
+        int units = 0;
+        if (have_after) {
+            for (std::size_t i = 0; i < n_before; ++i) {
+                int now = 0;
+                for (std::size_t j = 0; j < n_after; ++j) {
+                    if (after[j].fp == before[i].fp) { now = after[j].count; break; }
+                }
+                const int moved = before[i].count - now;
+                if (moved <= 0) continue;
+                fw::net::ContainerOpPayload op = r.opp;
+                op.count   = moved;
+                op.item_fp = undescribed[i] ? fw::net::kFpUnknown : before[i].fp;
+                op.instance = before_desc[i];
+                if (op.item_fp == fw::net::kFpUnknown) std::memset(&op.instance, 0, sizeof(op.instance));
+                fw::net::client().remember_instance(r.item_id, op.item_fp, op.instance);
+                const std::uint32_t op_id = fw::net::client().submit_container_op(op);
+                ++sent;
+                units += moved;
+                FW_LOG("[put] PUT applied, op_id=%u sent for a verdict container=0x%X "
+                       "(base=0x%X cell=0x%X) item=0x%X count=%d fp=%016llX", op_id,
+                       r.container_form_id, r.base_id, r.cell_id, r.item_id, moved,
+                       static_cast<unsigned long long>(op.item_fp));
+            }
+        }
+        if (sent == 0) {
+            fw::net::ContainerOpPayload op = r.opp;
+            op.item_fp = fw::net::kFpUnknown;
+            std::memset(&op.instance, 0, sizeof(op.instance));
+            const std::uint32_t op_id = fw::net::client().submit_container_op(op);
+            FW_WRN("[put] PUT applied, op_id=%u sent as an UNKNOWN instance: the player's "
+                   "stacks of 0x%X could not be compared before and after (container=0x%X "
+                   "count=%d)", op_id, r.item_id, r.container_form_id, r.opp.count);
+        } else if (units != r.opp.count) {
+            FW_WRN("[put] deposit of %d x 0x%X: the player's stacks went down by %d over %d "
+                   "instance(s)", r.opp.count, r.item_id, units, sent);
         }
     }
     // v23 — a deposit went through on a PA frame: ship its full state.

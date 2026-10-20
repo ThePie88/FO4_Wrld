@@ -1223,13 +1223,19 @@ class OwnershipRegistry:
                 continue  # stale epoch
             rec.last_heartbeat_ms = now_ms
 
-    def on_peer_disconnect(
+    def release_all_owned(
         self,
         peer_id: str,
         now_ms: float,
+        reason: str,
     ) -> list[OwnershipChange]:
-        """Peer disconnected. Release all NPCs they owned. Each release
-        becomes an unowned record (next observer claims)."""
+        """Release every NPC `peer_id` owns; each becomes an unowned record
+        the next observer claims. The disconnect path, and since v43
+        (2026-10-20) the client's death release: one NPC_UNLOAD with
+        form_id NPC_UNLOAD_ALL_OWNED instead of one per owned NPC (637 in
+        an interior, a burst that filled the client's outbound queue and
+        dropped the PLAYER_LIFE behind it). The records decide what is
+        released, never the sender's count."""
         changes: list[OwnershipChange] = []
         for fid in list(self._records):
             rec = self._records[fid]
@@ -1238,10 +1244,9 @@ class OwnershipRegistry:
             new_epoch = self._next_epoch
             self._next_epoch += 1
             del self._records[fid]
-            log.info(
-                "ownership: forced release fid=0x%X owner=%s "
-                "(peer disconnect)",
-                fid, peer_id,
+            log.debug(
+                "ownership: forced release fid=0x%X owner=%s (%s)",
+                fid, peer_id, reason,
             )
             changes.append(OwnershipChange(
                 form_id=fid,
@@ -1249,8 +1254,21 @@ class OwnershipRegistry:
                 new_owner_peer_id=None,
                 new_epoch=new_epoch,
                 phase="release",
-                reason="peer-disconnect",
+                reason=reason,
             ))
+        return changes
+
+    def on_peer_disconnect(
+        self,
+        peer_id: str,
+        now_ms: float,
+    ) -> list[OwnershipChange]:
+        """Peer disconnected. Release all NPCs they owned. Each release
+        becomes an unowned record (next observer claims)."""
+        changes = self.release_all_owned(peer_id, now_ms, "peer-disconnect")
+        if changes:
+            log.info("ownership: %d NPC(s) of %s released (peer disconnect)",
+                     len(changes), peer_id)
 
         # v26 — and scrub the peer out of the records it did NOT own.
         #

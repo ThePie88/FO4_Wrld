@@ -57,6 +57,34 @@ struct ResolvedRefs {
     void* unequip_fn  = nullptr;
 };
 
+// The manager, the player and the two engine functions: what every equip
+// call needs (R2b shares it with the cycle).
+bool resolve_core(ResolvedRefs* out) {
+    HMODULE mod = GetModuleHandleW(L"Fallout4.exe");
+    if (!mod) {
+        FW_ERR("[equip-cycle] resolve: Fallout4.exe module not loaded");
+        return false;
+    }
+    out->base = reinterpret_cast<std::uintptr_t>(mod);
+    out->manager = *reinterpret_cast<void**>(
+        out->base + offsets::ACTOR_EQUIP_MGR_SINGLETON_RVA);
+    if (!out->manager) {
+        FW_WRN("[equip-cycle] resolve: ActorEquipManager singleton is null");
+        return false;
+    }
+    out->player = *reinterpret_cast<void**>(
+        out->base + offsets::PLAYER_SINGLETON_RVA);
+    if (!out->player) {
+        FW_WRN("[equip-cycle] resolve: PlayerCharacter singleton is null");
+        return false;
+    }
+    out->equip_fn = reinterpret_cast<void*>(
+        out->base + offsets::ENGINE_EQUIP_OBJECT_RVA);
+    out->unequip_fn = reinterpret_cast<void*>(
+        out->base + offsets::ENGINE_UNEQUIP_OBJECT_RVA);
+    return true;
+}
+
 bool resolve_refs(ResolvedRefs* out) {
     HMODULE mod = GetModuleHandleW(L"Fallout4.exe");
     if (!mod) {
@@ -373,6 +401,77 @@ void on_force_equip_cycle_equip_message() {
            "should now be in stable post-cycle state. Peer-connect can "
            "proceed safely.", static_cast<int>(ret));
     g_state.store(CycleState::DONE);
+}
+
+// L5 realtime R2b (2026-10-05) — see the header. POD-only frames: the SEH
+// cage forbids objects with destructors in these functions.
+bool equip_form(std::uint32_t form_id, std::uint32_t stack_id) {
+    ResolvedRefs r;
+    if (!resolve_core(&r)) return false;
+    using LookupFn = void* (__fastcall*)(std::uint32_t form_id);
+    void* form = reinterpret_cast<LookupFn>(r.base + offsets::LOOKUP_BY_FORMID_RVA)(form_id);
+    if (!form) {
+        FW_WRN("[equip-cycle] equip_form: form 0x%X not found", form_id);
+        return false;
+    }
+    std::uint64_t form_pair[2] = {reinterpret_cast<std::uint64_t>(form), 0};
+    using EquipFn = char (__fastcall*)(
+        void*, void*, void*,
+        unsigned int,   // a4 the stack of the item's chain (0 = the head)
+        int,            // a5 how many
+        std::int64_t,   // a6 slot (0 = the engine decides)
+        char, char, char, char, char);
+    auto equip = reinterpret_cast<EquipFn>(r.equip_fn);
+    char ret = 0;
+    __try {
+        // The decompiled sub_140CE5900: a4 goes to sub_140505440(actor,
+        // form, a4), the stack walked from the head, whose instance data
+        // becomes the object's when the pair carries none; a5 and a4 are
+        // stored as the pair {a4, a5} of the equip request. The flags are
+        // the ones of the callers in the executable (play sounds).
+        ret = equip(r.manager, r.player, form_pair,
+                    /*stack=*/ stack_id, /*number=*/ 1, /*slot=*/ 0,
+                    /*a7=*/ 0, /*a8=*/ 0, /*a9=*/ 1, /*a10=*/ 0, /*a11=*/ 0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_ERR("[equip-cycle] equip_form 0x%X stack %u: SEH caught, nothing changed",
+               form_id, stack_id);
+        return false;
+    }
+    FW_LOG("[equip-cycle] equip_form 0x%X stack %u: EquipObject returned %d", form_id,
+           stack_id, static_cast<int>(ret));
+    return true;
+}
+
+bool unequip_form(std::uint32_t form_id) {
+    ResolvedRefs r;
+    if (!resolve_core(&r)) return false;
+    using LookupFn = void* (__fastcall*)(std::uint32_t form_id);
+    void* form = reinterpret_cast<LookupFn>(r.base + offsets::LOOKUP_BY_FORMID_RVA)(form_id);
+    if (!form) {
+        FW_WRN("[equip-cycle] unequip_form: form 0x%X not found", form_id);
+        return false;
+    }
+    std::uint64_t form_pair[2] = {reinterpret_cast<std::uint64_t>(form), 0};
+    using UnequipFn = char (__fastcall*)(
+        void*, void*, void*,
+        int,            // a4 how many
+        std::int64_t,   // a5 slot (0 = the engine decides)
+        int,            // a6 the stack (0 = the engine finds the worn one)
+        char, char, char, char,
+        std::int64_t);
+    auto unequip = reinterpret_cast<UnequipFn>(r.unequip_fn);
+    char ret = 0;
+    __try {
+        ret = unequip(r.manager, r.player, form_pair,
+                      /*number=*/ 1, /*slot=*/ 0, /*stack=*/ 0,
+                      /*a7=*/ 0, /*a8=*/ 0, /*a9=*/ 0, /*a10=*/ 0, /*a11=*/ 0);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_ERR("[equip-cycle] unequip_form 0x%X: SEH caught, nothing changed", form_id);
+        return false;
+    }
+    FW_LOG("[equip-cycle] unequip_form 0x%X: UnequipObject returned %d", form_id,
+           static_cast<int>(ret));
+    return true;
 }
 
 void shutdown_equip_cycle() {

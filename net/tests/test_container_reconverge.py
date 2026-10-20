@@ -66,6 +66,14 @@ class TestPartialRecords:
         assert not r.ok and r.reason == RejectReason.INSUFFICIENT_ITEMS
 
 
+def _plain(items) -> dict[int, int]:
+    """Server lines as {item: count}, every one of them asserted plain: the
+    fixtures here deal in ammo and stimpaks (L5 stage 4b keys a line by
+    (item, instance fingerprint))."""
+    assert all(fp == 0 for _, fp in items), items
+    return {iid: n for (iid, _), n in items.items()}
+
+
 def _state_entries(frames) -> list[ContainerStateEntry]:
     out: list[ContainerStateEntry] = []
     for f, _ in frames:
@@ -167,7 +175,7 @@ async def test_seed_that_creates_a_record_is_pushed_to_every_peer():
             expected = {TRUNK_FID: {STIMPAK: 5, AMMO_10MM: 20}}
             assert _by_container(_state_entries(frames_b)) == expected
             assert _by_container(_state_entries(frames_a)) == expected
-            assert protocol_obj.state.container_state(TRUNK_FID).items == expected[TRUNK_FID]
+            assert _plain(protocol_obj.state.container_state(TRUNK_FID).items) == expected[TRUNK_FID]
         finally:
             sock_a.close(); sock_b.close()
     finally:
@@ -221,7 +229,7 @@ async def test_rejected_seed_is_answered_with_the_server_state():
                 _collect_frames(sock_a, 0.6), _collect_frames(sock_b, 0.6))
             assert _by_container(_state_entries(frames_a)) == {TRUNK_FID: {STIMPAK: 5}}
             assert _state_entries(frames_b) == []
-            assert protocol_obj.state.container_state(TRUNK_FID).items == {STIMPAK: 5}
+            assert protocol_obj.state.container_state(TRUNK_FID).items == {(STIMPAK, 0): 5}
         finally:
             sock_a.close(); sock_b.close()
     finally:
@@ -249,7 +257,7 @@ async def test_first_op_on_unknown_container_makes_a_partial_record_not_pushed()
             assert any(f.header.msg_type == int(MessageType.CONTAINER_BCAST)
                        for f, _ in frames_b)
             rec = protocol_obj.state.container_state(TWIN_FID)
-            assert rec.items == {AMMO_10MM: 3} and rec.seeded is False
+            assert rec.items == {(AMMO_10MM, 0): 3} and rec.seeded is False
 
             seed = ContainerSeedPayload(entries=(
                 ContainerStateEntry(TWIN_FID, TRUNK_BASE, TRUNK_CELL, AMMO_10MM, 3),
@@ -263,7 +271,7 @@ async def test_first_op_on_unknown_container_makes_a_partial_record_not_pushed()
             assert _by_container(_state_entries(frames_a)) == expected
             assert _by_container(_state_entries(frames_b)) == expected
             rec = protocol_obj.state.container_state(TWIN_FID)
-            assert rec.items == expected[TWIN_FID] and rec.seeded is True
+            assert _plain(rec.items) == expected[TWIN_FID] and rec.seeded is True
         finally:
             sock_a.close(); sock_b.close()
     finally:
@@ -330,7 +338,7 @@ async def test_empty_scan_sentinel_seeds_a_known_empty_record():
                           server_addr)
             await asyncio.gather(_collect_frames(sock_a, 0.4), _collect_frames(sock_b, 0.4))
             rec = protocol_obj.state.container_state(TWIN_FID)
-            assert rec.seeded is True and rec.items == {AMMO_10MM: 3}
+            assert rec.seeded is True and rec.items == {(AMMO_10MM, 0): 3}
         finally:
             sock_a.close(); sock_b.close()
     finally:
@@ -359,7 +367,7 @@ async def test_empty_scan_sentinel_never_erases_a_seeded_record():
             assert _by_container(_state_entries(frames_a)) == {TRUNK_FID: {STIMPAK: 5}}
             assert _state_entries(frames_b) == []
             rec = protocol_obj.state.container_state(TRUNK_FID)
-            assert rec.seeded is True and rec.items == {STIMPAK: 5}
+            assert rec.seeded is True and rec.items == {(STIMPAK, 0): 5}
         finally:
             sock_a.close(); sock_b.close()
     finally:
@@ -387,7 +395,7 @@ async def test_empty_scan_sentinel_leaves_a_partial_record_alone():
                 _collect_frames(sock_a, 0.6), _collect_frames(sock_b, 0.6))
             assert _state_entries(frames_a) == [] and _state_entries(frames_b) == []
             rec = protocol_obj.state.container_state(TWIN_FID)
-            assert rec.seeded is False and rec.items == {AMMO_10MM: 3}
+            assert rec.seeded is False and rec.items == {(AMMO_10MM, 0): 3}
         finally:
             sock_a.close(); sock_b.close()
     finally:
@@ -424,7 +432,7 @@ async def test_corpse_seed_with_another_runtime_base_replaces_the_partial_record
             assert _by_container(_state_entries(frames_a)) == expected
             assert _by_container(_state_entries(frames_b)) == expected
             rec = protocol_obj.state.container_state(corpse)
-            assert rec.seeded is True and rec.items == {AMMO_10MM: 3, STIMPAK: 1}
+            assert rec.seeded is True and rec.items == {(AMMO_10MM, 0): 3, (STIMPAK, 0): 1}
         finally:
             sock_a.close(); sock_b.close()
     finally:

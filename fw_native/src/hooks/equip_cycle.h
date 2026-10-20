@@ -12,6 +12,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 namespace fw::hooks {
 
 // Arms a worker thread that, after `delay_ms` from now, posts
@@ -58,6 +60,20 @@ void arm_equip_cycle_for_peer_join(unsigned int delay_ms);
 // and write per-actor state (race-unsafe from worker threads).
 void on_force_equip_cycle_unequip_message();
 void on_force_equip_cycle_equip_message();
+
+// L5 realtime R2b (2026-10-05) — one equip, one unequip, for the restore
+// after a load (persist/inventory_restore.cpp): what the record says is
+// worn is worn. The same engine calls as the cycle above
+// (ActorEquipManager::EquipObject / UnequipObject), each SEH-caged, the
+// refs resolved at the call. equip_form wears `stack_id` of the item's
+// chain (0 = the head; the decompiled EquipObject reads that stack's
+// instance data through sub_140505440 when the object pair carries none,
+// so a modded weapon is worn as itself, not as a plain roll); unequip_form
+// takes off whatever stack of the form is worn (stack 0 = the engine finds
+// it). True = the call ran without a fault; the engine's own return byte
+// is logged, not trusted (its early exits return 1 too). MAIN THREAD.
+bool equip_form(std::uint32_t form_id, std::uint32_t stack_id);
+bool unequip_form(std::uint32_t form_id);
 
 // Called from DLL_PROCESS_DETACH. Stops the arming worker if still
 // sleeping. Idempotent.

@@ -14,6 +14,7 @@
 #include "../log.h"
 #include "overlay.h"
 #include "../native/chargen_stage.h"
+#include "../hooks/loader_flush_hook.h"   // loader_flush_active(): no vsync while a load runs (2026-10-18)
 #include "../main_thread_dispatch.h"   // main_thread_id() — Present has 4 call
                                        // sites and one is a worker thread
 
@@ -30,6 +31,24 @@ using PresentFn = HRESULT (STDMETHODCALLTYPE*)(
 PresentFn g_orig_present = nullptr;
 std::atomic<unsigned long long> g_frame_count{0};
 std::atomic<bool> g_hooked{false};
+
+// 2026-10-18 — no vsync while the loader flushes (RESEARCH_interior_loads.md
+// sections 8-13). Leaving an interior took 90-228 s: every precombined NIF
+// of the exterior cells creates its GPU buffers through the renderer's
+// resource thread (sub_141850010), which before each creation spins
+// `while (Present in flight) Sleep(1)` (unk_1438CAAC0, raised around the
+// Present call in sub_141817F60). The game presents with SyncInterval 3
+// (iPresentInterval=1 on a 144 Hz display: the 48 fps cap), so a Present
+// blocks up to 21 ms and the loading screen keeps one in flight almost all
+// the time: 850 NIFs x several creations x a vblank each. With no vsync the
+// Present returns at once, the flag is down and the creations fly. This is
+// what Load Accelerator and High FPS Physics Fix do blind ("more fps while
+// loading"); here it is scoped to the loader flush, the gameplay Present is
+// untouched. Config loading_vsync_off (default on).
+std::atomic<bool> g_vsync_off_in_loads{true};
+std::atomic<bool> g_vsync_off_now{false};
+std::atomic<unsigned long long> g_vsync_off_frames{0};
+std::atomic<unsigned> g_vsync_saved_interval{0};
 // Off by default. The archived Strada A draws lazily initialise themselves, so
 // without this gate simply installing the hook would put a triangle on screen.
 std::atomic<bool> g_strada_a{false};
@@ -232,7 +251,26 @@ HRESULT STDMETHODCALLTYPE detour_present(
         // still points at us, but we'd have already crashed elsewhere).
         return S_OK;
     }
-    return g_orig_present(self, sync_interval, flags);
+    // The loader is flushing: present without vsync so the renderer's
+    // resource thread stops waiting a vblank per GPU resource (see the
+    // comment at g_vsync_off_in_loads). One line at each transition.
+    UINT si = sync_interval;
+    if (g_vsync_off_in_loads.load(std::memory_order_relaxed) && sync_interval != 0 &&
+        fw::hooks::loader_flush_active()) {
+        si = 0;
+        g_vsync_off_frames.fetch_add(1, std::memory_order_relaxed);
+        if (!g_vsync_off_now.exchange(true, std::memory_order_acq_rel)) {
+            g_vsync_saved_interval.store(sync_interval, std::memory_order_relaxed);
+            FW_LOG("[render] vsync OFF for the load: a loader flush is on (the game asked sync %u)",
+                   sync_interval);
+        }
+    } else if (g_vsync_off_now.load(std::memory_order_acquire) && !fw::hooks::loader_flush_active()) {
+        g_vsync_off_now.store(false, std::memory_order_release);
+        FW_LOG("[render] vsync back (sync %u) after %llu frames without it",
+               g_vsync_saved_interval.load(std::memory_order_relaxed),
+               g_vsync_off_frames.exchange(0, std::memory_order_relaxed));
+    }
+    return g_orig_present(self, si, flags);
 }
 
 // Create a minimal D3D11 device + dummy swapchain on a hidden window,
@@ -371,6 +409,12 @@ bool init_present_hook(std::uintptr_t module_base) {
 
 unsigned long long frame_count() {
     return g_frame_count.load(std::memory_order_relaxed);
+}
+
+
+void set_vsync_off_in_loads(bool on) noexcept {
+    g_vsync_off_in_loads.store(on, std::memory_order_relaxed);
+    FW_LOG("[render] vsync off during loader flushes: %s", on ? "ON" : "off");
 }
 
 } // namespace fw::render

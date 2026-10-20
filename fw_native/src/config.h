@@ -192,10 +192,51 @@ struct Settings {
     // a summary line when it changes, every stack at debug level. false =
     // the reader never runs. It writes nothing to the engine either way.
     bool          inventory_capture = true;
+    // L5 stage 4a (2026-10-02) - the measurements stage 4 is designed on
+    // (persist/instance_probe.cpp): every uid move the engine announces,
+    // the stacks around every transfer, apply, rollback and realignment,
+    // the capture's records at info. Observe-only. Off by default here; the
+    // launcher writes it.
+    bool          instance_probe = false;
     // L5 stage 2 - virtual-key that asks for a TEST checkpoint: a granted
     // named save (fwck_test_N) plus the inventory manifest of the same
     // instant, for tools/fos_inventory.py --diff. 0 = off. Default F10.
     std::uint32_t checkpoint_test_key = 0x79;
+    // L5 realtime D2, the experiment (2026-10-15): the key that makes a map
+    // marker at the player at runtime (press 1 place, 2 AddToMap, 3 remove)
+    // and the icon type it gets. 0 = off. OFF by default since D2 closed
+    // (2026-10-16); set 0x77 (F8) to try icon types. Type 30.
+    std::uint32_t map_marker_test_key = 0;
+    std::uint32_t map_marker_test_type = 30;
+    // L5 realtime D2 (2026-10-15): the death crates and the other players on
+    // the Pip-Boy map and the compass (native/map_markers.cpp). map_markers
+    // = 0 switches the whole thing off; the icon types (the engine's map
+    // marker types: 30 is the gravestone the experiment showed), and how
+    // often the map's positions are refreshed while the Pip-Boy is open.
+    bool          map_markers = true;
+    std::uint32_t map_marker_death_type = 30;
+    std::uint32_t map_marker_player_type = 31;
+    std::uint32_t map_marker_rebuild_ms = 1000;   // the rebuild costs under 2 ms (measured 2026-10-15)
+
+    // 2026-10-18: the loader flush fix (hooks/loader_flush_hook.cpp). While
+    // a flush runs off the main thread, the loader's owner thread id is that
+    // thread's, so the precombined geometry tasks finish there instead of
+    // waiting for the main thread to win a lock by luck (exits from
+    // interiors took 90-112 s in vanilla). 0 = observe only (the flush is
+    // still logged and counted).
+    bool loader_flush_owner_spoof = false;   // tried 2026-10-18 20:10: 139 s, worse; kept for experiments
+    // 2026-10-18: the fix that stands. During a flush the owner thread (the
+    // main thread) raises a flag when it wants the post-process lock, waits
+    // for the worker's slice to end and takes it; the worker yields while the
+    // flag is up. The owner's steps (the precombined geometry of exterior
+    // cells) then run every frame instead of by luck.
+    bool loader_owner_priority = false;   // 20:25: the main thread never post-processes during a flush, useless; counters stay
+    // 2026-10-18: THE fix for the exits from interiors (render/present_hook.cpp):
+    // no vsync on Present while the loader flushes. Every precombined NIF
+    // creates its GPU buffers through the renderer's resource thread, which
+    // waits a vblank per creation while a Present is in flight (sync 3 at
+    // 144 Hz = 21 ms). Gameplay Present untouched. 0 = off.
+    bool loading_vsync_off = true;
 
     // 2026-08-08 — ghost body cull. true (default) = shipping behaviour: the
     // ghost's body geometry is hidden when the peer wears body armour. false

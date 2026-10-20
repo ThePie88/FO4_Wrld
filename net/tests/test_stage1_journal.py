@@ -395,7 +395,7 @@ class TestDurabilityGate:
                 if decode_frame(raw).header.msg_type == int(MessageType.CONTAINER_OP_ACK)]
         assert len(acks) == 1
         assert acks[0].status == int(ContainerOpAckStatus.REJ_UNAVAILABLE)
-        assert state.container_state(TRUNK_FID).items[STIMPAK] == 5
+        assert state.container_state(TRUNK_FID).items[(STIMPAK, 0)] == 5
         assert state.recall_container_verdict("alice", 5) is None
         j.close()
 
@@ -454,7 +454,7 @@ class TestSnapshotAndJournal:
         assert b.applied_lsn == 2
         j2 = Journal.open(d)
         assert j2.replay(b, after_lsn=b.applied_lsn) == 1
-        assert b.container_state(TRUNK_FID).items[STIMPAK] == 12
+        assert b.container_state(TRUNK_FID).items[(STIMPAK, 0)] == 12
         j2.close()
 
     def test_quests_and_globals_survive_the_snapshot(self, tmp_path: Path):

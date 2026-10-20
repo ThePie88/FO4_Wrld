@@ -264,7 +264,13 @@ def run(
             # from a REPLICATED one by eye — the whole point of the test.
             # Side A is left as it is (black hair).
             chargen_selftest=(0x000A042F if side.name == "B" else 0),
+            # 2026-10-05 — A/B lever, see config.FP_GRAPH_OFF_MARKER.
+            first_person_graph_drive=not config.FP_GRAPH_OFF_MARKER.exists(),
         )
+        if config.FP_GRAPH_OFF_MARKER.exists():
+            log(side.log_prefix,
+                f"first-person graph module OFF: marker {config.FP_GRAPH_OFF_MARKER} is present",
+                color=YELLOW)
         if side.auto_load_save:
             log(side.log_prefix,
                 f"fw_config.ini written -> {fwcfg_path} (auto-load: {side.auto_load_save!r})",

@@ -94,6 +94,12 @@ persist_lifecycle = {persist_lifecycle}
 # only: a summary line in fw_native.log when it changes, every stack at
 # debug level. Writes nothing to the engine. false = the reader never runs.
 inventory_capture = {inventory_capture}
+# L5 stage 4a - the measurements stage 4 is designed on, observe-only:
+# every uid move the engine announces ([uid] lines), the stacks of the
+# container and of the player around every menu transfer, remote apply,
+# rollback and realignment, the capture's records at info ([probe] lines).
+# On while stage 4a runs; false = no detour and no line.
+instance_probe = {instance_probe}
 # Virtual-key that asks for a TEST checkpoint: a granted named save
 # (fwck_test_N in Saves) plus fw_inventory_ckpt_N.json in the game dir, the
 # pair tools/fos_inventory.py --diff compares. 0 = off. 0x79 = F10.
@@ -176,6 +182,7 @@ def write_for_side(
     world_spawn_sync: bool = True,
     persist_lifecycle: bool = True,
     inventory_capture: bool = True,
+    instance_probe: bool = True,
     checkpoint_test_key: int = 0x79,
     chargen_selftest: int = 0,
     chargen_selftest_delay: int = 20,
@@ -226,6 +233,7 @@ def write_for_side(
         world_spawn_sync=("true" if world_spawn_sync else "false"),
         persist_lifecycle=("true" if persist_lifecycle else "false"),
         inventory_capture=("true" if inventory_capture else "false"),
+        instance_probe=("true" if instance_probe else "false"),
         checkpoint_test_key=(f"0x{checkpoint_test_key:02X}" if checkpoint_test_key else "0"),
         chargen_selftest=f"0x{chargen_selftest:08X}" if chargen_selftest else "0",
         chargen_selftest_delay=str(chargen_selftest_delay),

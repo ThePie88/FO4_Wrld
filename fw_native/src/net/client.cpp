@@ -32,8 +32,11 @@
 #include "../native/ghost_lifecycle.h"
 #include "../native/face_cache.h"
 #include "../persist/checkpoint.h"     // L5 stage 3a: the server's checkpoint request
+#include "../persist/instance_fp.h"    // L5 stage 4b: a descriptor must make its fingerprint
 #include "../persist/death.h"        // L5 stage 3c: the respawn point from the boot word
+#include "../persist/inventory_restore.h"   // L5 realtime R2: the record back into the game
 #include "../native/world_spawn.h"   // v20: land peer recipes off the wire
+#include "../native/map_markers.h"   // L5 realtime D2 (v40): the owner's death crates on the map
 #include "../native/appearance_recipe.h"  // v21: the entry ritual raises the
                                           // editing flag from WELCOME
 
@@ -59,6 +62,11 @@ Client::Client() {
     // that, and the |1 keeps the epoch from being 0.
     op_epoch_ = static_cast<std::uint16_t>(
         (std::chrono::steady_clock::now().time_since_epoch().count() & 0xFFFE) | 1);
+    // L5 realtime R1: the id an INV_STATE names its process by. Any bits
+    // that differ between two launches; never 0 (the server refuses it).
+    const auto t = static_cast<std::uint64_t>(
+        std::chrono::high_resolution_clock::now().time_since_epoch().count());
+    capture_session_ = static_cast<std::uint32_t>(t ^ (t >> 32)) | 1u;
 }
 
 Client::~Client() {
@@ -1184,6 +1192,218 @@ void Client::enqueue_container_seed(std::uint32_t form_id,
     }
 }
 
+void Client::enqueue_instance_defs(const InstanceDefEntry* entries, std::size_t n) {
+    if (!accepting_enqueue() || !entries || n == 0) return;
+    constexpr std::size_t max_per_chunk = INSTANCE_DEFS_MAX_ENTRIES_PER_FRAME;   // 12
+    const std::uint16_t total = static_cast<std::uint16_t>((n + max_per_chunk - 1) / max_per_chunk);
+    for (std::uint16_t ci = 0; ci < total; ++ci) {
+        const std::size_t off = static_cast<std::size_t>(ci) * max_per_chunk;
+        const std::size_t this_chunk = (n - off) < max_per_chunk ? (n - off) : max_per_chunk;
+        QueuedSend q;
+        q.msg_type = MessageType::INSTANCE_DEFS;
+        q.reliable = true;
+        q.payload_bytes.resize(sizeof(ChunkHeader) + this_chunk * sizeof(InstanceDefEntry));
+        ChunkHeader h{};
+        h.num_entries  = static_cast<std::uint16_t>(this_chunk);
+        h.chunk_index  = ci;
+        h.total_chunks = total;
+        std::memcpy(q.payload_bytes.data(), &h, sizeof(h));
+        std::memcpy(q.payload_bytes.data() + sizeof(ChunkHeader), entries + off,
+                    this_chunk * sizeof(InstanceDefEntry));
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+}
+
+void Client::enqueue_inv_state(const InvStateHeader& header, const InvStateEntry* entries,
+                               std::size_t n) {
+    if (!accepting_enqueue()) return;
+    if (!(header.flags & kInvStateFlagComplete)) return;   // never a half-read inventory
+    constexpr std::size_t per = INV_STATE_MAX_ENTRIES_PER_FRAME;   // 80
+    const std::size_t chunks = n == 0 ? 1 : (n + per - 1) / per;
+    if (chunks > 64) {
+        FW_WRN("net: INV_STATE of %zu lines needs %zu frames, more than the server takes: "
+               "not sent", n, chunks);
+        return;
+    }
+    std::vector<QueuedSend> frames;
+    frames.reserve(chunks);
+    for (std::size_t ci = 0; ci < chunks; ++ci) {
+        const std::size_t off = ci * per;
+        const std::size_t this_chunk = n > off ? ((n - off) < per ? (n - off) : per) : 0;
+        InvStateHeader h = header;
+        h.num_entries  = static_cast<std::uint16_t>(this_chunk);
+        h.chunk_index  = static_cast<std::uint16_t>(ci);
+        h.total_chunks = static_cast<std::uint16_t>(chunks);
+        QueuedSend q;
+        q.msg_type = MessageType::INV_STATE;
+        q.reliable = true;
+        q.payload_bytes.resize(sizeof(h) + this_chunk * sizeof(InvStateEntry));
+        std::memcpy(q.payload_bytes.data(), &h, sizeof(h));
+        if (this_chunk) {
+            std::memcpy(q.payload_bytes.data() + sizeof(h), entries + off,
+                        this_chunk * sizeof(InvStateEntry));
+        }
+        frames.push_back(std::move(q));
+    }
+    std::lock_guard lk(queue_mutex_);
+    // Only the latest inventory matters: a capture still waiting here is
+    // superseded (a long drop must not pile up copies of the inventory).
+    for (auto it = queue_.begin(); it != queue_.end();) {
+        if (it->msg_type == MessageType::INV_STATE) it = queue_.erase(it);
+        else ++it;
+    }
+    // Outside the ceiling, like the seeds: a capture with a chunk missing
+    // is never applied, and the record would lag until the next change.
+    for (auto& q : frames) queue_.push_back(std::move(q));
+}
+
+void Client::enqueue_player_instance_defs(const InstanceDefEntry* entries, std::size_t n) {
+    if (!entries || n == 0) return;
+    std::vector<InstanceDefEntry> fresh;
+    {
+        std::lock_guard lk(player_defs_mutex_);
+        for (std::size_t i = 0; i < n; ++i) {
+            if (player_defs_sent_.insert(entries[i].fp).second) fresh.push_back(entries[i]);
+        }
+    }
+    if (!fresh.empty()) enqueue_instance_defs(fresh.data(), fresh.size());
+}
+
+void Client::enqueue_restore_request(const RestoreRequestPayload& p) {
+    if (!accepting_enqueue()) return;
+    QueuedSend q;
+    q.msg_type = MessageType::RESTORE_REQUEST;
+    q.reliable = true;
+    q.payload_bytes.resize(sizeof(p));
+    std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
+    std::lock_guard lk(queue_mutex_);
+    queue_.push_back(std::move(q));
+}
+
+void Client::enqueue_restore_done(const RestoreDonePayload& p) {
+    if (!accepting_enqueue()) return;
+    QueuedSend q;
+    q.msg_type = MessageType::RESTORE_DONE;
+    q.reliable = true;
+    q.payload_bytes.resize(sizeof(p));
+    std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
+    std::lock_guard lk(queue_mutex_);
+    queue_.push_back(std::move(q));
+}
+
+void Client::enqueue_location_discovered(const LocationDiscoveredPayload& p) {
+    if (!accepting_enqueue()) return;
+    QueuedSend q;
+    q.msg_type = MessageType::LOCATION_DISCOVERED;
+    q.reliable = true;
+    q.payload_bytes.resize(sizeof(p));
+    std::memcpy(q.payload_bytes.data(), &p, sizeof(p));
+    std::lock_guard lk(queue_mutex_);
+    queue_.push_back(std::move(q));
+}
+
+void Client::enqueue_stats_state(const PlayerStatsHeader& header, const PerkRankEntry* perks,
+                                 std::size_t n) {
+    if (!accepting_enqueue()) return;
+    if (!(header.flags & kStatsFlagComplete)) return;
+    constexpr std::size_t per = STATS_MAX_PERKS_PER_FRAME;   // 267
+    const std::size_t chunks = n == 0 ? 1 : (n + per - 1) / per;
+    if (chunks > 64) return;
+    std::vector<QueuedSend> frames;
+    frames.reserve(chunks);
+    for (std::size_t ci = 0; ci < chunks; ++ci) {
+        const std::size_t off = ci * per;
+        const std::size_t this_chunk = n > off ? ((n - off) < per ? (n - off) : per) : 0;
+        PlayerStatsHeader h = header;
+        h.num_perks    = static_cast<std::uint16_t>(this_chunk);
+        h.chunk_index  = static_cast<std::uint16_t>(ci);
+        h.total_chunks = static_cast<std::uint16_t>(chunks);
+        QueuedSend q;
+        q.msg_type = MessageType::STATS_STATE;
+        q.reliable = true;
+        q.payload_bytes.resize(sizeof(h) + this_chunk * sizeof(PerkRankEntry));
+        std::memcpy(q.payload_bytes.data(), &h, sizeof(h));
+        if (this_chunk) {
+            std::memcpy(q.payload_bytes.data() + sizeof(h), perks + off,
+                        this_chunk * sizeof(PerkRankEntry));
+        }
+        frames.push_back(std::move(q));
+    }
+    std::lock_guard lk(queue_mutex_);
+    for (auto it = queue_.begin(); it != queue_.end();) {
+        if (it->msg_type == MessageType::STATS_STATE) it = queue_.erase(it);
+        else ++it;
+    }
+    for (auto& q : frames) queue_.push_back(std::move(q));
+}
+
+bool Client::container_ops_in_flight() {
+    if (acks_in_progress_.load() != 0) return true;
+    // R1b: an op begun and not yet sent (a drop still falling) holds the
+    // captures too. A count stuck for 30 s is a watch that was lost: freed,
+    // said out loud, the captures resume (one capture may then be taken over
+    // a drop, the pre-R1b behaviour, instead of none ever again).
+    if (world_item_ops_open_.load() != 0) {
+        const std::uint64_t now = static_cast<std::uint64_t>(GetTickCount64());
+        const std::uint64_t since = world_item_open_since_ms_.load();
+        if (since != 0 && now - since > 30000ull) {
+            FW_ERR("net: %u world item op(s) open for more than 30 s: freed (a drop watch was "
+                   "lost), the captures resume", world_item_ops_open_.load());
+            world_item_ops_open_.store(0);
+            world_item_open_since_ms_.store(0);
+        } else {
+            return true;
+        }
+    }
+    std::lock_guard lk(pending_ops_mutex_);
+    return !pending_container_ops_.empty() || !pending_world_item_ops_.empty();
+}
+
+void Client::remember_instance(std::uint32_t base, std::uint64_t fp, const InstanceDesc& d) {
+    if (base == 0 || fp == kFpPlain || fp == kFpUnknown) return;
+    if (fw::persist::instance::fp_of(base, d) != fp) {
+        FW_WRN("net: descriptor of 0x%08X fp=%016llX does not make its fingerprint: refused",
+               base, static_cast<unsigned long long>(fp));
+        return;
+    }
+    std::lock_guard lk(instance_defs_mutex_);
+    instance_defs_[fp] = {base, d};
+}
+
+bool Client::instance_desc(std::uint64_t fp, InstanceDesc* out) {
+    std::lock_guard lk(instance_defs_mutex_);
+    const auto it = instance_defs_.find(fp);
+    if (it == instance_defs_.end()) return false;
+    if (out) *out = it->second.second;
+    return true;
+}
+
+void Client::mirror_take(std::map<LineKey, std::int32_t>& bucket, std::uint32_t item,
+                         std::uint64_t fp, std::int32_t count) {
+    std::vector<LineKey> order;
+    if (fp == kFpUnknown) {
+        order.push_back({item, kFpUnknown});
+        order.push_back({item, kFpPlain});
+        for (const auto& [k, n] : bucket) {
+            if (k.first == item && k.second != kFpUnknown && k.second != kFpPlain) order.push_back(k);
+        }
+    } else {
+        order.push_back({item, fp});
+        order.push_back({item, kFpUnknown});
+    }
+    std::int32_t remaining = count;
+    for (const auto& k : order) {
+        if (remaining <= 0) break;
+        const auto it = bucket.find(k);
+        if (it == bucket.end() || it->second <= 0) continue;
+        const std::int32_t used = it->second < remaining ? it->second : remaining;
+        it->second -= used;
+        remaining -= used;
+        if (it->second <= 0) bucket.erase(it);
+    }
+}
+
 // Loot rework L2 (2026-09-23). The function this replaces waited up to
 // 100 ms here for the verdict and told the caller to skip the engine on a
 // refusal or a timeout; the caller sat on the ADD half of a transfer the
@@ -1205,6 +1425,7 @@ std::uint32_t Client::submit_container_op(ContainerOpPayload op) {
     {
         std::lock_guard lk(pending_ops_mutex_);
         pending_container_ops_[id] = op;
+        last_op_id_.store(id);
     }
 
     // Direct push, not push_queued: an op the engine has already applied
@@ -1221,17 +1442,82 @@ std::uint32_t Client::submit_container_op(ContainerOpPayload op) {
     return id;
 }
 
+std::uint32_t Client::begin_world_item_op() {
+    if (!accepting_enqueue()) return 0;
+    std::uint32_t id = 0;
+    do {
+        const std::uint32_t seq = next_op_seq_.fetch_add(1) & 0xFFFFu;
+        id = (static_cast<std::uint32_t>(op_epoch_) << 16) | seq;
+    } while (id == 0);
+    if (world_item_ops_open_.fetch_add(1) == 0) {
+        world_item_open_since_ms_.store(static_cast<std::uint64_t>(GetTickCount64()));
+    }
+    return id;
+}
+
+void Client::release_world_item_open_() {
+    std::uint32_t open = world_item_ops_open_.load();
+    while (open != 0 && !world_item_ops_open_.compare_exchange_weak(open, open - 1)) {}
+    if (open <= 1) world_item_open_since_ms_.store(0);
+}
+
+void Client::cancel_world_item_op(std::uint32_t op_id) {
+    if (op_id == 0) return;
+    release_world_item_open_();
+}
+
+bool Client::submit_world_item_op(WorldItemOpPayload op, std::uint32_t ref_handle) {
+    if (op.client_op_id == 0) return false;
+    if (!accepting_enqueue()) {
+        release_world_item_open_();
+        return false;
+    }
+    {
+        std::lock_guard lk(pending_ops_mutex_);
+        pending_world_item_ops_[op.client_op_id] = PendingWorldItemOp{op, ref_handle};
+        // The watermark is the newest id SENT. A drop's id is handed out
+        // before a container op's and sent after it (at rest): storing it
+        // blindly would move the watermark backwards, and the server would
+        // apply that container op a second time over the next capture.
+        const std::uint32_t cur = last_op_id_.load();
+        const std::uint16_t d = static_cast<std::uint16_t>((op.client_op_id - cur) & 0xFFFFu);
+        if (cur == 0 || (op.client_op_id >> 16) != (cur >> 16) || (d != 0 && d < 0x8000u)) {
+            last_op_id_.store(op.client_op_id);
+        }
+    }
+    release_world_item_open_();   // begun -> sent: pending now, no longer open
+    // Direct push, not push_queued: an op the engine has already applied
+    // must not be the one the ceiling drops (see submit_container_op).
+    QueuedSend q;
+    q.msg_type = MessageType::WORLD_ITEM_OP;
+    q.reliable = true;
+    q.payload_bytes.resize(sizeof(op));
+    std::memcpy(q.payload_bytes.data(), &op, sizeof(op));
+    {
+        std::lock_guard lk(queue_mutex_);
+        queue_.push_back(std::move(q));
+    }
+    return true;
+}
+
 void Client::resend_pending_container_ops() {
     std::vector<ContainerOpPayload> ops;
+    std::vector<WorldItemOpPayload> wops;
     {
         std::lock_guard lk(pending_ops_mutex_);
         ops.reserve(pending_container_ops_.size());
         for (const auto& [id, op] : pending_container_ops_) ops.push_back(op);
+        wops.reserve(pending_world_item_ops_.size());
+        for (const auto& [id, p] : pending_world_item_ops_) wops.push_back(p.op);
     }
-    if (ops.empty()) return;
+    if (ops.empty() && wops.empty()) return;
     // In the order they were made: the ids are one sequence per process.
     std::sort(ops.begin(), ops.end(),
               [](const ContainerOpPayload& a, const ContainerOpPayload& b) {
+                  return a.client_op_id < b.client_op_id;
+              });
+    std::sort(wops.begin(), wops.end(),
+              [](const WorldItemOpPayload& a, const WorldItemOpPayload& b) {
                   return a.client_op_id < b.client_op_id;
               });
     {
@@ -1244,9 +1530,17 @@ void Client::resend_pending_container_ops() {
             std::memcpy(q.payload_bytes.data(), &op, sizeof(op));
             queue_.push_back(std::move(q));
         }
+        for (const auto& op : wops) {
+            QueuedSend q;
+            q.msg_type = MessageType::WORLD_ITEM_OP;
+            q.reliable = true;
+            q.payload_bytes.resize(sizeof(op));
+            std::memcpy(q.payload_bytes.data(), &op, sizeof(op));
+            queue_.push_back(std::move(q));
+        }
     }
-    FW_LOG("net: %zu container op(s) applied before the drop sent again for "
-           "a verdict", ops.size());
+    FW_LOG("net: %zu container op(s) and %zu world item op(s) applied before the drop sent "
+           "again for a verdict", ops.size(), wops.size());
 }
 
 bool Client::container_known(std::uint32_t form_id) {
@@ -1293,7 +1587,7 @@ bool Client::reconverge_container(std::uint32_t form_id) {
             }
         }
     }
-    std::vector<std::pair<std::uint32_t, std::int32_t>> want;
+    std::vector<fw::engine::ServerLine> want;
     std::uint32_t base_id = 0, cell_id = 0;
     {
         std::lock_guard lk(container_mirror_mutex_);
@@ -1301,7 +1595,17 @@ bool Client::reconverge_container(std::uint32_t form_id) {
         if (it == container_mirror_.end()) return false;
         base_id = it->second.base_id;
         cell_id = it->second.cell_id;
-        want.assign(it->second.items.begin(), it->second.items.end());
+        for (const auto& [k, n] : it->second.items) {
+            fw::engine::ServerLine sl{};
+            sl.item = k.first;
+            sl.fp = k.second;
+            sl.count = n;
+            want.push_back(sl);
+        }
+    }
+    // L5 stage 4b: how to build every named line, when it is known here.
+    for (auto& sl : want) {
+        if (sl.fp != kFpPlain && sl.fp != kFpUnknown) sl.have_desc = instance_desc(sl.fp, &sl.desc);
     }
     fw::hooks::ApplyingRemoteGuard guard;
     fw::engine::ContainerDiff d{};
@@ -1943,6 +2247,15 @@ bool Client::push_queued(QueuedSend&& q) {
             }
         }
         if (!made_room) {
+            if (is_critical(q.msg_type)) {
+                // Past the ceiling on purpose: see the header. Said every
+                // time, it is rare and it is the trace of a near miss.
+                FW_WRN("net: outbound queue full with %zu state event(s) — "
+                       "control message 0x%04X goes in past the ceiling",
+                       queue_.size(), static_cast<unsigned>(q.msg_type));
+                queue_.push_back(std::move(q));
+                return true;
+            }
             static std::uint64_t s_next_warn_ms = 0;
             const std::uint64_t now = now_ms_wall();
             if (now >= s_next_warn_ms) {
@@ -1957,6 +2270,21 @@ bool Client::push_queued(QueuedSend&& q) {
     }
     queue_.push_back(std::move(q));
     return true;
+}
+
+bool Client::is_critical(MessageType t) noexcept {
+    switch (t) {
+    case MessageType::PLAYER_LIFE:
+    case MessageType::RESTORE_REQUEST:
+    case MessageType::RESTORE_DONE:
+    case MessageType::CKPT_DONE:
+    case MessageType::BOOT_RESULT:
+    case MessageType::INV_DIGEST:
+    case MessageType::LOCATION_DISCOVERED:
+        return true;
+    default:
+        return false;
+    }
 }
 
 // Everything that belongs to ONE session and must not survive the next.
@@ -2332,6 +2660,9 @@ void Client::dispatch(const Delivered& d) {
             FW_DBG("net: CKPT_BOOT after the boot decision (a resume): ignored");
             break;
         }
+        // L5 realtime R2: the boot load is next; the record is asked for now
+        // and put back into the game once that load is over.
+        fw::persist::restore::on_boot_word();
         // v30 — the position rides along for both decisions.
         boot_ckpt_.has_pos = b.has_pos != 0;
         boot_ckpt_.pos[0] = b.pos[0]; boot_ckpt_.pos[1] = b.pos[1]; boot_ckpt_.pos[2] = b.pos[2];
@@ -2434,6 +2765,15 @@ void Client::dispatch(const Delivered& d) {
         // Loot rework L2: the engine applied the op before it was sent.
         // ACCEPTED closes it; anything else is undone on the main thread,
         // the only one allowed to touch an inventory (B1.l).
+        //
+        // L5 realtime R1: from taking the op out of the pending map to
+        // queuing its undo the op is in no list an INV_STATE could check:
+        // this count covers that gap (container_ops_in_flight).
+        acks_in_progress_.fetch_add(1);
+        struct AckDone {
+            std::atomic<std::uint32_t>& n;
+            ~AckDone() { n.fetch_sub(1); }
+        } ack_done{acks_in_progress_};
         std::optional<ContainerOpPayload> op;
         {
             std::lock_guard lk(pending_ops_mutex_);
@@ -2458,16 +2798,21 @@ void Client::dispatch(const Delivered& d) {
         fw::dispatch::PendingContainerOp settle{};
         settle.container_form_id = op->container_form_id;
         settle.reconverge = 1;
+        // L5 stage 4b: the ACK's count is the one of the (item, instance)
+        // line the op named; an op that could not name its instance gets the
+        // item's total, which no single line of the mirror can take.
+        auto mirror_line = [&]() {
+            if (ack.item_fp == kFpUnknown) return;
+            std::lock_guard lk(container_mirror_mutex_);
+            auto mit = container_mirror_.find(op->container_form_id);
+            if (mit == container_mirror_.end()) return;
+            auto& bucket = mit->second.items;
+            const LineKey key{ack.item_base_id, ack.item_fp};
+            if (ack.final_count > 0) bucket[key] = ack.final_count;
+            else                     bucket.erase(key);
+        };
         if (ack.status == static_cast<std::uint8_t>(ContainerOpAckStatus::ACCEPTED)) {
-            {
-                std::lock_guard lk(container_mirror_mutex_);
-                auto mit = container_mirror_.find(op->container_form_id);
-                if (mit != container_mirror_.end()) {
-                    auto& bucket = mit->second.items;
-                    if (ack.final_count > 0) bucket[ack.item_base_id] = ack.final_count;
-                    else                     bucket.erase(ack.item_base_id);
-                }
-            }
+            mirror_line();
             FW_DBG("net: CONTAINER_OP op_id=%u %s ACCEPTED, server has %d x 0x%X "
                    "in 0x%X", ack.client_op_id, take ? "TAKE" : "PUT",
                    ack.final_count, ack.item_base_id, op->container_form_id);
@@ -2482,6 +2827,9 @@ void Client::dispatch(const Delivered& d) {
                op->container_cell_id, op->item_base_id, op->count);
         const bool insufficient = ack.status ==
             static_cast<std::uint8_t>(ContainerOpAckStatus::REJ_INSUFFICIENT);
+        // The one refusal whose count describes this container's line: the
+        // realignment queued behind the undo settles the container to it.
+        if (insufficient) mirror_line();
         fw::dispatch::PendingContainerOp undo{};
         undo.kind              = op->kind;
         undo.container_form_id = op->container_form_id;
@@ -2492,6 +2840,7 @@ void Client::dispatch(const Delivered& d) {
         undo.rollback          = 1;
         undo.insufficient      = insufficient ? 1 : 0;
         undo.server_count      = ack.final_count;
+        undo.item_fp           = op->item_fp;
         fw::dispatch::enqueue_container_apply(undo);
         fw::dispatch::enqueue_container_apply(settle);
         {
@@ -2509,6 +2858,81 @@ void Client::dispatch(const Delivered& d) {
         break;
     }
 
+    case static_cast<std::uint16_t>(MessageType::WORLD_ITEM_ACK): {
+        // L5 realtime R1b (2026-10-05): the verdict of a drop or a pickup.
+        // ACCEPTED closes it (a drop's echo binds the wid on its own);
+        // anything else is undone on the main thread: a drop's REFR goes and
+        // the item comes back, a picked-up item is destroyed (someone else
+        // took it first), except REJ_UNAVAILABLE on a pickup, where nothing
+        // is destroyed and the next capture settles the record.
+        if (d.payload.size() < sizeof(WorldItemAckPayload)) break;
+        WorldItemAckPayload ack{};
+        std::memcpy(&ack, d.payload.data(), sizeof(ack));
+        acks_in_progress_.fetch_add(1);
+        struct WorldAckDone {
+            std::atomic<std::uint32_t>& n;
+            ~WorldAckDone() { n.fetch_sub(1); }
+        } ack_done{acks_in_progress_};
+        std::optional<PendingWorldItemOp> p;
+        {
+            std::lock_guard lk(pending_ops_mutex_);
+            auto it = pending_world_item_ops_.find(ack.client_op_id);
+            if (it != pending_world_item_ops_.end()) {
+                p = it->second;
+                pending_world_item_ops_.erase(it);
+            }
+        }
+        if (!p) {
+            FW_DBG("net: WORLD_ITEM_ACK op_id=%u status=%u for no pending op",
+                   ack.client_op_id, ack.status);
+            break;
+        }
+        const WorldItemOpPayload& op = p->op;
+        const bool drop = op.kind == kWorldItemDrop;
+        if (ack.status == static_cast<std::uint8_t>(ContainerOpAckStatus::ACCEPTED)) {
+            FW_LOG("net: WORLD_ITEM_OP op_id=%u %s ACCEPTED: wid=%u, %d x 0x%X fp=%016llX, "
+                   "the record holds %d", ack.client_op_id, drop ? "DROP" : "PICKUP", ack.wid,
+                   op.count, op.item_base_id, static_cast<unsigned long long>(op.item_fp),
+                   ack.record_count);
+            break;
+        }
+        const bool unavailable = ack.status ==
+            static_cast<std::uint8_t>(ContainerOpAckStatus::REJ_UNAVAILABLE);
+        const bool insufficient = ack.status ==
+            static_cast<std::uint8_t>(ContainerOpAckStatus::REJ_INSUFFICIENT);
+        const bool keep = !drop && unavailable;
+        FW_WRN("net: WORLD_ITEM_OP op_id=%u %s REFUSED status=%u: %d x 0x%X fp=%016llX "
+               "form=0x%X wid=%u - %s", ack.client_op_id, drop ? "DROP" : "PICKUP", ack.status,
+               op.count, op.item_base_id, static_cast<unsigned long long>(op.item_fp),
+               op.ref_form_id, op.wid,
+               keep ? "the item stays, the next capture settles the record"
+                    : "undoing it on the main thread");
+        char msg[160];
+        if (keep) {
+            std::snprintf(msg, sizeof(msg), "(the server cannot record changes right now: "
+                          "your pickup is kept, the record catches up later)");
+            fw::render::chat::notice(msg);
+            break;
+        }
+        fw::dispatch::PendingContainerOp undo{};
+        undo.world_undo    = drop ? 1 : 2;
+        undo.item_base_id  = op.item_base_id;
+        undo.count         = op.count;
+        undo.item_fp       = op.item_fp;
+        undo.have_instance = (op.item_fp != kFpUnknown) ? 1 : 0;
+        undo.instance      = op.instance;
+        undo.ref_fid       = op.ref_form_id;
+        undo.ref_handle    = p->ref_handle;
+        fw::dispatch::enqueue_container_apply(undo);
+        std::snprintf(msg, sizeof(msg),
+                      drop           ? "(the server refused your drop: %d item(s) back in your inventory)"
+                      : insufficient ? "(someone took it first: %d item(s) removed from your inventory)"
+                                     : "(the server refused your pickup: %d item(s) removed from your inventory)",
+                      op.count);
+        fw::render::chat::notice(msg);
+        break;
+    }
+
     case static_cast<std::uint16_t>(MessageType::CONTAINER_BCAST): {
         stats_.container_ops_received.fetch_add(1);
         if (d.payload.size() < sizeof(ContainerBroadcastPayload)) break;
@@ -2519,21 +2943,20 @@ void Client::dispatch(const Delivered& d) {
 
         // Mirror update, keyed by the REFR (L1), only for a container whose
         // view is held (L3: a BCAST never creates a view, see the header).
+        // L5 stage 4b: a deposit of a named instance says how to build it.
+        if (b.kind == static_cast<std::uint32_t>(ContainerOpKind::PUT)) {
+            remember_instance(b.item_base_id, b.item_fp, b.instance);
+        }
         {
             std::lock_guard lk(container_mirror_mutex_);
             auto mit = container_mirror_.find(b.container_form_id);
             if (mit != container_mirror_.end()) {
                 auto& bucket = mit->second.items;
-                const auto it = bucket.find(b.item_base_id);
-                std::int32_t current = (it == bucket.end()) ? 0 : it->second;
-                std::int32_t new_count = current;
                 if (b.kind == static_cast<std::uint32_t>(ContainerOpKind::TAKE)) {
-                    new_count = (b.count >= current) ? 0 : (current - b.count);
+                    mirror_take(bucket, b.item_base_id, b.item_fp, b.count);
                 } else if (b.kind == static_cast<std::uint32_t>(ContainerOpKind::PUT)) {
-                    new_count = current + b.count;
+                    bucket[LineKey{b.item_base_id, b.item_fp}] += b.count;
                 }
-                if (new_count == 0) bucket.erase(b.item_base_id);
-                else               bucket[b.item_base_id] = new_count;
             }
         }
 
@@ -2559,6 +2982,9 @@ void Client::dispatch(const Delivered& d) {
             op.container_cell_id  = b.container_cell_id;
             op.item_base_id       = b.item_base_id;
             op.count              = b.count;
+            op.item_fp            = b.item_fp;
+            op.have_instance      = 1;
+            op.instance           = b.instance;
             fw::dispatch::enqueue_container_apply(op);
             // Loot rework L3.2 (2026-09-24): an alignment right behind the
             // apply, in the same drain. The engine's AddItem of a weapon
@@ -3675,8 +4101,9 @@ void Client::dispatch(const Delivered& d) {
                     mc.cell_id = e.container_cell_id;
                 }
                 if (e.item_base_id == 0) continue;
-                if (e.count > 0) mc.items[e.item_base_id] = e.count;
-                else             mc.items.erase(e.item_base_id);
+                const LineKey key{e.item_base_id, e.item_fp};   // L5 stage 4b
+                if (e.count > 0) mc.items[key] = e.count;
+                else             mc.items.erase(key);
             }
         }
         if (h.chunk_index + 1 >= h.total_chunks) {
@@ -3694,6 +4121,76 @@ void Client::dispatch(const Delivered& d) {
             FW_LOG("net: CONTAINER_STATE sequence complete, %zu container(s) "
                    "to align with the server", n);
         }
+        break;
+    }
+
+    case static_cast<std::uint16_t>(MessageType::DEATH_CRATES): {
+        // L5 realtime D2: the owner's death crates, for the map and the
+        // compass (native/map_markers.cpp takes the list on its own tick).
+        if (d.payload.size() < sizeof(DeathCratesHeader)) break;
+        DeathCratesHeader h{};
+        std::memcpy(&h, d.payload.data(), sizeof(h));
+        if (h.count > DEATH_CRATES_MAX ||
+            d.payload.size() < sizeof(DeathCratesHeader) + h.count * sizeof(DeathCrateEntry)) {
+            FW_WRN("[net] DEATH_CRATES: %u entries in %zu bytes: dropped", h.count, d.payload.size());
+            break;
+        }
+        std::vector<DeathCrateEntry> crates(h.count);
+        if (h.count) {
+            std::memcpy(crates.data(), d.payload.data() + sizeof(DeathCratesHeader),
+                        h.count * sizeof(DeathCrateEntry));
+        }
+        fw::native::map_markers::on_death_crates(h.death_count, crates.data(), crates.size());
+        break;
+    }
+
+    case static_cast<std::uint16_t>(MessageType::PLAYER_STATS): {
+        // L5 realtime R4: the record's numbers, for the restore after the load.
+        if (d.payload.size() < sizeof(PlayerStatsHeader)) break;
+        PlayerStatsHeader h{};
+        std::memcpy(&h, d.payload.data(), sizeof(h));
+        if (d.payload.size() < sizeof(PlayerStatsHeader) + h.num_perks * sizeof(PerkRankEntry)) break;
+        std::vector<PerkRankEntry> perks(h.num_perks);
+        if (h.num_perks) {
+            std::memcpy(perks.data(), d.payload.data() + sizeof(PlayerStatsHeader),
+                        h.num_perks * sizeof(PerkRankEntry));
+        }
+        fw::persist::restore::on_player_stats(h, perks.data(), perks.size());
+        break;
+    }
+
+    case static_cast<std::uint16_t>(MessageType::PLAYER_INV): {
+        // L5 realtime R2: the player's record, chunk by chunk, for the
+        // restore after the load (its descriptors came first, INSTANCE_DEFS).
+        if (d.payload.size() < sizeof(PlayerInvHeader)) break;
+        PlayerInvHeader h{};
+        std::memcpy(&h, d.payload.data(), sizeof(h));
+        if (d.payload.size() < sizeof(PlayerInvHeader) + h.num_entries * sizeof(InvStateEntry)) break;
+        std::vector<InvStateEntry> lines(h.num_entries);
+        if (h.num_entries) {
+            std::memcpy(lines.data(), d.payload.data() + sizeof(PlayerInvHeader),
+                        h.num_entries * sizeof(InvStateEntry));
+        }
+        fw::persist::restore::on_player_inv(h, lines.data(), lines.size());
+        break;
+    }
+
+    case static_cast<std::uint16_t>(MessageType::INSTANCE_DEFS): {
+        // L5 stage 4b: how to build the instance lines of the STATE that
+        // follows (or preceded it: the channel may deliver out of order; a
+        // line whose descriptor is late is built by the next alignment).
+        if (d.payload.size() < sizeof(ChunkHeader)) break;
+        ChunkHeader h{};
+        std::memcpy(&h, d.payload.data(), sizeof(h));
+        if (d.payload.size() < sizeof(ChunkHeader) + h.num_entries * sizeof(InstanceDefEntry)) break;
+        for (std::uint16_t i = 0; i < h.num_entries; ++i) {
+            InstanceDefEntry e{};
+            std::memcpy(&e, d.payload.data() + sizeof(ChunkHeader) + i * sizeof(InstanceDefEntry),
+                        sizeof(e));
+            remember_instance(e.base_id, e.fp, e.instance);
+        }
+        FW_LOG("net: INSTANCE_DEFS chunk %u/%u: %u descriptor(s)", h.chunk_index + 1,
+               h.total_chunks, h.num_entries);
         break;
     }
 

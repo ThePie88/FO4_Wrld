@@ -87,6 +87,15 @@ NATIVE_MODE: bool = True
 # Remember to remove it afterwards: two clients at debug are ~100 MB/hour.
 FULL_LOGS_MARKER: Path = REPO_ROOT / "FULL_LOGS"
 
+# 2026-10-05 — the same idiom for an A/B test of the first-person graph
+# module (fw_config.ini first_person_graph_drive): a marker file named
+# FP_GRAPH_OFF in the repo root starts side A with the module off. Created
+# for the Pip-Boy that opens blurred with no device at the wrist after a
+# death inside power armour: the module hooks the player's animation graphs
+# (camera switch, 1P->3P bone copy, SetActiveGraph), the one place of ours
+# that touches what the Pip-Boy raise runs on. Delete the file to go back.
+FP_GRAPH_OFF_MARKER: Path = REPO_ROOT / "FP_GRAPH_OFF"
+
 
 def _resolve_dll_log_level() -> str:
     env = os.environ.get("FW_LOG_LEVEL", "").strip().lower()

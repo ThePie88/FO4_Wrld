@@ -135,7 +135,7 @@ class TestServerState:
         s.record_container_op(p, "alice", 100.0)
         s.record_container_op(p, "alice", 200.0)
         st = s.container_state(TRUNK_FID)
-        assert st.items == {STIMPAK: 10}
+        assert st.items == {(STIMPAK, 0): 10}
         assert st.last_owner_peer_id == "alice"
 
     def test_take_decrements_then_removes_at_zero(self):
@@ -153,7 +153,7 @@ class TestServerState:
             container_form_id=TRUNK_FID,
             item_base_id=STIMPAK, count=3, timestamp_ms=0,
         ), "bob", 0.0)
-        assert s.container_state(TRUNK_FID).items == {STIMPAK: 4}
+        assert s.container_state(TRUNK_FID).items == {(STIMPAK, 0): 4}
         # take remaining 4 -> zero -> key gone
         s.record_container_op(ContainerOpPayload(
             kind=int(ContainerOpKind.TAKE),
@@ -237,7 +237,7 @@ class TestServerState:
                 item_base_id=item, count=cnt, timestamp_ms=0,
             ), "alice", 0.0)
         st = s.container_state(TRUNK_FID)
-        assert st.items == {STIMPAK: 5, AMMO_10MM: 200}
+        assert st.items == {(STIMPAK, 0): 5, (AMMO_10MM, 0): 200}
 
 
 # ------------------------------------------------------------------ validator
@@ -361,22 +361,23 @@ class TestPersistence:
         # v7 (L5 stage 1) keeps the v6 container layout; the version bump
         # added the journal mark, quests, globals and hashed tokens; v8 (L5
         # stage 2) adds the inventory digests; v9 (L5 stage 3a) the checkpoints;
-        # v10 (L5 stage 3b) their custody.
-        assert data["version"] == SNAPSHOT_FORMAT_VERSION == 10
+        # v10 (L5 stage 3b) their custody; v11 (L5 stage 4b) writes a
+        # container's items as [item, instance fingerprint, count] lines.
+        assert data["version"] == SNAPSHOT_FORMAT_VERSION == 15   # v15: partial-record ops, checkpoint world, world base per peer (2026-10-20)
         assert len(data["containers"]) == 2
         c = next(x for x in data["containers"] if x["form_id"] == f"0x{TRUNK_FID:X}")
         assert c["base_id"] == f"0x{TRUNK_BASE:X}"
-        assert c["items"] == {f"0x{STIMPAK:X}": 10, f"0x{AMMO_10MM:X}": 50}
+        assert c["items"] == [[f"0x{STIMPAK:X}", "0x0", 10], [f"0x{AMMO_10MM:X}", "0x0", 50]]
 
         dst = ServerState()
         load_into(dst, path)
         st = dst.container_state(TRUNK_FID)
         assert st is not None
-        assert st.items == {STIMPAK: 10, AMMO_10MM: 50}
+        assert st.items == {(STIMPAK, 0): 10, (AMMO_10MM, 0): 50}
         assert st.last_owner_peer_id == "bob"  # last writer
         assert (st.base_id, st.cell_id) == (TRUNK_BASE, TRUNK_CELL)
         assert st.seeded is True
-        assert dst.container_state(TWIN_FID).items == {STIMPAK: 1}
+        assert dst.container_state(TWIN_FID).items == {(STIMPAK, 0): 1}
         assert dst.container_state(TWIN_FID).seeded is False
 
     def test_pre_v6_containers_are_dropped(self, tmp_path: Path):
@@ -536,7 +537,7 @@ async def test_live_container_op_propagation():
         key = TRUNK_FID
         # Server authoritative
         srv_view = protocol.state.container_state(key)
-        assert srv_view.items.get(STIMPAK) == 7
+        assert srv_view.items.get((STIMPAK, 0)) == 7
         assert srv_view.last_owner_peer_id == "A"
         # B's mirror (via CONTAINER_BCAST)
         assert client_b.container_state[key].get(STIMPAK) == 7
@@ -607,7 +608,7 @@ async def test_frida_capture_flows_through_to_peer():
 
         # Everybody agrees: 3 left after A took 2
         key = TRUNK_FID
-        assert protocol.state.container_state(key).items.get(STIMPAK) == 3
+        assert protocol.state.container_state(key).items.get((STIMPAK, 0)) == 3
         assert client_a.container_state[key].get(STIMPAK) == 3   # optimistic on sender
         assert client_b.container_state[key].get(STIMPAK) == 3   # via bcast
         assert client_a.stats["container_ops_captured"] >= 1
@@ -671,7 +672,7 @@ async def test_take_over_available_rejected_not_broadcast_b1h4():
         # Server state: unchanged (still 2 stimpaks from the seed).
         srv = protocol.state.container_state(TRUNK_FID)
         assert srv is not None
-        assert srv.items == {STIMPAK: 2}, \
+        assert srv.items == {(STIMPAK, 0): 2}, \
             f"state changed despite reject, got {srv.items}"
         # Rejection counter bumped by exactly 1.
         assert protocol.stats()["rejections"] == rejections_before + 1
@@ -719,7 +720,7 @@ async def test_first_seed_creates_state_second_is_rejected():
 
             srv = protocol_obj.state.container_state(TRUNK_FID)
             assert srv is not None
-            assert srv.items == {STIMPAK: 5, AMMO_10MM: 100}
+            assert srv.items == {(STIMPAK, 0): 5, (AMMO_10MM, 0): 100}
             assert srv.last_owner_peer_id == "peer_sA"
 
             # Peer B sends a SEED with LESS info (only STIMPAK, and lower count).
@@ -733,7 +734,7 @@ async def test_first_seed_creates_state_second_is_rejected():
 
             srv_after = protocol_obj.state.container_state(TRUNK_FID)
             assert srv_after is not None
-            assert srv_after.items == {STIMPAK: 5, AMMO_10MM: 100}, \
+            assert srv_after.items == {(STIMPAK, 0): 5, (AMMO_10MM, 0): 100}, \
                 f"second SEED wholesale-replaced state: {srv_after.items}"
             assert srv_after.last_owner_peer_id == "peer_sA"   # UNCHANGED
         finally:
@@ -777,7 +778,7 @@ async def test_seed_refills_empty_tracked_container():
 
             srv = protocol_obj.state.container_state(TRUNK_FID)
             assert srv is not None
-            assert srv.items == {STIMPAK: 4, AMMO_10MM: 50}, \
+            assert srv.items == {(STIMPAK, 0): 4, (AMMO_10MM, 0): 50}, \
                 f"empty container wasn't refilled: {srv.items}"
             assert srv.last_owner_peer_id == "peer_refill"   # refresh owner
         finally:
@@ -823,7 +824,7 @@ async def test_empty_seed_does_not_erase_state():
             # Server state is intact — the empty SEED must not wipe the stimpaks.
             srv = protocol_obj.state.container_state(TRUNK_FID)
             assert srv is not None
-            assert srv.items.get(STIMPAK) == 3, \
+            assert srv.items.get((STIMPAK, 0)) == 3, \
                 f"drifted client's empty SEED wiped state: {srv.items}"
         finally:
             sock.close()
@@ -976,7 +977,7 @@ async def test_concurrent_take_dup_race_b1h4_one_wins_one_loses():
             # Server state: winner took all 3, key removed (or value=0).
             final = protocol_obj.state.container_state(TRUNK_FID)
             assert final is not None
-            assert final.items.get(STIMPAK, 0) == 0, \
+            assert final.items.get((STIMPAK, 0), 0) == 0, \
                 f"winner didn't clear the stock: {final.items}"
 
             # Exactly 1 REJ_INSUFFICIENT on the validator stats.
@@ -1027,8 +1028,9 @@ class TestPlacedRefIdentity:
         f = decode_frame(encode_frame(MessageType.CONTAINER_STATE, 1, s, reliable=True))
         assert f.payload.entries[0].container_form_id == TRUNK_FID
         # 20 bytes per entry under the 1400-byte payload, 6 of chunk header.
-        assert ContainerStatePayload.MAX_ENTRIES_PER_FRAME == 69
-        assert ContainerSeedPayload.MAX_ENTRIES_PER_FRAME == 69
+        # v34 (L5 stage 4b): 28 bytes with the instance fingerprint.
+        assert ContainerStatePayload.MAX_ENTRIES_PER_FRAME == 49
+        assert ContainerSeedPayload.MAX_ENTRIES_PER_FRAME == 49
 
     def test_twins_are_two_records(self):
         s = ServerState()
@@ -1036,7 +1038,7 @@ class TestPlacedRefIdentity:
             s.record_container_op(_put(fid, STIMPAK, 5), "alice", 0.0)
         s.record_container_op(_take(TRUNK_FID, STIMPAK, 5), "bob", 1.0)
         assert s.container_state(TRUNK_FID).items == {}
-        assert s.container_state(TWIN_FID).items == {STIMPAK: 5}
+        assert s.container_state(TWIN_FID).items == {(STIMPAK, 0): 5}
         assert len(s.all_containers()) == 2
 
     def test_take_on_emptied_twin_is_insufficient(self):
@@ -1087,7 +1089,7 @@ class TestPlacedRefIdentity:
             timestamp_ms=0,
         )
         assert s.record_container_op(drifted, "bob", 1.0) is None
-        assert s.container_state(TRUNK_FID).items == {STIMPAK: 2}
+        assert s.container_state(TRUNK_FID).items == {(STIMPAK, 0): 2}
         assert s.container_state(TRUNK_FID).last_owner_peer_id == "alice"
 
 
@@ -1115,8 +1117,8 @@ async def test_seed_twins_create_two_records_and_runtime_refs_are_skipped():
                         server_addr)
             await asyncio.sleep(0.3)
 
-            assert protocol_obj.state.container_state(TRUNK_FID).items == {STIMPAK: 5}
-            assert protocol_obj.state.container_state(TWIN_FID).items == {AMMO_10MM: 100}
+            assert protocol_obj.state.container_state(TRUNK_FID).items == {(STIMPAK, 0): 5}
+            assert protocol_obj.state.container_state(TWIN_FID).items == {(AMMO_10MM, 0): 100}
             assert protocol_obj.state.container_state(RUNTIME_FID) is None
             assert len(protocol_obj.state.all_containers()) == 2
         finally:
@@ -1189,7 +1191,7 @@ async def test_duplicate_op_applies_once_and_is_acked_twice():
             assert all(a.status == int(ContainerOpAckStatus.ACCEPTED) for a in acks)
             assert all(a.final_count == 3 for a in acks)
             assert len(bcasts) == 1, bcasts
-            assert protocol_obj.state.container_state(TRUNK_FID).items == {STIMPAK: 3}
+            assert protocol_obj.state.container_state(TRUNK_FID).items == {(STIMPAK, 0): 3}
             assert protocol_obj.stats()["container_op_repeats"] == 1
         finally:
             sock_a.close(); sock_b.close()
@@ -1226,7 +1228,7 @@ async def test_same_op_id_from_two_peers_both_apply():
                 return [f.payload for f, _ in frames
                         if f.header.msg_type == int(MessageType.CONTAINER_OP_ACK)]
             assert len(_acks(frames_a)) == 1 and len(_acks(frames_b)) == 1
-            assert protocol_obj.state.container_state(TRUNK_FID).items == {STIMPAK: 3}
+            assert protocol_obj.state.container_state(TRUNK_FID).items == {(STIMPAK, 0): 3}
             assert protocol_obj.stats()["container_op_repeats"] == 0
         finally:
             sock_a.close(); sock_b.close()
@@ -1273,7 +1275,7 @@ class TestCorpseIdentity:
         r = validate_container_op(_session(), op, s.container_state_for_op(op), 0.0)
         assert r.ok
         assert s.record_container_op(op, "alice", 1.0) is not None
-        assert s.container_state(CORPSE_FID).items == {AMMO_10MM: 6, STIMPAK: 1}
+        assert s.container_state(CORPSE_FID).items == {(AMMO_10MM, 0): 6, (STIMPAK, 0): 1}
 
     def test_static_base_still_catches_drift(self):
         s = ServerState()

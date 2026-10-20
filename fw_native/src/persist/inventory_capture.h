@@ -74,6 +74,11 @@ struct StackRecord {
     char          name[MAX_NAME];   // the literal name of 0x99, when +0x30 == -2
 };
 
+// Two bits of StackRecord::extra_mask other modules read (their positions in
+// the capture's order of the 24 persisted types).
+constexpr std::uint32_t MASK_OIE       = 1u << 10;   // BGSObjectInstanceExtra (0x35)
+constexpr std::uint32_t MASK_UNIQUE_ID = 1u << 21;   // ExtraUniqueID (0x9F)
+
 // Why a capture is not complete. Bits.
 enum : std::uint32_t {
     REASON_NO_LIST        = 1u << 0,   // player has no list yet: "no list", never "empty"
@@ -113,7 +118,8 @@ void set_output_dir(const wchar_t* dir);
 bool dump_json(const wchar_t* path);
 
 // The main-thread tick: gates, paces to 1 Hz, captures, logs a summary
-// when the digest changes (and every record at debug level).
+// when the digest changes (and every record at debug level, or at info
+// with the 4a instance probe on).
 void tick(std::uintptr_t module_base);
 
 // Capture now, gates permitting (used before a checkpoint and at exit
@@ -131,6 +137,11 @@ const Manifest& last();
 // is a fw::net::kInvDigestWhy* code. Main thread only.
 void send_digest_now(std::uint8_t why);
 
+// L5 realtime R1/R2 - the capture number of the last INV_STATE sent by this
+// process (0 = none): a death's RESTORE_REQUEST names it, so the server
+// answers with a record that holds it. Main thread.
+std::uint32_t last_state_seq();
+
 // L5 stage 2 (2026-09-27) — the instance data of ONE world REFR (a dropped
 // item), read from its own extra list (+0x100) with the same walker the
 // capture uses on a stack: world count (ExtraCount, 1 when absent),
@@ -141,5 +152,62 @@ void send_digest_now(std::uint8_t why);
 // not present a half-read one as the whole truth. Main thread; needs no
 // prior capture (resolves the engine functions itself).
 bool read_refr_instance(std::uintptr_t module_base, void* refr, fw::net::PaPieceEntry* out);
+// L5 realtime R1b (2026-10-05) — the same walk, as the WHOLE record (what a
+// stack of it would be: count from ExtraCount, condition, the OIE with its
+// template and its mods, the rest), so persist/instance_fp.h can make the
+// fingerprint and the descriptor of a dropped or picked-up REFR exactly as
+// the capture makes them for a stack. `out` is always filled (bare at
+// worst, count 1); false when the extra list could not be read to the end.
+// Main thread; needs no prior capture.
+bool read_refr_record(std::uintptr_t module_base, void* refr, StackRecord* out);
+
+// L5 stage 4a (2026-10-02) — measurement only (persist/instance_probe.cpp).
+//
+// One stack of ANY REFR's inventory (a container, a corpse, the player),
+// decoded by the capture's own walker, plus what the capture does not keep:
+// the stack's position in its entry's chain (0 = the head, where the
+// engine's base-only removals take from), whether it is transient (bit 5,
+// a menu's inspect copy) and the base form's flags (TESFORM_FLAG_UNIQUE_IDS:
+// the engine gives this base's units an ExtraUniqueID in every inventory).
+struct ProbeStack {
+    StackRecord   r;
+    std::uint16_t chain;
+    std::uint8_t  transient;
+    std::uint8_t  pad;
+    std::uint32_t base_flags;
+};
+
+// Reads `refr`'s inventory list (every base, or only `base` when non-zero)
+// into `out`, at most `max` stacks. Returns how many. `reasons` gets the
+// capture's reason bits; REASON_WRITER_HELD means nothing was read (the
+// engine holds the list's write lock, possibly on this very thread).
+// Main thread. Never writes to the engine.
+std::uint32_t probe_stacks(std::uintptr_t module_base, void* refr, std::uint32_t base,
+                           ProbeStack* out, std::uint32_t max, std::uint32_t* reasons);
+
+// A provisional instance fingerprint, for the measurements only (stage 4b
+// fixes the real one): FNV-1a 64 over the base, whether the stack carries
+// an OIE, the OIE's u16 at +0x20 (only when `with_template`), the OMOD
+// records sorted by (mod, attach, rank), the health rounded to 1/1000 and
+// the literal name. The engine's uid is left out on purpose.
+std::uint64_t fingerprint(const StackRecord& r, bool with_template) noexcept;
+
+// The base form's u32 flags (TESFORM_FLAGS_OFF), 0 when unreadable.
+std::uint32_t base_flags_of(std::uint32_t base_form_id) noexcept;
+
+// L5 stage 4b (2026-10-03) — one ExtraDataList (the one a transfer is moving)
+// decoded into a record the way the capture decodes a stack; `xlist` null is
+// a stack with no extras (a plain one). False when the walk did not finish:
+// the record is then not the whole truth and the caller names the instance
+// unknown. Main thread.
+bool read_list_record(std::uintptr_t module_base, void* xlist, std::uint32_t base_id,
+                      StackRecord* out);
+
+// 2026-10-20: the engine's own "is a ContainerMenu open" query (the UI
+// singleton, sub_141A7FD40), for the seed at the open of a container the
+// server does not know (hooks/container_hook.cpp): once the menu is open the
+// engine has built the list and resolved its leveled items. False on a
+// fault. Any thread.
+bool container_menu_is_open() noexcept;
 
 } // namespace fw::persist::inventory

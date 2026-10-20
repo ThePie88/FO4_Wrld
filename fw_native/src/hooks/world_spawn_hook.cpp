@@ -13,7 +13,8 @@
 #include "../native/world_spawn.h"
 #include "../net/client.h"
 #include "../offsets.h"
-#include "../persist/inventory_capture.h"   // read_refr_instance (the drop descriptor)
+#include "../persist/inventory_capture.h"   // read_refr_instance (the drop descriptor), read_refr_record (R1b)
+#include "../persist/instance_fp.h"         // R1b: fp_of_record
 #include "../ref_identity.h"
 #include "../log.h"
 
@@ -208,6 +209,58 @@ void report_world_drop(void* refr, std::uint32_t handle, std::int32_t count_hint
            "x%d -> watched until it rests", id.base_id, id.form_id, handle,
            count_hint);
     fw::native::world_spawn::watch_local_drop(refr, handle, count_hint);
+}
+
+void announce_world_drop(void* refr, std::uint32_t handle, std::uint32_t op_id,
+                         std::int32_t count_hint, const char* what) {
+    if (!refr || op_id == 0) return;
+    const std::uintptr_t base = g_base.load(std::memory_order_relaxed);
+    if (!base) {
+        fw::net::client().cancel_world_item_op(op_id);
+        return;
+    }
+    const auto id = fw::read_ref_identity(refr);
+    if (id.form_id == 0 || id.base_id == 0) {
+        FW_WRN("[world-spawn-tx] %s: no readable identity (fid=0x%08X base=0x%08X), not "
+               "announced, the op cancelled", what ? what : "drop", id.form_id, id.base_id);
+        fw::net::client().cancel_world_item_op(op_id);
+        return;
+    }
+    if (handle == 0) handle = fw::engine::refr_get_handle(refr);
+    fw::native::world_spawn::note_self_object(id.form_id, handle);
+    float pos[3] = {0}, rot[3] = {0};
+    auto* rb = reinterpret_cast<std::uint8_t*>(refr);
+    (void)seh_read_vec3(rb + fw::offsets::POS_OFF, pos);
+    (void)seh_read_vec3(rb + fw::offsets::ROT_OFF, rot);
+    const bool tmp_ok = seh_or_u32(rb + fw::offsets::FLAGS_OFF,
+                                   fw::offsets::REFR_FLAG_TEMPORARY);
+    // The line: the REFR's own record (count, condition, mods), read now,
+    // so the fingerprint is the one the capture makes for the same stack.
+    // Unreadable = an unknown instance, said out loud, never a half-read one
+    // presented as the whole truth.
+    fw::persist::inventory::StackRecord rec;
+    const bool read_ok = fw::persist::inventory::read_refr_record(base, refr, &rec);
+    fw::net::WorldItemOpPayload op{};
+    op.kind         = fw::net::kWorldItemDrop;
+    op.client_op_id = op_id;
+    op.item_base_id = id.base_id;
+    op.count        = (read_ok && rec.count > 0) ? rec.count : (count_hint > 0 ? count_hint : 1);
+    op.item_fp      = read_ok ? fw::persist::instance::fp_of_record(rec, &op.instance)
+                              : fw::net::kFpUnknown;
+    op.ref_form_id  = id.form_id;
+    op.wid          = 0;
+    op.cell_id      = id.cell_id;
+    op.pos[0] = pos[0]; op.pos[1] = pos[1]; op.pos[2] = pos[2];
+    op.rot[0] = rot[0]; op.rot[1] = rot[1]; op.rot[2] = rot[2];
+    op.flags        = fw::net::kWorldSpawnFlagSelfDescribed;
+    op.timestamp_ms = static_cast<std::uint64_t>(GetTickCount64());
+    const bool sent = fw::net::client().submit_world_item_op(op, handle);
+    FW_LOG("[world-spawn-tx] observed %s: base=0x%08X local fid=0x%08X handle=0x%08X "
+           "cell=0x%08X at (%.1f, %.1f, %.1f) -> WORLD_ITEM_OP op_id=%u %s (%d x, fp=%016llX, "
+           "instance %s, TEMPORARY %s)", what ? what : "drop", id.base_id, id.form_id, handle,
+           id.cell_id, pos[0], pos[1], pos[2], op_id, sent ? "sent" : "NOT SENT (stopping)",
+           op.count, static_cast<unsigned long long>(op.item_fp),
+           read_ok ? "read" : "UNREAD, unknown", tmp_ok ? "patched" : "PATCH FAILED");
 }
 
 void announce_world_refr(void* refr, std::uint32_t handle, std::uint8_t flags,

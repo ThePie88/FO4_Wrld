@@ -13,6 +13,7 @@
 #include <cstring>     // strrchr: the module name of a foreign RIP
 
 #include "engine/engine_calls.h"
+#include "native/world_spawn.h"   // R1b: undo_local_drop / undo_local_pickup
 #include "hooks/container_hook.h"   // ApplyingRemoteGuard + tls_applying_remote
 #include "hooks/container_menu_hook.h" // loot rework L3.1: rebuild the open ContainerMenu
 #include "hooks/ownership_manager.h" // Build 65.c.10 — owner-driven apply gate
@@ -2572,16 +2573,29 @@ void drain_container_apply_queue() {
             ++aligned;
             continue;
         }
+        if (op.world_undo) {
+            // R1b: a refused drop or pickup, undone under the same guard so
+            // the engine calls do not re-emit through the hooks.
+            ok = (op.world_undo == 1)
+               ? fw::native::world_spawn::undo_local_drop(
+                     op.ref_fid, op.ref_handle, op.item_base_id, op.item_fp,
+                     op.have_instance ? &op.instance : nullptr, op.count)
+               : fw::native::world_spawn::undo_local_pickup(
+                     op.item_base_id, op.item_fp, op.count);
+            if (ok) ++undone; else ++failed;
+            continue;
+        }
         if (op.rollback) {
             ok = fw::engine::rollback_container_op_to_engine(
                 op.kind, op.container_form_id, op.container_base_id,
                 op.container_cell_id, op.item_base_id, op.count,
-                op.insufficient != 0, op.server_count);
+                op.insufficient != 0, op.server_count, op.item_fp);
             if (ok) ++undone;
         } else {
             ok = fw::engine::apply_container_op_to_engine(
                 op.kind, op.container_form_id, op.container_base_id,
-                op.container_cell_id, op.item_base_id, op.count);
+                op.container_cell_id, op.item_base_id, op.count,
+                op.item_fp, op.have_instance ? &op.instance : nullptr);
             if (ok) ++applied_ok;
         }
         if (!ok) { ++failed; continue; }

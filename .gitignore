@@ -6,6 +6,15 @@
 #menu principale ancora todo
 /MENU_PRINCIPALE/
 /MENU_PRINCIPALE
+# -- if you read this, contact me in private on Discord for a chance to be the first beta tester of the project.
+/SITOWEB/
+/SITOWEB
+# -- generated reports of the crash campaign and the thread sampler (hundreds of MB) --
+/tools/crash_campaign_reports/
+/tools/sampler_reports/
+# -- generated reports of the crash campaign and the thread sampler (hundreds of MB) --
+/tools/crash_campaign_reports/
+/tools/sampler_reports/
 # -- Bethesda binaries / data files (IP, never push) --------------------------
 **/Fallout4.exe
 **/Fallout4Launcher.exe

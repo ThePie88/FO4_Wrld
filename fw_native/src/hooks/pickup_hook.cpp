@@ -12,7 +12,9 @@
 #include "../ref_identity.h"
 #include "../net/client.h"
 #include "../net/protocol.h"
-#include "../native/world_spawn.h"   // L5 stage 2: on_local_pickup
+#include "../native/world_spawn.h"   // L5 stage 2: on_local_pickup; R1b: note_local_pickup, cancel_pending_drop
+#include "../persist/inventory_capture.h"   // R1b: read_refr_record (the line of the REFR)
+#include "../persist/instance_fp.h"         // R1b: fp_of_record
 
 namespace fw::hooks {
 
@@ -31,6 +33,7 @@ using InvAddFromWorldFn = void (*)(
     void* dst_actor, void* src_refr, std::uint32_t count);
 
 InvAddFromWorldFn g_orig_inv_add = nullptr;
+std::atomic<std::uintptr_t> g_module_base{0};   // R1b: for read_refr_record
 
 std::atomic<std::uint64_t> g_fire_count{0};
 
@@ -131,17 +134,58 @@ void __fastcall detour_inv_add_from_world(
     observe_pickup(dst_actor, src_refr, count, &r);
 
     if (r.emit) {
-        // L5 stage 2 — a spawned object of ours leaving the world into the
-        // local player's inventory is a world event, said NOW, while the
-        // REFR is still alive (the engine destroys it inside the original
-        // and marks it deleted, which the sweep could not tell from a
-        // streaming loss).
-        fw::native::world_spawn::on_local_pickup(src_refr);
-        fw::net::client().enqueue_actor_event(r.aep);
-        FW_LOG("[pickup] WORLD_PICKUP form=0x%X base=0x%X cell=0x%X "
-               "pos=(%.1f %.1f %.1f) count=%u",
-               r.item_refr_form_id, r.item_base_id, r.cell_id,
-               r.aep.x, r.aep.y, r.aep.z, count);
+        // L5 realtime R1b (2026-10-05) — the pickup is an op of the record,
+        // said NOW, while the REFR is still alive (the engine destroys it
+        // inside the original): its line read from the REFR, its wid when it
+        // is an object of ours, its form id otherwise; the server does the
+        // world side and the record side in one journal record and answers
+        // with a verdict (a refusal destroys the item: someone else took it
+        // first). A drop of ours still falling, taken back: the drop is
+        // cancelled and nothing is sent, the record never saw it. When no op
+        // can be made (the client is stopping) the legacy path runs: the
+        // reason-5 despawn for an object of ours, the DISABLE event otherwise.
+        if (fw::native::world_spawn::cancel_pending_drop(src_refr)) {
+            FW_LOG("[pickup] form=0x%X base=0x%X is a drop of ours still falling: taken back, "
+                   "the drop never happened", r.item_refr_form_id, r.item_base_id);
+        } else {
+            const std::uint32_t wid =
+                fw::native::world_spawn::wid_for_refr(src_refr, r.item_refr_form_id);
+            fw::persist::inventory::StackRecord rec;
+            const bool read_ok = fw::persist::inventory::read_refr_record(
+                g_module_base.load(std::memory_order_relaxed), src_refr, &rec);
+            fw::net::WorldItemOpPayload op{};
+            op.kind         = fw::net::kWorldItemPickup;
+            op.client_op_id = fw::net::client().begin_world_item_op();
+            op.item_base_id = r.item_base_id;
+            op.count        = (read_ok && rec.count > 0) ? rec.count
+                            : (count > 0 && count < 0x7FFFFFFFu) ? static_cast<std::int32_t>(count)
+                            : 1;
+            op.item_fp      = read_ok ? fw::persist::instance::fp_of_record(rec, &op.instance)
+                                      : fw::net::kFpUnknown;
+            op.ref_form_id  = r.item_refr_form_id;
+            op.wid          = wid;
+            op.cell_id      = r.cell_id;
+            op.pos[0] = r.aep.x; op.pos[1] = r.aep.y; op.pos[2] = r.aep.z;
+            op.timestamp_ms = static_cast<std::uint64_t>(GetTickCount64());
+            const bool sent = op.client_op_id != 0
+                           && fw::net::client().submit_world_item_op(op, 0);
+            if (sent) {
+                fw::native::world_spawn::note_local_pickup(src_refr);
+                FW_LOG("[pickup] WORLD_ITEM_OP op_id=%u: %d x 0x%X fp=%016llX form=0x%X wid=%u "
+                       "cell=0x%X pos=(%.1f %.1f %.1f) (hook count=%u, instance %s)",
+                       op.client_op_id, op.count, op.item_base_id,
+                       static_cast<unsigned long long>(op.item_fp), op.ref_form_id, op.wid,
+                       op.cell_id, r.aep.x, r.aep.y, r.aep.z, count,
+                       read_ok ? "read" : "UNREAD, unknown");
+            } else {
+                fw::native::world_spawn::on_local_pickup(src_refr);
+                fw::net::client().enqueue_actor_event(r.aep);
+                FW_LOG("[pickup] WORLD_PICKUP (legacy event, no op could be made) form=0x%X "
+                       "base=0x%X cell=0x%X pos=(%.1f %.1f %.1f) count=%u",
+                       r.item_refr_form_id, r.item_base_id, r.cell_id,
+                       r.aep.x, r.aep.y, r.aep.z, count);
+            }
+        }
     }
 
     // ALWAYS call through — trust-client pickup, the local player must
@@ -157,6 +201,7 @@ void __fastcall detour_inv_add_from_world(
 } // namespace
 
 bool install_pickup_hook(std::uintptr_t module_base) {
+    g_module_base.store(module_base, std::memory_order_relaxed);
     const auto target_ea = module_base + offsets::INV_ADD_FROM_WORLD_RVA;
     void* target = reinterpret_cast<void*>(target_ea);
 

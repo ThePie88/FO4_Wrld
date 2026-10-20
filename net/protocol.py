@@ -25,6 +25,7 @@ Total frame size: 12 + payload_len bytes.
 from __future__ import annotations
 
 import hashlib
+import math
 import struct
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -33,7 +34,38 @@ from typing import ClassVar, Union
 # ------------------------------------------------------------------ constants
 
 PROTOCOL_MAGIC: int = 0xFA
-PROTOCOL_VERSION: int = 33  # v33: CKPT_RESPAWN, the server's moved checkpoint after a death (stage 3d)
+PROTOCOL_VERSION: int = 43  # v43: NPC_UNLOAD with form_id 0 releases every NPC the sender owns (the death release in one message)
+# v38 (2026-10-03): L5 realtime persistence, slice D1. A world spawn with
+# flag WORLD_SPAWN_FLAG_CONTAINER (0x04) is a container of the server's (the
+# death crate): its content travels by the container protocol under the
+# key 0xFF000000 | wid (wid_container_key). No layout changes: a 0xFF
+# container id was always refused before, so on the wire it can only name
+# such a container now.
+# v37 (2026-10-03): L5 realtime persistence, slice R4. STATS_STATE (0x02B5,
+# client -> server) and PLAYER_STATS (0x02B6, server -> client, in the
+# restore answer): XP, level, perk points, the SPECIAL base values, health,
+# action points, rads and the perks held (64-byte header + 5-byte perks,
+# 267 per frame). RESTORE_REQUEST grows to 16 bytes (last_stats_seq).
+# v36 (2026-10-03): L5 realtime persistence, slice R2. RESTORE_REQUEST
+# (0x02B2, client -> server, 12 B): a load is coming, send me my record;
+# PLAYER_INV (0x02B3, server -> client, 20-byte header + 17-byte lines, 81
+# per frame, after INSTANCE_DEFS of its named instances): the record;
+# RESTORE_DONE (0x02B4, client -> server, 24 B): the player is aligned to it.
+# The captures of a new process are refused until its RESTORE_DONE.
+# v35 (2026-10-03): L5 realtime persistence, slice R1. INV_STATE (0x02B1,
+# client -> server): the player's whole inventory by instance, captured at
+# every change, chunked (30-byte header, 17 bytes per line, 80 per frame).
+# The server keeps it as the player's record, with the container ops it
+# accepts on top (the watermark names the last op a capture includes).
+# v34 (2026-10-03): L5 stage 4b. A container line was (base, count) until
+# v33: a modded pistol and a plain one were the same item. CONTAINER_OP and
+# CONTAINER_BCAST now carry the instance fingerprint of the stack they move
+# and the descriptor that rebuilds it (148 and 160 bytes), CONTAINER_OP_ACK
+# the fingerprint of the line its count is about (29), and a
+# CONTAINER_STATE / CONTAINER_SEED entry the fingerprint of its line (28,
+# 49 per chunk). INSTANCE_DEFS (0x0205, both directions) carries the
+# descriptors of the lines a STATE or a SEED refers to. ACK status
+# REJ_INSTANCE (7): a descriptor that does not make its fingerprint.
 # v27 (2026-09-23): loot rework L1. ContainerStateEntry (CONTAINER_SEED and
 # CONTAINER_STATE) gains `container_form_id` in front: 16 -> 20 bytes per
 # entry, 87 -> 69 entries per chunk. The server keys container state by the
@@ -292,6 +324,7 @@ class MessageType(IntEnum):
     CONTAINER_BCAST  = 0x0202   # server -> client: relay of container op (authoritative)
     CONTAINER_SEED   = 0x0203   # client -> server: full inventory dump at first-open
     CONTAINER_OP_ACK = 0x0204   # server -> sender: verdict (accepted / rejected + reason)
+    INSTANCE_DEFS    = 0x0205   # L5 stage 4b (v34): both ways: descriptors of the instances a STATE or a SEED names
     DOOR_OP          = 0x0230   # B6.1: client -> server: I activated door X (toggle)
     DOOR_BCAST       = 0x0231   # B6.1: server -> other peers: peer X activated door Y
     EQUIP_OP         = 0x0240   # M9 w1: client -> server: I equipped/unequipped item X
@@ -307,6 +340,16 @@ class MessageType(IntEnum):
     WORLD_PA_PIECES_OP    = 0x02A4  # v23: client -> server: full piece list for wid
     WORLD_PA_PIECES_BCAST = 0x02A5  # v23: server -> OTHER clients: replace replica content
     INV_DIGEST            = 0x02B0  # L5 stage 2 (v28): client -> server: advisory digest of the player's inventory (reliable, no answer)
+    INV_STATE             = 0x02B1  # L5 realtime R1 (v35): client -> server: the player's whole inventory by instance (reliable, chunked, no answer)
+    RESTORE_REQUEST       = 0x02B2  # L5 realtime R2 (v36): client -> server: a load is coming, send the record (reliable)
+    PLAYER_INV            = 0x02B3  # L5 realtime R2 (v36): server -> client: the record to align the player to (reliable, chunked)
+    RESTORE_DONE          = 0x02B4  # L5 realtime R2 (v36): client -> server: the player is aligned (reliable, no answer)
+    STATS_STATE           = 0x02B5  # L5 realtime R4 (v37): client -> server: XP, level, perks, SPECIAL... (reliable, chunked)
+    PLAYER_STATS          = 0x02B6  # L5 realtime R4 (v37): server -> client: the stats of the record, in the restore answer
+    WORLD_ITEM_OP         = 0x02B7  # L5 realtime R1b (v39): client -> server: a Pip-Boy drop that rested / a pickup from the world, as an op of the record (reliable)
+    WORLD_ITEM_ACK        = 0x02B8  # L5 realtime R1b (v39): server -> sender: the verdict of a WORLD_ITEM_OP
+    DEATH_CRATES          = 0x02B9  # L5 realtime D2 (v40): server -> owner: their death crates still in the world (reliable)
+    LOCATION_DISCOVERED   = 0x02BA  # L5 realtime R5 (v42): client -> server: a map marker turned visible (reliable); the server asks a checkpoint
     CKPT_REQUEST          = 0x02C0  # L5 stage 3 (v29): server -> client: write a checkpoint at your next quiet moment
     CKPT_DONE             = 0x02C1  # L5 stage 3 (v29): client -> server: the checkpoint written (or why not)
     CKPT_BOOT             = 0x02C2  # L5 stage 3 (v29): server -> client, first bootstrap stage: boot from this checkpoint
@@ -1335,6 +1378,166 @@ def identities_conflict(base_a: int, cell_a: int, base_b: int, cell_b: int) -> b
     return base_a != base_b or cell_a != cell_b
 
 
+# ---------------------------------------------------------------- instances
+#
+# L5 stage 4b (2026-10-03) — what makes one stack of an item that particular
+# instance. Measured live in 4a: the OIE's u16 at +0x20 is the index of the
+# object template the instance was built from (the same on two clients for
+# the same template), the OMOD records are what the mods are, and the Health
+# extra is a piece's condition or a core's charge. The engine's own uid
+# (ExtraUniqueID) is NOT part of it: weapons and armour do not carry one
+# (their bases lack flag 0x400000), and where it exists it is local to one
+# container and reassigned at every crossing.
+#
+# The fingerprint is FNV-1a 64 over:
+#   u32 base | u8 has_oie | [u16 template | u8 n | n x (u32 form, u8 attach,
+#   u8 rank), sorted] | u8 has_health | [i32 round(health * 1000), half away
+#   from zero]
+# A stack with neither an OIE nor a Health extra is PLAIN (0): ammo, aid,
+# junk, exactly the lines of v33. UNKNOWN (all ones) names a line nobody can
+# rebuild: a v33 record, or a stack a client could not read to the end. A
+# hash that falls on either reserved value becomes 1. The record's flag byte,
+# the uid, the stack flags and a custom name are left out: the name is not
+# carried in v1, so two stacks that differ only by it are one instance.
+# fw_native/src/persist/instance_fp.cpp computes the same bytes and checks a
+# shared vector at startup.
+
+FP_PLAIN: int = 0
+FP_UNKNOWN: int = 0xFFFF_FFFF_FFFF_FFFF
+INSTANCE_MAX_MODS: int = 16
+INSTANCE_FLAG_OIE: int = 0x01
+INSTANCE_FLAG_HEALTH: int = 0x02
+
+
+@dataclass(frozen=True, slots=True)
+class InstanceDescriptor:
+    """The data an engine needs to rebuild one instance of a base: the
+    template index (OIE+0x20, 0xFFFF none), the OMOD records (form, attach,
+    rank) and the condition. Fixed 104 bytes on the wire: u16 template, u8
+    flags, u8 mod count, f32 health, 16 x (u32 form, u8 attach, u8 rank)."""
+    template: int = 0xFFFF
+    flags: int = 0
+    health: float = -1.0
+    mods: tuple[tuple[int, int, int], ...] = ()
+
+    SIZE: ClassVar[int] = 104
+    _HEAD: ClassVar[struct.Struct] = struct.Struct("<HBBf")   # 8 B
+    _MOD: ClassVar[struct.Struct] = struct.Struct("<IBB")     # 6 B
+
+    def encode(self) -> bytes:
+        if len(self.mods) > INSTANCE_MAX_MODS:
+            raise ProtocolError(
+                f"instance descriptor: {len(self.mods)} mods > {INSTANCE_MAX_MODS}")
+        parts = [self._HEAD.pack(self.template & 0xFFFF, self.flags & 0xFF,
+                                 len(self.mods), self.health)]
+        for form, attach, rank in self.mods:
+            parts.append(self._MOD.pack(form & 0xFFFFFFFF, attach & 0xFF, rank & 0xFF))
+        parts.append(b"\x00" * (self._MOD.size * (INSTANCE_MAX_MODS - len(self.mods))))
+        return b"".join(parts)
+
+    @classmethod
+    def decode(cls, data: bytes, off: int) -> tuple["InstanceDescriptor", int]:
+        if len(data) < off + cls.SIZE:
+            raise ProtocolError("instance descriptor truncated")
+        template, flags, n, health = cls._HEAD.unpack_from(data, off)
+        if n > INSTANCE_MAX_MODS:
+            raise ProtocolError(f"instance descriptor: {n} mods > {INSTANCE_MAX_MODS}")
+        mods = tuple(cls._MOD.unpack_from(data, off + cls._HEAD.size + cls._MOD.size * i)
+                     for i in range(n))
+        return cls(template=template, flags=flags, health=health, mods=mods), off + cls.SIZE
+
+    def is_plain(self) -> bool:
+        return (self.flags & (INSTANCE_FLAG_OIE | INSTANCE_FLAG_HEALTH)) == 0
+
+
+def _health_q(health: float) -> int:
+    """round(health * 1000) the way the DLL does it: the value as the f32
+    the wire and the engine hold, times 1000 in double, half away from zero
+    (std::lround), not Python's round-half-to-even."""
+    v = struct.unpack("<f", struct.pack("<f", health))[0] * 1000.0
+    a = abs(v)
+    fl = math.floor(a)
+    q = int(fl) + (1 if (a - fl) >= 0.5 else 0)
+    return -q if v < 0 else q
+
+
+def instance_fp(base_id: int, d: InstanceDescriptor) -> int:
+    """The fingerprint of the instance `d` of `base_id` (see the block above)."""
+    has_oie = bool(d.flags & INSTANCE_FLAG_OIE)
+    has_health = bool(d.flags & INSTANCE_FLAG_HEALTH)
+    if not has_oie and not has_health:
+        return FP_PLAIN
+    buf = bytearray(struct.pack("<IB", base_id & 0xFFFFFFFF, 1 if has_oie else 0))
+    if has_oie:
+        mods = sorted((m[0] & 0xFFFFFFFF, m[1] & 0xFF, m[2] & 0xFF) for m in d.mods)
+        buf += struct.pack("<HB", d.template & 0xFFFF, len(mods))
+        for form, attach, rank in mods:
+            buf += struct.pack("<IBB", form, attach, rank)
+    buf += struct.pack("<B", 1 if has_health else 0)
+    if has_health:
+        buf += struct.pack("<i", _health_q(d.health))
+    h = 0xCBF29CE484222325
+    for b in buf:
+        h ^= b
+        h = (h * 0x100000001B3) & 0xFFFF_FFFF_FFFF_FFFF
+    if h in (FP_PLAIN, FP_UNKNOWN):
+        h = 1
+    return h
+
+
+@dataclass(frozen=True, slots=True)
+class InstanceDefEntry:
+    """One descriptor with the base and the fingerprint it makes (116 B)."""
+    base_id: int
+    fp: int
+    instance: InstanceDescriptor
+
+
+@dataclass(frozen=True, slots=True)
+class InstanceDefsPayload:
+    """L5 stage 4b (v34), both ways: the descriptors of the instance lines
+    a CONTAINER_STATE (server -> client) or a CONTAINER_SEED (client ->
+    server) names. Sent before the lines; the reliable channel may still
+    deliver it after them, so a receiver keeps a line whose descriptor has
+    not arrived and builds it when it does.
+
+    Wire: u16 num_entries, u16 chunk_index, u16 total_chunks, then per entry
+    u32 base, u64 fp, descriptor (104 B). 12 entries per chunk."""
+    entries: tuple[InstanceDefEntry, ...]
+    chunk_index: int = 0
+    total_chunks: int = 1
+
+    _HEADER_STRUCT: ClassVar[struct.Struct] = struct.Struct("<HHH")
+    _KEY: ClassVar[struct.Struct] = struct.Struct("<IQ")
+    ENTRY_SIZE: ClassVar[int] = 12 + 104
+    MAX_ENTRIES_PER_FRAME: ClassVar[int] = (MAX_PAYLOAD_SIZE - 6) // (12 + 104)  # 12
+
+    def encode(self) -> bytes:
+        if len(self.entries) > self.MAX_ENTRIES_PER_FRAME:
+            raise ProtocolError(
+                f"INSTANCE_DEFS too many entries: {len(self.entries)} > {self.MAX_ENTRIES_PER_FRAME}")
+        parts = [self._HEADER_STRUCT.pack(len(self.entries), self.chunk_index, self.total_chunks)]
+        for e in self.entries:
+            parts.append(self._KEY.pack(e.base_id, e.fp))
+            parts.append(e.instance.encode())
+        return b"".join(parts)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "InstanceDefsPayload":
+        if len(data) < cls._HEADER_STRUCT.size:
+            raise ProtocolError("INSTANCE_DEFS header truncated")
+        num, chunk_idx, total = cls._HEADER_STRUCT.unpack_from(data, 0)
+        if len(data) < cls._HEADER_STRUCT.size + num * cls.ENTRY_SIZE:
+            raise ProtocolError("INSTANCE_DEFS payload truncated")
+        entries = []
+        off = cls._HEADER_STRUCT.size
+        for _ in range(num):
+            base, fp = cls._KEY.unpack_from(data, off)
+            desc, off = InstanceDescriptor.decode(data, off + cls._KEY.size)
+            entries.append(InstanceDefEntry(base_id=base, fp=fp, instance=desc))
+        return cls(entries=tuple(entries), chunk_index=chunk_idx, total_chunks=total)
+
+
 class EquipOpKind(IntEnum):
     """M9 w1: kind of equipment-state change observed on the local player.
 
@@ -1360,9 +1563,11 @@ class ContainerOpPayload:
     rationale as Option B for actors (stable across processes). item_base_id
     is a TESForm.formID of the item template (stable plugin-loaded).
 
-    For v1 we don't carry extra-data (weapon mods, enchantments, leveled
-    variants) — a modded 10mm and a vanilla 10mm are treated as the same
-    item. TODO once container UX forces the issue.
+    v34 (L5 stage 4b): `item_fp` is the instance fingerprint of the stack
+    moved (FP_PLAIN for ammo, aid, junk; FP_UNKNOWN when the client could
+    not read it) and `instance` the descriptor that makes it, so a modded
+    10mm and a plain one are two lines and an observer rebuilds the right
+    one. Until v33 they were the same item.
 
     count is SIGNED i32 for future-proofing but MUST be > 0 at send time.
     The OP kind (TAKE/PUT) conveys the direction; count stays positive.
@@ -1380,25 +1585,29 @@ class ContainerOpPayload:
                                  # LookupByFormID, then validate (base, cell)
                                  # match, then invoke real AddItem/RemoveItem.
                                  # 0 = legacy / unknown → receiver can't apply.
+    item_fp: int = FP_PLAIN      # u64 — v34; the instance fingerprint
+    instance: InstanceDescriptor = InstanceDescriptor()   # v34; 104 B
 
-    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIIiQII")  # 36B (v5: +4 for container_form_id)
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIIiQIIQ")  # 44B (v34: +8 fp), then the descriptor
 
     def encode(self) -> bytes:
         return self._STRUCT.pack(
             self.kind, self.container_base_id, self.container_cell_id,
             self.item_base_id, self.count, self.timestamp_ms,
-            self.client_op_id, self.container_form_id,
-        )
+            self.client_op_id, self.container_form_id, self.item_fp,
+        ) + self.instance.encode()
 
     @classmethod
     def decode(cls, data: bytes) -> "ContainerOpPayload":
-        if len(data) < cls._STRUCT.size:
+        if len(data) < cls._STRUCT.size + InstanceDescriptor.SIZE:
             raise ProtocolError("CONTAINER_OP truncated")
-        kind, cbase, ccell, ibase, cnt, ts, op_id, cfid = cls._STRUCT.unpack_from(data, 0)
+        kind, cbase, ccell, ibase, cnt, ts, op_id, cfid, fp = cls._STRUCT.unpack_from(data, 0)
+        desc, _ = InstanceDescriptor.decode(data, cls._STRUCT.size)
         return cls(
             kind=kind, container_base_id=cbase, container_cell_id=ccell,
             item_base_id=ibase, count=cnt, timestamp_ms=ts,
             client_op_id=op_id, container_form_id=cfid,
+            item_fp=fp, instance=desc,
         )
 
 
@@ -1422,8 +1631,10 @@ class ContainerBroadcastPayload:
                                  # (base, cell) to find their local REFR and
                                  # invoke engine::apply_container_op_to_engine.
                                  # 0 = legacy / unknown → receiver can't apply.
+    item_fp: int = FP_PLAIN      # u64 — v34, as in ContainerOpPayload
+    instance: InstanceDescriptor = InstanceDescriptor()   # v34; 104 B
 
-    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIIiQI")  # 28B (v5: +4 for container_form_id)
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIIiQIQ")  # 36B (v34: +8 fp), then the descriptor
 
     def encode(self) -> bytes:
         return (
@@ -1431,22 +1642,24 @@ class ContainerBroadcastPayload:
             + self._STRUCT.pack(
                 self.kind, self.container_base_id, self.container_cell_id,
                 self.item_base_id, self.count, self.timestamp_ms,
-                self.container_form_id,
+                self.container_form_id, self.item_fp,
             )
+            + self.instance.encode()
         )
 
     @classmethod
     def decode(cls, data: bytes) -> "ContainerBroadcastPayload":
         off = MAX_CLIENT_ID_LEN + 1
-        if len(data) < off + cls._STRUCT.size:
+        if len(data) < off + cls._STRUCT.size + InstanceDescriptor.SIZE:
             raise ProtocolError("CONTAINER_BCAST truncated")
         pid = _decode_fixed_string(data, MAX_CLIENT_ID_LEN)
-        kind, cbase, ccell, ibase, cnt, ts, cfid = cls._STRUCT.unpack_from(data, off)
+        kind, cbase, ccell, ibase, cnt, ts, cfid, fp = cls._STRUCT.unpack_from(data, off)
+        desc, _ = InstanceDescriptor.decode(data, off + cls._STRUCT.size)
         return cls(
             peer_id=pid, kind=kind,
             container_base_id=cbase, container_cell_id=ccell,
             item_base_id=ibase, count=cnt, timestamp_ms=ts,
-            container_form_id=cfid,
+            container_form_id=cfid, item_fp=fp, instance=desc,
         )
 
 
@@ -1465,24 +1678,26 @@ class ContainerStateEntry:
     container_cell_id: int       # u32
     item_base_id: int            # u32
     count: int                   # i32 (signed for future; >= 0 in practice)
+    item_fp: int = FP_PLAIN      # u64 — v34: the instance fingerprint of the line
 
 
 @dataclass(frozen=True, slots=True)
 class ContainerStatePayload:
     """Chunked snapshot of all container inventories on the server.
 
-    Wire format (protocol v27):
+    Wire format (protocol v34):
         u16  num_entries
         u16  chunk_index
         u16  total_chunks
-        per entry (20B):
+        per entry (28B):
             u32 container_form_id   (the placed REFR: the identity)
             u32 container_base_id
             u32 container_cell_id
             u32 item_base_id
             i32 count
+            u64 item_fp             (v34: the instance of the line)
 
-    Entries per frame cap: (1400 - 6) // 20 = 69. Multi-chunk via
+    Entries per frame cap: (1400 - 6) // 28 = 49. Multi-chunk via
     chunk_index + total_chunks, same pattern as WorldStatePayload.
     """
 
@@ -1490,11 +1705,11 @@ class ContainerStatePayload:
     chunk_index: int = 0
     total_chunks: int = 1
 
-    _ENTRY_STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIIi")  # 20B
+    _ENTRY_STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIIiQ")  # 28B
     _HEADER_STRUCT: ClassVar[struct.Struct] = struct.Struct("<HHH")  # 6B
 
     MAX_ENTRIES_PER_FRAME: ClassVar[int] = (
-        (MAX_PAYLOAD_SIZE - 6) // 20  # 69 entries per chunk at MTU 1400
+        (MAX_PAYLOAD_SIZE - 6) // 28  # 49 entries per chunk at MTU 1400
     )
 
     def encode(self) -> bytes:
@@ -1506,7 +1721,7 @@ class ContainerStatePayload:
         for e in self.entries:
             parts.append(self._ENTRY_STRUCT.pack(
                 e.container_form_id, e.container_base_id, e.container_cell_id,
-                e.item_base_id, e.count,
+                e.item_base_id, e.count, e.item_fp,
             ))
         return b"".join(parts)
 
@@ -1521,11 +1736,11 @@ class ContainerStatePayload:
         entries = []
         off = cls._HEADER_STRUCT.size
         for _ in range(num):
-            cfid, cbase, ccell, ibase, cnt = cls._ENTRY_STRUCT.unpack_from(data, off)
+            cfid, cbase, ccell, ibase, cnt, fp = cls._ENTRY_STRUCT.unpack_from(data, off)
             entries.append(ContainerStateEntry(
                 container_form_id=cfid,
                 container_base_id=cbase, container_cell_id=ccell,
-                item_base_id=ibase, count=cnt,
+                item_base_id=ibase, count=cnt, item_fp=fp,
             ))
             off += cls._ENTRY_STRUCT.size
         return cls(
@@ -1547,6 +1762,9 @@ class ContainerOpAckStatus(IntEnum):
     # be made durable; the op is refused and the client undoes it, like any
     # refusal. Nothing was applied on the server.
     REJ_UNAVAILABLE = 6
+    # L5 stage 4b (v34): the op's descriptor does not make its fingerprint, or
+    # cannot be one (too many mods). Nothing was applied; the client undoes it.
+    REJ_INSTANCE = 7
 
 
 @dataclass(frozen=True, slots=True)
@@ -1570,26 +1788,27 @@ class ContainerOpAckPayload:
     container_base_id: int      # u32
     container_cell_id: int      # u32
     item_base_id: int           # u32
-    final_count: int            # i32
+    final_count: int            # i32 — v34: the count of the (item, fp) line
+    item_fp: int = FP_PLAIN     # u64 — v34: the instance the count is about
 
-    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IBIIIi")  # 21 bytes
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IBIIIiQ")  # 29 bytes
 
     def encode(self) -> bytes:
         return self._STRUCT.pack(
             self.client_op_id, self.status,
             self.container_base_id, self.container_cell_id,
-            self.item_base_id, self.final_count,
+            self.item_base_id, self.final_count, self.item_fp,
         )
 
     @classmethod
     def decode(cls, data: bytes) -> "ContainerOpAckPayload":
         if len(data) < cls._STRUCT.size:
             raise ProtocolError("CONTAINER_OP_ACK truncated")
-        op_id, status, cbase, ccell, ibase, fcnt = cls._STRUCT.unpack_from(data, 0)
+        op_id, status, cbase, ccell, ibase, fcnt, fp = cls._STRUCT.unpack_from(data, 0)
         return cls(
             client_op_id=op_id, status=status,
             container_base_id=cbase, container_cell_id=ccell,
-            item_base_id=ibase, final_count=fcnt,
+            item_base_id=ibase, final_count=fcnt, item_fp=fp,
         )
 
 
@@ -1613,19 +1832,21 @@ class ContainerSeedPayload:
       u32 container_cell_id
       u32 item_base_id
       i32 count
+      u64 item_fp             (v34: the instance of the line; the descriptors
+                               of its instance lines travel in INSTANCE_DEFS)
 
-    Small inventories (<69 items) ship in a single chunk. For very large
-    containers (unlikely in FO4; >69 unique item types) we chunk.
+    Small inventories (<49 lines) ship in a single chunk. For very large
+    containers (unlikely in FO4; >49 lines) we chunk.
     """
     entries: tuple["ContainerStateEntry", ...]
     chunk_index: int = 0
     total_chunks: int = 1
 
-    _ENTRY_STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIIi")  # 20B
+    _ENTRY_STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIIiQ")  # 28B
     _HEADER_STRUCT: ClassVar[struct.Struct] = struct.Struct("<HHH")
 
     MAX_ENTRIES_PER_FRAME: ClassVar[int] = (
-        (MAX_PAYLOAD_SIZE - 6) // 20  # 69
+        (MAX_PAYLOAD_SIZE - 6) // 28  # 49
     )
 
     def encode(self) -> bytes:
@@ -1637,7 +1858,7 @@ class ContainerSeedPayload:
         for e in self.entries:
             parts.append(self._ENTRY_STRUCT.pack(
                 e.container_form_id, e.container_base_id, e.container_cell_id,
-                e.item_base_id, e.count,
+                e.item_base_id, e.count, e.item_fp,
             ))
         return b"".join(parts)
 
@@ -1654,11 +1875,11 @@ class ContainerSeedPayload:
         entries = []
         off = cls._HEADER_STRUCT.size
         for _ in range(num):
-            cfid, cbase, ccell, ibase, cnt = cls._ENTRY_STRUCT.unpack_from(data, off)
+            cfid, cbase, ccell, ibase, cnt, fp = cls._ENTRY_STRUCT.unpack_from(data, off)
             entries.append(ContainerStateEntry(
                 container_form_id=cfid,
                 container_base_id=cbase, container_cell_id=ccell,
-                item_base_id=ibase, count=cnt,
+                item_base_id=ibase, count=cnt, item_fp=fp,
             ))
             off += cls._ENTRY_STRUCT.size
         return cls(
@@ -2274,6 +2495,440 @@ class WorldDespawnOpPayload:
         wid, reason, ts = cls._STRUCT.unpack(data)
         return cls(wid, reason, ts)
 
+
+# L5 realtime R1b (2026-10-05) - the kinds of WorldItemOpPayload.
+WORLD_ITEM_DROP = 1
+WORLD_ITEM_PICKUP = 2
+
+
+@dataclass(frozen=True, slots=True)
+class WorldItemOpPayload:
+    """L5 realtime R1b (v39), client -> server: an item of the player's moved
+    between the inventory and the world, as an op of the record.
+
+    Until R1b the record learned a drop and a pickup from the next capture
+    only (250 ms after the tap): a crash in that window lost the item twice
+    over (the world had moved it, the record had not), and two clients
+    picking up the same object of ours both kept it.
+
+    kind WORLD_ITEM_DROP: a Pip-Boy drop that has come to rest. The server
+    mints the wid, stores the object self-described (pieces[0] from the
+    descriptor), takes the line out of the record and tells everyone with
+    WORLD_SPAWN_BCAST (the sender's echo binds the wid to `ref_form_id`).
+    kind WORLD_ITEM_PICKUP: a world REFR taken into the inventory. `wid`
+    names an object of the server's (removed, WORLD_DESPAWN_BCAST reason 5
+    to all); a static `ref_form_id` names a REFR of the save (marked
+    disabled, ACTOR_EVENT DISABLE to the others); a runtime one nobody knows
+    (a drop never accepted) is trusted, the line only. `client_op_id` is in
+    the same sequence as the container ops (epoch << 16 | seq): one
+    watermark covers both, the verdict comes back in WORLD_ITEM_ACK, and
+    the client holds its captures until it does.
+
+    Wire: u8 kind, u32 client_op_id, u32 item, i32 count, u64 fp, u32
+    ref_form_id, u32 wid, u32 cell, 6 x f32 pose, u8 flags, u64 timestamp
+    (66 B), then the 104 B descriptor: 170 B."""
+    kind: int
+    client_op_id: int
+    item_base_id: int
+    count: int
+    item_fp: int
+    ref_form_id: int
+    wid: int
+    cell_id: int
+    px: float
+    py: float
+    pz: float
+    rx: float
+    ry: float
+    rz: float
+    flags: int
+    timestamp_ms: int
+    instance: InstanceDescriptor = InstanceDescriptor()
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<BIIiQIII6fBQ")   # 66 B
+    SIZE: ClassVar[int] = 66 + InstanceDescriptor.SIZE                   # 170 B
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.kind & 0xFF, self.client_op_id & 0xFFFFFFFF,
+            self.item_base_id & 0xFFFFFFFF, self.count,
+            self.item_fp & 0xFFFF_FFFF_FFFF_FFFF, self.ref_form_id & 0xFFFFFFFF,
+            self.wid & 0xFFFFFFFF, self.cell_id & 0xFFFFFFFF,
+            self.px, self.py, self.pz, self.rx, self.ry, self.rz,
+            self.flags & 0xFF, self.timestamp_ms & 0xFFFF_FFFF_FFFF_FFFF,
+        ) + self.instance.encode()
+
+    @classmethod
+    def decode(cls, data: bytes) -> "WorldItemOpPayload":
+        if len(data) < cls.SIZE:
+            raise ProtocolError("WORLD_ITEM_OP truncated")
+        (kind, op_id, item, count, fp, ref, wid, cell, px, py, pz, rx, ry, rz,
+         flags, ts) = cls._STRUCT.unpack_from(data, 0)
+        desc, _ = InstanceDescriptor.decode(data, cls._STRUCT.size)
+        return cls(kind=kind, client_op_id=op_id, item_base_id=item, count=count,
+                   item_fp=fp, ref_form_id=ref, wid=wid, cell_id=cell,
+                   px=px, py=py, pz=pz, rx=rx, ry=ry, rz=rz, flags=flags,
+                   timestamp_ms=ts, instance=desc)
+
+
+@dataclass(frozen=True, slots=True)
+class WorldItemAckPayload:
+    """L5 realtime R1b (v39), server -> sender: the verdict of a WORLD_ITEM_OP,
+    by `client_op_id`. `status` is a ContainerOpAckStatus: ACCEPTED, or a
+    refusal the client undoes (a drop refused: the REFR goes, the item comes
+    back; a pickup refused: the item is destroyed, REJ_INSUFFICIENT meaning
+    someone else took the object first). `wid` is the wid minted for a drop
+    or the one a pickup removed, `record_count` the record's line after the
+    op.
+
+    Wire: u32 op id, u8 status, u8 kind, u32 wid, u32 item, u64 fp, i32
+    record count: 26 B."""
+    client_op_id: int
+    status: int
+    kind: int
+    wid: int
+    item_base_id: int
+    item_fp: int
+    record_count: int
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IBBIIQi")   # 26 B
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(
+            self.client_op_id & 0xFFFFFFFF, self.status & 0xFF, self.kind & 0xFF,
+            self.wid & 0xFFFFFFFF, self.item_base_id & 0xFFFFFFFF,
+            self.item_fp & 0xFFFF_FFFF_FFFF_FFFF, self.record_count)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "WorldItemAckPayload":
+        if len(data) < cls._STRUCT.size:
+            raise ProtocolError("WORLD_ITEM_ACK truncated")
+        op_id, status, kind, wid, item, fp, n = cls._STRUCT.unpack_from(data, 0)
+        return cls(client_op_id=op_id, status=status, kind=kind, wid=wid,
+                   item_base_id=item, item_fp=fp, record_count=n)
+
+
+INV_STATE_FLAG_COMPLETE = 0x01
+INV_STATE_FLAG_IN_POWER_ARMOR = 0x02
+INV_ENTRY_EQUIPPED = 0x01
+
+
+@dataclass(frozen=True, slots=True)
+class InvStateEntry:
+    """One line of the player's inventory: an instance and how many (17 B)."""
+    item_base_id: int          # u32
+    item_fp: int               # u64 - the instance fingerprint (FP_PLAIN, FP_UNKNOWN or one)
+    count: int                 # i32, > 0
+    flags: int = 0             # u8 - INV_ENTRY_*
+
+
+@dataclass(frozen=True, slots=True)
+class InvStatePayload:
+    """L5 realtime persistence, R1 (v35), client -> server: the player's
+    whole inventory by instance, as one capture saw it.
+
+    The server keeps the last one as the player's record, with the
+    container ops it accepted after `watermark` (the id of the last op the
+    client had sent when it captured; every op up to it had its verdict
+    applied) on top. The client sends one at every change, only from a
+    complete capture, only with no op in flight and only once the record
+    has been restored after the load. A capture spans `total_chunks`
+    frames sharing (session, seq); the server applies it whole.
+
+    Wire: u32 session, u32 seq, u32 watermark, u16 op_epoch, u8 flags,
+    u8 pad, u64 digest, u16 num_entries, u16 chunk_index, u16
+    total_chunks (30 B), then per line u32 item, u64 fp, i32 count, u8
+    flags (17 B). 80 lines per frame."""
+    session: int               # u32 - random per client process, never 0
+    seq: int                   # u32 - the capture's number in that process
+    watermark: int             # u32 - the last container op id sent before it (0 = none)
+    op_epoch: int              # u16 - the high half of this process's op ids
+    flags: int                 # u8 - INV_STATE_FLAG_*
+    digest: int                # u64 - the capture's digest (FNV-1a 64)
+    entries: tuple[InvStateEntry, ...]
+    chunk_index: int = 0
+    total_chunks: int = 1
+
+    _HEADER: ClassVar[struct.Struct] = struct.Struct("<IIIHBBQHHH")   # 30 B
+    _ENTRY: ClassVar[struct.Struct] = struct.Struct("<IQiB")           # 17 B
+    MAX_ENTRIES_PER_FRAME: ClassVar[int] = (MAX_PAYLOAD_SIZE - 30) // 17   # 80
+
+    def encode(self) -> bytes:
+        if len(self.entries) > self.MAX_ENTRIES_PER_FRAME:
+            raise ProtocolError(
+                f"INV_STATE too many entries: {len(self.entries)} > {self.MAX_ENTRIES_PER_FRAME}")
+        parts = [self._HEADER.pack(
+            self.session & 0xFFFFFFFF, self.seq & 0xFFFFFFFF, self.watermark & 0xFFFFFFFF,
+            self.op_epoch & 0xFFFF, self.flags & 0xFF, 0, self.digest & 0xFFFFFFFFFFFFFFFF,
+            len(self.entries), self.chunk_index & 0xFFFF, self.total_chunks & 0xFFFF)]
+        for e in self.entries:
+            parts.append(self._ENTRY.pack(e.item_base_id & 0xFFFFFFFF,
+                                          e.item_fp & 0xFFFFFFFFFFFFFFFF,
+                                          e.count, e.flags & 0xFF))
+        return b"".join(parts)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "InvStatePayload":
+        if len(data) < cls._HEADER.size:
+            raise ProtocolError("INV_STATE header truncated")
+        (session, seq, watermark, epoch, flags, _pad, digest,
+         num, chunk_idx, total) = cls._HEADER.unpack_from(data, 0)
+        if len(data) < cls._HEADER.size + num * cls._ENTRY.size:
+            raise ProtocolError("INV_STATE payload truncated")
+        off = cls._HEADER.size
+        entries = []
+        for _ in range(num):
+            item, fp, count, eflags = cls._ENTRY.unpack_from(data, off)
+            entries.append(InvStateEntry(item, fp, count, eflags))
+            off += cls._ENTRY.size
+        return cls(session=session, seq=seq, watermark=watermark, op_epoch=epoch,
+                   flags=flags, digest=digest, entries=tuple(entries),
+                   chunk_index=chunk_idx, total_chunks=total)
+
+
+RESTORE_REASON_BOOT = 0
+RESTORE_REASON_DEATH = 1
+RESTORE_REASON_RETRY = 2
+RESTORE_REASON = {0: "boot", 1: "death", 2: "retry"}
+
+PLAYER_INV_RECORD = 0   # the record, current up to the client's last capture
+PLAYER_INV_NONE = 1     # nothing to align to (no record, or no capture under it)
+PLAYER_INV_BEHIND = 2   # the record, but the client's last capture never arrived
+PLAYER_INV_STATUS = {0: "record", 1: "none", 2: "behind"}
+
+RESTORE_ALIGNED = 0     # every line of the record is in the game
+RESTORE_PARTIAL = 1     # some lines could not be built or removed (counted)
+RESTORE_NOTHING = 2     # PLAYER_INV said none: the game is the record
+RESTORE_FAILED = 3      # the alignment did not run; the record stays closed
+RESTORE_OUTCOME = {0: "aligned", 1: "partial", 2: "nothing to restore", 3: "failed"}
+
+
+@dataclass(frozen=True, slots=True)
+class RestoreRequestPayload:
+    """L5 realtime R2 (v36), client -> server: a load is coming (the boot, or
+    the reload after a death), send me my record. `session` is the
+    process's INV_STATE session, `last_seq` the last inventory capture it
+    sent and `last_stats_seq` (v37) the last STATS_STATE (0 = none): the
+    server answers once both are in the record, or after a wait with what it
+    has (PLAYER_INV_BEHIND). Wire: <IIIB3x = 16 B."""
+    session: int          # u32
+    last_seq: int         # u32
+    reason: int           # u8 - RESTORE_REASON_*
+    last_stats_seq: int = 0   # u32 - v37
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIIB3x")
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(self.session & 0xFFFFFFFF, self.last_seq & 0xFFFFFFFF,
+                                 self.last_stats_seq & 0xFFFFFFFF, self.reason & 0xFF)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "RestoreRequestPayload":
+        if len(data) < cls._STRUCT.size:
+            raise ProtocolError("RESTORE_REQUEST truncated")
+        session, last_seq, last_stats_seq, reason = cls._STRUCT.unpack_from(data, 0)
+        return cls(session=session, last_seq=last_seq, reason=reason,
+                   last_stats_seq=last_stats_seq)
+
+
+@dataclass(frozen=True, slots=True)
+class PlayerInvPayload:
+    """L5 realtime R2 (v36), server -> client: the player's record, the
+    lines to align the player to after the load. Preceded by INSTANCE_DEFS
+    with the descriptors of its named instances. Wire: u32 session (the
+    request's), u32 record_seq, u32 captures, u8 status, u8 pad, u16
+    num_entries, u16 chunk_index, u16 total_chunks (20 B), then lines as in
+    INV_STATE (17 B), 81 per frame."""
+    session: int     # u32
+    record_seq: int  # u32 - the capture the record stands on
+    captures: int    # u32
+    status: int      # u8 - PLAYER_INV_*
+    entries: tuple[InvStateEntry, ...] = ()
+    chunk_index: int = 0
+    total_chunks: int = 1
+
+    _HEADER: ClassVar[struct.Struct] = struct.Struct("<IIIBBHHH")   # 20 B
+    _ENTRY: ClassVar[struct.Struct] = struct.Struct("<IQiB")         # 17 B
+    MAX_ENTRIES_PER_FRAME: ClassVar[int] = (MAX_PAYLOAD_SIZE - 20) // 17   # 81
+
+    def encode(self) -> bytes:
+        if len(self.entries) > self.MAX_ENTRIES_PER_FRAME:
+            raise ProtocolError(
+                f"PLAYER_INV too many entries: {len(self.entries)} > {self.MAX_ENTRIES_PER_FRAME}")
+        parts = [self._HEADER.pack(self.session & 0xFFFFFFFF, self.record_seq & 0xFFFFFFFF,
+                                   self.captures & 0xFFFFFFFF, self.status & 0xFF, 0,
+                                   len(self.entries), self.chunk_index & 0xFFFF,
+                                   self.total_chunks & 0xFFFF)]
+        for e in self.entries:
+            parts.append(self._ENTRY.pack(e.item_base_id & 0xFFFFFFFF,
+                                          e.item_fp & 0xFFFFFFFFFFFFFFFF,
+                                          e.count, e.flags & 0xFF))
+        return b"".join(parts)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "PlayerInvPayload":
+        if len(data) < cls._HEADER.size:
+            raise ProtocolError("PLAYER_INV header truncated")
+        session, seq, captures, status, _pad, num, idx, total = cls._HEADER.unpack_from(data, 0)
+        if len(data) < cls._HEADER.size + num * cls._ENTRY.size:
+            raise ProtocolError("PLAYER_INV payload truncated")
+        off = cls._HEADER.size
+        entries = []
+        for _ in range(num):
+            item, fp, count, eflags = cls._ENTRY.unpack_from(data, off)
+            entries.append(InvStateEntry(item, fp, count, eflags))
+            off += cls._ENTRY.size
+        return cls(session=session, record_seq=seq, captures=captures, status=status,
+                   entries=tuple(entries), chunk_index=idx, total_chunks=total)
+
+
+@dataclass(frozen=True, slots=True)
+class RestoreDonePayload:
+    """L5 realtime R2 (v36), client -> server: what the alignment did. Any
+    outcome but RESTORE_FAILED opens the record to the process: its captures
+    are the record from now. Wire: <IIBBHHHQ = 24 B."""
+    session: int      # u32
+    record_seq: int   # u32 - the PLAYER_INV it aligned to
+    outcome: int      # u8 - RESTORE_*
+    removed: int      # u16 - lines whose surplus was removed
+    added: int        # u16 - lines whose shortfall was built
+    unresolved: int   # u16 - lines left as they were (counted in the log)
+    digest: int       # u64 - the capture after the alignment
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<IIBBHHHQ")
+
+    def encode(self) -> bytes:
+        return self._STRUCT.pack(self.session & 0xFFFFFFFF, self.record_seq & 0xFFFFFFFF,
+                                 self.outcome & 0xFF, 0, self.removed & 0xFFFF,
+                                 self.added & 0xFFFF, self.unresolved & 0xFFFF,
+                                 self.digest & 0xFFFFFFFFFFFFFFFF)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "RestoreDonePayload":
+        if len(data) < cls._STRUCT.size:
+            raise ProtocolError("RESTORE_DONE truncated")
+        session, seq, outcome, _pad, removed, added, unresolved, digest = \
+            cls._STRUCT.unpack_from(data, 0)
+        return cls(session=session, record_seq=seq, outcome=outcome, removed=removed,
+                   added=added, unresolved=unresolved, digest=digest)
+
+
+SPECIAL_COUNT = 7       # Strength, Perception, Endurance, Charisma, Intelligence, Agility, Luck
+STATS_FLAG_COMPLETE = 0x01
+STATS_MAX_PERKS = 2048
+
+
+@dataclass(frozen=True, slots=True)
+class PerkEntry:
+    """One perk the player holds and its rank (5 B). In Fallout 4 every
+    rank of the perk chart is a form of its own, rank 1."""
+    perk_form_id: int     # u32
+    rank: int             # u8, >= 1
+
+
+@dataclass(frozen=True, slots=True)
+class PlayerStatsPayload:
+    """L5 realtime R4 (v37): the character's numbers. STATS_STATE (client ->
+    server, `flags` bit0 complete) at every change; PLAYER_STATS (server ->
+    client) in the restore answer, `status` a PLAYER_INV_* code. XP is the
+    current value of the Experience actor value (the level follows from it
+    in the engine), `special` the seven base values, health, action points
+    and rads the current ones. A capture spans `total_chunks` frames sharing
+    (session, seq); every chunk repeats the numbers and carries a slice of
+    the perks. Wire: <IIBBHfBB7ffffHHH = 64 B, then perks <IB = 5 B, 267
+    per frame."""
+    session: int
+    seq: int
+    status: int
+    flags: int
+    level: int            # u16
+    xp: float
+    perk_points: int      # u8
+    special: tuple
+    health: float
+    action_points: float
+    rads: float
+    perks: tuple = ()
+    chunk_index: int = 0
+    total_chunks: int = 1
+
+    _HEADER: ClassVar[struct.Struct] = struct.Struct("<IIBBHfBB7ffffHHH")   # 64 B
+    _PERK: ClassVar[struct.Struct] = struct.Struct("<IB")                  # 5 B
+    MAX_PERKS_PER_FRAME: ClassVar[int] = (MAX_PAYLOAD_SIZE - 64) // 5       # 267
+
+    def encode(self) -> bytes:
+        if len(self.special) != SPECIAL_COUNT:
+            raise ProtocolError(f"stats: {len(self.special)} SPECIAL values, not {SPECIAL_COUNT}")
+        if len(self.perks) > self.MAX_PERKS_PER_FRAME:
+            raise ProtocolError(
+                f"stats: too many perks in one frame: {len(self.perks)} > {self.MAX_PERKS_PER_FRAME}")
+        parts = [self._HEADER.pack(
+            self.session & 0xFFFFFFFF, self.seq & 0xFFFFFFFF, self.status & 0xFF,
+            self.flags & 0xFF, self.level & 0xFFFF, self.xp, self.perk_points & 0xFF, 0,
+            *self.special, self.health, self.action_points, self.rads,
+            len(self.perks), self.chunk_index & 0xFFFF, self.total_chunks & 0xFFFF)]
+        for pe in self.perks:
+            parts.append(self._PERK.pack(pe.perk_form_id & 0xFFFFFFFF, pe.rank & 0xFF))
+        return b"".join(parts)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "PlayerStatsPayload":
+        if len(data) < cls._HEADER.size:
+            raise ProtocolError("stats header truncated")
+        v = cls._HEADER.unpack_from(data, 0)
+        session, seq, status, flags, level, xp, points, _pad = v[:8]
+        special = tuple(v[8:15])
+        health, ap, rads, num, idx, total = v[15:21]
+        if len(data) < cls._HEADER.size + num * cls._PERK.size:
+            raise ProtocolError("stats perks truncated")
+        off = cls._HEADER.size
+        perks = []
+        for _ in range(num):
+            form, rank = cls._PERK.unpack_from(data, off)
+            perks.append(PerkEntry(form, rank))
+            off += cls._PERK.size
+        return cls(session=session, seq=seq, status=status, flags=flags, level=level, xp=xp,
+                   perk_points=points, special=special, health=health, action_points=ap,
+                   rads=rads, perks=tuple(perks), chunk_index=idx, total_chunks=total)
+
+
+# L5 realtime D1 (v38): a world spawn whose content the server keeps as a
+# container (the death crate), keyed 0xFF000000 | wid on the container wire.
+WORLD_SPAWN_FLAG_CONTAINER = 0x04
+# L5 stage 2 (2026-09-27): pieces[0] is the object ITSELF (a dropped item's base,
+# count, mods and condition), not an inventory. The server sets it on every
+# drop it records (R1b).
+WORLD_SPAWN_FLAG_SELF_DESCRIBED = 0x02
+
+
+def wid_container_key(wid: int) -> int:
+    """The container key of the world spawn `wid` (D1)."""
+    return 0xFF000000 | (wid & 0xFFFFFF)
+
+
+def is_wid_container_key(form_id: int) -> bool:
+    """A container key of a world spawn: 0xFF prefix, a wid under it."""
+    return (form_id & 0xFF000000) == 0xFF000000 and (form_id & 0xFFFFFF) != 0
+
+
+# 2026-10-05 - the "body" armours of a power armour frame (Fallout4.esm, every
+# ARMO named ArmorPoweredFrame*): the engine puts one on the player on
+# entering a frame and takes it off on leaving, and it occupies biped slot 30,
+# the Pip-Boy's. They are never inventory: a capture drops them, a crate never
+# holds them, a record never names them, and the restore takes them off a
+# player on foot. Live tests of 2026-10-04/05: the raider one (0x1909D6) went
+# into the death crate as loot, came back on the player with the loot, and
+# every exit from a frame since left it equipped over the Pip-Boy, which then
+# opened blurred with no device at the wrist.
+PA_FRAME_WEARABLES = frozenset({
+    0x0003E577,   # ArmorPoweredFrame
+    0x001909D6,   # ArmorPoweredFrameRaider
+    0x001909D5,   # ArmorPoweredFrameWastelander
+    0x001909D1,   # ArmorPoweredFrameAtomCat
+    0x00198B13,   # ArmorPoweredFrameBOS
+    0x00140D7B,   # ArmorPoweredFrameIngram
+    0x000B1C09,   # ArmorPoweredFrameWithModsNoHelmet
+})
 
 INV_DIGEST_FLAG_COMPLETE = 0x01
 INV_DIGEST_FLAG_IN_POWER_ARMOR = 0x02
@@ -3763,6 +4418,17 @@ class NPCObservedPayload:
                    observer_distance_sq=d)
 
 
+# v43 (2026-10-20): an NPC_UNLOAD whose form_id is this releases EVERY NPC the
+# sender owns, in one message. The client's death release used to send one
+# NPC_UNLOAD per owned NPC: 637 at the live death of 2026-10-20 (in an
+# interior the client observes, and owns, the NPCs of other cells too), a
+# burst that filled its outbound queue and dropped the PLAYER_LIFE queued
+# behind it, so the server never heard of the death. With the wildcard,
+# `epoch` carries how many the client owned locally (for the log only) and
+# the position fields are unused: the server releases from its own records.
+NPC_UNLOAD_ALL_OWNED = 0
+
+
 @dataclass(frozen=True, slots=True)
 class NPCUnloadPayload:
     """C→S: "NPC X left my loaded cell — I'm no longer eligible to own it".
@@ -3771,8 +4437,8 @@ class NPCUnloadPayload:
 
     Wire: 26 bytes (2 × u32 + 4 × f32 + 2 × u8).
     """
-    form_id: int
-    epoch: int                  # proof-of-ownership at unload time
+    form_id: int                # NPC_UNLOAD_ALL_OWNED (0, v43): every NPC the sender owns
+    epoch: int                  # proof-of-ownership at unload time (the local count with the wildcard)
     last_pos_x: float
     last_pos_y: float
     last_pos_z: float
@@ -4384,7 +5050,7 @@ Payload = Union[
     ActorEventPayload, ChatPayload, DisconnectPayload,
     WorldStatePayload,
     ContainerOpPayload, ContainerBroadcastPayload, ContainerStatePayload,
-    ContainerOpAckPayload, ContainerSeedPayload,
+    ContainerOpAckPayload, ContainerSeedPayload, InstanceDefsPayload,
     QuestStageSetPayload, QuestStageBroadcastPayload, QuestStateBootPayload,
     GlobalVarSetPayload, GlobalVarBroadcastPayload, GlobalVarStateBootPayload,
     DoorOpPayload, DoorBroadcastPayload,
@@ -4683,6 +5349,99 @@ class AuthChallengeResponsePayload:
         return cls(nonce_echo, challenge, ttl_s)
 
 
+# ---------------------------------------------------------------------------
+# L5 realtime D2 (2026-10-15) — DEATH_CRATES. Server -> the owner, reliable:
+# the owner's death marks still standing, oldest first: the death crates in
+# the world (wid != 0) and the SPOTS of the deaths that left no crate (wid
+# 0; the owner's decision of the fourth live test: a marker for 15 minutes
+# where they died with nothing to drop). Each carries the ordinal of its
+# death (1, 2, 3... per peer, durable), its age in ms at send time (the
+# clocks of the two sides never meet: the client turns it into its own
+# expiry), where it stands and in which cell. `death_count` is how many
+# deaths the peer had. The client names them by recency: the newest mark is
+# "LATEST DEATH" (map and compass), the ones before it "CORPSE #2", "#3"...
+# (map only). Sent after the record (boot and death), after a crate goes
+# and after a spot expires. Header <HHI = 8 bytes, entry <IIQfffI = 32
+# bytes, at most DEATH_CRATES_MAX entries (the newest win, logged).
+DEATH_CRATES_MAX: int = (MAX_PAYLOAD_SIZE - 8) // 32   # 43
+
+
+@dataclass(frozen=True, slots=True)
+class DeathCrateEntry:
+    wid: int          # 0 = a spot (a death without a crate)
+    ordinal: int
+    age_ms: int       # ms since that death, at send time
+    px: float
+    py: float
+    pz: float
+    cell_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class DeathCratesPayload:
+    death_count: int
+    crates: tuple = ()
+    flags: int = 0
+
+    _HEADER: ClassVar[struct.Struct] = struct.Struct("<HHI")       # 8 B
+    _ENTRY: ClassVar[struct.Struct] = struct.Struct("<IIQfffI")    # 32 B
+
+    def encode(self) -> bytes:
+        if len(self.crates) > DEATH_CRATES_MAX:
+            raise ProtocolError(
+                f"death crates: {len(self.crates)} entries, at most {DEATH_CRATES_MAX}")
+        parts = [self._HEADER.pack(len(self.crates) & 0xFFFF, self.flags & 0xFFFF,
+                                   self.death_count & 0xFFFFFFFF)]
+        for c in self.crates:
+            parts.append(self._ENTRY.pack(
+                c.wid & 0xFFFFFFFF, c.ordinal & 0xFFFFFFFF, max(0, int(c.age_ms)) & 0xFFFFFFFFFFFFFFFF,
+                float(c.px), float(c.py), float(c.pz), c.cell_id & 0xFFFFFFFF))
+        return b"".join(parts)
+
+    @classmethod
+    def decode(cls, data: bytes) -> "DeathCratesPayload":
+        if len(data) < cls._HEADER.size:
+            raise ProtocolError("death crates header truncated")
+        n, flags, death_count = cls._HEADER.unpack_from(data, 0)
+        if n > DEATH_CRATES_MAX:
+            raise ProtocolError(f"death crates: {n} entries, at most {DEATH_CRATES_MAX}")
+        if len(data) < cls._HEADER.size + n * cls._ENTRY.size:
+            raise ProtocolError("death crates entries truncated")
+        crates = []
+        off = cls._HEADER.size
+        for _ in range(n):
+            wid, ordinal, age_ms, px, py, pz, cell_id = cls._ENTRY.unpack_from(data, off)
+            crates.append(DeathCrateEntry(wid, ordinal, age_ms, px, py, pz, cell_id))
+            off += cls._ENTRY.size
+        return cls(death_count=death_count, crates=tuple(crates), flags=flags)
+
+
+# ---------------------------------------------------------------------------
+# L5 realtime R5 (2026-10-16) — LOCATION_DISCOVERED. Client -> server,
+# reliable: a map marker of the world just turned visible on this player's
+# map (the engine's own reveal on approach, a quest, AddToMap). R5 stays
+# vanilla by the owner's decision: the server keeps no places, it asks a
+# checkpoint so a crash a minute later does not undo the discovery (the XP
+# is in the stats record already). <I64s = 68 bytes, the name for the log.
+@dataclass(frozen=True, slots=True)
+class LocationDiscoveredPayload:
+    marker_form_id: int
+    name: str = ""
+
+    _STRUCT: ClassVar[struct.Struct] = struct.Struct("<I64s")   # 68 B
+
+    def encode(self) -> bytes:
+        raw = self.name.encode("utf-8", "replace")[:63]
+        return self._STRUCT.pack(self.marker_form_id & 0xFFFFFFFF, raw.ljust(64, b"\x00"))
+
+    @classmethod
+    def decode(cls, data: bytes) -> "LocationDiscoveredPayload":
+        if len(data) < cls._STRUCT.size:
+            raise ProtocolError("LOCATION_DISCOVERED truncated")
+        fid, raw = cls._STRUCT.unpack_from(data, 0)
+        return cls(fid, raw.split(b"\x00", 1)[0].decode("utf-8", "replace"))
+
+
 _TYPE_TO_PAYLOAD_CLS: dict[int, type] = {
     MessageType.SERVER_INFO_REQUEST:   ServerInfoRequestPayload,
     MessageType.SERVER_INFO_RESPONSE:  ServerInfoResponsePayload,
@@ -4714,6 +5473,7 @@ _TYPE_TO_PAYLOAD_CLS: dict[int, type] = {
     MessageType.CONTAINER_STATE:  ContainerStatePayload,
     MessageType.CONTAINER_SEED:   ContainerSeedPayload,
     MessageType.CONTAINER_OP_ACK: ContainerOpAckPayload,
+    MessageType.INSTANCE_DEFS:    InstanceDefsPayload,      # v34
     MessageType.QUEST_STAGE_SET:       QuestStageSetPayload,
     MessageType.QUEST_STAGE_BCAST:     QuestStageBroadcastPayload,
     MessageType.QUEST_STATE_BOOT:      QuestStateBootPayload,
@@ -4739,6 +5499,16 @@ _TYPE_TO_PAYLOAD_CLS: dict[int, type] = {
     MessageType.WORLD_PA_PIECES_OP:    WorldPaPiecesOpPayload,
     MessageType.WORLD_PA_PIECES_BCAST: WorldPaPiecesBroadcastPayload,
     MessageType.INV_DIGEST:            InvDigestPayload,
+    MessageType.INV_STATE:             InvStatePayload,
+    MessageType.RESTORE_REQUEST:       RestoreRequestPayload,
+    MessageType.PLAYER_INV:            PlayerInvPayload,
+    MessageType.RESTORE_DONE:          RestoreDonePayload,
+    MessageType.STATS_STATE:           PlayerStatsPayload,
+    MessageType.PLAYER_STATS:          PlayerStatsPayload,
+    MessageType.WORLD_ITEM_OP:         WorldItemOpPayload,
+    MessageType.WORLD_ITEM_ACK:        WorldItemAckPayload,
+    MessageType.DEATH_CRATES:          DeathCratesPayload,
+    MessageType.LOCATION_DISCOVERED:   LocationDiscoveredPayload,
     MessageType.CKPT_REQUEST:          CkptRequestPayload,
     MessageType.CKPT_DONE:             CkptDonePayload,
     MessageType.CKPT_BOOT:             CkptBootPayload,

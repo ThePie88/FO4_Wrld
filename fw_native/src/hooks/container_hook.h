@@ -63,19 +63,26 @@ private:
 // player (the Activate worker, before the ContainerMenu builds its list).
 // If the server's view of it is known, the local inventory is aligned to it
 // first, so the menu opens on what the server has and not on what the save
-// says. The seed of a container the server does not know stays on the
-// first op (vt[0x7A] take, TransferItem deposit): by then the menu has made
-// the engine resolve the leveled lists, which an activation-time scan might
-// see unresolved. A container whose runtime list does not exist yet is
-// aligned once more when the activation has built it (L3.4, see
-// container_activation_tick). MAIN THREAD (the Activate worker runs there).
+// says. The seed of a container the server does not know used to stay on
+// the first op (vt[0x7A] take, TransferItem deposit): by then the menu has
+// made the engine resolve the leveled lists, which an activation-time scan
+// might see unresolved. Since 2026-10-20 the activation puts it on the
+// watch and the tick seeds it as soon as the engine says its menu is open
+// (lists built and resolved), before the first take; the first op still
+// seeds when the menu never opens. A container whose runtime list does not
+// exist yet is aligned once more when the activation has built it (L3.4,
+// see container_activation_tick). MAIN THREAD (the Activate worker runs
+// there).
 void on_container_activation(void* refr, std::uint32_t form_id,
                              std::uint32_t base_id, std::uint32_t cell_id);
 
 // Loot rework L3.4 (2026-09-24): polls the containers activated without a
 // runtime list and aligns each one as soon as the engine has built it, or
-// drops it with a warning 2 s later. Called from the main-thread tick next
-// to Client::container_sweep_tick; cheap when nothing is watched.
+// drops it with a warning 2 s later. 2026-10-20: and seeds the containers
+// the server does not know, at the open of their menu or again after a scan
+// the engine refused (the write lock held inside the take detour), within
+// 3 s. Called from the main-thread tick next to Client::container_sweep_tick;
+// cheap when nothing is watched.
 void container_activation_tick();
 
 // Loot rework L3.4 (2026-09-24): seed a container the server does not know

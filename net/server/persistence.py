@@ -33,14 +33,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from server.state import (  # noqa: E402
     WorldSpawnState,
     ServerState, SessionState, ActorWorldState, ContainerWorldState,
-    LockWorldState, OutfitEntry, ResumeTicket,
+    LockWorldState, OutfitEntry, ResumeTicket, PRE_SEED_OPS_MAX,
 )
-from protocol import PosStatePayload, EquipModRecord, is_runtime_form_id, COUNT_MAX  # noqa: E402
+from protocol import (  # noqa: E402
+    PosStatePayload, EquipModRecord, is_runtime_form_id, COUNT_MAX,
+    wid_container_key, PA_FRAME_WEARABLES,
+    FP_UNKNOWN, InstanceDescriptor,
+)
 
 
 log = logging.getLogger("persistence")
 
-SNAPSHOT_FORMAT_VERSION: int = 10
+SNAPSHOT_FORMAT_VERSION: int = 15   # v15: the ops a partial container record saw, the world a checkpoint carries, the save each peer's world runs on (2026-10-20)
+# v13 (L5 realtime R4, 2026-10-03): `player_stats`, each player's numbers
+#     (PlayerStatsRecord: XP, level, perk points, SPECIAL, health, action
+#     points, rads, perks). A v12 file loads with none.
+# v12 (L5 realtime R1, 2026-10-03): `players`, each player's inventory
+#     record (PlayerInvRecord: the lines [item, fp, count], the equipped
+#     lines, the capture it stands on and the accepted ops pending on top);
+#     `instances` also lists the descriptors a player's line or pending op
+#     names. A v11 file loads with no records.
+# v11 (L5 stage 4b, 2026-10-03): a container's `items` is a list of
+#     [item, fp, count] (the line's instance fingerprint, protocol.instance_fp)
+#     instead of {item: count}, and `instances` lists the descriptor of every
+#     instance a line names. The items of a v6..v10 file load as FP_UNKNOWN
+#     lines: their counts are kept, the instance they held is not known.
 # v10 (L5 stage 3b, 2026-09-28): `custody` on each checkpoint, true when the
 #     server holds its bytes (server/custody.py). Everything else as v9.
 # v9 (L5 stage 3a, 2026-09-28): `checkpoints`, the last three checkpoints
@@ -129,13 +146,41 @@ def snapshot(state: ServerState, path: Path, *, pretty: bool = True) -> None:
                 "form_id": f"0x{c.form_id:X}",
                 "base_id": f"0x{c.base_id:X}",
                 "cell_id": f"0x{c.cell_id:X}",
-                # items: hex-stringified keys for JSON (JSON keys must be str)
-                "items": {f"0x{iid:X}": cnt for iid, cnt in c.items.items()},
+                # v11: [item, instance fingerprint, count], hex for reading
+                "items": [[f"0x{iid:X}", f"0x{fp:X}", cnt]
+                          for (iid, fp), cnt in sorted(c.items.items())],
                 "seeded": c.seeded,
                 "last_owner": c.last_owner_peer_id,
                 "last_update_ms": c.last_update_ms,
+                # D1 (v13): the world spawn of a container of the server's.
+                "wid": c.wid,
+                # D2 (v14): whose death made it, the ordinal and when ("" / 0 otherwise).
+                "death_owner": c.death_owner,
+                "death_ordinal": c.death_ordinal,
+                "death_ms": c.death_ms,
+                # 2026-10-20 (v15): the ops a partial record saw before its first
+                # scan: [peer, ms, kind, item, fp, count]; empty once seeded.
+                "pre_seed_ops": [[who, ms, kind, f"0x{item:X}", f"0x{fp:X}", cnt]
+                                 for who, ms, kind, item, fp, cnt in c.pre_seed_ops],
+                "pre_seed_overflow": bool(c.pre_seed_overflow),
             }
             for c in state.all_containers()
+        ],
+        # D2 (v14): how many death crates each peer's deaths made (the next ordinal).
+        "death_counts": {peer: n for peer, n in sorted(state.all_death_counts().items())},
+        # 2026-10-20 (v15): per peer [save_ms, load_ms] of its last load (ServerState.note_world_base).
+        "world_base_ms": {peer: [wb[0], wb[1]] for peer, wb in sorted(state.all_world_bases().items())},
+        # v11 — the descriptors of the instances a line still names.
+        "instances": [
+            {
+                "fp": f"0x{fp:X}",
+                "item": f"0x{item:X}",
+                "template": d.template,
+                "flags": d.flags,
+                "health": d.health,
+                "mods": [[f"0x{form:X}", attach, rank] for form, attach, rank in d.mods],
+            }
+            for fp, item, d in state.instance_defs_named()
         ],
         "locks": [
             {
@@ -187,6 +232,40 @@ def snapshot(state: ServerState, path: Path, *, pretty: bool = True) -> None:
             }
             for d in state.all_inv_digests()
         ],
+        # v13 - the players' numbers (L5 realtime R4).
+        "player_stats": [
+            {
+                "peer_id": r.peer_id, "session": r.session, "seq": r.seq,
+                "level": r.level, "xp": r.xp, "perk_points": r.perk_points,
+                "special": list(r.special), "health": r.health,
+                "action_points": r.action_points, "rads": r.rads,
+                "perks": [[f"0x{form:X}", rank] for form, rank in sorted(r.perks.items())],
+                "captures": r.captures, "updated_ms": r.updated_ms,
+            }
+            for r in state.all_player_stats()
+        ],
+        # v12 - the players' inventory records (L5 realtime R1).
+        "players": [
+            {
+                "peer_id": r.peer_id,
+                "lines": [[f"0x{item:X}", f"0x{fp:X}", count]
+                          for (item, fp), count in sorted(r.lines.items())],
+                "equipped": [[f"0x{item:X}", f"0x{fp:X}"]
+                             for (item, fp) in sorted(r.equipped)],
+                "session": r.session,
+                "seq": r.seq,
+                "watermark": r.watermark,
+                "op_epoch": r.op_epoch,
+                "flags": r.flags,
+                "digest": f"0x{r.digest:016X}",
+                "pending": [[op_id, kind, f"0x{item:X}", f"0x{fp:X}", count]
+                            for (op_id, kind, item, fp, count) in r.pending],
+                "captures": r.captures,
+                "updated_ms": r.updated_ms,
+                "open_session": r.open_session,
+            }
+            for r in state.all_player_inventories()
+        ],
         # v9 — the checkpoints, newest first per peer.
         "checkpoints": [
             {
@@ -205,9 +284,17 @@ def snapshot(state: ServerState, path: Path, *, pretty: bool = True) -> None:
                 "status": c.status,
                 "boot_failures": c.boot_failures,
                 "custody": bool(c.custody),
+                "in_pa": c.in_pa,            # D1: None when its digest never came
+                "in_pa_wid": c.in_pa_wid,    # 2026-10-15: the frame they wore then
+                "world_ms": c.world_ms,      # 2026-10-20 (v15): the world it carries
             }
             for c in state.all_checkpoints()
         ],
+        # L5 realtime D1 (2026-10-03) — the wid counter itself. Derived from
+        # the objects left, it went back under a wid already issued whenever
+        # the newest object was gone (an emptied crate, as a rule), and the
+        # next object got that wid and that container key again.
+        "next_world_spawn_wid": int(state.next_world_spawn_wid),
         # B6.14 — spawned world objects. These MUST persist: the local copies
         # on every client are TEMPORARY refs that die with the session, so the
         # join bootstrap is the only thing that brings a spawned object back.
@@ -463,13 +550,13 @@ def load_into(state: ServerState, path: Path) -> int:
     # v2 snapshots have no containers section; v3 adds containers; v4 adds
     # locks; v5 presence and resume tokens; v6 rekeys the containers; v7
     # adds the journal mark, quests, globals and hashed tokens; v8 the
-    # inventory digests; v9 the checkpoints; v10 their custody. All readable
-    # — older missing sections become empty. Unknown versions (> 10 or
-    # other) are rejected.
-    if version not in (2, 3, 4, 5, 6, 7, 8, 9, SNAPSHOT_FORMAT_VERSION):
+    # inventory digests; v9 the checkpoints; v10 their custody; v11 the
+    # instance of every container line. All readable — older missing
+    # sections become empty. Unknown versions (> 11 or other) are rejected.
+    if version not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, SNAPSHOT_FORMAT_VERSION):
         raise ValueError(
             f"snapshot format version {version!r} unsupported "
-            f"(expected {SNAPSHOT_FORMAT_VERSION}, 9, 8, 7, 6, 5, 4, 3, 2, or 1)"
+            f"(expected {SNAPSHOT_FORMAT_VERSION}, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, or 1)"
         )
 
     # v7 — the journal mark. Older files carry none: lsn 0 means "replay
@@ -520,6 +607,7 @@ def load_into(state: ServerState, path: Path) -> int:
     # and such a record cannot be mapped to one REFR (the old key merged every
     # twin of one base in one cell): those sections are dropped, loudly.
     container_skipped = 0
+    frame_wear_stripped = 0   # 2026-10-05, see PA_FRAME_WEARABLES
     container_records = data.get("containers", []) or []
     if version < 6 and container_records:
         log.warning(
@@ -540,15 +628,25 @@ def load_into(state: ServerState, path: Path) -> int:
         form_id = int(fid_raw, 16) if isinstance(fid_raw, str) else int(fid_raw)
         base_id = int(base_raw, 16) if isinstance(base_raw, str) else int(base_raw)
         cell_id = int(cell_raw, 16) if isinstance(cell_raw, str) else int(cell_raw)
-        if (form_id == 0 or is_runtime_form_id(form_id)
-                or base_id == 0 or cell_id == 0):
+        wid = int(c.get("wid", 0) or 0)
+        if (form_id == 0 or base_id == 0 or cell_id == 0
+                or (is_runtime_form_id(form_id)
+                    and not (wid and form_id == wid_container_key(wid)))):
             container_skipped += 1
             continue
+        # v11: [item, fp, count] lines. v6..v10: {item: count}, whose
+        # instance nobody knows: FP_UNKNOWN lines (stage 4b).
         items_raw = c.get("items", {}) or {}
-        items: dict[int, int] = {}
-        for k, v in items_raw.items():
+        triples: list[tuple[Any, Any, Any]] = []
+        if isinstance(items_raw, dict):
+            triples = [(k, FP_UNKNOWN, v) for k, v in items_raw.items()]
+        else:
+            triples = [tuple(t) for t in items_raw if isinstance(t, (list, tuple)) and len(t) == 3]
+        items: dict[tuple[int, int], int] = {}
+        for k, f, v in triples:
             try:
                 iid = int(k, 16) if isinstance(k, str) else int(k)
+                fp = int(f, 16) if isinstance(f, str) else int(f)
             except (TypeError, ValueError):
                 continue
             if iid == 0:
@@ -558,8 +656,23 @@ def load_into(state: ServerState, path: Path) -> int:
                 log.warning("snapshot %s: container 0x%X item 0x%X count %d clamped to %d",
                             path, form_id, iid, count, COUNT_MAX)
                 count = COUNT_MAX
+            if iid in PA_FRAME_WEARABLES:
+                # 2026-10-05: the frame's body armour, loot in a crate made
+                # before the rule; it is nobody's inventory.
+                frame_wear_stripped += 1
+                continue
             if count > 0:
-                items[iid] = count
+                items[(iid, fp)] = count
+        # 2026-10-20 (v15): the ops a partial record saw; a bad entry is dropped.
+        pre_ops: list = []
+        for e in (c.get("pre_seed_ops") or []):
+            try:
+                who, ms, kind, item, fp, cnt = e
+                pre_ops.append((str(who), float(ms), int(kind),
+                                int(item, 16) if isinstance(item, str) else int(item),
+                                int(fp, 16) if isinstance(fp, str) else int(fp), int(cnt)))
+            except (TypeError, ValueError):
+                continue
         container = ContainerWorldState(
             form_id=form_id,
             base_id=base_id,
@@ -568,13 +681,124 @@ def load_into(state: ServerState, path: Path) -> int:
             last_owner_peer_id=c.get("last_owner"),
             last_update_ms=float(c.get("last_update_ms", 0.0)),
             seeded=bool(c.get("seeded", True)),
+            wid=wid,
+            # D2 (v14); a v13 file has neither: not a death crate as far as the map knows.
+            death_owner=str(c.get("death_owner") or ""),
+            death_ordinal=int(c.get("death_ordinal", 0) or 0),
+            death_ms=int(c.get("death_ms", 0) or 0),
+            pre_seed_ops=pre_ops[:PRE_SEED_OPS_MAX],
+            pre_seed_overflow=bool(c.get("pre_seed_overflow", False)) or len(pre_ops) > PRE_SEED_OPS_MAX,
         )
         state._containers[form_id] = container
+    # D2 (v14): the death crates made per peer.
+    n_counts_bad = 0
+    for peer, n in (data.get("death_counts", {}) or {}).items():
+        try:
+            state._restore_death_count(str(peer), int(n))
+        except (TypeError, ValueError):
+            n_counts_bad += 1
+    if n_counts_bad:
+        log.warning("snapshot %s: skipped %d bad death count entries", path, n_counts_bad)
+    # 2026-10-20 (v15): the save each peer's world runs on and when it was
+    # loaded; a bare number is both (nothing between them: no reconciliation).
+    n_bases_bad = 0
+    for peer, wb in (data.get("world_base_ms", {}) or {}).items():
+        try:
+            if isinstance(wb, (list, tuple)):
+                state.note_world_base(str(peer), float(wb[0]), float(wb[1]))
+            else:
+                state.note_world_base(str(peer), float(wb), float(wb))
+        except (TypeError, ValueError, IndexError):
+            n_bases_bad += 1
+    if n_bases_bad:
+        log.warning("snapshot %s: skipped %d bad world base entries", path, n_bases_bad)
     if container_skipped:
         log.warning(
             "snapshot %s: skipped %d container entries with missing/zero identity",
             path, container_skipped,
         )
+
+    # v11 — instance descriptors, back through the state's own validation
+    # (a descriptor that does not make its fingerprint is not restored).
+    n_inst_bad = 0
+    for d in data.get("instances", []) or []:
+        try:
+            fp = int(d["fp"], 16) if isinstance(d["fp"], str) else int(d["fp"])
+            item = int(d["item"], 16) if isinstance(d["item"], str) else int(d["item"])
+            mods = tuple((int(m[0], 16) if isinstance(m[0], str) else int(m[0]),
+                          int(m[1]), int(m[2])) for m in d.get("mods", []))
+            desc = InstanceDescriptor(template=int(d.get("template", 0xFFFF)),
+                                      flags=int(d.get("flags", 0)),
+                                      health=float(d.get("health", -1.0)), mods=mods)
+        except (KeyError, TypeError, ValueError, IndexError):
+            n_inst_bad += 1
+            continue
+        was = state._replaying
+        state.begin_replay()
+        try:
+            if not state.record_instance_def(item, fp, desc):
+                n_inst_bad += 1
+        finally:
+            if not was:
+                state.end_replay()
+    if n_inst_bad:
+        log.warning("snapshot %s: %d instance descriptor(s) not restored", path, n_inst_bad)
+
+    # v12 - the players' inventory records, as they were written.
+    def _hex(v) -> int:
+        return int(v, 16) if isinstance(v, str) else int(v)
+    n_players_bad = 0
+    for r in data.get("players", []) or []:
+        try:
+            lines = {(_hex(l[0]), _hex(l[1])): int(l[2]) for l in r.get("lines", [])}
+            equipped = {(_hex(e[0]), _hex(e[1])) for e in r.get("equipped", [])}
+            # 2026-10-05: the frame's body armour out of a record written
+            # before the rule.
+            stale = [k for k in lines if k[0] in PA_FRAME_WEARABLES]
+            for k in stale:
+                del lines[k]
+                equipped.discard(k)
+            frame_wear_stripped += len(stale)
+            pending = [(int(q[0]), int(q[1]), _hex(q[2]), _hex(q[3]), int(q[4]))
+                       for q in r.get("pending", [])]
+            if any(c <= 0 for c in lines.values()):
+                raise ValueError("a line with no count")
+            state._restore_player_inventory(
+                str(r["peer_id"]), lines, equipped, int(r.get("session", 0)),
+                int(r.get("seq", 0)), int(r.get("watermark", 0)),
+                int(r.get("op_epoch", 0)), int(r.get("flags", 0)),
+                _hex(r.get("digest", 0)), pending, int(r.get("captures", 0)),
+                float(r.get("updated_ms", 0.0)), int(r.get("open_session", 0)))
+        except (KeyError, TypeError, ValueError, IndexError):
+            n_players_bad += 1
+    if n_players_bad:
+        log.warning("snapshot %s: %d player inventory record(s) not restored",
+                    path, n_players_bad)
+    if frame_wear_stripped:
+        log.warning("snapshot %s: %d line(s) of a power armour frame's body armour "
+                    "(ArmorPoweredFrame*) dropped from records and crates: never inventory",
+                    path, frame_wear_stripped)
+
+    # v13 - the players' numbers.
+    n_stats_bad = 0
+    for r in data.get("player_stats", []) or []:
+        try:
+            special = tuple(float(x) for x in r.get("special", []))
+            if len(special) != 7:
+                raise ValueError("SPECIAL")
+            state._restore_player_stats(
+                str(r["peer_id"]), session=int(r.get("session", 0)), seq=int(r.get("seq", 0)),
+                level=int(r.get("level", 0)), xp=float(r.get("xp", 0.0)),
+                perk_points=int(r.get("perk_points", 0)), special=special,
+                health=float(r.get("health", 0.0)),
+                action_points=float(r.get("action_points", 0.0)),
+                rads=float(r.get("rads", 0.0)),
+                perks={_hex(p[0]): int(p[1]) for p in r.get("perks", [])},
+                captures=int(r.get("captures", 0)), updated_ms=float(r.get("updated_ms", 0.0)))
+        except (KeyError, TypeError, ValueError, IndexError):
+            n_stats_bad += 1
+    if n_stats_bad:
+        log.warning("snapshot %s: %d player stats record(s) not restored", path, n_stats_bad)
 
     # v7 — quests and globals. Restored through the state's own recorders
     # with the journal off (this is a load, not a new fact), so the same
@@ -626,7 +850,11 @@ def load_into(state: ServerState, path: Path) -> int:
                     float(c.get("received_ms", 0.0)), int(c.get("watermark_lsn", 0)),
                     int(c.get("reason", 0)), status=str(c.get("status", "provisional")),
                     boot_failures=int(c.get("boot_failures", 0)),
-                    custody=bool(c.get("custody", False)))
+                    custody=bool(c.get("custody", False)),
+                    in_pa=None if c.get("in_pa") is None else bool(c.get("in_pa")),
+                    in_pa_wid=int(c.get("in_pa_wid", 0) or 0),
+                    # v15; a v14 file has none: its own report's time, as before.
+                    world_ms=None if c.get("world_ms") is None else float(c["world_ms"]))
             except (KeyError, TypeError, ValueError):
                 log.warning("snapshot %s: skipping malformed checkpoint entry: %s", path, c)
     finally:
@@ -762,6 +990,12 @@ def load_into(state: ServerState, path: Path) -> int:
         state.world_spawns[st.wid] = st
         if st.wid >= state.next_world_spawn_wid:
             state.next_world_spawn_wid = st.wid + 1
+    # L5 realtime D1: the counter as it was (absent before 2026-10-03).
+    try:
+        state.next_world_spawn_wid = max(state.next_world_spawn_wid,
+                                         int(data.get("next_world_spawn_wid", 0) or 0))
+    except (TypeError, ValueError):
+        pass
 
     if lock_skipped:
         log.warning(

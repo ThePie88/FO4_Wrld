@@ -99,6 +99,19 @@ struct PendingContainerOp {
     // unused). Queued by the network thread when a CONTAINER_STATE sequence
     // completes and after every verdict on one of our own ops.
     std::uint8_t  reconverge;
+    // L5 stage 4b (2026-10-03): the instance of the item (fw::net::kFpPlain,
+    // kFpUnknown or a fingerprint) and, for a remote PUT of a named one, the
+    // descriptor it is built from (`have_instance`).
+    std::uint64_t item_fp;
+    std::uint8_t  have_instance;
+    fw::net::InstanceDesc instance;
+    // L5 realtime R1b (2026-10-05): the undo of a refused world item op, on
+    // the main thread: 1 = a drop (the REFR `ref_fid`/`ref_handle` goes, the
+    // item comes back from `instance`), 2 = a pickup (the item is destroyed:
+    // someone else took it first). The other fields unused.
+    std::uint8_t  world_undo;
+    std::uint32_t ref_fid;
+    std::uint32_t ref_handle;
 };
 
 struct PendingDoorOp {

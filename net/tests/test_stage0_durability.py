@@ -84,7 +84,7 @@ class TestCountBounds:
         r = validate_container_op(_session(), op, s.container_state_for_op(op), 0.0)
         assert not r.ok and r.reason == RejectReason.COUNT_OVERFLOW
         assert s.record_container_op(op, "alice", 1.0) is None
-        assert s.container_state(TRUNK_FID).items[STIMPAK] == 2_000_000_000
+        assert s.container_state(TRUNK_FID).items[(STIMPAK, 0)] == 2_000_000_000
         entries = ServerProtocol._container_state_entries([s.container_state(TRUNK_FID)])
         ContainerStatePayload(entries=tuple(entries)).encode()
 
@@ -95,7 +95,7 @@ class TestCountBounds:
         r = validate_container_op(_session(), op, s.container_state_for_op(op), 0.0)
         assert r.ok
         assert s.record_container_op(op, "alice", 1.0) is not None
-        assert s.container_state(TRUNK_FID).items[STIMPAK] == COUNT_MAX
+        assert s.container_state(TRUNK_FID).items[(STIMPAK, 0)] == COUNT_MAX
 
     def test_loader_clamps_counts_above_i32(self, tmp_path: Path):
         path = tmp_path / "big.json"
@@ -106,13 +106,13 @@ class TestCountBounds:
             "containers": [{
                 "form_id": f"0x{TRUNK_FID:X}", "base_id": f"0x{TRUNK_BASE:X}",
                 "cell_id": f"0x{TRUNK_CELL:X}",
-                "items": {f"0x{STIMPAK:X}": 4_000_000_000},
+                "items": [[f"0x{STIMPAK:X}", "0x0", 4_000_000_000]],
                 "seeded": True, "last_owner": "alice", "last_update_ms": 0.0,
             }],
         }), encoding="utf-8")
         s = ServerState()
         load_into(s, path)
-        assert s.container_state(TRUNK_FID).items[STIMPAK] == COUNT_MAX
+        assert s.container_state(TRUNK_FID).items[(STIMPAK, 0)] == COUNT_MAX
 
     @pytest.mark.asyncio
     async def test_overflowing_put_is_answered_with_rej_count(self):
@@ -139,7 +139,7 @@ class TestCountBounds:
                         if f.header.msg_type == int(MessageType.CONTAINER_OP_ACK)]
                 assert acks, "no ACK for the overflowing PUT"
                 assert acks[0].status == 3  # REJ_COUNT
-                assert protocol_obj.state.container_state(TRUNK_FID).items[STIMPAK] == 2_000_000_000
+                assert protocol_obj.state.container_state(TRUNK_FID).items[(STIMPAK, 0)] == 2_000_000_000
             finally:
                 sock.close()
         finally:
@@ -182,7 +182,7 @@ class TestSnapshotDurability:
         dst = ServerState()
         loaded = restore_state(dst, path)
         assert loaded == path.with_name("snap.json.1")
-        assert dst.container_state(TRUNK_FID).items == {STIMPAK: 3}
+        assert dst.container_state(TRUNK_FID).items == {(STIMPAK, 0): 3}
         # The unreadable file is kept for inspection under another name and
         # no longer sits where the next write would rotate it over the good copy.
         assert not path.exists()

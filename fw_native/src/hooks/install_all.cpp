@@ -96,12 +96,20 @@
 #include "main_menu_hook.h"
 #include "worldstate_hook.h"
 #include "door_hook.h"
+#include "loader_flush_hook.h"   // 2026-10-18: the loader flush fix (precombined geometry)
+#include "../render/present_hook.h"   // 2026-10-18: set_vsync_off_in_loads
 #include "lock_hook.h"
 #include "world_spawn_hook.h"
 #include "lifecycle_tripwire.h" // Build 70 Piano B Fase 0: WHO destroys our refs? (observe-only)
 #include "../persist/lifecycle.h" // L5 stage 1: save veto, request filter, load bracket
 #include "../persist/inventory_capture.h" // L5 stage 2: the player's inventory, observe-only
 #include "../persist/inventory_tap.h"     // L5 stage 2: the two inventory cores, observe-only
+#include "../persist/instance_probe.h"    // L5 stage 4a: uid moves and stack dumps, observe-only
+#include "../persist/instance_fp.h"       // L5 stage 4b: the fingerprint self-check
+#include "../persist/inventory_restore.h" // L5 realtime R2: the record back into the game after a load
+#include "../native/map_marker.h"         // L5 D2 experiment (2026-10-15): map markers made at runtime
+#include "../native/map_markers.h"        // L5 realtime D2 (2026-10-15): death crates and players on the map
+#include "../persist/player_stats.h"      // L5 realtime R4: the character's numbers
 #include "pa_pipeline_trace.h"  // Build 70m: log the engine's PA enter/exit pipeline step by step (observe-only)
 #include "npc_ai_suppress.h" // B6.5w4: Actor::Update_PerFrame detour
 #include "ghost_ai_package.h" // B6.5w12 hook #1: TESPackage::EvaluateConditions
@@ -175,6 +183,18 @@ InstallSummary install_all(std::uintptr_t module_base,
     // the two functions every inventory change goes through.
     fw::persist::inventory::configure(cfg);
     (void)fw::persist::tap::install(module_base, cfg);
+    // L5 realtime R2 - the player's record back into the game after a load.
+    fw::persist::restore::configure(cfg);
+    fw::native::map_marker::init(module_base, cfg);
+    fw::native::map_markers::init(module_base, cfg);
+    // L5 realtime R4 - XP, level, perks, SPECIAL to the server and back.
+    fw::persist::charstats::configure(cfg);
+    // L5 stage 4a - the measurements: one observe-only detour on the uid
+    // announcer, and the stack dumps the loot paths call when it is on.
+    fw::persist::probe::configure(cfg);
+    (void)fw::persist::probe::install(module_base);
+    // L5 stage 4b - the fingerprint must be the server's, byte for byte.
+    (void)fw::persist::instance::self_check();
     s.container_ok   = install_container_hook(module_base);
     // B1.k: must run after install_container_hook (shares MinHook manager);
     // captures PUT which vt[0x7A] doesn't see (live test 2026-04-21).
@@ -203,6 +223,15 @@ InstallSummary install_all(std::uintptr_t module_base,
     if (cfg.world_spawn_sync) {
         (void)install_world_spawn_hook(module_base);
     }
+    // 2026-10-18 - the loader flush fix: exits from interiors took 90-112 s
+    // in vanilla because the precombined geometry tasks may only finish on
+    // the loader's owner thread (RESEARCH_interior_loads.md). Not counted in
+    // the summary: config-gated between fix and observe-only.
+    (void)install_loader_flush_hook(module_base, cfg);
+    // ... and the half that matters: no vsync on Present while the loader
+    // flushes (render/present_hook.cpp). The Present hook is installed by
+    // dll_main before the hooks; this only sets its switch.
+    fw::render::set_vsync_off_in_loads(cfg.loading_vsync_off);
     // Build 70 (Piano B Fase 0) — lifecycle tripwires, observe-only, cold
     // paths (destroy + unpersist). Unconditional like the other pure
     // diagnostics (npc_hp_probe): they answer "who is destroying our

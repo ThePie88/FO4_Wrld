@@ -12,12 +12,15 @@
 #include "../log.h"
 #include "../offsets.h"
 #include "../ref_identity.h"
+#include "../native/world_spawn.h"   // L5 realtime D1: containers of the server's by wid
 #include "../hooks/container_hook.h"   // ApplyingRemoteGuard for TLS bypass
 #include "../native/scene_inject.h"    // B6.6w5 Build 8b: get_injected_body_ghost()
 #include "../hooks/npc_ai_suppress.h"  // B6.6w5 Build 12 Fix 1 gate: get_fid_for_aiproc
 #include "../hooks/ghost_is_attachable.h"  // B6.6w5 Build 28f: TLS bypass for IsAttachable during spawn
 #include "../main_thread_dispatch.h"        // Build 55f: mark_raider_ghost_targeted_yaw
 #include "../persist/lifecycle.h"           // L5 stage 1: CommandedLoadScope around our boot load
+#include "../persist/instance_probe.h"      // L5 stage 4a: the stacks around every world-side write
+#include "instance_writers.h"               // L5 stage 4b: one exact instance in or out
 
 namespace fw::engine {
 
@@ -1278,6 +1281,8 @@ bool init(std::uintptr_t module_base) {
     g_module_base_for_place = module_base;   // B6.14
     g_player_singleton_slot = reinterpret_cast<void**>(
         module_base + offsets::PLAYER_SINGLETON_RVA);
+    // L5 stage 4b — the instance writers resolve against the same base.
+    instances::init(module_base);
 
     g_ready.store(true, std::memory_order_release);
     FW_LOG("engine: calls resolved "
@@ -2806,6 +2811,19 @@ void* resolve_refhandle(void* handle_ptr) {
 static bool container_identity_verified(const RefIdentity& id,
                                         std::uint32_t expected_base_id,
                                         std::uint32_t expected_cell_id);
+
+// L5 realtime D1 (2026-10-03): the local REFR a container key names. A
+// placed REFR by its form id; a container of the server's (the death crate,
+// key 0xFF000000 | wid) by the world spawn bound to the wid, confirmed
+// through its handle. Its identity is the wid: the cell each client's copy
+// landed in is not checked (`expected_cell` is then 0).
+static void* resolve_container_key(std::uint32_t key, std::uint32_t* expected_cell) {
+    if (fw::net::is_wid_container_key(key)) {
+        if (expected_cell) *expected_cell = 0;
+        return fw::native::world_spawn::refr_for_container_key(key);
+    }
+    return lookup_by_form_id(key);
+}
 static bool container_loot_ready(void* refr, std::uint32_t form_id, const char* who);
 
 bool apply_container_op_to_engine(
@@ -2814,7 +2832,9 @@ bool apply_container_op_to_engine(
     std::uint32_t expected_base_id,
     std::uint32_t expected_cell_id,
     std::uint32_t item_base_id,
-    std::int32_t  count)
+    std::int32_t  count,
+    std::uint64_t item_fp,
+    const fw::net::InstanceDesc* instance)
 {
     // Sanity + readiness.
     if (!g_ready.load(std::memory_order_acquire)) return false;
@@ -2830,7 +2850,7 @@ bool apply_container_op_to_engine(
     }
 
     // Resolve the REFR for the container on OUR side.
-    void* container_ref = lookup_by_form_id(container_form_id);
+    void* container_ref = resolve_container_key(container_form_id, &expected_cell_id);
     if (!container_ref) {
         // Container not loaded in our engine (cell not streamed in, different
         // save state, etc.). Not a bug — just a no-op apply.
@@ -2879,6 +2899,62 @@ bool apply_container_op_to_engine(
     // or crash. Best to materialize first.
     (void)force_materialize_inventory(container_ref);
 
+    // L5 stage 4a: which stack a remote op really takes or makes on this
+    // side (a TAKE is a base-only removal, a PUT a base-only AddItem).
+    const bool probe = fw::persist::probe::enabled();
+    if (probe) {
+        FW_LOG("[probe] remote %s: %d x 0x%08X, container 0x%08X",
+               kind == 2 ? "PUT" : "TAKE", count, item_base_id, container_form_id);
+        fw::persist::probe::dump(container_ref, 0,
+                                 kind == 2 ? "apply-put-before" : "apply-take-before");
+    }
+
+    // L5 stage 4b: a known instance moves by its fingerprint. Out of the
+    // SEH block below: the writers cage their own engine calls.
+    const bool named = item_fp != fw::net::kFpPlain && item_fp != fw::net::kFpUnknown;
+    if (kind == 1 /* TAKE */ && item_fp != fw::net::kFpUnknown) {
+        const int gone = instances::remove_instance(container_ref, item_base_id, item_fp,
+                                                    count, nullptr);
+        if (gone < count) {
+            FW_WRN("engine: apply TAKE cfid=0x%X item=0x%X fp=%016llX: %d of %d removed, this "
+                   "engine held no more of that instance (DIVERGENCE, the realignment settles it)",
+                   container_form_id, item_base_id, static_cast<unsigned long long>(item_fp),
+                   gone, count);
+        } else {
+            FW_LOG("engine: apply_container_op_to_engine TAKE cfid=0x%X (base=0x%X cell=0x%X) "
+                   "item=0x%X fp=%016llX count=%d, the exact instance", container_form_id,
+                   id.base_id, id.cell_id, item_base_id,
+                   static_cast<unsigned long long>(item_fp), count);
+        }
+        if (probe) fw::persist::probe::dump(container_ref, 0, "apply-take-after");
+        return gone > 0;
+    }
+    if (kind == 2 /* PUT */ && named && instance) {
+        const int before = instances::count_of(container_ref, item_base_id, item_fp);
+        const int put = instances::add_instance(container_ref, item_base_id, *instance, count);
+        const int after = instances::count_of(container_ref, item_base_id, item_fp);
+        if (put > 0) {
+            if (before >= 0 && after - before == put && put == count) {
+                FW_LOG("engine: apply_container_op_to_engine PUT cfid=0x%X (base=0x%X cell=0x%X) "
+                       "item=0x%X fp=%016llX count=%d, built exactly", container_form_id,
+                       id.base_id, id.cell_id, item_base_id,
+                       static_cast<unsigned long long>(item_fp), count);
+            } else {
+                FW_WRN("engine: apply PUT cfid=0x%X item=0x%X fp=%016llX: %d of %d built, the "
+                       "fingerprint counts %d -> %d (DIVERGENCE: the engine made another instance)",
+                       container_form_id, item_base_id, static_cast<unsigned long long>(item_fp),
+                       put, count, before, after);
+            }
+            if (probe) fw::persist::probe::dump(container_ref, 0, "apply-put-after");
+            return true;
+        }
+        FW_WRN("engine: apply PUT cfid=0x%X item=0x%X fp=%016llX: the instance could not be "
+               "built, a rolled copy of the base goes in its place (DIVERGENCE: the server "
+               "refuses a take of it, nothing is duplicated)", container_form_id, item_base_id,
+               static_cast<unsigned long long>(item_fp));
+        // falls through to the base-only AddItem below
+    }
+
     const char* op_tag = "?";
     bool ok = false;
     __try {
@@ -2924,6 +3000,10 @@ bool apply_container_op_to_engine(
                "(base=0x%X cell=0x%X) item=0x%X count=%d",
                op_tag, container_form_id,
                id.base_id, id.cell_id, item_base_id, count);
+        if (probe) {
+            fw::persist::probe::dump(container_ref, 0,
+                                     kind == 2 ? "apply-put-after" : "apply-take-after");
+        }
     }
     return ok;
 }
@@ -2936,7 +3016,8 @@ bool rollback_container_op_to_engine(
     std::uint32_t item_base_id,
     std::int32_t  count,
     bool          insufficient,
-    std::int32_t  server_count)
+    std::int32_t  server_count,
+    std::uint64_t item_fp)
 {
     if (!g_ready.load(std::memory_order_acquire)) return false;
     if (container_form_id == 0 || item_base_id == 0 || count <= 0) return false;
@@ -2949,7 +3030,7 @@ bool rollback_container_op_to_engine(
         return false;
     }
 
-    void* container_ref = lookup_by_form_id(container_form_id);
+    void* container_ref = resolve_container_key(container_form_id, &expected_cell_id);
     if (!container_ref) {
         // The cell streamed out between the take and the verdict. The items
         // stay where the engine put them; the server's view wins on the next
@@ -2982,6 +3063,18 @@ bool rollback_container_op_to_engine(
     }
     (void)force_materialize_inventory(container_ref);
 
+    // L5 stage 4a: both sides around the undo. The undo removes by base, and
+    // the decomp says a base-only removal takes the head of the chain: these
+    // lines say which stack it really took.
+    const bool probe = fw::persist::probe::enabled();
+    if (probe) {
+        FW_LOG("[probe] rollback of a %s: %d x 0x%08X, container 0x%08X%s",
+               kind == 2 ? "PUT" : "TAKE", count, item_base_id, container_form_id,
+               insufficient ? " (insufficient)" : "");
+        fw::persist::probe::dump(container_ref, 0, "rollback-before");
+        fw::persist::probe::dump(player, item_base_id, "rollback-before");
+    }
+
     // Step 1: the player's side. A refused PUT: the items sit in the
     // container, they come back to the player. A refused TAKE: they sit
     // with the player; destroyed when the server never had them
@@ -2991,6 +3084,24 @@ bool rollback_container_op_to_engine(
     const char* what = (kind == 2)     ? "PUT undone, back to the player"
                      : insufficient    ? "TAKE denied, phantom copy destroyed"
                                        : "TAKE undone, back into the container";
+    // L5 stage 4b: the instance that moved moves back, stack by stack.
+    if (item_fp != fw::net::kFpUnknown) {
+        const int moved = instances::remove_instance(from, item_base_id, item_fp, count, to);
+        FW_LOG("engine: rollback_container_op_to_engine %s: %d of %d x 0x%X fp=%016llX (the "
+               "exact instance), cfid=0x%X (base=0x%X cell=0x%X), the server has %d",
+               what, moved, count, item_base_id, static_cast<unsigned long long>(item_fp),
+               container_form_id, id.base_id, id.cell_id, server_count);
+        if (moved < count) {
+            FW_WRN("engine: rollback of 0x%X fp=%016llX moved %d of %d: the rest of that instance "
+                   "is not where the op left it (DIVERGENCE, the realignment settles the "
+                   "container)", item_base_id, static_cast<unsigned long long>(item_fp), moved, count);
+        }
+        if (probe) {
+            fw::persist::probe::dump(container_ref, 0, "rollback-after");
+            fw::persist::probe::dump(player, item_base_id, "rollback-after");
+        }
+        return moved > 0;
+    }
     __try {
         g_engine_remove_item(
             from, item_form, static_cast<std::uint32_t>(count),
@@ -3006,6 +3117,10 @@ bool rollback_container_op_to_engine(
     FW_LOG("engine: rollback_container_op_to_engine %s: %d x 0x%X, "
            "cfid=0x%X (base=0x%X cell=0x%X)",
            what, count, item_base_id, container_form_id, id.base_id, id.cell_id);
+    if (probe) {
+        fw::persist::probe::dump(container_ref, 0, "rollback-after");
+        fw::persist::probe::dump(player, item_base_id, "rollback-after");
+    }
 
     // Step 2: the container's count of this item becomes the server's. Only
     // when the refusal was INSUFFICIENT: that is the one verdict where the
@@ -3013,7 +3128,8 @@ bool rollback_container_op_to_engine(
     // refusal (identity, runtime ref) the record is not this container's
     // view, and aligning to its count destroyed what the engine had put
     // back (measured 2026-09-25: 'had 1, the server has 0, aligned (-1)'
-    // right after 'back into the container').
+    // right after 'back into the container'). L5 stage 4b: only for an op
+    // whose instance was unknown; a named one is settled by the realignment.
     if (server_count < 0 || !insufficient) return true;
     constexpr std::size_t MAX = 128;
     std::uint32_t ids[MAX];
@@ -3046,6 +3162,7 @@ bool rollback_container_op_to_engine(
     FW_LOG("engine: rollback_container_op_to_engine: container 0x%X had %d x "
            "0x%X, the server has %d, aligned (%+d)",
            container_form_id, local, item_base_id, server_count, diff);
+    if (probe) fw::persist::probe::dump(container_ref, 0, "rollback-aligned");
     return true;
 }
 
@@ -3083,7 +3200,7 @@ bool reconverge_container_to_engine(
     std::uint32_t container_form_id,
     std::uint32_t expected_base_id,
     std::uint32_t expected_cell_id,
-    const std::vector<std::pair<std::uint32_t, std::int32_t>>& server_items,
+    const std::vector<ServerLine>& server_lines,
     ContainerDiff* out)
 {
     if (out) *out = ContainerDiff{};
@@ -3091,7 +3208,7 @@ bool reconverge_container_to_engine(
     if (container_form_id == 0) return false;
     if (!g_engine_add_item || !g_engine_remove_item) return false;
 
-    void* container_ref = lookup_by_form_id(container_form_id);
+    void* container_ref = resolve_container_key(container_form_id, &expected_cell_id);
     if (!container_ref) {
         FW_DBG("engine: reconverge_container: 0x%X not loaded, nothing to align",
                container_form_id);
@@ -3113,84 +3230,229 @@ bool reconverge_container_to_engine(
     if (!container_loot_ready(container_ref, container_form_id, "reconverge_container")) {
         return false;
     }
+
+    // L5 stage 4b — the churn guard. A container whose alignment keeps
+    // changing it holds an instance this engine does not build the same way;
+    // it is left alone for a while instead of destroyed and rebuilt forever.
+    // The server still checks every op on it by its fingerprint.
+    struct Churn { std::uint64_t window_start = 0; int changes = 0; std::uint64_t until = 0; };
+    static std::unordered_map<std::uint32_t, Churn> s_churn;   // main thread only
+    const std::uint64_t now = GetTickCount64();
+    {
+        const auto it = s_churn.find(container_form_id);
+        if (it != s_churn.end() && now < it->second.until) {
+            FW_DBG("engine: reconverge 0x%X suspended (churn) for %llu ms more",
+                   container_form_id, static_cast<unsigned long long>(it->second.until - now));
+            return true;
+        }
+    }
     (void)force_materialize_inventory(container_ref);
 
     ContainerDiff d{};
     d.refr = container_ref;
-    // Pass 1 adds and removes; pass 2, only when pass 1 added something,
-    // removes what the additions dragged in (the ammo of a weapon).
-    for (int pass = 1; pass <= 2; ++pass) {
-        constexpr std::size_t MAX = 256;
-        std::uint32_t ids[MAX];
-        std::int32_t  cnts[MAX];
-        const std::size_t n = scan_container_inventory(container_ref, ids, cnts, MAX);
-        if (n >= MAX) {
-            FW_WRN("engine: reconverge_container: 0x%X has %zu+ item lines, more "
-                   "than the scan buffer, not aligned", container_form_id, n);
-            return false;
-        }
-        std::unordered_map<std::uint32_t, std::int32_t> local;
-        for (std::size_t i = 0; i < n; ++i) {
-            if (ids[i] != 0 && cnts[i] > 0) local[ids[i]] += cnts[i];
-        }
+    // L5 stage 4a: a realignment that changes something is dumped before its
+    // first write and after its last; one that finds the container aligned
+    // writes nothing and logs nothing (the sweep runs at every cell change).
+    const bool probe = fw::persist::probe::enabled();
+    bool probed = false;
+    auto probe_before = [&]() {
+        if (!probe || probed) return;
+        probed = true;
+        FW_LOG("[probe] realignment of 0x%08X to the server's %zu line(s)",
+               container_form_id, server_lines.size());
+        fw::persist::probe::dump(container_ref, 0, "reconverge-before");
+    };
 
-        int added_this_pass = 0;
-        for (const auto& [item, want] : server_items) {
-            if (item == 0 || want <= 0) continue;
-            const auto it = local.find(item);
-            const std::int32_t have = (it == local.end()) ? 0 : it->second;
-            if (it != local.end()) local.erase(it);
-            if (want == have) continue;
-            if (want > have && pass == 2) {
-                // Pass 2 never adds: a line pass 1 added and the engine
-                // took away again is not fought over.
-                FW_WRN("engine: reconverge 0x%X: item 0x%X local %d < server %d "
-                       "after the add, left as is", container_form_id, item, have, want);
-                continue;
-            }
-            void* item_form = lookup_by_form_id(item);
+    constexpr std::size_t MAX = 256;
+    static instances::Line local[MAX];   // main thread only
+    std::size_t nl = 0;
+    if (!instances::scan_lines(container_ref, 0, local, MAX, &nl)) {
+        FW_DBG("engine: reconverge 0x%X: the list cannot be read now (no list, or the "
+               "engine holds it), not aligned", container_form_id);
+        return false;
+    }
+    if (nl >= MAX) {
+        FW_WRN("engine: reconverge_container: 0x%X has %zu+ lines, more than the scan "
+               "buffer, not aligned", container_form_id, nl);
+        return false;
+    }
+    auto local_count = [&](std::uint32_t item, std::uint64_t fp) -> int {
+        for (std::size_t k = 0; k < nl; ++k) {
+            if (local[k].base == item && local[k].fp == fp) return local[k].count;
+        }
+        return 0;
+    };
+    auto named_on_server = [&](std::uint32_t item, std::uint64_t fp) -> bool {
+        for (const auto& sl : server_lines) {
+            if (sl.item == item && sl.fp == fp && fp != fw::net::kFpUnknown) return true;
+        }
+        return false;
+    };
+    auto unknown_on_server = [&](std::uint32_t item) -> int {
+        int n = 0;
+        for (const auto& sl : server_lines) {
+            if (sl.item == item && sl.fp == fw::net::kFpUnknown && sl.count > 0) n += sl.count;
+        }
+        return n;
+    };
+    bool rolled_add = false;   // a base-only AddItem ran: ammo may have come in with it
+
+    // 1. Every plain or named line of the server, to its exact count.
+    for (const auto& sl : server_lines) {
+        if (sl.item == 0 || sl.count < 0 || sl.fp == fw::net::kFpUnknown) continue;
+        const int have = local_count(sl.item, sl.fp);
+        const int want = sl.count;
+        if (have == want) continue;
+        probe_before();
+        if (have > want) {
+            const int gone = instances::remove_instance(container_ref, sl.item, sl.fp,
+                                                        have - want, nullptr);
+            d.items_removed += gone;
+            FW_LOG("engine: reconverge 0x%X: item 0x%X fp=%016llX local %d -> server %d "
+                   "(%d removed)", container_form_id, sl.item,
+                   static_cast<unsigned long long>(sl.fp), have, want, gone);
+            continue;
+        }
+        if (sl.fp == fw::net::kFpPlain) {
+            void* item_form = lookup_by_form_id(sl.item);
             if (!item_form) {
-                FW_WRN("engine: reconverge 0x%X: item form 0x%X not found, line "
-                       "left as is (local %d, server %d)",
-                       container_form_id, item, have, want);
+                FW_WRN("engine: reconverge 0x%X: item form 0x%X not found, line left as is "
+                       "(local %d, server %d)", container_form_id, sl.item, have, want);
                 continue;
             }
-            const bool ok = (want > have)
-                ? seh_container_add(container_ref, item_form,
-                                    static_cast<std::uint32_t>(want - have))
-                : seh_container_destroy(container_ref, item_form,
-                                        static_cast<std::uint32_t>(have - want));
-            if (!ok) {
+            if (!seh_container_add(container_ref, item_form,
+                                   static_cast<std::uint32_t>(want - have))) {
                 FW_ERR("engine: SEH in reconverge_container cfid=0x%X item=0x%X "
-                       "local=%d server=%d", container_form_id, item, have, want);
+                       "local=%d server=%d", container_form_id, sl.item, have, want);
                 return false;
             }
-            FW_LOG("engine: reconverge 0x%X pass %d: item 0x%X local %d -> server %d",
-                   container_form_id, pass, item, have, want);
-            if (want > have) {
-                d.items_added += want - have;
-                if (have == 0) ++d.lines_added;
-                ++added_this_pass;
-            } else {
-                d.items_removed += have - want;
-            }
+            rolled_add = true;
+            d.items_added += want - have;
+            if (have == 0) ++d.lines_added;
+            FW_LOG("engine: reconverge 0x%X: item 0x%X (plain) local %d -> server %d",
+                   container_form_id, sl.item, have, want);
+            continue;
         }
-        // Everything the server never mentions is gone.
-        for (const auto& [item, have] : local) {
-            void* item_form = lookup_by_form_id(item);
-            if (!item_form) continue;
-            if (!seh_container_destroy(container_ref, item_form,
-                                       static_cast<std::uint32_t>(have))) {
-                FW_ERR("engine: SEH in reconverge_container cfid=0x%X item=0x%X "
-                       "(removing %d)", container_form_id, item, have);
-                return false;
-            }
-            FW_LOG("engine: reconverge 0x%X pass %d: item 0x%X local %d -> gone "
-                   "(not on the server)", container_form_id, pass, item, have);
-            d.items_removed += have;
-            ++d.lines_removed;
+        if (!sl.have_desc) {
+            FW_LOG("engine: reconverge 0x%X: item 0x%X fp=%016llX local %d < server %d, its "
+                   "descriptor has not arrived: left for the next alignment",
+                   container_form_id, sl.item, static_cast<unsigned long long>(sl.fp),
+                   have, want);
+            continue;
         }
-        if (added_this_pass == 0) break;
+        const int put = instances::add_instance(container_ref, sl.item, sl.desc, want - have);
+        const int now_have = instances::count_of(container_ref, sl.item, sl.fp);
+        d.items_added += put;
+        if (have == 0 && put > 0) ++d.lines_added;
+        if (now_have == want) {
+            FW_LOG("engine: reconverge 0x%X: item 0x%X fp=%016llX local %d -> server %d, "
+                   "built exactly", container_form_id, sl.item,
+                   static_cast<unsigned long long>(sl.fp), have, want);
+        } else {
+            FW_WRN("engine: reconverge 0x%X: item 0x%X fp=%016llX: %d built, the fingerprint "
+                   "counts %d of %d (DIVERGENCE: the engine made another instance)",
+                   container_form_id, sl.item, static_cast<unsigned long long>(sl.fp), put,
+                   now_have, want);
+        }
+    }
+
+    // 2. A local line no server line names is gone, unless its item has a
+    //    count-only line on the server (step 3 counts it there). A stack this
+    //    client cannot read is left where it is: never destroy what cannot be
+    //    named.
+    for (std::size_t k = 0; k < nl; ++k) {
+        const auto& l = local[k];
+        if (l.count <= 0 || named_on_server(l.base, l.fp) || unknown_on_server(l.base) > 0) continue;
+        if (l.fp == fw::net::kFpUnknown) {
+            FW_WRN("engine: reconverge 0x%X: %d x 0x%X the client cannot read, not on the "
+                   "server: left as is", container_form_id, l.count, l.base);
+            continue;
+        }
+        probe_before();
+        const int gone = instances::remove_instance(container_ref, l.base, l.fp, l.count, nullptr);
+        d.items_removed += gone;
+        ++d.lines_removed;
+        FW_LOG("engine: reconverge 0x%X: item 0x%X fp=%016llX local %d -> gone (not on the "
+               "server)", container_form_id, l.base, static_cast<unsigned long long>(l.fp), gone);
+    }
+
+    // 3. Count-only lines (a record of a v33 server): every stack of the item
+    //    that no named line claims counts against them.
+    for (std::size_t s = 0; s < server_lines.size(); ++s) {
+        const auto& sl = server_lines[s];
+        if (sl.fp != fw::net::kFpUnknown || sl.item == 0) continue;
+        bool first = true;   // one pass per item
+        for (std::size_t p = 0; p < s; ++p) {
+            if (server_lines[p].item == sl.item && server_lines[p].fp == fw::net::kFpUnknown) first = false;
+        }
+        if (!first) continue;
+        const int want = unknown_on_server(sl.item);
+        int have = 0;
+        for (std::size_t k = 0; k < nl; ++k) {
+            if (local[k].base == sl.item && !named_on_server(local[k].base, local[k].fp)) have += local[k].count;
+        }
+        if (have == want) continue;
+        probe_before();
+        if (have > want) {
+            int surplus = have - want;
+            for (std::size_t k = 0; k < nl && surplus > 0; ++k) {
+                const auto& l = local[k];
+                if (l.base != sl.item || named_on_server(l.base, l.fp) || l.fp == fw::net::kFpUnknown) continue;
+                const int gone = instances::remove_instance(container_ref, l.base, l.fp,
+                                                            l.count < surplus ? l.count : surplus, nullptr);
+                surplus -= gone;
+                d.items_removed += gone;
+            }
+            FW_LOG("engine: reconverge 0x%X: item 0x%X (count only) local %d -> server %d "
+                   "(%d removed)", container_form_id, sl.item, have, want,
+                   (have - want) - surplus);
+            continue;
+        }
+        void* item_form = lookup_by_form_id(sl.item);
+        if (!item_form || !seh_container_add(container_ref, item_form,
+                                             static_cast<std::uint32_t>(want - have))) {
+            FW_WRN("engine: reconverge 0x%X: item 0x%X (count only) local %d < server %d, the "
+                   "add failed", container_form_id, sl.item, have, want);
+            continue;
+        }
+        rolled_add = true;
+        d.items_added += want - have;
+        FW_LOG("engine: reconverge 0x%X: item 0x%X (count only) local %d -> server %d",
+               container_form_id, sl.item, have, want);
+    }
+
+    // 4. A base-only AddItem of a weapon also drops a stack of its ammo (live
+    //    2026-09-24, five to nine rounds after every 10mm pistol): one more
+    //    scan, removal only, of the plain lines the server does not list or
+    //    lists fewer of.
+    if (rolled_add && instances::scan_lines(container_ref, 0, local, MAX, &nl)) {
+        for (std::size_t k = 0; k < nl; ++k) {
+            const auto& l = local[k];
+            if (l.fp != fw::net::kFpPlain || unknown_on_server(l.base) > 0) continue;
+            int want = 0;
+            for (const auto& sl : server_lines) {
+                if (sl.item == l.base && sl.fp == fw::net::kFpPlain) want = sl.count;
+            }
+            if (l.count <= want) continue;
+            const int gone = instances::remove_instance(container_ref, l.base, l.fp,
+                                                        l.count - want, nullptr);
+            d.items_removed += gone;
+            FW_LOG("engine: reconverge 0x%X: item 0x%X (plain) local %d -> server %d after "
+                   "the add (dragged in)", container_form_id, l.base, l.count, want);
+        }
+    }
+
+    if (probed) fw::persist::probe::dump(container_ref, 0, "reconverge-after");
+    if (d.items_added || d.items_removed) {
+        Churn& ch = s_churn[container_form_id];
+        if (now - ch.window_start > 60000) { ch.window_start = now; ch.changes = 0; }
+        if (++ch.changes >= 3) {
+            ch.until = now + 300000;
+            ch.changes = 0;
+            FW_WRN("engine: reconverge 0x%X changed the container 3 times in 60 s: it holds "
+                   "an instance this engine does not build the same way (DIVERGENCE); its "
+                   "alignment is suspended for 5 minutes", container_form_id);
+        }
     }
     if (out) *out = d;
     return true;
@@ -4584,6 +4846,306 @@ bool player_in_interior(bool* inside) noexcept {
         *inside = false;
         return false;
     }
+}
+
+CellPlace cell_place_for_player(std::uint32_t cell_id, float x, float y) noexcept {
+    if (cell_id == 0 || !g_module_base_for_place) return CellPlace::Unknown;
+    void* pcell = get_pc_parent_cell();
+    if (!pcell) return CellPlace::Unknown;
+    const std::uintptr_t base = g_module_base_for_place;
+    void* ws = nullptr;
+    std::uint8_t cell_type = 0;
+    __try {
+        const auto* pc = static_cast<const std::uint8_t*>(pcell);
+        if (*reinterpret_cast<const std::uint32_t*>(pc + offsets::FORMID_OFF) == cell_id) {
+            return CellPlace::Here;
+        }
+        // An interior holds only itself.
+        if (pc[offsets::CELL_FLAGS40_OFF] & 1) return CellPlace::Elsewhere;
+        ws = *reinterpret_cast<void* const*>(pc + offsets::CELL_WORLDSPACE_OFF);
+        cell_type = pc[offsets::FORMTYPE_OFF];
+        if (!ws) return CellPlace::Unknown;
+        // The cell of the player's worldspace under the position.
+        if (std::isfinite(x) && std::isfinite(y)) {
+            auto cell_by_grid = reinterpret_cast<void*(__fastcall*)(void*, int, int)>(
+                base + offsets::EXT_CELL_BY_GRID_RVA);
+            void* tcell = cell_by_grid(ws, static_cast<int>(std::floor(x / 4096.0f)),
+                                       static_cast<int>(std::floor(y / 4096.0f)));
+            if (tcell && *reinterpret_cast<const std::uint32_t*>(
+                    static_cast<const std::uint8_t*>(tcell) + offsets::FORMID_OFF) == cell_id) {
+                return CellPlace::Here;
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return CellPlace::Unknown;
+    }
+    // The cell the id names: an exterior of the same worldspace whose id the
+    // grid does not give back under that position (a border, an id read a
+    // moment before a re-file). Not in this world at all: not one of the
+    // cells around the player either.
+    void* c = lookup_by_form_id(cell_id);
+    if (!c) return CellPlace::NotLoaded;   // an exterior never loaded in this session has no form yet
+    __try {
+        const auto* cb = static_cast<const std::uint8_t*>(c);
+        if (cb[offsets::FORMTYPE_OFF] != cell_type) return CellPlace::Elsewhere;   // not a cell
+        if (cb[offsets::CELL_FLAGS40_OFF] & 1) return CellPlace::Elsewhere;        // an interior
+        void* cws = *reinterpret_cast<void* const*>(cb + offsets::CELL_WORLDSPACE_OFF);
+        if (!cws) return CellPlace::NotLoaded;   // a form with no worldspace on it yet
+        return cws == ws ? CellPlace::Here : CellPlace::Elsewhere;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return CellPlace::Unknown;
+    }
+}
+
+namespace {
+
+// POD and SEH-caged: the references of one cell into `out`. 0 on a fault or
+// an implausible array.
+std::size_t seh_collect_cell_refrs(void* cell, void** out, std::size_t cap,
+                                   bool* full) noexcept {
+    std::size_t n = 0;
+    __try {
+        const auto* cb = static_cast<const std::uint8_t*>(cell);
+        void* const* arr = *reinterpret_cast<void* const* const*>(cb + offsets::CELL_REFS_ARRAY_OFF);
+        const std::uint32_t count = *reinterpret_cast<const std::uint32_t*>(cb + offsets::CELL_REFS_COUNT_OFF);
+        if (!arr || count == 0 || count > 65536) return 0;
+        for (std::uint32_t i = 0; i < count; ++i) {
+            void* r = arr[i];
+            if (!r) continue;
+            // Believed only when it points back at this cell.
+            if (*reinterpret_cast<void* const*>(static_cast<const std::uint8_t*>(r)
+                                                + offsets::PARENT_CELL_OFF) != cell) {
+                continue;
+            }
+            if (n >= cap) { *full = true; return n; }
+            out[n++] = r;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("engine: SEH reading the references of cell %p", cell);
+        return 0;
+    }
+    return n;
+}
+
+}  // namespace
+
+std::size_t collect_player_area_refrs(void** out, std::size_t cap) noexcept {
+    if (!out || cap == 0 || !g_module_base_for_place) return 0;
+    void* pcell = get_pc_parent_cell();
+    if (!pcell) return 0;
+    const std::uintptr_t base = g_module_base_for_place;
+    void* cells[9] = {pcell};
+    std::size_t n_cells = 1;
+    __try {
+        const auto* pc = static_cast<const std::uint8_t*>(pcell);
+        void* player = get_local_player();
+        if ((pc[offsets::CELL_FLAGS40_OFF] & 1) == 0 && player) {
+            void* ws = *reinterpret_cast<void* const*>(pc + offsets::CELL_WORLDSPACE_OFF);
+            const float* pp = reinterpret_cast<const float*>(
+                static_cast<const std::uint8_t*>(player) + offsets::POS_OFF);
+            if (ws && std::isfinite(pp[0]) && std::isfinite(pp[1])) {
+                auto cell_by_grid = reinterpret_cast<void*(__fastcall*)(void*, int, int)>(
+                    base + offsets::EXT_CELL_BY_GRID_RVA);
+                const int gx = static_cast<int>(std::floor(pp[0] / 4096.0f));
+                const int gy = static_cast<int>(std::floor(pp[1] / 4096.0f));
+                for (int dy = -1; dy <= 1; ++dy) {
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        if (dx == 0 && dy == 0) continue;
+                        void* c = cell_by_grid(ws, gx + dx, gy + dy);
+                        if (c && c != pcell && n_cells < 9) cells[n_cells++] = c;
+                    }
+                }
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        n_cells = 1;
+    }
+    std::size_t n = 0;
+    bool full = false;
+    for (std::size_t ci = 0; ci < n_cells && !full; ++ci) {
+        n += seh_collect_cell_refrs(cells[ci], out + n, cap - n, &full);
+    }
+    if (full) {
+        FW_WRN("engine: the references of the player's area exceed %zu: the rest is not "
+               "looked at", cap);
+    }
+    return n;
+}
+
+bool ui_menu_open(std::uintptr_t name_getter_rva) noexcept {
+    if (!g_module_base_for_place || !name_getter_rva) return false;
+    const std::uintptr_t base = g_module_base_for_place;
+    __try {
+        void* ui = *reinterpret_cast<void**>(base + offsets::UI_SINGLETON_RVA);
+        if (!ui) return false;
+        const void* name = reinterpret_cast<const void* (*)()>(base + name_getter_rva)();
+        if (!name) return false;
+        return reinterpret_cast<bool (*)(void*, const void*)>(
+            base + offsets::UI_MENU_IS_OPEN_RVA)(ui, name);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool loading_menu_open() noexcept {
+    return ui_menu_open(offsets::LOADING_MENU_NAME_RVA);
+}
+
+bool power_armor_hud_open() noexcept {
+    return ui_menu_open(offsets::POWER_ARMOR_HUD_MENU_NAME_RVA);
+}
+
+bool ui_queue_menu(std::uintptr_t name_getter_rva, std::uint32_t type) noexcept {
+    if (!g_module_base_for_place || !name_getter_rva) return false;
+    const std::uintptr_t base = g_module_base_for_place;
+    __try {
+        void* queue = *reinterpret_cast<void**>(base + offsets::UI_MESSAGE_QUEUE_PTR_RVA);
+        if (!queue) return false;
+        const void* name = reinterpret_cast<const void* (*)()>(base + name_getter_rva)();
+        if (!name) return false;
+        reinterpret_cast<void (*)(void*, const void*, std::uint32_t)>(
+            base + offsets::UI_MESSAGE_QUEUE_ADD_RVA)(queue, name, type);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        FW_WRN("engine: SEH queuing UI message %u for the menu named at RVA 0x%llX", type,
+               static_cast<unsigned long long>(name_getter_rva));
+        return false;
+    }
+}
+
+bool player_power_armor_state(bool* in_pa, std::uint8_t* state) noexcept {
+    if (in_pa) *in_pa = false;
+    if (state) *state = 0xFF;
+    if (!g_module_base_for_place) return false;
+    void* player = get_local_player();
+    if (!player) return false;
+    const std::uintptr_t base = g_module_base_for_place;
+    __try {
+        void* list = *reinterpret_cast<void**>(static_cast<std::uint8_t*>(player)
+                                               + offsets::REFR_EXTRA_LIST_OFF);
+        if (!list) return true;   // no list: on foot
+        void* extra = reinterpret_cast<void* (__fastcall*)(void*, std::uint32_t)>(
+            base + offsets::EXTRA_GET_BY_TYPE_RVA)(list, offsets::EXTRA_TYPE_POWER_ARMOR);
+        if (!extra) return true;
+        const std::uint8_t st = *(static_cast<const std::uint8_t*>(extra) + 0x28);
+        if (state) *state = st;
+        if (in_pa) *in_pa = (st == 1 || st == 2);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+namespace {
+bool seh_read_races(std::uintptr_t base, void* actor, void** race, void** pa_race) noexcept;
+}  // namespace
+
+void sync_power_armor_hud(const char* why) noexcept {
+    bool in_pa = false;
+    std::uint8_t st = 0xFF;
+    if (!player_power_armor_state(&in_pa, &st)) {
+        FW_WRN("engine: power armour HUD not checked (%s): the player's extra list could not "
+               "be read", why ? why : "?");
+        return;
+    }
+    const bool open = power_armor_hud_open();
+    void* race = nullptr;
+    void* pa_race = nullptr;
+    const bool races_read = g_module_base_for_place
+        && seh_read_races(g_module_base_for_place, get_local_player(), &race, &pa_race);
+    const char* race_word = !races_read ? "race unread"
+                            : (race && race == pa_race) ? "RACE = power armour"
+                                                        : "race not power armour";
+    if (in_pa == open) {
+        FW_LOG("engine: power armour HUD %s and the player %s (state 0x%02X, %s, %s): in step",
+               open ? "shown" : "hidden", in_pa ? "inside a frame" : "on foot", st, race_word,
+               why ? why : "?");
+        return;
+    }
+    const bool ok = ui_queue_menu(offsets::POWER_ARMOR_HUD_MENU_NAME_RVA,
+                                  in_pa ? offsets::UI_MESSAGE_SHOW : offsets::UI_MESSAGE_HIDE);
+    FW_LOG("engine: power armour HUD %s while the player is %s (state 0x%02X, %s): %s %s",
+           open ? "shown" : "hidden", in_pa ? "inside a frame" : "on foot", st,
+           why ? why : "?", in_pa ? "show" : "hide", ok ? "queued" : "NOT queued (see above)");
+}
+
+namespace {
+
+// POD and SEH-caged: the actor's race pointer and the power armour race.
+bool seh_read_races(std::uintptr_t base, void* actor, void** race, void** pa_race) noexcept {
+    if (!actor) return false;
+    __try {
+        *race = *reinterpret_cast<void**>(static_cast<std::uint8_t*>(actor) + offsets::ACTOR_RACE_OFF);
+        *pa_race = reinterpret_cast<void* (*)()>(base + offsets::PA_RACE_GETTER_RVA)();
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// POD and SEH-caged: the body of the Papyrus native Actor.SetRace
+// (sub_1410FB010), the console's setrace.
+bool seh_switch_race(std::uintptr_t base, void* actor, void* race) noexcept {
+    __try {
+        reinterpret_cast<void (*)(void*, void*, bool, bool)>(
+            base + offsets::ACTOR_SWITCH_RACE_RVA)(actor, race, true, true);
+        void* cell = *reinterpret_cast<void**>(static_cast<std::uint8_t*>(actor) + offsets::PARENT_CELL_OFF);
+        void* tes  = *reinterpret_cast<void**>(base + offsets::TES_SINGLETON_RVA);
+        if (cell && tes && reinterpret_cast<bool (*)(void*, void*, int)>(
+                base + offsets::IS_CELL_ATTACHED_RVA)(tes, cell, 0)) {
+            void* proc = *reinterpret_cast<void**>(static_cast<std::uint8_t*>(actor)
+                                                   + offsets::ACTOR_AIPROCESS_PTR_OFF);
+            if (proc) {
+                reinterpret_cast<void (*)(void*, int)>(base + offsets::PA_MODEL_RELOAD_A_RVA)(proc, 23);
+            }
+            void* reg = *reinterpret_cast<void**>(base + offsets::REFR_3D_RELOAD_QUEUE_PTR_RVA);
+            if (reg) {
+                reinterpret_cast<void (*)(void*, void*, int, int)>(
+                    base + offsets::REFR_3D_RELOAD_QUEUE_RVA)(reg, actor, 0, 0);
+            }
+        }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+}  // namespace
+
+void power_armor_race_watch() noexcept {
+    static DWORD s_last_ms = 0;
+    static int   s_seen    = 0;
+    const DWORD now = GetTickCount();
+    if (now - s_last_ms < 2000) return;
+    s_last_ms = now;
+    if (!g_module_base_for_place) return;
+    void* player = get_local_player();
+    if (!player) return;
+    bool in_pa = false;
+    std::uint8_t st = 0xFF;
+    if (!player_power_armor_state(&in_pa, &st)) return;
+    if (st != 0xFF) { s_seen = 0; return; }   // the extra exists: the engine's business
+    const std::uintptr_t base = g_module_base_for_place;
+    void* race = nullptr;
+    void* pa_race = nullptr;
+    if (!seh_read_races(base, player, &race, &pa_race)) return;
+    if (!race || !pa_race || race != pa_race) { s_seen = 0; return; }
+    if (++s_seen < 2) return;   // seen twice, two seconds apart: not the tail of an exit
+    s_seen = 0;
+    void* human = lookup_by_form_id(offsets::HUMAN_RACE_FORMID);
+    if (!human) {
+        FW_WRN("engine: the player's race is the power armour race with no power armour extra, "
+               "and the human race 0x%08X cannot be looked up: left as it is",
+               offsets::HUMAN_RACE_FORMID);
+        return;
+    }
+    const bool ok = seh_switch_race(base, player, human);
+    FW_LOG("engine: the player's race was the power armour race with no power armour extra "
+           "(the state a death inside a frame leaves in the save lineage, and every exit since "
+           "puts back): %s",
+           ok ? "switched back to the human race and the model reloaded, as the console's "
+                "setrace does"
+              : "the switch FAULTED (see above), left as it is");
 }
 
 bool player_fast_travel_to(float x, float y, float z, float yaw_rad,

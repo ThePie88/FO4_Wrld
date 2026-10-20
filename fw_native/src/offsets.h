@@ -415,6 +415,27 @@ constexpr std::uintptr_t UI_MENU_IS_OPEN_RVA        = 0x01A7FD40;
 // sub_141A85DD0() -> const BSFixedString* "ContainerMenu" (static, interned
 // on first use, the object the engine itself passes to the query above).
 constexpr std::uintptr_t CONTAINER_MENU_NAME_RVA    = 0x01A85DD0;
+// 2026-10-04 (live test of the death crate) — more of the UI's own idiom.
+// The static name getters of two more menus, the ContainerMenu pattern
+// above: sub_141A86F40() -> "LoadingMenu" (the loading screen of a door, a
+// fast travel or a load: the tick stays out of the engine's way while it is
+// open), sub_141A87BA0() -> "PowerArmorHUDMenu" (shown by the enter into
+// power armour, hidden by the exit ladder; a load that swaps the power
+// armour state runs neither, which left the HUD in the wrong mode after a
+// death in a frame and after a boot inside one). The UI message queue:
+// singleton qword_1430DDA20, sub_141A89050(queue, const BSFixedString*
+// name, u32 type) = AddMessage; type 1 shows, 3 hides (the engine's own
+// show of the power armour HUD at 0x1410512F4-0x14105130C passes 1, its
+// hides of other menus at 0x141041D61 and 0x14104576F pass 3).
+constexpr std::uintptr_t LOADING_MENU_NAME_RVA         = 0x01A86F40;
+constexpr std::uintptr_t POWER_ARMOR_HUD_MENU_NAME_RVA = 0x01A87BA0;
+// L5 realtime D2 (2026-10-15): sub_141A879F0() -> "PipboyMenu", the same
+// idiom; the map's positions are refreshed only while it is open.
+constexpr std::uintptr_t PIPBOY_MENU_NAME_RVA          = 0x01A879F0;
+constexpr std::uintptr_t UI_MESSAGE_QUEUE_PTR_RVA      = 0x030DDA20;
+constexpr std::uintptr_t UI_MESSAGE_QUEUE_ADD_RVA      = 0x01A89050;
+constexpr std::uint32_t  UI_MESSAGE_SHOW               = 1;
+constexpr std::uint32_t  UI_MESSAGE_HIDE               = 3;
 // ContainerMenu primary vtable (RTTI catalog, 33 slots). Slot 21 =
 // TransferItem (sub_14103E950, the put hook). Slot 32 = sub_14103E700,
 // UpdateList(bool container_side): rebuilds "containerListArray" (true) or
@@ -859,6 +880,13 @@ constexpr std::uintptr_t TES_SINGLETON_RVA           = 0x032D2048;
 constexpr std::uintptr_t EXT_CELL_BY_GRID_RVA        = 0x002F2320;
 constexpr std::size_t    CELL_FLAGS40_OFF            = 0x40;  // bit0 = interior
 constexpr std::size_t    CELL_WORLDSPACE_OFF         = 0xC8;
+// 2026-10-04 — a cell's reference array: TESObjectREFR* entries, 8 bytes
+// each, at cell+0x70, their count at cell+0x80 (the engine's own loops in
+// sub_1404D6B00 and sub_1404CF680; re/STRUCT_world_scenegraph.md). Read on
+// the main thread only, every entry believed only when it points back at
+// the cell it was listed in.
+constexpr std::size_t    CELL_REFS_ARRAY_OFF         = 0x70;
+constexpr std::size_t    CELL_REFS_COUNT_OFF         = 0x80;
 
 // ============================================================================
 // Build 70m — THE POWER ARMOR PIPELINE (re/pa_system_model.md; enter and
@@ -912,6 +940,144 @@ constexpr std::size_t    AIPROCESS_MIDDLE_HIGH_OFF        = 0x08;
 constexpr std::size_t    MIDDLEHIGH_3D_UPDATE_FLAGS_OFF   = 0x496;   // u16
 constexpr std::uintptr_t AIPROCESS_NEEDS_3D_LOAD_RVA      = 0x00CF0E60; // sub_140CF0E60(proc) -> bool
 constexpr std::uintptr_t PA_RACE_GETTER_RVA    = 0x00374740;
+// 2026-10-05 — the stuck power armour race (live tests of 2026-10-04/05: on
+// foot, no power armour extra, the Pip-Boy opens blurred with no device at
+// the wrist, every boot of the same save lineage; entering a frame shows a
+// working Pip-Boy, the exit breaks it again). The actor's race pointer at
+// +0x418 (the Papyrus native Actor.SetRace, sub_1410FB010, compares the new
+// race with *(actor+1048)); the enter keeps the race to restore in the
+// extra, so once the actor's race IS the power armour race every exit puts
+// it back. The cure is what the console's setrace does, read off the same
+// native: sub_140CA4420(actor, race, is_player, 1) = Actor::SwitchRace,
+// then, when the actor's cell is attached, sub_140D35EA0(process, 23) and
+// sub_1402C62B0(qword_1430DC0C8, actor, 0, 0) = the 3D reload. The races:
+// HumanRace 0x00013746, PowerArmorRace 0x0001D31E (Fallout4.esm).
+constexpr std::size_t    ACTOR_RACE_OFF               = 0x418;
+constexpr std::uintptr_t ACTOR_SWITCH_RACE_RVA        = 0x00CA4420;
+constexpr std::uintptr_t REFR_3D_RELOAD_QUEUE_PTR_RVA = 0x030DC0C8;
+constexpr std::uintptr_t REFR_3D_RELOAD_QUEUE_RVA     = 0x002C62B0;
+constexpr std::uint32_t  HUMAN_RACE_FORMID            = 0x00013746;
+constexpr std::uint32_t  POWER_ARMOR_RACE_FORMID      = 0x0001D31E;
+
+// 2026-10-05 — the "body" armours of a power armour frame: every ARMO of
+// Fallout4.esm named ArmorPoweredFrame* (biped slots 3, 4, 5 and 30, the
+// Pip-Boy's). The engine puts one on the player on entering a frame and
+// takes it off on leaving. They are never inventory: the capture drops
+// them, the server never records them, and the restore takes them off a
+// player on foot and leaves them alone inside a frame. Live tests of
+// 2026-10-04/05: the raider one (0x1909D6) went into the death crate as
+// loot, came back on the player with the loot, and every exit from a frame
+// since left it equipped over the Pip-Boy, which opened blurred with no
+// device at the wrist (the Pip-Boy's screen is drawn on that device).
+constexpr std::uint32_t PA_FRAME_WEARABLE_FORMIDS[] = {
+    0x0003E577,   // ArmorPoweredFrame
+    0x001909D6,   // ArmorPoweredFrameRaider
+    0x001909D5,   // ArmorPoweredFrameWastelander
+    0x001909D1,   // ArmorPoweredFrameAtomCat
+    0x00198B13,   // ArmorPoweredFrameBOS
+    0x00140D7B,   // ArmorPoweredFrameIngram
+    0x000B1C09,   // ArmorPoweredFrameWithModsNoHelmet
+};
+// 2026-10-05 (R2b) — the Pip-Boy (ARMO, biped slot 30): the restore never takes it
+// off or puts it on; the engine keeps it worn on its own.
+constexpr std::uint32_t PIPBOY_FORM_ID = 0x00021B3B;
+// ---------------------------------------------------------------------------
+// L5 realtime D2 (2026-10-15) — the engine's map markers, from the decomp
+// (RESEARCH_L5.md "D2 rivisto"). A marker is a REFR of the MapMarker base
+// (STAT 0x10) with an ExtraMapMarker (extra type 44, 32 bytes) whose +24
+// points to a MapMarkerData: 24 bytes, a TESFullName (vtable, BSFixedString
+// name at +8), a flag byte at +16 (bit0 visible on the map, bit1 fast travel
+// allowed, bit2 ?), a copy of it at +17, the icon type u16 at +18.
+constexpr std::uint32_t  MAPMARKER_BASE_FORMID          = 0x00000010;
+constexpr std::uint64_t  MAPMARKERDATA_SIZE             = 24;
+constexpr std::size_t    MAPMARKERDATA_FLAGS_OFF        = 16;
+constexpr std::size_t    MAPMARKERDATA_TYPE_OFF         = 18;
+constexpr std::uint8_t   MAPMARKER_FLAG_VISIBLE         = 0x01;
+constexpr std::uint8_t   MAPMARKER_FLAG_CAN_TRAVEL      = 0x02;
+constexpr std::uintptr_t MAPMARKERDATA_CTOR_RVA         = 0x002C0D30;   // sub_1402C0D30(data): TESFullName vtable, name, zeroed flags/type
+constexpr std::uintptr_t MAPMARKERDATA_SET_NAME_RVA     = 0x002C0F30;   // sub_1402C0F30(data, const char*): the name
+constexpr std::uintptr_t MAPMARKERDATA_GET_NAME_RVA     = 0x002C0F20;   // sub_1402C0F20(data): const char* name (TESFullName, via its vtable)
+constexpr std::uintptr_t EXTRALIST_SET_MAPMARKER_RVA    = 0x0027A680;   // sub_14027A680(list, data): make/replace/remove(nullptr) the ExtraMapMarker, under the list's lock
+constexpr std::uintptr_t REFR_GET_MAPMARKER_DATA_RVA    = 0x00562EC0;   // sub_140562EC0(refr): the data, or nullptr
+constexpr std::uintptr_t PAPYRUS_ADD_TO_MAP_RVA         = 0x01152F40;   // sub_141152F40(vm, stack, refr, allow_travel): ObjectReference.AddToMap
+// Where the map and the compass take the markers from (2026-10-15, the
+// second experiment): ONE array of ObjectRefHandles on the player, at
+// +1848 (BSTArray: data +0, capacity +8, size +16), which the engine refills
+// on a worldspace change from the REFRs of the worldspace's PERSISTENT cell
+// (sub_140576F40 -> sub_1404CF8F0) and reads under a global spin lock
+// (0x1432F5978: owner thread id +0, count +4; sub_14022D3A0 locks it, the
+// unlock is inlined everywhere). The Pip-Boy map builds its entries from it
+// (sub_140B56750), the compass copies it (sub_140D74690). A REFR made at
+// runtime in an exterior cell is never collected: it is pushed in by hand.
+constexpr std::size_t    PLAYER_MAPMARKERS_ARR_OFF      = 1848;
+// The worldspace the array was filled for (funcs_0316: compared with the
+// player's worldspace on every cell change, a difference refills the array
+// from scratch): when it moves, our handles are gone and get pushed again.
+constexpr std::size_t    PLAYER_MAPMARKERS_WS_OFF       = 2224;
+constexpr std::uintptr_t MAPMARKERS_LOCK_RVA            = 0x032F5978;
+constexpr std::uintptr_t SPINLOCK_LOCK_RVA              = 0x0022D3A0;   // sub_14022D3A0(lock): recursive spin lock
+constexpr std::uintptr_t BSTARRAY_PUSH_INDEX_RVA        = 0x01659520;   // sub_141659520(&size, &functor, capacity, elem_size): the index of a new slot, -1 when it cannot grow
+constexpr std::uintptr_t BSTARRAY_HEAP_FUNCTOR_VTABLE_RVA = 0x0245FFB0; // BSTArrayAllocatorFunctor<BSTArrayHeapAllocator>::`vftable'
+// The event the refill fires once the array is full again (2026-10-15, the
+// third experiment): sub_140D515B0(bool root_worldspace_changed) puts the
+// bool through BSTEventSource::Notify (sub_140D8DF80) on the source of
+// sub_140D92EF0(). The Pip-Boy map's sink (sub_140B552C0, +200 of its data
+// singleton) answers by rebuilding its marker entries from the player's
+// array (sub_140B56750: the hash map at +240 emptied and refilled with one
+// PipboyObject per marker, sub_140B556D0, which always returns 1). The
+// compass reads the array itself, the map only this rebuild. The bool
+// matters (the fourth experiment, fired with false, changed nothing): with
+// false the sink rebuilds only while its map is still EMPTY (capacity ==
+// free, +252 == +256), with true it empties the map first and always
+// rebuilds. The map data singleton is the event's only sink (one call of
+// the register helper sub_140D51550), so true costs one rebuild and nothing
+// else. A handle pushed by hand reaches the map once this is fired with TRUE.
+constexpr std::uintptr_t MAPMARKERS_NOTIFY_RVA            = 0x00D515B0;   // sub_140D515B0(char changed)
+// The event's source and the map's sink (2026-10-15, the second live test).
+// The source sub_140D92EF0() is a BSTEventSource: a spin lock at +0, the
+// REGISTERED sinks at +8 (a 24-byte BSTArray: pointers +8, capacity +16,
+// count +24), the registrations pending a notify at +32/+48, the removals
+// pending at +56/+72, the notifying depth at +80 (sub_140D8DF80 merges the
+// pending ones first, then calls every sink at +8; the third live test read
+// the pending count and saw 0 sinks while the map rebuilt in 1.5 ms). The
+// map data registers ONE sink, the object at +200
+// of itself, in sub_140B53C10 right AFTER rebuilding its entries from the
+// player's array; sub_140B54480 unregisters it. The Pip-Boy data is torn
+// down and set up again around a game load: while it is down a fire reaches
+// nobody (the "0.00 ms rebuilds" of the first live test), and the setup's
+// own rebuild takes what the array holds at that moment. The map data's
+// marker hash map sits at +240 (capacity +252, free +256): capacity - free
+// = its entries, compared across ticks to notice a rebuild of the engine's.
+constexpr std::uintptr_t MAPMARKERS_EVENT_SOURCE_RVA      = 0x00D92EF0;
+constexpr std::size_t    EVENT_SOURCE_SINKS_OFF           = 8;
+constexpr std::size_t    EVENT_SOURCE_SINK_COUNT_OFF      = 24;
+// The engine's own refill of the player's array (the third live test):
+// sub_140D74490(player), under the global lock, when the player's worldspace
+// is not the one the array was filled for OR the array is EMPTY: clears it
+// (sub_140D74610), collects the handles of every REFR of the MapMarker base
+// with marker data in the persistent cell of the root worldspace and of its
+// children (sub_140576F40 -> sub_1404CF8F0), fires the event. Called by the
+// engine on a cell change and on a load (sub_140D5BFB0, sub_140D67DC0). A
+// load leaves the array empty: anything of ours pushed into it before the
+// engine's check keeps the natives out for good ("array 2 (2 resolve)" for
+// a minute in the third test). So an array without a native marker gets
+// our handles taken out and this called, and ours go in after.
+constexpr std::uintptr_t MAPMARKERS_REFILL_RVA            = 0x00D74490;
+constexpr std::uintptr_t REFR_GET_WORLDSPACE_RVA          = 0x00516FB0;   // sub_140516FB0(refr): TESWorldSpace* of its parent cell, or nullptr
+constexpr std::size_t    WORLDSPACE_PERSISTENT_CELL_OFF   = 112;          // TESWorldSpace +112: the persistent cell the refill collects from
+constexpr std::size_t    MAPDATA_SINK_OFF                 = 200;
+constexpr std::size_t    MAPDATA_MAP_CAPACITY_OFF         = 252;
+constexpr std::size_t    MAPDATA_MAP_FREE_OFF             = 256;
+// TESObjectREFR +0xF0: LoadedRefData* (NULL until the 3D is loaded; +8 the
+// NiAVObject root), the chain of TESObjectREFR::Get3D (RVA 0x50D9D0).
+constexpr std::size_t    REFR_LOADED_DATA_OFF       = 0xF0;
+
+constexpr bool is_pa_frame_wearable(std::uint32_t fid) noexcept {
+    for (const std::uint32_t f : PA_FRAME_WEARABLE_FORMIDS) {
+        if (f == fid) return true;
+    }
+    return false;
+}
 constexpr std::uintptr_t EXTRA_GET_BY_TYPE_RVA = 0x002A0030;
 
 // E0 RE (2026-08-16) — sub_1411735A0(refr, form, count, silent, a5, a6):
@@ -3275,6 +3441,125 @@ constexpr std::size_t    REMOVE_ITEM_DATA_COUNT_OFF   = 0x28;
 constexpr std::size_t    REMOVE_ITEM_DATA_REASON_OFF  = 0x2C;
 constexpr std::size_t    REMOVE_ITEM_DATA_OTHER_OFF   = 0x30;
 
+// L5 stage 4a (2026-10-02) — the engine's per-container instance id.
+//
+// ExtraUniqueID (0x9F: u16 uid +0x18, u32 owner +0x1C) is given by the add
+// core (sub_140502940) to a stack entering an inventory when the base form's
+// flags have 0x400000 or the incoming list already carries one: the lowest
+// u16 from 1 up that no stack of the DESTINATION uses, owner = the
+// destination's form id (decomp funcs_0174.md:6883-6976, the flags read at
+// form+0x10 as `*(_DWORD *)(v9 + 16)`). Every move is announced through
+//   __int64 sub_14052EB10(u16 oldUid, u32 oldOwner, u16 newUid,
+//                         u32 newOwner, u32 baseFormId)
+// which packs {oldOwner, newOwner, base, oldUid, newUid} and dispatches it
+// on the event source sub_140533860 (TESUniqueIDChangeEvent). Four callers,
+// all inside the two cores: sub_140500870 (two sites, a removal clears the
+// uid), sub_140501620 and sub_140502940 (the assignment). The 4a probe
+// (persist/instance_probe.cpp) observes it.
+constexpr std::uintptr_t UNIQUE_ID_CHANGE_EVENT_RVA = 0x0052EB10;
+constexpr std::size_t    TESFORM_FLAGS_OFF          = 0x10;   // u32
+constexpr std::uint32_t  TESFORM_FLAG_UNIQUE_IDS    = 0x400000;
+
+// L5 stage 4b (2026-10-03) — moving one exact instance (engine/instance_writers.cpp).
+//
+// REMOVE. REFR vt[0x6D] = sub_140500870(refr, u32* outHandle, RemoveItemData*)
+// (Actor/PlayerCharacter override sub_140C9A7B0 calls the same core and
+// unequips an equipped stack first). The RemoveItemData, as the Papyrus
+// RemoveItem worker sub_1411825A0 fills it (funcs_0404.md:5616-5670) and the
+// core reads it (funcs_0174.md:4879-5400):
+//   +0x00 i32  header: sign bit set = the stack indices live inline at +0x08
+//   +0x08      inline u32 indices (16 bytes) or a pointer to them
+//   +0x18 u32  index count (0 = drain from the head of the chain)
+//   +0x20      TESBoundObject* object
+//   +0x28 u32  count (clamped by the core to what the entry holds)
+//   +0x2C u32  reason (0 destroy/consume, 3 drop, 4 into a container)
+//   +0x30      TESObjectREFR* destination (null = gone)
+//   +0x38/+0x40 the drop location arguments
+// An index is the stack's position in its entry's chain (sub_14034B860).
+constexpr std::size_t    REFR_VT_REMOVE_ITEM_SLOT = 0x6D;
+//
+// ADD. REFR vt[0x7A] = sub_140509250(refr, obj, ExtraDataList** sp, u32 count,
+// src) (Actor sub_140C7A500 takes a sixth `reason` it never reads). It
+// CONSUMES one reference of *sp: the caller adds one before the call. The
+// list a stack is made of, built the way the engine builds one:
+//   sub_1401E0000(0x28) + sub_140272730 (ctor: refcount 0, lock at +0x20)
+//   an OIE node: 0x28 bytes, vtable BGSObjectInstanceExtra, next 0, flags 0,
+//     type 0x35, records 0, template index u16 at +0x20 (sub_140248F40 builds
+//     one inline exactly so, minus the template)
+//   sub_140272380(list+8, node) under the list's write lock (+0x20)
+//   sub_1402480F0(oie, mod, attach, rank, replace): one record {mod formID,
+//     attach (+4), rank (+5), 0 (+6)} appended (replace = 0) or swapped for
+//     the record on the same attach point (replace = 1, AttachMod's way)
+//   released with sub_140272770 (dtor) + sub_1401E0080 (free) when the last
+//     reference goes. A list with an OIE present is never rolled (sub_140254DD0
+//     checks the presence bit) and no ammo is dragged in after it.
+constexpr std::size_t    REFR_VT_ADD_OBJECT_SLOT  = 0x7A;
+constexpr std::uintptr_t EXTRA_FREE_RVA           = 0x001E0080;
+constexpr std::uintptr_t EXTRALIST_CTOR_RVA       = 0x00272730;
+constexpr std::uintptr_t EXTRALIST_DTOR_RVA       = 0x00272770;
+constexpr std::size_t    EXTRALIST_SIZE           = 0x28;
+constexpr std::size_t    OIE_NODE_SIZE            = 0x28;
+constexpr std::uintptr_t OIE_ADD_RECORD_RVA       = 0x002480F0;
+constexpr std::uint8_t   FORMTYPE_OMOD            = 0x90;
+//
+// The derived half of an instance (2026-10-03, first 4b live test: every
+// pistol B built showed the base's bare "10mm"). The engine's template branch
+// (sub_140254DD0) links the OIE and then calls sub_14027EB90(list, base,
+// generate_name = 1), which adds what the OIE implies and vt[0x7A] never
+// does: ExtraInstanceData (0xBA: base +0x18, refcounted TBO_InstanceData
+// +0x20, the modded stats, built by sub_14024A360 from the OIE) and, with the
+// flag, the name the naming rules give it (sub_14027E5E0: an
+// ExtraTextDisplayData 0x99, owner -2, left alone when renamed or tied to a
+// message/quest). It takes the list's write lock itself and returns the
+// instance data (0 when the OIE yields none). The load rebuilds 0xBA with
+// generate_name = 0 (sub_140294440), so a stack saved without the name keeps
+// the base's.
+constexpr std::uintptr_t XLIST_CREATE_INSTANCE_DATA_RVA = 0x0027EB90;
+
+// L5 realtime R4 (2026-10-03) - the character's numbers (RESEARCH_L5.md
+// section 10, R4). Actor values go through the ActorValueOwner interface at
+// Actor+0x58: slot 1 GetActorValue (Papyrus GetValue, sub_141156DC0), slot 3
+// GetBaseActorValue (GetBaseValue, sub_141155C60), slot 5 ModBaseActorValue
+// (the XP reward sub_140CA6C90 and PlayerCharacter::SetLevel sub_140D5DC50),
+// slot 9 SetActorValue (Papyrus SetValue sub_14115DD10: the base value). The
+// ActorValueInfo pointers sit in a static struct sub_140263120 returns (built
+// once by sub_1406F90C0), at the offsets below. XP is the current value of
+// Experience; the level follows from it (SetLevel never goes down and raises
+// the level by awarding the missing XP through slot 5). Perk points: a byte
+// of PlayerCharacter, set through sub_140D75AC0 (Game.AddPerkPoints does).
+// Perks: Actor::AddPerk sub_140C91AF0(actor, perk, 0) adds one rank (the
+// console AddPerk then reads it back), Actor::HasPerk sub_140C91EA0 returns
+// the rank (0 = none). Every PERK of the game: TESDataHandler (pointer at
+// RVA 0x30DC000) array at +0x950, count at +0x960 (form type 95; the engine
+// walks it so in sub_1406227C0).
+constexpr std::uintptr_t AV_LIST_RVA              = 0x00263120; // void** sub_140263120()
+constexpr std::size_t    AV_LIST_EXPERIENCE_OFF   = 208;
+constexpr std::size_t    AV_LIST_HEALTH_OFF       = 216;
+constexpr std::size_t    AV_LIST_ACTION_POINTS_OFF = 8;
+constexpr std::size_t    AV_LIST_RADS_OFF         = 464;
+constexpr std::size_t    AV_LIST_STRENGTH_OFF     = 584;
+constexpr std::size_t    AV_LIST_PERCEPTION_OFF   = 368;
+constexpr std::size_t    AV_LIST_ENDURANCE_OFF    = 192;
+constexpr std::size_t    AV_LIST_CHARISMA_OFF     = 136;
+constexpr std::size_t    AV_LIST_INTELLIGENCE_OFF = 256;
+constexpr std::size_t    AV_LIST_AGILITY_OFF      = 24;
+constexpr std::size_t    AV_LIST_LUCK_OFF         = 320;
+constexpr std::size_t    ACTOR_AV_OWNER_OFF       = 0x58;
+constexpr std::size_t    AVO_VT_GET_VALUE         = 1;
+constexpr std::size_t    AVO_VT_GET_BASE_VALUE    = 3;
+constexpr std::size_t    AVO_VT_MOD_BASE_VALUE    = 5;
+constexpr std::size_t    AVO_VT_SET_VALUE         = 9;
+constexpr std::size_t    PLAYER_PERK_POINTS_OFF   = 0xCF1;      // u8
+constexpr std::uintptr_t PLAYER_SET_PERK_POINTS_RVA = 0x00D75AC0; // (player, u8)
+constexpr std::uintptr_t ACTOR_GET_LEVEL_RVA      = 0x00C62EC0; // u16 (actor)
+constexpr std::uintptr_t ACTOR_ADD_PERK_RVA       = 0x00C91AF0; // (actor, perk, 0)
+constexpr std::uintptr_t ACTOR_HAS_PERK_RVA       = 0x00C91EA0; // u8 rank (actor, perk)
+constexpr std::uintptr_t DATA_HANDLER_PTR_RVA     = 0x030DC000;
+constexpr std::size_t    DATA_HANDLER_PERKS_OFF   = 0x950;      // TESForm** of type 95
+constexpr std::size_t    DATA_HANDLER_PERKS_COUNT_OFF = 0x960;  // u32
+constexpr std::uint8_t   FORMTYPE_PERK            = 0x5F;
+constexpr std::uint8_t   FORMTYPE_AVIF            = 0x62;
+
 // L5 stage 2 (2026-09-27) — dropped items travel as world spawns.
 //
 // The remove core's drop branch (reason 3) creates the world REFR through
@@ -3324,5 +3609,27 @@ constexpr std::size_t    REFR_LOADED_3D_OFF         = 0xF0;
 // engine's own identity for live REFRs): GetHandle sub_140519190(refr,
 // u32* out) mints or returns it, sub_14021E230 resolves it, and a released
 // handle never resolves again, whoever holds the id now.
+
+// ---- The BSResource loader and the precombined geometry (2026-10-18) ----
+// RESEARCH_interior_loads.md sections 8-11 and hooks/loader_flush_hook.cpp:
+// the loader singleton qword_14355EB28; its flush sub_1417AF2F0(loader,
+// priority) waits for every queued load up to that priority (kick, Sleep(1),
+// post-process sub_1417AF000 in 20 ms slices); the owner thread id at
+// loader+5280 (written at init, the main thread) gates the steps that only
+// that thread may run; the request ring object sits at loader+384 with its
+// monotonic consume index at +4096 and the pending count at loader+5084
+// (= ring+4700). sub_140483760 is BGSCombinedCellGeometryDB::LoadTask
+// vtable slot 11: it queues the task's NIFs to the unpacker thread, on the
+// owner thread only.
+constexpr std::uintptr_t LOADER_SINGLETON_RVA            = 0x0355EB28; // qword_14355EB28
+constexpr std::uintptr_t LOADER_FLUSH_RVA                = 0x017AF2F0; // sub_1417AF2F0(loader, priority)
+constexpr std::uintptr_t LOADER_POST_PROCESS_RVA         = 0x017AF000; // sub_1417AF000(loader): one slice of post-processing under the try-lock, 1 when busy
+constexpr std::uintptr_t LOADER_POST_PROCESS_LOCK_RVA    = 0x0355EB40; // unk_14355EB40: the try-lock word (InterlockedCompareExchange 0 -> 1)
+constexpr std::uintptr_t COMBINED_GEOMETRY_TASK_RUN_RVA  = 0x00483760; // sub_140483760(task): LoadTask slot 11
+constexpr std::size_t    LOADER_OWNER_TID_OFF            = 5280;       // dword: the owner thread id
+constexpr std::size_t    LOADER_STATE_OFF                = 5284;       // dword: 6 idle, else the priority being flushed
+constexpr std::size_t    LOADER_PENDING_OFF              = 5084;       // dword: requests pushed and not yet popped
+constexpr std::size_t    LOADER_RING_OFF                 = 384;        // the request ring object inside the loader
+constexpr std::size_t    LOADER_RING_CONSUME_OFF         = 4096;       // dword in the ring: consume index (monotonic)
 
 } // namespace fw::offsets

@@ -61,6 +61,9 @@ namespace fw::render {
 // being ready. `module_base` is Fallout4.exe's base, used to resolve the
 // renderer globals below.
 bool init_present_hook(std::uintptr_t module_base);
+// 2026-10-18: present without vsync while the loader flushes (config
+// loading_vsync_off). See the comment in present_hook.cpp.
+void set_vsync_off_in_loads(bool on) noexcept;
 
 // Arm the archived Strada A draw calls (triangle + body + camera probes).
 // Default OFF. Nothing calls this today; it exists so reviving that path is a

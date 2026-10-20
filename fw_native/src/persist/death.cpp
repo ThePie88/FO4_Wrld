@@ -24,6 +24,7 @@
 #include "checkpoint.h"                   // fetch_from_custody (stage 3d)
 #include "custody.h"                      // available (stage 3d)
 #include "inventory_capture.h"            // last().in_power_armor
+#include "inventory_restore.h"            // L5 realtime R2: the record comes back after the reload
 #include "lifecycle.h"                    // requeue_death_reload, loads_requested, exiting, load_in_flight
 
 namespace fw::persist::death {
@@ -320,6 +321,13 @@ void report_respawned(void* player, const char* how) {
     g_curtain.store(false, std::memory_order_relaxed);
     g_landed_ms = now;
     g_phase = Phase::Protected;
+    // L5 realtime D1: a respawn with no load behind it (the resurrect) gets
+    // the record of the death all the same.
+    fw::persist::restore::on_respawn_without_load();
+    // 2026-10-04: the HUD of power armour is shown by the enter and hidden by
+    // the exit ladder; a death in a frame answered with a checkpoint on foot
+    // runs neither, and the Pip-Boy stayed in its power armour mode.
+    fw::engine::sync_power_armor_hud("the respawn");
 }
 
 // The direct move: the Actor::MoveTo the boot uses. It works, but a far
@@ -576,6 +584,9 @@ void note_killed() {
     g_corpse_hits = 0;
     ++g_deaths;
     g_died_ms = now;
+    // L5 realtime R2: the reload of this death loads an older inventory;
+    // the record is asked for now and put back once that load is over.
+    fw::persist::restore::on_death();
     float pos[3] = {0.0f, 0.0f, 0.0f};
     void* player = fw::engine::get_local_player();
     if (player) (void)seh_player_pos(player, pos);

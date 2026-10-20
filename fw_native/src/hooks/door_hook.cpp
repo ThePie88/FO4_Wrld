@@ -13,6 +13,7 @@
 #include "../offsets.h"
 #include "../ref_identity.h"
 #include "../net/client.h"
+#include "../native/world_spawn.h"   // L5 realtime D1: saved copies awaiting the purge
 
 namespace fw::hooks {
 
@@ -136,6 +137,23 @@ char __fastcall detour_activate_worker(void* refr,
                "form=0x%X ftype=0x%X (puppet: prevent dialogue freeze)",
                static_cast<unsigned long long>(fire),
                r.form_id, r.form_type);
+        return 0;
+    }
+
+    // L5 realtime D1 (2026-10-03/04): a saved copy of one of our objects
+    // waiting for the purge of the load: nothing happens to it. After the
+    // reload of a death the purge waits some 20 s for the world to settle,
+    // and the checkpoint reloaded holds copies of the crates, the dropped
+    // items and the frames of the world as it was: a crate opened there
+    // handed out locally what the server's still holds, an item picked up
+    // there is picked up twice (the server's copy comes back after the
+    // purge), a frame entered there is destroyed by the purge around the
+    // player.
+    if (r.identity_ok && fw::native::world_spawn::saved_copy_awaiting_purge(r.form_id)) {
+        FW_LOG("[door-act] FIRE #%llu BAIL: 0x%X (base=0x%X, form type 0x%02X) is a saved copy "
+               "of one of our objects awaiting the purge of the load: nothing happens to it "
+               "(the server's object is placed after the purge)",
+               static_cast<unsigned long long>(fire), r.form_id, r.base_id, r.form_type);
         return 0;
     }
 

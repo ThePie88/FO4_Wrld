@@ -56,6 +56,7 @@ add_library(fw_native SHARED
     src/hooks/main_menu_hook.cpp
     src/hooks/worldstate_hook.cpp
     src/hooks/door_hook.cpp         # B6.0: Activate worker for door open/close
+    src/hooks/loader_flush_hook.cpp # 2026-10-18: the loader flush fix (precombined geometry, owner thread)
     src/hooks/lock_hook.cpp         # B6.3: ForceUnlock + ForceLock detours
     src/hooks/world_spawn_hook.cpp  # B6.14: PlaceAtMe detour (spawn sender)
     src/hooks/lifecycle_tripwire.cpp # Build 70: destroy+unpersist observers (Piano B Fase 0)
@@ -65,6 +66,11 @@ add_library(fw_native SHARED
     src/persist/checkpoint.cpp        # L5 stage 2/3: the commanded save (test form on F10) at the engine's save point
     src/persist/custody.cpp           # L5 stage 3b: the checkpoint bytes to and from the server (TCP bulk)
     src/persist/death.cpp             # L5 stage 3c: the respawn without a reload (resurrect, camera, teleport)
+    src/persist/instance_probe.cpp    # L5 stage 4a: uid moves and stack dumps, the measurements of stage 4 (observe-only)
+    src/persist/instance_fp.cpp       # L5 stage 4b: the instance fingerprint of a stack, shared with the server
+    src/engine/instance_writers.cpp   # L5 stage 4b: one exact instance in or out of an inventory
+    src/persist/inventory_restore.cpp # L5 realtime R2: the player's record back into the game after every load
+    src/persist/player_stats.cpp      # L5 realtime R4: XP, level, perks, SPECIAL to the server and back
     src/hooks/workbench_hook.cpp    # v26: PA station apply-mod + repair -> pieces report
     src/hooks/pa_pipeline_trace.cpp  # Build 70m: PA enter/exit engine pipeline tracer
     src/hooks/npc_ai_suppress.cpp   # B6.5w4: Actor::Update_PerFrame suppression for tracked NPCs
@@ -106,6 +112,8 @@ add_library(fw_native SHARED
     src/native/chargen_catalog.cpp
     src/native/chargen_stage.cpp
     src/native/world_spawn.cpp    # B6.14: wid registry + receive-side placement
+    src/native/map_marker.cpp     # L5 D2 experiment (2026-10-15): map markers made at runtime
+    src/native/map_markers.cpp    # L5 realtime D2 (2026-10-15): death crates and players on the map and the compass
     src/native/ghost_lifecycle.cpp  # Fase 2: registro per peer + ciclo di vita del ghost
     src/render/present_hook.cpp
     src/render/overlay.cpp          # Phase 4: owns ImGui and the frame; editor, chat and nametags draw into it

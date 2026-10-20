@@ -541,37 +541,34 @@ void record_owned_state(std::uint32_t form_id,
 
 std::size_t release_all_owned_on_death() {
     // Build 69q — see the header comment. Main thread (kill hook); the maps
-    // are lock-protected so the net thread can't race us. We snapshot the
-    // payloads under the lock, clear, then enqueue outside it (enqueue takes
-    // the client queue mutex — keep the two locks unnested).
+    // are lock-protected so the net thread can't race us. We count under
+    // the lock, clear, then enqueue outside it (enqueue takes the client
+    // queue mutex — keep the two locks unnested).
+    //
+    // v43 (2026-10-20): ONE message. This used to send one NPC_UNLOAD per
+    // owned NPC. In an interior the client observes, and owns, the NPCs of
+    // other cells too: 637 at the live death of 2026-10-20, a burst that
+    // filled the outbound queue (Client::kSendQueueMax) and dropped the
+    // PLAYER_LIFE queued behind it; the server never heard of the death and
+    // the client fell back to the engine's reload of a checkpoint four
+    // minutes old. The server releases everything the sender owns from its
+    // own records (release_all_owned); the per-NPC last state only ever
+    // reached its debug log.
     auto& tx = tx_state();
-    std::vector<fw::net::NPCUnloadPayload> out;
+    std::size_t owned = 0;
     {
         std::unique_lock lk(tx.owned_mtx);
-        out.reserve(tx.owned.size());
-        for (const auto& [fid, snap] : tx.owned) {
-            fw::net::NPCUnloadPayload p{};
-            p.form_id         = fid;
-            p.epoch           = snap.epoch;
-            p.last_pos_x      = snap.pos_x;
-            p.last_pos_y      = snap.pos_y;
-            p.last_pos_z      = snap.pos_z;
-            p.last_yaw        = snap.yaw_rad;
-            p.last_anim_state = snap.anim_state;
-            p.last_hp_pct     = snap.hp_pct;
-            out.push_back(p);
-        }
+        owned = tx.owned.size();
         tx.owned.clear();   // heartbeats stop this very tick
     }
-    for (const auto& p : out) {
-        fw::net::client().enqueue_npc_unload(p);
-    }
-    if (!out.empty()) {
-        FW_LOG("ownership: DEATH RELEASE — sent NPC_UNLOAD for %zu owned "
-               "NPCs (sphere despawned; peers can claim on next observe)",
-               out.size());
-    }
-    return out.size();
+    if (owned == 0) return 0;
+    fw::net::NPCUnloadPayload p{};
+    p.form_id = fw::net::NPC_UNLOAD_ALL_OWNED;
+    p.epoch   = static_cast<std::uint32_t>(owned);   // how many were owned here, for the server's log
+    fw::net::client().enqueue_npc_unload(p);
+    FW_LOG("ownership: DEATH RELEASE — one NPC_UNLOAD for all %zu owned NPCs "
+           "(sphere despawned; peers can claim on next observe)", owned);
+    return owned;
 }
 
 std::size_t collect_tracked_fids(std::uint32_t* out, std::size_t cap) {

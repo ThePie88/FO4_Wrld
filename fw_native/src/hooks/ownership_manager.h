@@ -91,11 +91,14 @@ std::uint64_t tracked_count();
 // gates all TX, so the server only released our NPCs via the 8s heartbeat
 // timeout, and the peer's raiders stayed frozen mirrors until then (the
 // observed "raiders turn toward B only when the body despawns" lag).
-// This sends one reliable NPC_UNLOAD per owned fid (epoch-checked server
-// side), then clears the owned TX cache so heartbeats stop instantly. The
-// server broadcasts each release; every peer's PHASE_2 handler already
-// resets its observe-dedup for the fid, so the survivor re-observes and
-// claims on its very next frame. Returns how many releases were sent.
+// This sends ONE reliable NPC_UNLOAD with form_id NPC_UNLOAD_ALL_OWNED (v43,
+// 2026-10-20: one per owned fid until then, 637 of them at a death in an
+// interior, a burst that dropped the PLAYER_LIFE behind it), then clears the
+// owned TX cache so heartbeats stop instantly. The server releases every
+// NPC the sender owns and broadcasts each release; every peer's PHASE_2
+// handler already resets its observe-dedup for the fid, so the survivor
+// re-observes and claims on its very next frame. Returns how many were
+// owned here (and released by the server, as far as its records agree).
 std::size_t release_all_owned_on_death();
 
 // Build 69q — enumerate every fid in the local ownership map (owned AND

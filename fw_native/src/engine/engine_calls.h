@@ -22,6 +22,8 @@
 #include <utility>
 #include <vector>
 
+#include "../net/protocol.h"   // L5 stage 4b: InstanceDesc on the container writers
+
 namespace fw::engine {
 
 // Set once at init. Read by the call wrappers below. Must be non-zero
@@ -130,6 +132,62 @@ bool remove_items_destroy(void* container_refr, void* item_form, std::int32_t co
 // `inside` is left false.
 bool player_in_interior(bool* inside) noexcept;
 
+// L5 realtime D1 (2026-10-03) — where an object of the server's (the death
+// crate) stands for the local player, from its cell id and its position.
+// Here: the player's own cell, or an exterior cell of the player's
+// worldspace (the cell under the position, or the cell the id names).
+// Elsewhere: an interior the player is not in, or another worldspace: the
+// coordinates of an interior are local to it, so two interiors (or an
+// interior and the world around its origin) share positions, and a child
+// worldspace like Diamond City overlaps its parent. Unknown: nothing could
+// be read (no cell id, no parent cell, a fault). Main thread.
+// NotLoaded (2026-10-15, D2's first live test): the cell the id names is not
+// in the form table (the engine loads exterior cells lazily: one never
+// loaded in this session has no form yet) or carries no worldspace yet: it
+// cannot vouch for a worldspace, which is not the same as being elsewhere.
+enum class CellPlace : std::uint8_t { Unknown = 0, Here = 1, Elsewhere = 2, NotLoaded = 3 };
+CellPlace cell_place_for_player(std::uint32_t cell_id, float x, float y) noexcept;
+
+// 2026-10-04 — the references of the player's cell and, outdoors, of the
+// eight cells around it: TESObjectREFR pointers into `out`, `cap` at most
+// (the rest is dropped, and said). Each entry is read under SEH and believed
+// only when its parent cell is the cell it was listed in. Main thread.
+std::size_t collect_player_area_refrs(void** out, std::size_t cap) noexcept;
+
+// 2026-10-04 — the UI's own "is this menu open" with the static name getter
+// at `name_getter_rva` (offsets::*_MENU_NAME_RVA). loading_menu_open: the
+// loading screen (a door, a fast travel, a load). power_armor_hud_open: the
+// HUD of power armour. ui_queue_menu: AddMessage(name, type) on the UI
+// message queue (UI_MESSAGE_SHOW / UI_MESSAGE_HIDE). Main thread; false on
+// a missing pointer or a fault.
+bool ui_menu_open(std::uintptr_t name_getter_rva) noexcept;
+bool loading_menu_open() noexcept;
+bool power_armor_hud_open() noexcept;
+bool ui_queue_menu(std::uintptr_t name_getter_rva, std::uint32_t type) noexcept;
+
+// 2026-10-04 — the local player's power armour extra (0xBB on the REFR's
+// list): `in_pa` = present in state 1 or 2 (entering, fully in: the state
+// the save loader replays), `state` the byte at +0x28 (0xFF without the
+// extra). False when nothing could be read.
+bool player_power_armor_state(bool* in_pa, std::uint8_t* state) noexcept;
+
+// 2026-10-04 — the HUD of power armour brought in step with the player: shown
+// when they are inside a frame and it is hidden, hidden when they are on
+// foot and it is shown. The enter shows it and the exit ladder hides it, and
+// a load that swaps the power armour state runs neither: a death in a frame
+// answered with a checkpoint on foot left the Pip-Boy in its power armour
+// mode, a boot inside a frame left the HUD of a player on foot (live tests
+// of 2026-10-03/04). `why` goes to the log. Main thread, after a load.
+void sync_power_armor_hud(const char* why) noexcept;
+
+// 2026-10-05 — the stuck power armour race (offsets::ACTOR_RACE_OFF): a
+// player with no power armour extra whose race is the power armour race, on
+// two checks two seconds apart (the tail of an exit is shorter), is switched
+// back to the human race and reloaded, the way the console's setrace does.
+// Main thread, every tick, while the scene is settled; cheap when nothing
+// is wrong.
+void power_armor_race_watch() noexcept;
+
 // 2026-09-29 — a power armour frame redraws its pieces from its inventory:
 // reference task 106, sub_14098C120 with the 3D update (see
 // offsets::PA_FRAME_SYNC_TASK_RVA), what the engine runs after a
@@ -202,13 +260,23 @@ void* resolve_refhandle(void* handle_ptr);
 // container_hook) before/after this call so our detour bypasses the
 // observe/submit path and just runs g_orig_add — otherwise we'd echo the
 // remote op back to the server as a new CONTAINER_OP (infinite loop).
+//
+// L5 stage 4b (2026-10-03): `item_fp` names the instance. A TAKE of a known
+// instance (plain included) removes exactly the stacks with that fingerprint
+// (engine/instance_writers.cpp); a PUT of a named instance builds it from
+// `instance` instead of rolling one. An unknown fingerprint keeps the
+// base-only path of before. A remote TAKE of an instance this engine does
+// not hold removes nothing: the realignment that follows settles the counts,
+// and taking another instance in its place was the swap measured in 4a.
 bool apply_container_op_to_engine(
     std::uint32_t kind,
     std::uint32_t container_form_id,
     std::uint32_t expected_base_id,
     std::uint32_t expected_cell_id,
     std::uint32_t item_base_id,
-    std::int32_t  count);
+    std::int32_t  count,
+    std::uint64_t item_fp,
+    const fw::net::InstanceDesc* instance);
 
 // Loot rework L2 (2026-09-23): undo a LOCAL op the server refused. The
 // engine moved the items before the op was sent. Two steps:
@@ -222,10 +290,14 @@ bool apply_container_op_to_engine(
 //      the server just denied; that is the anti-dupe. Any other refusal
 //      (rate limit, identity) left the server's container untouched, so
 //      they go back into it.
-//   2. the container's count of the item is aligned to `server_count`, the
-//      server's count for it after the verdict (the ACK's final_count): a
-//      scan of the runtime list, then AddItem / RemoveItem for the
-//      difference. No-op when the container was in sync.
+//   2. (removed by L5 stage 4b) the container's count used to be aligned
+//      here; the realignment queued behind every undo does it now, with the
+//      instance of each line, from the mirror the ACK updated.
+// L5 stage 4b: with a known `item_fp` the undo moves exactly that instance
+// (the stage 0 residue: a refused deposit gave back the head stack, a
+// legendary could come back plain or a plain one legendary). An unknown
+// fingerprint keeps the base-only undo of before. `server_count` is kept
+// for the log.
 // Same resolution and identity check as apply_container_op_to_engine; same
 // guard obligation on the caller (main thread, inside ApplyingRemoteGuard).
 bool rollback_container_op_to_engine(
@@ -236,7 +308,8 @@ bool rollback_container_op_to_engine(
     std::uint32_t item_base_id,
     std::int32_t  count,
     bool          insufficient,
-    std::int32_t  server_count);
+    std::int32_t  server_count,
+    std::uint64_t item_fp);
 
 // Loot rework L3 (2026-09-24): align one loaded container to the server's
 // contents. `server_items` is the COMPLETE list for that REFR (empty means
@@ -254,6 +327,15 @@ bool rollback_container_op_to_engine(
 // server never listed before anyone sees it. Every changed line is logged
 // with the item id and both counts.
 // Main thread, inside ApplyingRemoteGuard (the caller's obligation).
+//
+// L5 stage 4b (2026-10-03): a line is (item, instance). The scan folds the
+// container's stacks by fingerprint; a named line is matched by it (the
+// surplus removed stack by stack, the shortfall built from the descriptor
+// when the client has it, deferred otherwise); a plain line as before; an
+// UNKNOWN line (a v33 record) by count, over every stack of its item no
+// named line claims. A container this realignment keeps changing (3 times in
+// 60 s: an instance this engine does not build the same way) is left alone
+// for 5 minutes, loudly, instead of destroying and rebuilding it forever.
 struct ContainerDiff {
     int lines_added = 0;     // item kinds the container lacked
     int lines_removed = 0;   // item kinds the server does not have
@@ -261,11 +343,18 @@ struct ContainerDiff {
     int items_removed = 0;   // units removed over all lines
     void* refr = nullptr;    // the container REFR, for the menu rebuild
 };
+struct ServerLine {
+    std::uint32_t item = 0;
+    std::uint64_t fp = 0;
+    std::int32_t  count = 0;
+    bool          have_desc = false;
+    fw::net::InstanceDesc desc{};
+};
 bool reconverge_container_to_engine(
     std::uint32_t container_form_id,
     std::uint32_t expected_base_id,
     std::uint32_t expected_cell_id,
-    const std::vector<std::pair<std::uint32_t, std::int32_t>>& server_items,
+    const std::vector<ServerLine>& server_lines,
     ContainerDiff* out);
 
 // B6.1 — apply a remote door activation by invoking the engine's

@@ -18,6 +18,7 @@
 #include "chat_overlay.h"
 #include "nametags.h"
 #include "../persist/death.h"   // L5 stage 3c: the respawn curtain
+#include "../persist/inventory_restore.h"   // L5 realtime R2: the restore curtain
 #include "../log.h"
 #include "../native/appearance_recipe.h"
 
@@ -174,7 +175,11 @@ void on_frame(std::uintptr_t module_base) {
     // the screen is ours, because the far move shows the destination being
     // loaded and every ghost we render on it (measured on the second live
     // death: a peer's ghost on a white screen).
-    const bool curtain = fw::persist::death::curtain_active();
+    const bool respawning = fw::persist::death::curtain_active();
+    // L5 realtime R2: and from the end of a load to the record back in the
+    // game, so nobody plays a few seconds on the checkpoint's inventory.
+    const bool restoring = !respawning && fw::persist::restore::curtain_active();
+    const bool curtain = respawning || restoring;
     if (!editing && !chat && !tags && !curtain) return;
 
     if (!g_ready.load(std::memory_order_acquire)) {
@@ -197,7 +202,7 @@ void on_frame(std::uintptr_t module_base) {
         ImDrawList* dl = ImGui::GetForegroundDrawList();
         dl->AddRectFilled(ImVec2(0.0f, 0.0f), size, IM_COL32(6, 6, 8, 255));
         ImFont* font = tag_font();
-        const char* text = "Respawning...";
+        const char* text = respawning ? "Respawning..." : "Restoring your inventory...";
         const float px = size.y / 30.0f;
         const ImVec2 ts = (font ? font : ImGui::GetFont())->CalcTextSizeA(px, FLT_MAX, 0.0f, text);
         dl->AddText(font ? font : ImGui::GetFont(), px,

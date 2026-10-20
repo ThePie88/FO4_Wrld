@@ -39,7 +39,7 @@ ghost.
 │  authoritative state · keyed by placed form_id · validator             │
 │  reliable channel (SACK + retransmit) · durable journal + snapshot     │
 └─────────────────────────┬──────────────────────────────────────────────┘
-                          │ binary protocol v28 (44B POS_BCAST · reliable channel · appearance recipes · world objects · session lifecycle · container reconvergence)
+                          │ binary protocol v43 (44B POS_BCAST · reliable channel · appearance recipes · world objects · session lifecycle · container reconvergence · checkpoints, custody and the player's record)
             ┌─────────────┼─────────────┐
             │             │             │
        ┌────▼─────┐  ┌────▼─────┐  ┌────▼─────┐
@@ -61,17 +61,19 @@ ghost.
 |------|---------|
 | `fw_native/` | C++ native client (dxgi.dll proxy + MinHook + scene graph injection) |
 | `fw_native/src/native/` | Strada B native injection (NIF loader, scene graph, ghost body) |
-| `fw_native/src/hooks/` | MinHook detours (kill, container, container menu, pos poll, main_menu, worldstate) |
+| `fw_native/src/hooks/` | MinHook detours (kill, container, container menu, activation, pos poll, main_menu, worldstate, ownership, the loader flush) |
+| `fw_native/src/persist/` | L5: the save/load lifecycle, checkpoints and custody, the inventory capture, tap and restore, the character's numbers, the death flow, instance fingerprints |
+| `fw_native/src/engine/` | Engine calls (inventory, UI, world references) and the instance writers |
 | `fw_native/src/net/` | C++ port of Python protocol (byte-identical via static_assert) |
 | `fw_native/src/render/` | Present hook on the game's own swapchain + ImGui overlay (character creation, chat, nametags) |
 | `fw_native/deps/` | Vendored third-party deps (MinHook, Dear ImGui). Fetched locally, never committed |
 | `fw_native/docs/` | Internal docs + tools list |
 | `launcher/` | Python orchestrator (FO4 INI mgmt, side A/B startup, fw_config.ini) |
 | `fw_launcher/` | C++ launcher wrapper (`FoM.exe`) |
-| `net/` | Python server (asyncio UDP, validator, journal, snapshot v8) |
+| `net/` | Python server (asyncio UDP, validator, durable journal, snapshot v15, checkpoint custody, the respawn and the save rewriter) |
 | `frida/` | Frida JS scripts + Python attach helpers (RE / live tracing) |
 | `re/` | Reverse-engineering dossiers + IDA Python scripts |
-| `tools/` | Maintenance scripts: Frida traces, decode helpers |
+| `tools/` | Maintenance scripts: the crash campaign, the thread sampler, save inventory diff, forget a peer, rebook a checkpoint, remove a world object, Steam pin, Frida traces |
 
 ## Major milestones
 
@@ -105,7 +107,7 @@ ghost.
 | ↳ **B6.7** NPC dialogue state + faction joined | ⏳ — quest-stage adjacent; brainstorm §3.2 says 10 players = 1 entity, simplifies state |
 | ↳ **B6.8** Companion state (recruited / position) | ⏳ — companions are NPCs with extra ownership flag |
 | ↳ **B6.9** Cell-cleared status (no respawn after group clear) | ⏳ — `cleared` flag in cell extra-data, persisted server-side |
-| ↳ **B6.10** One-shot loot pickups (bobbleheads, magazines, holotapes, skill books) | ⏳ — single-pickup persistence, partially covered by container `kill` events |
+| ↳ **B6.10** One-shot loot pickups (bobbleheads, magazines, holotapes, skill books) | 🟡 since v0.10.5 a vanilla pickup is relayed to the other clients as a disable (L6, R1b); the one-shot effect itself is not shared |
 | ↳ **B6.11** Time of day + weather sync | ⏳ — GlobalVar `GameHour` + Sky weather state |
 | ↳ **B6.12** Workshop / settlement build state sync | ⏳ — major epic; build/scrap/move workshop refs + furniture |
 | ↳ **B6.13** Power Armor frame + worn-state sync | ✅ closed (v0.7.6, 2026-09-16) — the frame rides the spawn rails (enter = despawn, exit = rebirth); pieces, OMOD upgrade levels, condition, core charge and paint jobs travel with the object and persist in a per-wid server ledger; replicas are stocked through the engine's own `AddItem` (`sub_1411735A0`) and `AttachModToInventoryItem` (`sub_1411808F0`) workers and the Health extra is created the way the engine does it; manual take/put and the power armor station (`PowerArmorModMenu`, polled while it lives) ship full state; frames are exempt from the loot layer and re-seat themselves after a station edit. The wearer's ghost is dressed and painted: `Frame.nif` plus the model OMOD meshes of every piece, material swaps read from the OMOD property records, on a ghost skeleton grafted with the 20 PA-only bones and retargeted to PA proportions while worn. Residue: fingers do not articulate. The frame lost when the wearer quits is closed server side in v0.8.0 (handed back to the world on leave, eviction and timeout) and still owes the live test with a client killed from the task manager |
@@ -117,8 +119,17 @@ ghost.
 | ↳ **N4** Player death + respawn sync | ✅ done (v0.6.2, 2026-06-06) — a client's death is vanilla: it ragdolls + respawns at Sanctuary, and the raiders re-aggro the surviving client (the threat table re-elects on the death). **v0.6.4 closed the death transition properly**: the respawn-load crash is fixed (see N row), and the aggro flip is now a message, not a timeout: one reliable NPC_UNLOAD per owned NPC at death, so the raiders turn on the survivor within a frame instead of after 8 s. **v0.10.0 moved the respawn to the server**: a death is answered with the player's checkpoint moved onto the founder's respawn point and loaded once (11.7 s from 31,000 units away in the live test, against 2 to 6 minutes for a fast travel after the vanilla reload), the player healed, from an exterior or an interior, in power armour or not. |
 | **CG1** Character creation + appearance identity *(new epic, my first custom in-game UI)* | 🟡 v1 shipped (v0.7.0, 2026-08-12), deliberately unfinished. Forced first-entry ritual (server flag), sky staging + pinned auto-vanity camera, runtime catalogs (filtered head parts, 32 hair colours, 9 tint groups from race CharGenData), live editing of hair / eyes / beard / teeth / brows / skin tone / marks through the engine's own apply calls, recipe v2 (parts + tints, wire v21) stored per identity on the server, adopted at join and replicated onto the ghost with private composite textures and engine-computed body skin. Open: morph sculpting, body build, sex switch, Markings tab placement, per-peer ghost cache; the ImGui panel is a placeholder for the final UI |
 | **S1** Session lifecycle *(join / leave / disconnect / rejoin / late join)* | ✅ closed (v0.8.1, 2026-09-23) — phases 0-2 in v0.8.0: the ghost is born from PEER_JOIN and torn down on PEER_LEAVE instead of from a 30 s timer that never re-armed, a registry keyed by peer id replaces the single body pointer and the census of single-peer globals in the ghost path is empty; presence that outlives the session, resume tokens for a rejoin without the launcher, reject reasons on the wire, eviction with notice, a queued join bootstrap, a reconnection loop with backoff, a goodbye on ALT+F4. Phases 3-4 in v0.8.1: the worn outfit is read from the inventory and announced at every session start, global chat, nametags above the ghosts, the three reconnection holes closed with tests. Residue: matrix tests T4/T6/T7/T8 not run, a second remote ghost refused until a third client exists, a 100 ms race on a live container op, weapons not announced at session start |
-| **L** Loot sync rework *(containers, corpses, player inventory, world items)* | 🟡 L1-L4 done (v0.9.0, 2026-09-26) — containers keyed by the placed reference, optimistic ops with rollback, the server view pushed and applied to every engine with a real-time menu redraw, corpses of placed NPCs. L5 stages 0-3 done (v0.10.0, 2026-10-02): no save or load the server did not command, a durable journal, mandatory login, the player's inventory read and its boundary tapped, the character in a checkpoint the server commands, keeps in custody and moves for the respawn and the first entry. Open: L5 stages 4-5 (restore and replay after the checkpoint, the save barrier) and L6, world items |
+| **L** Loot sync rework *(containers, corpses, player inventory, world items)* | 🟡 L1-L5 done — L1-L4 (v0.9.0, 2026-09-26): containers keyed by the placed reference, optimistic ops with rollback, the server view pushed and applied to every engine with a real-time menu redraw, corpses of placed NPCs. L5 (v0.10.0, 2026-10-02, and v0.10.5, 2026-10-20): no save or load the server did not command, a durable journal, mandatory login, the character in a checkpoint the server commands, keeps in custody and moves for the respawn and the first entry; since v0.10.5 a realtime record of the inventory by instance and of the character's numbers, given back after every load, the death crate with its markers, the crash campaign. Open: stage 5 (the save barrier, the .fos diff, fault injection), L6 beyond the Pip-Boy, L7 |
+| ↳ **L5** Player persistence *(checkpoints, custody, the realtime record, death crates and markers)* | ✅ done (v0.10.5, 2026-10-20) — a kill of the process loses nothing a checkpoint would have; the residuals are in the known limitations |
+| ↳ **L5 stage 5** Pollution and integration *(save barrier, .fos diff, fault injection)* | ⏳ next, after R3 (the player's last position made durable in the journal) |
+| ↳ **L6** World items | 🟡 Pip-Boy drops and pickups are ops of the player's record (v0.10.5); a vanilla pickup is relayed as a disable; open: arbitration between two pickers, the one-shot pickups |
+| ↳ **L7** Workshop, settlements and vendors | ⏳ parked by the sandbox-first decision: an empty, playable world first; vendors, companions and quest NPCs later |
+| **R** Deterministic engine rolls *(NPC looks, leveled loot, random weapon mods)* | ⏳ parked epic — make the Creation Engine's random rolls deterministic instead of syncing every result, engine-native (no ESL, no Creation Kit) |
 | **B7** Rust server port | ⏳ |
+
+**Next, in order (2026-10-20):** R3, the player's last position in the
+journal (half a day); L5 stage 5; L6; L7. Parked on purpose until the sandbox
+is playable: vendors, companions, quest NPCs, the RNG epic.
 
 ## Major RE achievements
 
@@ -159,11 +170,61 @@ ghost.
   bones. Condition and core charge are one Health extra (`0x25`) on the
   inventory stack; the engine's `AddItem` / `AttachModToInventoryItem`
   workers and the `ExtraDataList` add idiom are all callable from the DLL.
+- **Why leaving an interior takes minutes** — every precombined mesh of the
+  destination cell is built on the renderer's resource-creation thread,
+  which spins while a Present is in flight; the loading screen presents at a
+  sync interval of 3 (the engine's own choice at 144 Hz), so each GPU
+  creation waits a vblank, about 850 meshes times several creations. Present
+  with interval 0 during a loader flush cuts the exit from minutes to
+  seconds. `RESEARCH_interior_loads.md` (local), `hooks/loader_flush_hook.cpp`.
+- **The inventory list's write lock** — inside the engine's AddObject the
+  list's writer bit is held on the calling thread, so a detour there reads
+  nothing; the list is read a frame later, outside the lock.
+- **Native map markers from a mod** — a MapMarker reference with its
+  `MapMarkerData` (`SetMapMarkerData`, `sub_14027A680`), its handle pushed
+  into the player's own marker array (`player+1848`, under the global lock)
+  and the map's rebuild event fired with `true` (`sub_140D515B0`): compass
+  and Pip-Boy map both show it; `AddToMap` is never called, it sets fast
+  travel. `native/map_markers.cpp`.
+- **The character's numbers** — XP is an actor value (list `sub_140263120`
+  + 208), the ActorValueOwner at `player+0x58` (get, get base, mod base,
+  set), perk points at `+0xCF1` with their setter, `AddPerk` / `HasPerk`,
+  every PERK at the data handler. `persist/player_stats.cpp`.
+- **The frame's body armour** — entering a power armour frame the engine
+  force-equips one of seven `ArmorPoweredFrame*` armours (slots 3, 4, 5 and
+  30, the Pip-Boy's); one of them left equipped on foot draws the Pip-Boy on
+  a hidden wrist device. Never inventory.
+- **The engine's own save, crash-proofed** — a temporary reference in an
+  unloaded cell crashes the save (a null form id read inside
+  `sub_140BF6DD0`); references of ours are taken out of the world around
+  every named save. The UI message queue (`sub_141A89050`) shows and hides a
+  menu the way the engine does, used for the power armour HUD after a
+  respawn.
 
 ## Changelog
 
 Latest 3 patches summarized below. **Full version history in
 [CHANGELOG.md](CHANGELOG.md).**
+
+### v0.10.5 (2026-10-20) — persistence, second half: the realtime record, death crates and markers
+
+Tag v0.10.5, wire proto v43, server snapshot v15. The character no longer
+lives only in a checkpoint: the server keeps a record of the player's
+inventory, by instance, and of the character's numbers, kept current from
+the client's captures, and gives both back after every load, so a kill of
+the process loses nothing a checkpoint would have. A death leaves the whole
+inventory in a crate at the death point, marked on the compass and the
+Pip-Boy map ("LATEST DEATH", then "CORPSE #n"), and the player comes back on
+foot on the respawn point through one load, 6.8 s after the death in the
+last test; a death in power armour leaves the complete frame where the
+player fell. Other players show on the map. A crash campaign (twenty
+automatic cycles, five played) closed what a kill leaves behind: the exit
+checkpoint that crashed the engine's save, a death in an interior that fell
+back to an old checkpoint, a toolbox that came back full. And leaving an
+interior, one to four minutes in vanilla too, takes under seven seconds: the
+engine's resource thread waits a vblank per precombined mesh while the
+loading screen presents at a sync interval of 3, and the Present hook drops
+the interval during a loader flush. Detail in [CHANGELOG.md](CHANGELOG.md).
 
 ### v0.10.0 (2026-10-02) — persistence, first half: checkpoints, custody and the respawn
 
@@ -208,27 +269,6 @@ Tag v0.9.0, wire proto v27, server snapshot v6.
 
 Full detail in [CHANGELOG.md](CHANGELOG.md).
 
-### v0.8.1 (2026-09-23) — nametags and chat, minor fixes
-
-Tag v0.8.1, wire proto v26 unchanged.
-
-- **Chat** — a small see-through box on the left, always on, "name: text".
-  Enter opens the input with the game's controls paused, Enter sends, Escape
-  closes. The server stamps the sender itself, echoes every line back to its
-  author and keeps a flood limit. Enter in the Pip-Boy or the console goes to
-  the game.
-- **Nametags** — the peer's name above the ghost's head, bold white with a
-  black outline, projected at Present with the world root camera and checked
-  against the engine's own ray function. In this engine the rows of a world
-  rotation are the camera axes, not Gamebryo's columns; that cost one test.
-- **Outfit announced at session start** (phase 3) — the client reads what it
-  wears from its inventory, with the OMODs, and the server forgets its stored
-  copy on every (re)join.
-- **The three reconnection holes** of v0.8.0 are closed, each with a test
-  that failed on the old code.
-
-Full detail in [CHANGELOG.md](CHANGELOG.md).
-
 ## Why this exists
 
 I've been waiting ~10 years for someone to ship Fallout 4 multiplayer.
@@ -255,25 +295,53 @@ that should be most reusable for anyone else attempting the same thing.
 
 ## Known limitations
 
-- **1st-person walk cycle plays at the wrong rate** — with the sender in
-  first person the ghost now animates correctly (v0.6.5), but the walk
-  clip runs at a rate unrelated to the ground covered until the sender
-  switches view and back. The locomotion scalars the behavior scales its
-  clips from are not written into a parked graph; deriving them from
-  frame-to-frame displacement was tried and reverted (this drive does not
-  run every frame, so the displacement spans gaps the delta time does not
-  account for). The engine's own movement speed is the correct source.
-  Workaround: one camera round-trip.
-- **Ghost body casts no shadow** — the body is attached to the
-  `ShadowSceneNode` and gets depth, lighting and occlusion from it, but it
-  still does not appear in the shadow pass. Separate render-flag
-  investigation, deferred.
-- **No dedicated Pip-Boy pose on the ghost** — the Pip-Boy mesh itself is
-  correct since v0.6.5 (parented to `PipboyBone`, riding the forearm and
-  animating with it), and the ghost no longer contorts while a peer has it
-  open. What is missing is the gesture: vanilla has no third-person
-  arm-raise for a remote player consulting a Pip-Boy, so the ghost shows
-  its normal standing pose instead of the animation the peer sees.
+Persistence (L5):
+
+- **A kill of the process inside an interior can bring the player back on
+  another floor** — a crash or a forced kill writes no checkpoint; the boot
+  loads the last one and applies the server's last position blindly, in
+  whatever cell is loaded, and with a checkpoint written inside the same
+  interior the player can land elsewhere in it. Left open by decision: a
+  clean restart fixes it. A clean quit, Alt+F4 and the task manager's "End
+  task" all write an exit checkpoint and are not this case.
+- **A crash inside a dangerous window is not proven** — the campaign killed
+  the process at random moments, never on purpose while a checkpoint is being
+  written, a transfer is half done or the death reload runs.
+- **Quick loot takes before the seed** — with the HUD's quick loot the first
+  take comes with the activation, one frame before the scan the server
+  needs, so the server accepts that take on trust and never sees the
+  pre-take content of a container nobody scanned. A container taken whole
+  by one peer and scanned first by another, whose engine still has the
+  save's content, is canonised by that scan: the first scan wins and other
+  peers' ops are not reconciled.
+- **Two clients picking the same vanilla world item are not arbitrated** —
+  a loose item is keyed by (base, cell), not per reference; both can take
+  it.
+- **Health, action points and rads are known to the server and not
+  restored after a load** — by decision; the engine and the checkpoint
+  decide them, so quitting to heal works. Limb conditions, active effects and
+  addictions are not even captured.
+- **Discovered places are the engine's** — a discovery asks for a
+  checkpoint, so a crash keeps it; a discovery in the window before that
+  checkpoint is re-discovered (double XP), and a respawn from the genesis
+  save, when no checkpoint on foot exists, starts every discovery over.
+- **An exit from power armour followed by a kill within a second puts the
+  player back inside the frame** — the exit is undone; another player
+  entering the standing frame in that second would make two frames until one
+  is left.
+- **A piece swapped from the Pip-Boy while inside a frame ends in the death
+  crate**, while the frame's ledger keeps the mounted one.
+- **When the server cannot move a checkpoint in time**, a death falls back
+  to the engine's reload and a teleport to the point; from a checkpoint
+  inside an interior that teleport is skipped and the player stays inside.
+- **A deposit into an actor that the server refuses gives back the first
+  stack of that item**, not necessarily the one deposited.
+- **The exit after a long load crashes in the engine's allocator**, after
+  the exit checkpoint is written and recorded: nothing is lost, the process
+  dies ugly.
+
+Gameplay and sync:
+
 - **Tested with 2 peers** — the peer-keyed registry landed in v0.8.0 and the
   ghost path holds no single-peer global any more, but a second remote ghost
   is still refused on purpose: that path has never been executed, because two
@@ -282,14 +350,10 @@ that should be most reusable for anyone else attempting the same thing.
 - **Network rate-limited to 20Hz** — works smoothly on LAN, untested
   over real-world internet routes; receiver-side interpolation between
   POSE_BROADCAST frames is open work.
-- **A crash rewinds the player to the last checkpoint** — since v0.10.0 the
-  character lives in a checkpoint the server commands and keeps (written at
-  a quiet moment on a timer, at every exit, and the moment a player leaves
-  their power armour) and hands back at the next boot. A crash or a kill
-  from the task manager writes none: the player comes back as the last one
-  left them, at their last known position, while the world keeps what
-  happened after it, so a take in that window is lost and a deposit is
-  duplicated. Replaying after the checkpoint is the next stage.
+- **Inside an interior the ownership sphere sees the NPCs of other cells**
+  through their local coordinates: 180 owned NPCs in a cellar, hundreds
+  cycling through assignment and release on the server. Since v0.10.5 a
+  death releases them in one message; the churn itself is open.
 - **A weapon equipped when the save loads is not shown on the ghost until
   the peer equips or draws one** — since v0.8.1 every piece of apparel worn
   at load is read from the inventory and announced at session start, so a
@@ -315,19 +379,43 @@ that should be most reusable for anyone else attempting the same thing.
   different NPC variant, outfit, weapon and mods from the leveled lists with
   its own RNG. Since v0.9.0 the loot converges: the first client to open a
   corpse or a container decides its contents, and every other client is
-  aligned to it by base and count, so a weapon's mods are lost on the way.
-  The appearance still diverges. Parked for a dedicated epic that makes the
-  engine's random rolls deterministic, staying engine-native (no ESL, no
-  Creation Kit).
-- **A client that quits while wearing power armor** no longer loses the frame
-  for everyone: v0.8.0 marks the record worn instead of deleting it and hands
-  the frame back at its last known position on a graceful leave, an eviction
-  or a timeout, taking the plates out of the stored outfit so the rejoining
-  peer is not wearing an empty shell. Since v0.10.0 the checkpoint written at
-  the quit brings the player back inside the frame, and the boot takes the
-  standing frame back from the world: one armour, not two. Covered by unit
-  tests; neither that boot nor the test with a wearer killed from the task
-  manager (T7) has been run live yet.
+  aligned to it; since v0.10.5 a weapon or an armour piece keeps its mods and
+  condition on the way (an instance travels with its descriptor). The
+  appearance still diverges, and the corpse of a runtime-spawned NPC stays
+  local. Parked for a dedicated epic that makes the engine's random rolls
+  deterministic, staying engine-native (no ESL, no Creation Kit).
+- **A corpse's final position differs for a peer who arrives after the
+  fight** — the owner's final pose is not sent with the bootstrap.
+- **The character creation opens while the player is still landing** at
+  the first boot and freezes the falling pose until it closes.
+
+Ghost and rendering:
+
+- **1st-person walk cycle plays at the wrong rate** — with the sender in
+  first person the ghost now animates correctly (v0.6.5), but the walk
+  clip runs at a rate unrelated to the ground covered until the sender
+  switches view and back. The locomotion scalars the behavior scales its
+  clips from are not written into a parked graph; deriving them from
+  frame-to-frame displacement was tried and reverted (this drive does not
+  run every frame, so the displacement spans gaps the delta time does not
+  account for). The engine's own movement speed is the correct source.
+  Workaround: one camera round-trip.
+- **Ghost body casts no shadow** — the body is attached to the
+  `ShadowSceneNode` and gets depth, lighting and occlusion from it, but it
+  still does not appear in the shadow pass. Separate render-flag
+  investigation, deferred.
+- **No dedicated Pip-Boy pose on the ghost** — the Pip-Boy mesh itself is
+  correct since v0.6.5 (parented to `PipboyBone`, riding the forearm and
+  animating with it), and the ghost no longer contorts while a peer has it
+  open. What is missing is the gesture: vanilla has no third-person
+  arm-raise for a remote player consulting a Pip-Boy, so the ghost shows
+  its normal standing pose instead of the animation the peer sees.
+- **A ghost built while its viewer is inside an interior shows its nametag
+  and no body** — the viewer who built it outside sees the peer; open.
+- **An appearance that reaches a ghost already alive** dresses it again with
+  the local player's borrowed parts, and the hair stays tied to the local
+  player's head. The creation path avoids it (a ghost is built only after
+  the peer's first position); a change of appearance would hit it.
 - **Power-armor headlamps do not light up on the ghost** — the lamp mesh is
   an engine add-on point whose glow effect is bookkept globally, which is
   the crash class closed in v0.7.6; the ghost skips it.

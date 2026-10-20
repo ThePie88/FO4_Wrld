@@ -56,4 +56,9 @@ std::size_t drain(Event* out, std::size_t max, std::uint32_t* dropped);
 // A readable name for an add-core caller, or nullptr.
 const char* cause_name(std::uint32_t cause);
 
+// L5 realtime R1: how many adds and removes the cores have made on the
+// player since the start. The capture compares it with the value at its last
+// pass and captures again at once when it moved. Any thread.
+std::uint64_t events_seen() noexcept;
+
 } // namespace fw::persist::tap

@@ -5,18 +5,25 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "../config.h"
 #include "../engine/engine_calls.h"     // get_local_player
 #include "../hooks/workbench_hook.h"    // pa_mod_menu_open
 #include "../log.h"
+#include "../main_thread_dispatch.h"    // pending_count: undos not applied yet
 #include "../native/scene_inject.h"     // ghost_scene_settled
 #include "../net/client.h"              // enqueue_inv_digest
 #include "../net/protocol.h"            // PaPieceEntry: the wire descriptor of a dropped item
 #include "../offsets.h"
 #include "../ref_identity.h"            // read_ref_identity
 #include "inventory_tap.h"              // the boundary events since the last capture
+#include "instance_fp.h"                // fp_of_record: the line of a stack
+#include "instance_probe.h"             // stage 4a: the records at info, in the probe's format
+#include "inventory_restore.h"          // R2: INV_STATE only while the game holds the record
 #include "lifecycle.h"                  // load_in_flight
 
 namespace fw::persist::inventory {
@@ -105,6 +112,16 @@ std::uint64_t g_sent_digest = 0;
 std::uint64_t g_sent_at_ms  = 0;
 std::uint32_t g_sent_count  = 0;
 constexpr std::uint64_t kDigestMinIntervalMs = 10000;   // the dossier's cadence
+
+// L5 realtime R1 (2026-10-03): INV_STATE bookkeeping. The digest of the last
+// capture sent as the player's record, and the tap's count at the last
+// capture: when it moved, the next capture comes after kEventCaptureMs
+// instead of the second (and so does a retry of a capture not sent yet).
+std::uint64_t g_state_digest = 0;
+bool          g_state_sent   = false;
+std::uint32_t g_state_seq    = 0;
+std::uint64_t g_tap_seen     = 0;
+constexpr std::uint64_t kEventCaptureMs = 250;
 
 std::uint32_t total_items(const Manifest& m) noexcept {
     std::uint64_t n = 0;
@@ -569,6 +586,58 @@ void walk_locked(void* list, Manifest* m, std::uint32_t* reasons) noexcept {
     }
 }
 
+// Stage 4a: the probe's locked walk. The capture's, on any REFR's list,
+// for one base or all, transient stacks included, each stack with its
+// position in the chain and its base's flags. POD only, __finally
+// releases the list lock.
+void probe_walk_locked(void* list, std::uint32_t base, ProbeStack* out, std::uint32_t max,
+                       std::uint32_t* n_out, std::uint32_t* reasons) noexcept {
+    void* lock = static_cast<std::uint8_t*>(list) + offsets::INVLIST_MUTEX_OFF;
+    if (!call_lock(g_read_lock, lock)) { *reasons |= REASON_SEH; return; }
+    __try {
+        std::uint32_t entry_count = 0;
+        void* entries = rd_ptr(list, offsets::INVLIST_ENTRIES_OFF);
+        if (!rd_u32(list, offsets::INVLIST_COUNT_OFF, &entry_count) || !entries) { *reasons |= REASON_SEH; return; }
+        if (entry_count > 4096) { *reasons |= REASON_CAPS; entry_count = 4096; }
+        for (std::uint32_t i = 0; i < entry_count; ++i) {
+            void* entry = static_cast<std::uint8_t*>(entries) + static_cast<std::size_t>(i) * offsets::INVENTORY_ITEM_STRIDE;
+            void* obj = rd_ptr(entry, offsets::INVENTORY_ITEM_OBJ_OFF);
+            if (!obj) continue;
+            const std::uint32_t base_id = form_id_of(obj);
+            if (base != 0 && base_id != base) continue;
+            std::uint8_t form_type = 0;
+            rd_u8(obj, offsets::FORMTYPE_OFF, &form_type);
+            std::uint32_t base_flags = 0;
+            rd_u32(obj, offsets::TESFORM_FLAGS_OFF, &base_flags);
+            std::uint16_t chain = 0;
+            for (void* s = rd_ptr(entry, 0x08); s; s = rd_ptr(s, offsets::INV_STACK_NEXT_OFF), ++chain) {
+                if (chain >= 256) { *reasons |= REASON_CAPS; break; }
+                if (rd_vtable(s) != g_base + offsets::INV_STACK_VTABLE_RVA) { *reasons |= REASON_STACK_VTABLE; break; }
+                std::uint32_t cnt = 0;
+                std::uint16_t flags = 0;
+                if (!rd_u32(s, offsets::INV_STACK_COUNT_OFF, &cnt) || !rd_u16(s, offsets::INV_STACK_FLAGS_OFF, &flags)) {
+                    *reasons |= REASON_SEH; break;
+                }
+                if (*n_out >= max) { *reasons |= REASON_CAPS; return; }
+                ProbeStack* p = &out[*n_out];
+                std::memset(p, 0, sizeof(*p));
+                StackRecord* r = &p->r;
+                r->base_id = base_id; r->form_type = form_type; r->flags = flags;
+                r->count = static_cast<std::int32_t>(cnt);
+                r->health = NAN; r->charge = NAN; r->favorite = 0xFF; r->oie_template = 0xFFFF;
+                p->chain = chain;
+                p->transient = (flags & offsets::INV_STACK_FLAG_TRANSIENT) ? 1 : 0;
+                p->base_flags = base_flags;
+                void* xlist = rd_ptr(s, offsets::INV_STACK_EXTRAS_OFF);
+                if (xlist) read_extras(xlist, r, reasons);
+                ++*n_out;
+            }
+        }
+    } __finally {
+        call_lock(g_read_unlock, lock);
+    }
+}
+
 // ---------------------------------------------------------------- digest
 std::uint64_t fnv1a(std::uint64_t h, const void* data, std::size_t n) noexcept {
     const auto* p = static_cast<const std::uint8_t*>(data);
@@ -623,6 +692,18 @@ const char* type_name(std::uint8_t t) noexcept {
 }
 
 void log_records(const Manifest& m) {
+    // Stage 4a: with the instance probe on, every record goes out at info in
+    // the probe's format (the uid with its owner, the base's flags, the two
+    // fingerprints), the same lines the probe writes around a transfer.
+    if (fw::persist::probe::enabled()) {
+        char tag[24];
+        std::snprintf(tag, sizeof(tag), "capture#%u", m.seq);
+        for (std::uint32_t i = 0; i < m.stacks; ++i) {
+            fw::persist::probe::log_stack(tag, m.records[i], -1, false,
+                                          base_flags_of(m.records[i].base_id));
+        }
+        return;
+    }
     if (fw::log::get_level() < fw::log::Level::Debug) return;
     for (std::uint32_t i = 0; i < m.stacks; ++i) {
         const StackRecord& r = m.records[i];
@@ -725,9 +806,85 @@ bool do_capture(std::uintptr_t base, const char* why) {
     return true;
 }
 
+// L5 realtime R1 (2026-10-03) - the capture `m` as the player's record on
+// the server (INV_STATE), when its digest is not the last one sent. Only a
+// complete capture, and only when no container op of ours was in flight
+// across it: `quiet_before` is the check made before the capture ran, this
+// function makes the one after (an op refused in between would otherwise
+// travel inside the record with its effect undone a moment later; the next
+// change sends the capture again). The descriptors of its named instances go
+// first. Main thread.
+void send_state(const Manifest& m, bool quiet_before) {
+    if (m.seq == 0 || !m.complete) return;
+    // R2: after a load, until the record is back in the game, a capture is
+    // the old checkpoint's inventory and must not reach the record.
+    if (!fw::persist::restore::record_open()) return;
+    if (g_state_sent && m.digest == g_state_digest) return;
+    auto& c = fw::net::client();
+    if (!quiet_before || c.container_ops_in_flight() || fw::dispatch::pending_count() != 0) return;
+
+    std::map<std::pair<std::uint32_t, std::uint64_t>, std::pair<std::int64_t, std::uint8_t>> lines;
+    std::vector<fw::net::InstanceDefEntry> defs;
+    std::uint32_t unknown = 0;
+    for (std::uint32_t i = 0; i < m.stacks; ++i) {
+        const StackRecord& r = m.records[i];
+        if (r.count <= 0 || r.base_id == 0) continue;
+        // 2026-10-05: the frame's body armour is the engine's, never inventory
+        // (offsets::PA_FRAME_WEARABLE_FORMIDS).
+        if (offsets::is_pa_frame_wearable(r.base_id)) continue;
+        fw::net::InstanceDesc d{};
+        const std::uint64_t fp = fw::persist::instance::fp_of_record(r, &d);
+        auto& slot = lines[{r.base_id, fp}];
+        slot.first += r.count;
+        if (r.flags & offsets::INV_STACK_FLAG_EQUIPPED) slot.second |= fw::net::kInvEntryEquipped;
+        if (fp == fw::net::kFpUnknown) {
+            ++unknown;
+        } else if (fp != fw::net::kFpPlain) {
+            fw::net::InstanceDefEntry e{};
+            e.base_id  = r.base_id;
+            e.fp       = fp;
+            e.instance = d;
+            defs.push_back(e);
+        }
+    }
+    std::vector<fw::net::InvStateEntry> out;
+    out.reserve(lines.size());
+    std::uint64_t items = 0;
+    std::uint32_t equipped = 0;
+    for (const auto& [k, v] : lines) {
+        fw::net::InvStateEntry e{};
+        e.item_base_id = k.first;
+        e.item_fp      = k.second;
+        e.count        = static_cast<std::int32_t>(v.first > 0x7FFFFFFF ? 0x7FFFFFFF : v.first);
+        e.flags        = v.second;
+        items += static_cast<std::uint64_t>(e.count);
+        if (e.flags & fw::net::kInvEntryEquipped) ++equipped;
+        out.push_back(e);
+    }
+    c.enqueue_player_instance_defs(defs.data(), defs.size());
+    fw::net::InvStateHeader h{};
+    h.session   = c.capture_session();
+    h.seq       = m.seq;
+    h.watermark = c.last_op_id();
+    h.op_epoch  = c.op_epoch();
+    h.flags     = static_cast<std::uint8_t>(fw::net::kInvStateFlagComplete |
+                  (m.in_power_armor ? fw::net::kInvStateFlagInPowerArmor : 0));
+    h.digest    = m.digest;
+    c.enqueue_inv_state(h, out.data(), out.size());
+    g_state_digest = m.digest;
+    g_state_sent   = true;
+    g_state_seq    = m.seq;
+    FW_LOG("[inv] state #%u sent: %zu line(s), %llu item(s), %u equipped, %u unreadable, "
+           "watermark %08X, digest %016llX", m.seq, out.size(),
+           static_cast<unsigned long long>(items), equipped, unknown, h.watermark,
+           static_cast<unsigned long long>(m.digest));
+}
+
 } // namespace
 
 // ---------------------------------------------------------------- public
+
+bool container_menu_is_open() noexcept { return container_menu_open(); }
 
 void set_output_dir(const wchar_t* dir) { g_out_dir = dir ? dir : L""; }
 
@@ -742,12 +899,23 @@ void configure(const fw::config::Settings& cfg) {
 void tick(std::uintptr_t module_base) {
     if (!g_enabled) return;
     const std::uint64_t now = wall_ms();
-    if (now - g_last_tick_ms < 1000) return;
+    // L5 realtime R1: an add or a remove on the player since the last
+    // capture, or a capture the record has not had yet, brings the next
+    // capture forward from the second to kEventCaptureMs.
+    const std::uint64_t events = fw::persist::tap::events_seen();
+    const bool moved = events != g_tap_seen;
+    const bool behind = g_last.seq != 0 && g_last.complete &&
+                        !(g_state_sent && g_last.digest == g_state_digest);
+    if (now - g_last_tick_ms < ((moved || behind) ? kEventCaptureMs : 1000)) return;
     g_last_tick_ms = now;
     const char* why = nullptr;
     if (!gates_open(module_base, &why)) { ++g_skips_gate; return; }
-    do_capture(module_base, "tick");
+    auto& c = fw::net::client();
+    const bool quiet_before = !c.container_ops_in_flight() && fw::dispatch::pending_count() == 0;
+    g_tap_seen = events;
+    do_capture(module_base, moved ? "event" : "tick");
     send_digest(g_last, fw::net::kInvDigestWhyChange, /*force=*/false);
+    send_state(g_last, quiet_before);
     if (now - g_last_stats_ms >= 60000) {
         g_last_stats_ms = now;
         FW_DBG("[inv] stats: %u captures, %u passes skipped by a writer, %u by gates, "
@@ -767,9 +935,32 @@ bool capture_now(std::uintptr_t module_base, const char* why) {
 
 const Manifest& last() { return g_last; }
 
+std::uint32_t last_state_seq() { return g_state_seq; }
+
 void send_digest_now(std::uint8_t why) {
     if (!g_enabled) return;
     send_digest(g_last, why, /*force=*/true);
+}
+
+bool read_refr_record(std::uintptr_t module_base, void* refr, StackRecord* out) {
+    if (!out) return false;
+    std::memset(out, 0, sizeof(*out));
+    out->health = NAN; out->charge = NAN; out->favorite = 0xFF; out->oie_template = 0xFFFF;
+    out->count = 1;
+    if (!refr || !module_base) return false;
+    resolve(module_base);
+    const fw::RefIdentity id = fw::read_ref_identity(refr);
+    out->base_id = id.base_id;
+    if (id.base_id == 0) return false;
+    // A REFR without an extra list is a bare object: one of the base, no
+    // condition, no mods, a complete answer.
+    void* xlist = rd_ptr(refr, offsets::REFR_EXTRA_LIST_OFF);
+    if (!xlist) return true;
+    std::uint32_t reasons = 0;
+    read_extras(xlist, out, &reasons);
+    if (reasons & (REASON_SEH | REASON_EXTRAS_UNREAD | REASON_CAPS)) return false;
+    if (out->extra_count > 0) out->count = out->extra_count;
+    return true;
 }
 
 bool read_refr_instance(std::uintptr_t module_base, void* refr, fw::net::PaPieceEntry* out) {
@@ -806,6 +997,88 @@ bool read_refr_instance(std::uintptr_t module_base, void* refr, fw::net::PaPiece
                r.oie_truncated ? "+" : "", unsigned(n));
     }
     return true;
+}
+
+std::uint32_t probe_stacks(std::uintptr_t module_base, void* refr, std::uint32_t base,
+                           ProbeStack* out, std::uint32_t max, std::uint32_t* reasons) {
+    std::uint32_t scratch = 0;
+    if (!reasons) reasons = &scratch;
+    *reasons = 0;
+    if (!refr || !out || max == 0 || !module_base) return 0;
+    resolve(module_base);
+    void* list = rd_ptr(refr, offsets::REFR_INV_LIST_OFF);
+    if (!list) { *reasons |= REASON_NO_LIST; return 0; }
+    // As in the capture: a list whose writer bit is set is not walked. The
+    // writer may be this very thread (a probe called from inside a transfer
+    // the engine is making), and its lock does not let a reader in.
+    std::uint32_t counter = 0;
+    if (!rd_u32(list, offsets::INVLIST_LOCK_COUNTER_OFF, &counter)) { *reasons |= REASON_SEH; return 0; }
+    if (counter & 0x80000000u) { *reasons |= REASON_WRITER_HELD; return 0; }
+    std::uint32_t n = 0;
+    probe_walk_locked(list, base, out, max, &n, reasons);
+    return n;
+}
+
+std::uint64_t fingerprint(const StackRecord& r, bool with_template) noexcept {
+    std::uint64_t h = 14695981039346656037ull;
+    h = fnv1a(h, &r.base_id, sizeof(r.base_id));
+    const std::uint8_t has_oie = (r.extra_mask & MASK_OIE) ? 1 : 0;
+    h = fnv1a(h, &has_oie, sizeof(has_oie));
+    if (with_template) h = fnv1a(h, &r.oie_template, sizeof(r.oie_template));
+    // The records sorted by (mod, attach, rank): the engine's order of the
+    // OIE array is not part of what the instance is.
+    ModRecord recs[MAX_OIE_RECORDS];
+    const std::uint32_t n = r.oie_count < MAX_OIE_RECORDS ? r.oie_count : MAX_OIE_RECORDS;
+    for (std::uint32_t i = 0; i < n; ++i) recs[i] = r.oie[i];
+    for (std::uint32_t i = 1; i < n; ++i) {
+        const ModRecord key = recs[i];
+        std::uint32_t j = i;
+        while (j > 0) {
+            const ModRecord& prev = recs[j - 1];
+            const bool after = prev.mod_form_id != key.mod_form_id ? prev.mod_form_id > key.mod_form_id
+                             : prev.attach_index != key.attach_index ? prev.attach_index > key.attach_index
+                             : prev.rank > key.rank;
+            if (!after) break;
+            recs[j] = recs[j - 1];
+            --j;
+        }
+        recs[j] = key;
+    }
+    for (std::uint32_t i = 0; i < n; ++i) {
+        h = fnv1a(h, &recs[i].mod_form_id, sizeof(recs[i].mod_form_id));
+        h = fnv1a(h, &recs[i].attach_index, sizeof(recs[i].attach_index));
+        h = fnv1a(h, &recs[i].rank, sizeof(recs[i].rank));
+    }
+    const std::int32_t hp = std::isnan(r.health)
+        ? INT32_MIN
+        : static_cast<std::int32_t>(std::lround(static_cast<double>(r.health) * 1000.0));
+    h = fnv1a(h, &hp, sizeof(hp));
+    std::size_t len = 0;
+    while (len < MAX_NAME && r.name[len]) ++len;
+    h = fnv1a(h, r.name, len);
+    return h;
+}
+
+std::uint32_t base_flags_of(std::uint32_t base_form_id) noexcept {
+    if (base_form_id == 0) return 0;
+    void* form = fw::engine::lookup_by_form_id(base_form_id);
+    std::uint32_t flags = 0;
+    return (form && rd_u32(form, offsets::TESFORM_FLAGS_OFF, &flags)) ? flags : 0;
+}
+
+bool read_list_record(std::uintptr_t module_base, void* xlist, std::uint32_t base_id,
+                      StackRecord* out) {
+    if (!out || !module_base) return false;
+    resolve(module_base);
+    std::memset(out, 0, sizeof(*out));
+    out->base_id = base_id;
+    out->health = NAN; out->charge = NAN; out->favorite = 0xFF; out->oie_template = 0xFFFF;
+    if (!xlist) return true;   // no extras: a plain stack, completely known
+    std::uint32_t reasons = 0;
+    read_extras(xlist, out, &reasons);
+    // The health cross-check is an opinion; anything else means the walk
+    // did not finish.
+    return (reasons & (REASON_SEH | REASON_EXTRAS_UNREAD | REASON_CAPS)) == 0;
 }
 
 } // namespace fw::persist::inventory

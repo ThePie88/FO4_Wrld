@@ -9,11 +9,13 @@
 #include <deque>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>   // 2026-10-04: the lone runtime frames said once
 
 #include <vector>
 #include <string>
 
 #include "../engine/engine_calls.h"
+#include "../engine/instance_writers.h"   // R1b: the undo of a refused op
 #include "../hooks/equip_hook.h"        // v24: read_item_mod_forms (piece OMODs)
 #include "../hooks/container_hook.h"    // 2026-09-29: ApplyingRemoteGuard around the in-place alignment
 #include "../hooks/container_menu_hook.h" // 2026-09-29: refresh an open menu on the aligned frame
@@ -55,6 +57,12 @@ struct Bound {
                                   // against its birth cell forever
     bool          reported = false;
     bool          null_seen = false;   // one-shot: said "went null" already
+    // 2026-10-15 (D2's second live test): a crate re-placed right after a
+    // death reload stood with no 3D on one client (its form id had just
+    // been freed by the purge of a saved copy). Said once when the 3D is
+    // missing for five seconds near the player, so the next test tells.
+    std::uint64_t no3d_since_ms = 0;
+    bool          no3d_said = false;
     DWORD         bound_at_ms = 0;     // birth of the binding, for the grace
     // Build 70b — the wire truth this binding replicates. Kept so a local
     // replica the ENGINE destroys (cell streaming, the PA janitor measured
@@ -140,6 +148,7 @@ struct PendingDrop {
     DWORD         since_ms, stable_since_ms;
     float         last_pos[3];
     bool          rested;
+    std::uint32_t op_id;      // R1b: the op of the record, handed out at the drop; 0 = legacy announce
 };
 std::vector<PendingDrop> g_pending_drops;
 constexpr DWORD kDropSettleMs   = 1500;   // still for this long, model loaded = rested
@@ -160,6 +169,14 @@ constexpr DWORD kDressVerifyMs = 2500;
 struct PurgeJob { std::vector<WorldObjectStamp> stamps; std::string save; };
 PurgeJob g_purge;
 bool     g_purge_armed = false;
+// 2026-10-04 — see run_zombie_frame_sweep: due after every load (armed with
+// the purge list, run once the purge is over). g_mx.
+bool     g_zombie_sweep_due = false;
+// 2026-10-04 — adopted copies disabled for their move, enabled again on a
+// later tick (the adoption in tick). g_mx.
+struct Reenable { std::uint32_t wid = 0, fid = 0, handle = 0; DWORD due_ms = 0; };
+std::vector<Reenable> g_reenable;
+constexpr DWORD kReenableDelayMs = 250;
 
 // 2026-09-30 (live test #23) — the saved copy of a power armour frame is
 // ADOPTED instead of purged when the server still has its wid (the wid is
@@ -913,6 +930,7 @@ static void tick_pending_drops() {
             if (!refr) {
                 FW_LOG("[world-spawn-tx] drop fid=0x%08X (base=0x%08X) is gone before it "
                        "rested (picked up again?): nothing announced", d.fid, d.base_id);
+                if (d.op_id) fw::net::client().cancel_world_item_op(d.op_id);
                 it = g_pending_drops.erase(it);
                 continue;
             }
@@ -946,7 +964,19 @@ static void tick_pending_drops() {
     for (const PendingDrop& d : ready) {
         std::uint32_t h = d.handle;
         void* refr = fw::engine::resolve_refhandle(&h);
-        if (!refr) continue;
+        if (!refr) {
+            if (d.op_id) fw::net::client().cancel_world_item_op(d.op_id);
+            continue;
+        }
+        if (d.op_id != 0) {
+            // R1b: the op of the record, with the line read now.
+            char what[96];
+            std::snprintf(what, sizeof(what), "Pip-Boy drop (%s after %u ms)",
+                          d.rested ? "rested" : "still moving, announced anyway",
+                          unsigned(now - d.since_ms));
+            fw::hooks::announce_world_drop(refr, d.handle, d.op_id, d.count_hint, what);
+            continue;
+        }
         // The descriptor: what the item IS, read from the REFR the engine
         // built out of the stack (count, condition, mods). Unreadable =
         // bare, said out loud, never a half-read one presented as complete.
@@ -1076,6 +1106,28 @@ std::size_t snapshot_world_objects(WorldObjectStamp* out, std::size_t cap) {
         s.wid = wid;
         out[n++] = s;
     }
+    // 2026-10-05 (live test): the copies kept for adoption are saved objects
+    // of ours too, unbound only until their wid comes within reach. Left out
+    // of the manifest they outlived their wid outside every purge: the two
+    // frames standing alone at Sanctuary were the copies kept for wids 108
+    // and 110, never adopted (the player went elsewhere), the wids removed
+    // on the server in between.
+    for (const Adoptable& a : g_adoptable) {
+        if (n >= cap) break;
+        void* refr = resolve_object(a.handle, a.fid);
+        if (!refr) continue;
+        const std::uint8_t* rb = reinterpret_cast<const std::uint8_t*>(refr);
+        WorldObjectStamp s{};
+        s.fid = seh_u32_at(rb + fw::offsets::FORMID_OFF);
+        if (s.fid == 0) continue;
+        void* base = seh_deref(reinterpret_cast<std::uintptr_t>(rb) + fw::offsets::BASE_FORM_OFF);
+        s.base_id = base ? seh_u32_at(reinterpret_cast<const std::uint8_t*>(base)
+                                      + fw::offsets::FORMID_OFF)
+                         : kPaFrameBase;
+        if (!seh_vec3_at(rb + fw::offsets::POS_OFF, s.pos)) continue;
+        s.wid = a.wid;
+        out[n++] = s;
+    }
     return n;
 }
 
@@ -1120,6 +1172,7 @@ void purge_saved_copies(const WorldObjectStamp* stamps, std::size_t n, const cha
     if (stamps && n) g_purge.stamps.assign(stamps, stamps + n);
     g_purge.save   = save_name ? save_name : "";
     g_purge_armed  = !g_purge.stamps.empty();
+    g_zombie_sweep_due = true;
     if (g_purge_armed) {
         FW_LOG("[world-spawn] %zu saved cop(ies) of our objects listed for '%s': purged "
                "when the world is back, before any placement", g_purge.stamps.size(),
@@ -1201,6 +1254,116 @@ static bool run_saved_copy_purge() {
     FW_LOG("[world-spawn] saved copies of '%s': %zu purged, %zu kept for adoption, %zu absent "
            "from this world, %zu kept", job.save.c_str(), purged, adopted, absent, kept);
     return purged > 0;
+}
+
+// 2026-10-04 — the zombie frames. A power armour frame this DLL places is a
+// persistent reference (no temporary bit since stage 3d: a worn frame must
+// save its cell), so a copy that lost its binding without being destroyed
+// stays in the save for good, outside every manifest, and the purge never
+// sees it. Live test of 2026-10-04: one such frame (0xFF001340, a core and
+// nothing else) stood exactly where the adopted copy of wid 87 stood; the E
+// key entered the zombie while the transfer had filled the other, the player
+// climbed out of "a second frame", and its exit announced the zombie to the
+// server twice. The sweep: every runtime power armour frame in the player's
+// area that is neither bound, nor announced and awaiting its echo, nor kept
+// for adoption, nor disabled (worn, or mid-transition), AND stands within
+// kZombieTwinUnits of a frame of ours (bound, queued or kept for adoption)
+// is a stale copy of that frame and goes. One standing alone is left and said
+// once: it may be the game's own (a frame an NPC was thrown out of, a frame a
+// script placed), and a lone stale copy only clutters. Once after the purge
+// of a load, and once at each change of the player's cell, two seconds apart
+// at least. Main thread.
+constexpr float kZombieTwinUnits = 256.0f;
+
+static void run_zombie_frame_sweep(const char* why) {
+    static void* s_refs[4096];
+    static std::unordered_set<std::uint32_t> s_alone_said;
+    const std::size_t n = fw::engine::collect_player_area_refrs(s_refs, 4096);
+    if (n == 0) return;
+    // Where the frames of ours stand: the server's pose of the bound and the
+    // queued ones, the live pose of the copies kept for adoption.
+    struct Spot { float p[3]; std::uint32_t wid; };
+    std::vector<Spot> ours;
+    std::vector<Adoptable> adopt;
+    {
+        std::lock_guard<std::mutex> lk(g_mx);
+        for (const auto& [wid, b] : g_wid_to_bound) {
+            if (b.entry.base_form_id == kPaFrameBase) {
+                ours.push_back({{b.entry.pos[0], b.entry.pos[1], b.entry.pos[2]}, wid});
+            }
+        }
+        for (const SpawnEntry& pe : g_pending) {
+            if (pe.base_form_id == kPaFrameBase) ours.push_back({{pe.pos[0], pe.pos[1], pe.pos[2]}, pe.wid});
+        }
+        adopt = g_adoptable;
+    }
+    for (const Adoptable& a : adopt) {
+        void* f = resolve_object(a.handle, a.fid);
+        float p[3];
+        if (f && seh_vec3_at(reinterpret_cast<const std::uint8_t*>(f) + fw::offsets::POS_OFF, p)) {
+            ours.push_back({{p[0], p[1], p[2]}, a.wid});
+        }
+    }
+    std::size_t frames = 0, zombies = 0, alone = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        void* r = s_refs[i];
+        const auto* rb = reinterpret_cast<const std::uint8_t*>(r);
+        if (seh_u8_at(rb + fw::offsets::FORMTYPE_OFF) != kFormTypeRefr) continue;
+        void* base = seh_deref(reinterpret_cast<std::uintptr_t>(rb) + fw::offsets::BASE_FORM_OFF);
+        if (!base || seh_u32_at(reinterpret_cast<const std::uint8_t*>(base)
+                                + fw::offsets::FORMID_OFF) != kPaFrameBase) {
+            continue;
+        }
+        const std::uint32_t fid = seh_u32_at(rb + fw::offsets::FORMID_OFF);
+        if ((fid >> 24) != 0xFF) continue;   // a frame the game placed
+        ++frames;
+        const std::uint32_t flags = seh_u32_at(rb + fw::offsets::FLAGS_OFF);
+        if (flags & (kFlagDeleted | fw::offsets::FLAG_DISABLED)) continue;   // worn, entering, going
+        if (is_our_refr(r, fid)) continue;
+        bool spoken_for = false;
+        {
+            std::lock_guard<std::mutex> lk(g_mx);
+            for (const Adoptable& a : g_adoptable) if (a.fid == fid) { spoken_for = true; break; }
+            for (const SelfObject& s : g_self_objects) if (s.fid == fid) { spoken_for = true; break; }
+            if (!spoken_for && g_purge_armed) {
+                for (const WorldObjectStamp& s : g_purge.stamps) if (s.fid == fid) { spoken_for = true; break; }
+            }
+        }
+        if (spoken_for) continue;
+        float p[3] = {0.0f, 0.0f, 0.0f};
+        const bool have_pos = seh_vec3_at(rb + fw::offsets::POS_OFF, p);
+        std::uint32_t twin = 0;
+        float best = kZombieTwinUnits * kZombieTwinUnits;
+        if (have_pos) {
+            for (const Spot& s : ours) {
+                const float dx = p[0] - s.p[0], dy = p[1] - s.p[1], dz = p[2] - s.p[2];
+                const float d2 = dx * dx + dy * dy + dz * dz;
+                if (d2 <= best) { best = d2; twin = s.wid; }
+            }
+        }
+        const std::uint32_t handle = fw::engine::refr_get_handle(r);
+        if (twin == 0) {
+            ++alone;
+            if (s_alone_said.insert(fid).second) {
+                FW_LOG("[world-spawn] runtime frame fid=0x%08X handle=0x%08X at (%.1f, %.1f, %.1f) "
+                       "is nobody's (not bound, not announced, not kept for adoption) and stands "
+                       "alone: left (the game's own, or a stale copy whose twin is elsewhere)",
+                       fid, handle, p[0], p[1], p[2]);
+            }
+            continue;
+        }
+        const bool gone = fw::engine::destroy_world_refr(r);
+        if (gone) ++zombies;
+        FW_LOG("[world-spawn] zombie frame fid=0x%08X handle=0x%08X at (%.1f, %.1f, %.1f): a "
+               "runtime power armour frame that is nobody's, %.0f units from our wid %u: %s (%s)",
+               fid, handle, p[0], p[1], p[2], std::sqrt(best), twin,
+               gone ? "DESTROYED" : "destroy FAILED - see preceding SEH line", why);
+    }
+    if (zombies || alone) {
+        FW_LOG("[world-spawn] zombie sweep (%s): %zu reference(s) looked at, %zu runtime "
+               "frame(s), %zu zombie(s) destroyed, %zu standing alone left", why, n, frames,
+               zombies, alone);
+    }
 }
 
 void tick(std::uintptr_t module_base) {
@@ -1289,6 +1452,63 @@ void tick(std::uintptr_t module_base) {
     // and the fresh replica shared one tick and Havok kicked the replica
     // 27 units away.
     if (run_saved_copy_purge()) return;
+
+    // 2026-10-04 — the adopted copies disabled for their move are enabled
+    // again once the move is written: the engine rebuilds their 3D where
+    // the reference now is.
+    {
+        std::vector<Reenable> due;
+        {
+            std::lock_guard<std::mutex> lk(g_mx);
+            const DWORD n1 = GetTickCount();
+            for (auto it = g_reenable.begin(); it != g_reenable.end();) {
+                if (static_cast<std::int32_t>(n1 - it->due_ms) >= 0) {
+                    due.push_back(*it);
+                    it = g_reenable.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+        for (const Reenable& r : due) {
+            void* refr = resolve_object(r.handle, r.fid);
+            if (!refr) {
+                FW_WRN("[world-spawn] wid=%u: the adopted copy fid=0x%08X no longer resolves: "
+                       "not enabled again", r.wid, r.fid);
+                continue;
+            }
+            const bool was_disabled = seh_refr_disabled(refr);
+            fw::engine::enable_ref(refr);
+            FW_LOG("[world-spawn] wid=%u: the adopted copy fid=0x%08X enabled again at the "
+                   "server's position (it read as %s before; %s now)", r.wid, r.fid,
+                   was_disabled ? "disabled" : "enabled",
+                   seh_refr_disabled(refr) ? "still disabled" : "enabled");
+        }
+    }
+
+    // 2026-10-04 — the zombie frames: once the purge of a load is over, and
+    // at each change of the player's cell.
+    {
+        static std::uint32_t s_zombie_cell = 0;
+        static DWORD         s_zombie_ms   = 0;
+        const std::uint32_t here = player_cell_id(module_base);
+        const DWORD n2 = GetTickCount();
+        bool load_due = false;
+        {
+            std::lock_guard<std::mutex> lk(g_mx);
+            load_due = !g_purge_armed && g_zombie_sweep_due;
+        }
+        const bool cell_due = here != 0 && here != s_zombie_cell;
+        if ((load_due || cell_due) && n2 - s_zombie_ms >= 2000) {
+            {
+                std::lock_guard<std::mutex> lk(g_mx);
+                if (load_due) g_zombie_sweep_due = false;
+            }
+            s_zombie_cell = here;
+            s_zombie_ms   = n2;
+            run_zombie_frame_sweep(load_due ? "after the load" : "the player changed cell");
+        }
+    }
 
     // Build 70i - deferred PA diagnostic dump (fires ~2.5s after the enter,
     // when the race-swap model reload has landed).
@@ -1654,6 +1874,34 @@ void tick(std::uintptr_t module_base) {
                                 + fw::offsets::FORMID_OFF);
                             if (cid) b.cell_id = cid;
                         }
+                        // The 3D watch (the Bound's comment): said once.
+                        if (!(flags & kFlagDeleted) && !(flags & fw::offsets::FLAG_DISABLED)) {
+                            void* loaded = seh_deref(reinterpret_cast<std::uintptr_t>(refr)
+                                                     + fw::offsets::REFR_LOADED_DATA_OFF);
+                            if (loaded) {
+                                b.no3d_since_ms = 0;
+                                b.no3d_said = false;
+                            } else if (b.no3d_since_ms == 0) {
+                                b.no3d_since_ms = now_ms;
+                            } else if (!b.no3d_said && now_ms - b.no3d_since_ms >= 5000) {
+                                float op[3] = {0.0f, 0.0f, 0.0f}, pp[3] = {0.0f, 0.0f, 0.0f};
+                                void* lp = fw::engine::get_local_player();
+                                const bool have = seh_vec3_at(reinterpret_cast<std::uint8_t*>(refr)
+                                                              + fw::offsets::POS_OFF, op)
+                                    && lp && seh_vec3_at(static_cast<std::uint8_t*>(lp)
+                                                         + fw::offsets::POS_OFF, pp);
+                                const float dx = op[0] - pp[0], dy = op[1] - pp[1];
+                                const float d = have ? std::sqrt(dx * dx + dy * dy) : -1.0f;
+                                if (have && d < 6000.0f) {
+                                    b.no3d_said = true;
+                                    FW_LOG("[world-spawn] wid=%u (base 0x%08X, fid 0x%08X) has had NO 3D for "
+                                           "%llu ms at (%.0f, %.0f, %.0f), %.0f units from the player: the "
+                                           "engine never loaded its model", wid, b.entry.base_form_id, b.fid,
+                                           static_cast<unsigned long long>(now_ms - b.no3d_since_ms),
+                                           op[0], op[1], op[2], d);
+                                }
+                            }
+                        }
                         if (flags & kFlagDeleted)                 reason = 1;
                         else if (flags & fw::offsets::FLAG_DISABLED) reason = 2;
                         else if (b.ours) {
@@ -1698,6 +1946,13 @@ void tick(std::uintptr_t module_base) {
                                 }
                             }
                         }
+                    } else if (b.entry.flags & fw::net::kWorldSpawnFlagContainer) {
+                        // L5 realtime D1: the copy of a crate of the server's
+                        // the engine freed (its cell went out of memory) is
+                        // queued again at once (below: never reported), not
+                        // when the player steps into that very cell: the
+                        // next copy is placed on approach.
+                        reason = 3;
                     } else if (here != 0 && b.cell_id == here) {
                         reason = 3;   // vanished while its cell is loaded
                     } else if (!b.null_seen) {
@@ -1726,7 +1981,15 @@ void tick(std::uintptr_t module_base) {
                     // parent cell by definition.
                     const bool item = (b.entry.flags
                                        & fw::net::kWorldSpawnFlagSelfDescribed) != 0;
-                    if (reason == 1 && !(item && pc_alive)) {
+                    // L5 realtime D1: a container of the server's (the death
+                    // crate) is never reported dead by a client: only the
+                    // server ends it, when it is emptied; whatever happened
+                    // to this copy, it is placed again on approach.
+                    const bool server_container =
+                        (b.entry.flags & fw::net::kWorldSpawnFlagContainer) != 0;
+                    if (reason && server_container) {
+                        streaming_losses.push_back(wid);
+                    } else if (reason == 1 && !(item && pc_alive)) {
                         // Build 70b — DELETED by the engine is a LOCAL
                         // streaming event, not a world event. Measured live:
                         // the engine's PA janitor (caller +0x109DAA7)
@@ -1874,6 +2137,36 @@ void tick(std::uintptr_t module_base) {
             const float dz = c.pos[2] - pp[2];
             if (dx * dx + dy * dy + dz * dz
                     <= kPlaceRadius * kPlaceRadius) {
+                // L5 realtime D1 (2026-10-04, every object of the server's: the
+                // crates, the dropped items, the frames): an object goes only
+                // into its own cell, or into the player's worldspace when it
+                // stands outside. The range alone put an object of an interior
+                // into any other interior with the same local coordinates
+                // (most interiors are built around the origin) and into a
+                // child worldspace over its parent. An entry without a cell
+                // (never seen on the wire) keeps the range alone.
+                if (c.cell_id != 0) {
+                    const auto where = fw::engine::cell_place_for_player(c.cell_id, c.pos[0],
+                                                                         c.pos[1]);
+                    if (where != fw::engine::CellPlace::Here) {
+                        static DWORD s_cell_log = 0;
+                        const DWORD n1 = GetTickCount();
+                        if (n1 - s_cell_log >= 10000) {
+                            s_cell_log = n1;
+                            FW_LOG("[world-spawn] wid=%u (base=0x%08X) is in range but its cell "
+                                   "0x%08X is %s: placed when the player is there", c.wid,
+                                   c.base_form_id, c.cell_id,
+                                   where == fw::engine::CellPlace::Elsewhere
+                                       ? "not here (an interior the player is not in, or "
+                                         "another worldspace)"
+                                       : where == fw::engine::CellPlace::NotLoaded
+                                       ? "not loaded yet (an exterior the engine has not "
+                                         "loaded in this session)"
+                                       : "unreadable now");
+                        }
+                        continue;
+                    }
+                }
                 e = c; pick = i; have = true;
                 break;
             }
@@ -1950,17 +2243,37 @@ void tick(std::uintptr_t module_base) {
             const bool worn = seh_refr_disabled(old);
             float p[3] = {0.0f, 0.0f, 0.0f};
             bool moved = false;
+            bool reenable = false;
             if (!worn && seh_vec3_at(static_cast<const std::uint8_t*>(old) + fw::offsets::POS_OFF, p)) {
                 const float dx = p[0] - e.pos[0], dy = p[1] - e.pos[1], dz = p[2] - e.pos[2];
                 if (dx * dx + dy * dy + dz * dz > kMoveThresholdUnits * kMoveThresholdUnits) {
+                    // 2026-10-04 (live test): the position leaf and the re-file
+                    // move the reference, not a 3D already loaded: the adopted
+                    // copy of wid 87 was "moved onto the server's position" and
+                    // stayed in sight where the save had it. A copy with its 3D
+                    // loaded is disabled first and enabled again a few ticks
+                    // later, once the move is written: the engine rebuilds its
+                    // 3D where the reference now is (the console's disable and
+                    // enable). The sweep's grace after a binding covers the
+                    // moment it reads as disabled.
+                    const bool loaded = seh_loaded_3d(old);
+                    if (loaded) fw::engine::disable_ref(old, false);
                     moved = fw::engine::finalize_world_placement(
                         old, e.pos[0], e.pos[1], e.pos[2], e.rot[2], nullptr, true).moved;
+                    if (loaded) {
+                        std::lock_guard<std::mutex> lk(g_mx);
+                        g_reenable.push_back(Reenable{e.wid, ad.fid, ad.handle,
+                                                      GetTickCount() + kReenableDelayMs});
+                        reenable = true;
+                    }
                 }
             }
             FW_LOG("[world-spawn] wid=%u ADOPTED: the saved copy fid=0x%08X handle=0x%08X is "
-                   "bound instead of a new replica%s%s", e.wid, ad.fid, ad.handle,
+                   "bound instead of a new replica%s%s%s", e.wid, ad.fid, ad.handle,
                    worn ? " (worn by the local player already: left as it is)" : "",
-                   moved ? ", moved onto the server's position" : "");
+                   moved ? ", moved onto the server's position" : "",
+                   reenable ? " (its 3D was loaded: disabled for the move, enabled again on a "
+                              "later tick)" : "");
             if (!worn && e.base_form_id == kPaFrameBase) {
                 fw::hooks::ApplyingRemoteGuard guard;
                 align_frame_pieces(old, ad.fid, e.wid, e.pieces, e.piece_n);
@@ -2038,7 +2351,18 @@ void tick(std::uintptr_t module_base) {
     // to write — and the engine's own AddItem right after placement renders
     // on the standing frame and transfers on enter, both verified live.
     // ========================================================================
-    if (e.flags & fw::net::kWorldSpawnFlagSelfDescribed) {
+    if (e.flags & fw::net::kWorldSpawnFlagContainer) {
+        // L5 realtime D1: a container of the server's (the death crate). Its
+        // content is the container record keyed by the wid: aligned now that
+        // the copy exists (the base's own inventory goes, the record's
+        // instances are built). Without the record yet, the CONTAINER_STATE
+        // that brings it, or the activation, aligns it.
+        const bool queued =
+            fw::net::client().reconverge_container(fw::net::wid_container_key(e.wid));
+        FW_LOG("[world-spawn] wid=%u is a crate of the server's: content %s", e.wid,
+               queued ? "aligned to its record"
+                      : "not known yet (aligned when its record arrives, or at the activation)");
+    } else if (e.flags & fw::net::kWorldSpawnFlagSelfDescribed) {
         // L5 stage 2 — a dropped item: pieces[0] is the object itself.
         apply_self_descriptor(refr, new_fid, e);
     } else if (e.piece_n > 0) {
@@ -2257,6 +2581,44 @@ bool is_our_refr(void* refr, std::uint32_t fid) {
     return wid_for_refr(refr, fid) != 0;
 }
 
+std::uint32_t container_key_for_refr(void* refr, std::uint32_t fid) {
+    const std::uint32_t wid = wid_for_refr(refr, fid);
+    if (wid == 0) return 0;
+    std::lock_guard<std::mutex> lk(g_mx);
+    auto it = g_wid_to_bound.find(wid);
+    if (it == g_wid_to_bound.end()
+            || !(it->second.entry.flags & fw::net::kWorldSpawnFlagContainer)) {
+        return 0;
+    }
+    return fw::net::wid_container_key(wid);
+}
+
+bool saved_copy_awaiting_purge(std::uint32_t fid) {
+    if (fid == 0 || (fid >> 24) != 0xFF) return false;
+    std::lock_guard<std::mutex> lk(g_mx);
+    if (!g_purge_armed) return false;
+    for (const WorldObjectStamp& s : g_purge.stamps) {
+        if (s.fid == fid) return true;
+    }
+    return false;
+}
+
+void* refr_for_container_key(std::uint32_t key) {
+    if (!fw::net::is_wid_container_key(key)) return nullptr;
+    std::uint32_t handle = 0, fid = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_mx);
+        auto it = g_wid_to_bound.find(key & 0x00FFFFFFu);
+        if (it == g_wid_to_bound.end()
+                || !(it->second.entry.flags & fw::net::kWorldSpawnFlagContainer)) {
+            return nullptr;
+        }
+        handle = it->second.handle;
+        fid    = it->second.fid;
+    }
+    return resolve_object(handle, fid);
+}
+
 void note_self_object(std::uint32_t fid, std::uint32_t handle) {
     if (fid == 0) return;
     const DWORD now = GetTickCount();
@@ -2293,11 +2655,96 @@ void watch_local_drop(void* refr, std::uint32_t handle, std::int32_t count_hint)
     d.since_ms = d.stable_since_ms = GetTickCount();
     (void)seh_vec3_at(reinterpret_cast<std::uint8_t*>(refr) + fw::offsets::POS_OFF, d.last_pos);
     d.rested = false;
+    d.op_id = 0;
     std::lock_guard<std::mutex> lk(g_mx);
     for (const PendingDrop& p : g_pending_drops) {
         if (p.handle == handle) return;   // already watched
     }
-    if (g_pending_drops.size() < 64) g_pending_drops.push_back(d);
+    if (g_pending_drops.size() >= 64) {
+        FW_WRN("[world-spawn-tx] 64 drops already watched: fid=0x%08X (base=0x%08X) not "
+               "watched, not announced", id.form_id, id.base_id);
+        return;
+    }
+    // R1b: the op id is handed out now, while the item has just left the
+    // inventory, so no capture is taken over the drop before the server has
+    // it; the op itself goes at rest, with the line read then. 0 (the client
+    // is stopping) = the legacy announce, without the record side.
+    d.op_id = fw::net::client().begin_world_item_op();
+    g_pending_drops.push_back(d);
+}
+
+std::uint32_t note_local_pickup(void* refr) {
+    if (!refr) return 0;
+    const auto id = fw::read_ref_identity(refr);
+    if (id.form_id == 0) return 0;
+    const std::uint32_t wid = wid_for_refr(refr, id.form_id);
+    if (wid == 0) return 0;
+    std::lock_guard<std::mutex> lk(g_mx);
+    auto it = g_wid_to_bound.find(wid);
+    if (it != g_wid_to_bound.end()) it->second.reported = true;   // the op says it, not the sweep
+    return wid;
+}
+
+bool cancel_pending_drop(void* refr) {
+    if (!refr) return false;
+    const std::uint32_t handle = fw::engine::refr_get_handle(refr);
+    if (handle == 0 || handle == 0xFFFFFFFFu) return false;
+    std::uint32_t op_id = 0;
+    bool found = false;
+    {
+        std::lock_guard<std::mutex> lk(g_mx);
+        for (auto it = g_pending_drops.begin(); it != g_pending_drops.end(); ++it) {
+            if (it->handle == handle) {
+                op_id = it->op_id;
+                g_pending_drops.erase(it);
+                found = true;
+                break;
+            }
+        }
+    }
+    if (found && op_id) fw::net::client().cancel_world_item_op(op_id);
+    return found;
+}
+
+bool undo_local_drop(std::uint32_t fid, std::uint32_t handle, std::uint32_t base,
+                     std::uint64_t fp, const fw::net::InstanceDesc* desc, std::int32_t count) {
+    std::uint32_t h = handle;
+    void* refr = (handle != 0 && handle != 0xFFFFFFFFu) ? fw::engine::resolve_refhandle(&h)
+                                                        : nullptr;
+    if (refr) {
+        fw::engine::disable_ref(refr, false);
+        FW_LOG("[world-spawn-tx] drop refused: REFR fid=0x%08X disabled (TEMPORARY since its "
+               "announce, no save keeps it)", fid);
+    } else {
+        FW_WRN("[world-spawn-tx] drop refused: REFR fid=0x%08X handle=0x%08X not found, nothing "
+               "to disable", fid, handle);
+    }
+    void* player = fw::engine::get_local_player();
+    if (!player || base == 0 || count <= 0) return false;
+    fw::net::InstanceDesc plain{};
+    plain.tmpl = 0xFFFF;
+    const bool named = desc != nullptr && fp != fw::net::kFpUnknown;
+    const int added = fw::engine::instances::add_instance(player, base, named ? *desc : plain, count);
+    FW_LOG("[world-spawn-tx] drop refused: %d of %d x 0x%08X back on the player %s", added, count,
+           base, named ? "(the exact instance)" : "(a plain one: the instance was unread)");
+    return added > 0;
+}
+
+bool undo_local_pickup(std::uint32_t base, std::uint64_t fp, std::int32_t count) {
+    void* player = fw::engine::get_local_player();
+    if (!player || base == 0 || count <= 0) return false;
+    int removed = 0;
+    if (fp != fw::net::kFpUnknown) {
+        removed = fw::engine::instances::remove_instance(player, base, fp, count, nullptr);
+    }
+    if (removed < count) {
+        void* form = fw::engine::lookup_by_form_id(base);
+        if (form && fw::engine::remove_items_destroy(player, form, count - removed)) removed = count;
+    }
+    FW_LOG("[world-spawn] pickup refused: %d of %d x 0x%08X fp=%016llX destroyed on the player "
+           "(someone else has the object)", removed, count, base,
+           static_cast<unsigned long long>(fp));
+    return removed > 0;
 }
 
 }  // namespace fw::native::world_spawn

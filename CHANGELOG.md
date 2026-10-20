@@ -5,6 +5,219 @@ older lives here. Format: newest first, milestones / patches inline.
 
 ---
 
+## Persistence, second half: the realtime record, death crates and markers (2026-10-20) — v0.10.5
+
+Stage 4 of the L5 plan, reshaped on 2026-10-03 into realtime persistence:
+the character no longer lives only in a checkpoint. The server keeps a
+record of the player's inventory, by instance, and of the character's
+numbers, both kept current from the client's captures, and gives them back
+after every load: a boot, a death, a kill of the process. A death leaves the
+whole inventory in a crate at the death point, marked on the compass and the
+Pip-Boy map, and the player comes back on foot on the respawn point through
+one load. The death crates, the worn power armour and the respawn were
+hardened through more than twenty live deaths; a crash campaign of twenty
+automatic and five played cycles found and closed what a kill leaves
+behind. On the side, leaving an interior, which took one to four minutes,
+now takes under seven seconds: a root cause in the engine, not in the mod.
+
+Wire proto v43 (v34: a container line is an instance; v35 INV_STATE; v36
+RESTORE_REQUEST / PLAYER_INV / RESTORE_DONE; v37 STATS_STATE / PLAYER_STATS;
+v38 the death crate flag; v39 WORLD_ITEM_OP / WORLD_ITEM_ACK; v40
+DEATH_CRATES; v41 death spots; v42 LOCATION_DISCOVERED; v43 the death
+release in one NPC_UNLOAD). Server snapshot v15 (v11: instance lines and
+their descriptors; v12: the players' inventory records; v13: their numbers;
+v14: death crate owner and ordinal, the per-peer death counts; v15: the ops a
+partial container record saw, the world a checkpoint carries, the save each
+peer's world runs on). 843 pytest (612 in v0.10.0), each new test failing on
+the code before it. DLL 8DBD9A279CAADCD4 built and deployed on both clients.
+
+### Stage 4a and 4b: an item is an instance
+
+- **Measured first** — stage 4a (2026-10-02) was an observe-only probe of the
+  engine's own unique ids, the stacks around every menu transfer, remote
+  apply, rollback and realignment, and the capture's records
+  (`persist/instance_probe.cpp`, config `instance_probe`, default off).
+- **A line is (item, instance fingerprint)** — a weapon or an armour piece
+  travels with its descriptor (template, mods, condition), hashed into a
+  64-bit fingerprint; plain items (ammo, aid, junk) share one line per base,
+  and a stack the walker cannot read is an unknown line that answers a take
+  of any instance of its base. INSTANCE_DEFS carries the descriptors both
+  ways; the server keeps the ones a line still names and refuses a
+  descriptor that does not make its fingerprint. Since 4b a modded weapon
+  crosses a container intact: the receiving engine builds the instance with
+  its own CreateInstanceData (`sub_14027EB90`) and the OMOD attacher.
+
+### The realtime record (R1, R2, R4)
+
+- **The player's inventory is a server record** — the client sends its whole
+  inventory by instance at every change (INV_STATE, 250 ms behind the
+  engine's own tap), only complete and only with no op in flight; the
+  server's record is the last capture plus the container ops accepted after
+  its watermark, in the same journal record as the container. Pip-Boy drops
+  that came to rest and pickups from the world are ops of the record too
+  (R1b, WORLD_ITEM_OP), numbered in the container ops' sequence; a refused
+  drop disables the reference and gives the item back, a refused pickup
+  destroys the item someone else took first.
+- **The record comes back after every load** — the boot and every death ask
+  for it (RESTORE_REQUEST); the server answers once the last capture and
+  stats it names are in, or after a wait, marked behind; the client aligns
+  behind a curtain, by (base, fingerprint), building what is missing and
+  removing the surplus, then dresses the player as the record says (R2b,
+  through the engine's EquipObject / UnequipObject with the stack index the
+  decomp names). The server refuses a new process's captures until its
+  RESTORE_DONE. Verified: a take after the last checkpoint survives a kill of
+  the process; a deposit after it is not duplicated.
+- **The character's numbers** — XP, level, perk points, perks with their
+  ranks, SPECIAL, health, action points and rads are captured when they
+  change (STATS_STATE); XP, level, perks and points are put back after a
+  load, and the SPECIAL is checked 2.5 s later so that only what the
+  re-added perks did not raise is raised (the first version counted a
+  SPECIAL-rank perk twice). Health, action points and rads are known to the
+  server and not restored, by decision: the engine and the checkpoint decide
+  them, the quit-to-heal is accepted. Limb conditions and chems are mapped,
+  not built.
+
+### The death (D1, D2)
+
+- **The whole inventory goes into a crate** — at the death point, keyed by
+  the server's world id; anyone can loot it, it goes for everyone once
+  emptied; the player respawns with the Pip-Boy only, on foot, on the
+  respawn point, through the moved checkpoint of v0.10.0: 6.8 s from the
+  death to the respawn in the last test. The crate is placed only in its own
+  cell or the player's worldspace, a saved copy of a crate awaiting the load
+  purge cannot be opened, an emptied crate is swept. `server.ini` names the
+  crate's base in a new `[death]` section (default: an empty footlocker).
+- **Death in power armour** — the complete frame, with its mounted pieces,
+  stands where the player fell, next to the crate; the player always comes
+  back on foot (the respawn checkpoint is the newest one on foot, the
+  genesis moved onto the point as a stand-in when none is). The seven
+  ArmorPoweredFrame body armours the engine equips inside a frame are never
+  inventory: capture, crate, record and restore skip them. This closed a week
+  of a Pip-Boy that opened on a blurred screen without a wrist device: one
+  of them, looted back from a crate, had stayed equipped on foot over the
+  Pip-Boy slot.
+- **The frame across a quit and a boot** — a checkpoint records the frame
+  worn at its write; the enter demands a checkpoint like the exit; a
+  departure keeps worn the frame the newest checkpoint has the player inside,
+  so they come back inside it, and the boot takes it back by that id. A kill
+  inside a frame no longer doubles it. Also: a zombie frame overlapping an
+  adopted copy is swept, a loaded copy far from its server spot is moved
+  with its 3D disabled, and the power armour HUD is put in the right mode
+  after a respawn or a restore through the engine's own UI message queue.
+- **Markers on the compass and the map** — native MapMarker references,
+  pushed into the player's own marker array under the engine's lock and
+  published with the engine's rebuild event: the newest crate is "LATEST
+  DEATH" on compass and map, the older ones "CORPSE #n" on the map only, a
+  death without loot leaves a 15-minute spot, and every other player shows
+  on the map with their name on hover. Crate markers stay until the crate is
+  emptied, survive the Pip-Boy teardown around a load and the engine's own
+  refill of the array, and are remade when a load disables their reference
+  or purges it. The server tells each owner their crates (DEATH_CRATES) with
+  a durable per-peer death ordinal, so a name changes once at most. Four
+  rounds of experiments found the recipe; the compass range is the engine's
+  114 m.
+- **Discovered places stay vanilla** (R5) — a discovery asks the server for
+  an on-demand checkpoint, one per 30 s, so a crash keeps it.
+
+### The crash campaign (R6)
+
+- **`tools/crash_campaign.py`** — launches the client, lets it live a random
+  while, kills Fallout4.exe, waits for the relaunch and compares: the
+  restore's alignment, the character's numbers against the server's last
+  record, the position, the world, the server's log. Twenty automatic cycles
+  clean (back in 14-18 s, position restored to the unit); five played
+  cycles, four green, one defect found (below, open by choice).
+- **The exit checkpoint crashed the engine's save** — an access violation
+  inside the save on one of the marker references (temporary, in an
+  unloaded cell, a reused form id); the mod's handler reported a file that
+  never appeared. Every named save now runs with the markers taken out of
+  the world and remade after it, and markers are destroyed and remade on
+  every player cell change. Proven with a crate marker a few cells away: the
+  periodic, the F10 and the menu-Quit saves all written.
+- **A death in an interior fell back to a four-minute-old checkpoint** —
+  the death release sent one NPC_UNLOAD per owned NPC, 637 of them in an
+  interior, the outbound queue filled and dropped the reliable PLAYER_LIFE
+  queued behind them. Now the control messages of the character's life go
+  past the queue's ceiling, and the death release is one message: the
+  server releases everything the sender owns. In the retest the server
+  answered the death in 154 ms.
+- **A toolbox taken whole came back full after the reload** — every seed
+  scan inside a Take All was refused because the engine holds the
+  inventory's write lock inside the take, the takes were accepted on a
+  partial record, the reload restored the save's content and the next scan
+  canonised it. Now a partial record remembers its ops, and a scan from a
+  peer whose engine no longer holds them (newer than the save its world runs
+  on, older than its load) has them applied over it again; the server hears
+  every load from the restore requests, the boot results and the death
+  answers. On the client the activation puts an unknown container on a
+  watch and the tick seeds it as soon as its menu is open, before the first
+  take; a refused scan is retried outside the lock within three seconds.
+- **Bootstraps only for online peers**, with the joiner's recipe carried by
+  PEER_JOIN: the face-cache scan logged 1,700 lines a second for phantom
+  peers replayed by the bootstrap and held a loading screen for five
+  minutes.
+- **Housekeeping** — `forget_peer`, a journaled op (and `tools/peer_forget.py`)
+  that forgets one identity on the server while the world keeps what it
+  placed; `tools/checkpoint_rebook.py`, which books a clean save moved onto
+  the point as a player's newest checkpoint.
+
+### Interior loads: the engine waits for the monitor
+
+- **One to four minutes to leave an interior, in vanilla too** — measured
+  80-112 s vanilla and up to 228 s with the mod, entries 3-5 s. An outside
+  sampler (`tools/fo4_thread_sampler.py`: suspends the threads, reads their
+  stacks, names them from the decomp) and three instrumented runs found the
+  mechanism: every precombined mesh of the destination cell is built on the
+  renderer's resource-creation thread, which spins while a Present is in
+  flight; the loading screen presents with a sync interval of 3 (the engine's
+  choice at 144 Hz, also the 48 fps cap in game), so each creation waits a
+  vblank, and about 850 meshes times several creations is minutes. That is
+  why the "unlock the FPS during loads" mods help.
+- **The fix is in the Present hook** — while a loader flush is active,
+  Present runs with sync interval 0 (config `loading_vsync_off`, default
+  on): exits now take under seven seconds, entries about five. Two other
+  attempts (running the loader's owner-only steps on another thread, giving
+  the owner thread priority in the post-process) made it worse and are off
+  by default. The loader's counters stay in the log (`[loader] flush`).
+
+### Open
+
+- A kill of the process inside an interior, with a checkpoint written inside
+  it before, applies the server's last position blindly in whatever cell is
+  loaded: the player can come back on another floor. Left open by decision,
+  a clean restart fixes it. A clean quit, Alt+F4 and the task manager's "End
+  task" all write an exit checkpoint and are not this case.
+- The crash campaign never killed the process on purpose inside a dangerous
+  window (a checkpoint being written, a transfer half done, the death
+  reload); the tool for targeted kills does not exist.
+- With the quick-loot HUD the first take precedes the seed by one frame, so
+  the server accepts it on trust and never sees the pre-take content of a
+  container nobody scanned; a container taken whole by one peer and scanned
+  first by another, whose engine still has the save's content, is canonised
+  by that scan.
+- An exit from power armour followed by a kill within a second puts the
+  player back inside the frame.
+- A piece swapped from the Pip-Boy while inside a frame ends in the crate,
+  while the frame's ledger keeps the mounted one.
+- Two clients picking the same vanilla world item are not arbitrated.
+- Inside an interior the ownership sphere still sees the NPCs of other cells
+  through their local coordinates (180 owned in a cellar).
+- When the server cannot move a checkpoint in time, a death falls back to
+  the engine's reload and a teleport to the point; from a checkpoint inside
+  an interior that teleport is skipped and the player stays inside.
+- A deposit into an actor that the server refuses gives back the first stack
+  of that item, not necessarily the one deposited.
+- A ghost built while its viewer is inside an interior shows no body; an
+  appearance that reaches a ghost already alive ties its hair to the local
+  player's head; a corpse's final position differs for a peer who arrives
+  after the fight.
+- The character creation opens while the player is still landing at the
+  boot and freezes the falling pose.
+- The exit after a long load crashes in the engine's allocator, after the
+  exit checkpoint is written and recorded.
+
+---
+
 ## Persistence, first half: checkpoints, custody and the respawn (2026-10-02) — v0.10.0
 
 Stages 0 to 3 of the L5 plan, every one verified live: no save or load the

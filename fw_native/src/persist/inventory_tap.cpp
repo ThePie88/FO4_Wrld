@@ -280,4 +280,8 @@ const char* cause_name(std::uint32_t cause) {
     return nullptr;
 }
 
+std::uint64_t events_seen() noexcept {
+    return g_adds.load(std::memory_order_relaxed) + g_removes.load(std::memory_order_relaxed);
+}
+
 } // namespace fw::persist::tap

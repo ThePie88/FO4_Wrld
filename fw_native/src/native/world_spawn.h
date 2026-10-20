@@ -95,6 +95,26 @@ std::uint32_t wid_for_fid(std::uint32_t fid);
 bool is_our_refr(void* refr, std::uint32_t fid);
 std::uint32_t wid_for_refr(void* refr, std::uint32_t fid);
 
+// L5 realtime D1 (2026-10-03) — the containers of the server's (the death
+// crate, kWorldSpawnFlagContainer). container_key_for_refr: the container
+// key (0xFF000000 | wid) of `refr` when it is one of them, 0 otherwise.
+// refr_for_container_key: the local REFR of such a key, confirmed through
+// its handle; nullptr when it is not placed in this world. Any thread (the
+// handle table is interlocked).
+std::uint32_t container_key_for_refr(void* refr, std::uint32_t fid);
+void* refr_for_container_key(std::uint32_t key);
+
+// L5 realtime D1 (2026-10-03) — `fid` is a saved copy of one of our objects
+// listed for the purge that has not run yet: from a load until the world is
+// back and settled, some 20 s after the reload of a death. Such a copy is
+// nobody's object: a crate of an earlier death saved in the checkpoint the
+// death reloads would hand out, opened there, what the server's crate still
+// holds; a dropped item picked up there is picked up twice (the server's
+// copy comes back after the purge); a frame entered there is destroyed by
+// the purge around the player. The activation hook (door_hook) lets nothing
+// happen to such a copy. Any thread.
+bool saved_copy_awaiting_purge(std::uint32_t fid);
+
 // The sender (hooks/world_spawn_hook.cpp) calls this right before it
 // announces one of OUR objects, so the echo can bind the wid to the handle
 // and not only to the fid. Entries expire on their own.
@@ -116,6 +136,27 @@ void on_local_pickup(void* refr);
 // up again before it rests = nothing sent. MAIN THREAD (the drop runs on
 // it), handle required.
 void watch_local_drop(void* refr, std::uint32_t handle, std::int32_t count_hint);
+// L5 realtime R1b (2026-10-05).
+//
+// note_local_pickup: the pickup hook has sent the pickup of `refr` as an op
+// of the record; if it is one of our bound objects, the sweep is told not to
+// report its death (the op says it). Returns the wid, 0 for anything else.
+// Any thread.
+std::uint32_t note_local_pickup(void* refr);
+// cancel_pending_drop: `refr` is being picked up; if it is a drop of ours
+// still watched (not yet announced), the watch and its op are cancelled and
+// true comes back: the item simply returns, nothing is sent, the record
+// never saw it. Any thread.
+bool cancel_pending_drop(void* refr);
+// The undo of a refused world item op (main thread, the dispatch drain under
+// ApplyingRemoteGuard). A drop: the REFR (`handle`, confirmed through the
+// handle table; TEMPORARY since its announce) is disabled and the item comes
+// back on the player, the exact instance when `desc` names it, a plain one
+// otherwise. A pickup: the instance is destroyed on the player (someone else
+// took the object first). True when the player's side moved.
+bool undo_local_drop(std::uint32_t fid, std::uint32_t handle, std::uint32_t base,
+                     std::uint64_t fp, const fw::net::InstanceDesc* desc, std::int32_t count);
+bool undo_local_pickup(std::uint32_t base, std::uint64_t fp, std::int32_t count);
 
 // v23 — network thread: a WORLD_PA_PIECES_BCAST arrived. Queued; the main
 // tick applies it by destroy-and-replace (the streaming-requeue idiom).
