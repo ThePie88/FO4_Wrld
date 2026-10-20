@@ -1,3 +1,4 @@
+#include "../game_build.h"
 // ============================================================================
 // Build 55e — Actor::IsHostileTo (vt[197]) guard for ghost.
 // 2026-05-23.
@@ -59,7 +60,7 @@ namespace {
 // Actor vt[197] = IsHostileTo dispatcher. RVA 0xCA85C0 verified.
 using IsHostileToVt197Fn = std::int64_t (__fastcall *)(void* a1, void* a2,
                                                        std::int64_t a3);
-constexpr std::uintptr_t VT197_IS_HOSTILE_TO_RVA = 0x00CA85C0;
+const std::uintptr_t VT197_IS_HOSTILE_TO_RVA = FW_RVA(0x00CA85C0, 0x00CA8AE0);
 IsHostileToVt197Fn g_orig_vt197 = nullptr;
 
 std::atomic<std::uint64_t> g_force_count{0};

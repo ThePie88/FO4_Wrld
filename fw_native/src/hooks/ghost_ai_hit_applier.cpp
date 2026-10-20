@@ -1,3 +1,4 @@
+#include "../game_build.h"
 // ============================================================================
 // NOT INSTALLED — 2026-05-17. install_all.cpp:246 has only `(void)install_ghost_ai_hit_applier;`
 // for ODR; actual install call is commented out.
@@ -82,7 +83,7 @@ static float safe_read_float_at(const void* base, std::size_t off) noexcept {
 // Actor = entry-0x20. Compare to the player singleton. This is ground-truth and
 // does NOT depend on the player's combat-target field (which is empty for the
 // player, since that mirror is populated only for AI actors picking targets).
-constexpr std::uintptr_t HANDLE_TABLE_PTR_RVA       = 0x30DA390;
+const std::uintptr_t HANDLE_TABLE_PTR_RVA       = FW_RVA(0x30DA390, 0x030E5490);
 constexpr std::size_t    HITDATA_AGGRESSOR_HANDLE_OFF = 0x40;
 
 static bool hit_attacker_is_local_player(const void* aux) noexcept {

@@ -1,5 +1,7 @@
 #include "version.h"
 
+#include "game_build.h"
+
 #include <windows.h>
 #include <string>
 #include <vector>
@@ -55,7 +57,11 @@ Result check(std::string* actual_out) {
     const std::string actual = buf;
     if (actual_out) *actual_out = actual;
 
-    return (actual == EXPECTED) ? Result::Match : Result::Mismatch;
+    // VERSIONINFO must name the same build the PE fingerprint identified, so a
+    // re-signed or patched exe with a known version string still stays inert.
+    const auto id = fw::build::current();
+    return (fw::build::supported(id) && actual == fw::build::name(id))
+               ? Result::Match : Result::Mismatch;
 }
 
 } // namespace fw::version

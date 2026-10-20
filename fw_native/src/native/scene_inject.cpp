@@ -1,3 +1,4 @@
+#include "../game_build.h"
 // Strada B — M1 scene graph injection implementation.
 //
 // Flow (dossier §11):
@@ -886,13 +887,13 @@ bool resolve_once() {
     // inject time because it may not be initialized at DLL load.
     g_r.effect_tex_handle     = *reinterpret_cast<void**>(base + BSEFFECT_SHADER_TEX_HANDLE_RVA);
     g_r.effect_tex_int_slot   = reinterpret_cast<std::uint32_t*>(base + BSEFFECT_SHADER_TEX_INT_RVA);
-    g_r.nialpha_vftable       = reinterpret_cast<void*>(base + 0x02474400);  // NiAlphaProperty vtable RVA
+    g_r.nialpha_vftable       = reinterpret_cast<void*>(base + FW_RVA(0x02474400, 0x0247C460));  // NiAlphaProperty vtable RVA
     g_r.bslsp_new             = reinterpret_cast<BSLSPNewFn>    (base + BSLSP_NEW_RVA);
     g_r.texset_ctor           = reinterpret_cast<TexSetCtorFn>  (base + BSSHADERTEXSET_CTOR_RVA);
     g_r.texset_set_path       = reinterpret_cast<TexSetSetPathFn>(base + BSSHADERTEXSET_SETPATH_RVA);
     g_r.bind_mat_texset       = reinterpret_cast<BindMatTexSetFn>(base + BSLSP_BIND_MATERIAL_TEXSET_RVA);
     g_r.material_ctor         = reinterpret_cast<MaterialCtorFn> (base + BSLIGHTINGMAT_CTOR_RVA);
-    g_r.tex_load              = reinterpret_cast<TexLoadFn>      (base + 0x0217A910);  // sub_14217A910
+    g_r.tex_load              = reinterpret_cast<TexLoadFn>      (base + FW_RVA(0x0217A910, 0x02182420));  // sub_14217A910
 
     // M5: public NIF loader API. 3-arg form (path, out-slot, flags).
     // sub_14026E1C0 (legacy wrapper) kept as constant for documentation
@@ -1746,9 +1747,9 @@ constexpr float kCubeColors[8 * 4] = {
 // SEH-caged: if any read hits garbage, we log "<?>" and move on rather
 // than crashing the dump.
 
-static constexpr std::uintptr_t kBSTriShapeVt       = 0x0267E948;
-static constexpr std::uintptr_t kBSDynamicTriVtA    = 0x0267F758;
-static constexpr std::uintptr_t kBSDynamicTriVtB    = 0x0267F948;
+static const std::uintptr_t kBSTriShapeVt       = FW_RVA(0x0267E948, 0x02686A78);
+static const std::uintptr_t kBSDynamicTriVtA    = FW_RVA(0x0267F758, 0x02687888);
+static const std::uintptr_t kBSDynamicTriVtB    = FW_RVA(0x0267F948, 0x02687A78);
 // BSSubIndexTriShape — FO4 character bodies use THIS (multi-material
 // single-mesh geometry). First live diag v3.2 saw vt_rva=0x2697D40 on
 // the lone non-bone child of the BSFadeNode; string "BSSubIndexTriShape"
@@ -1756,7 +1757,7 @@ static constexpr std::uintptr_t kBSDynamicTriVtB    = 0x0267F948;
 // the skeleton bones, and the 59th-slot BSSIT is the actual body mesh.
 // BSSIT inherits from BSGeometry so shader/alpha offsets (+0x130/+0x138)
 // match what dump_trishape_materials already reads.
-static constexpr std::uintptr_t kBSSubIndexTriVt    = 0x02697D40;
+static const std::uintptr_t kBSSubIndexTriVt    = FW_RVA(0x02697D40, 0x0269FE60);
 
 static bool is_geometry_vtable_rva(std::uintptr_t vt_rva) {
     return vt_rva == kBSTriShapeVt
@@ -2327,7 +2328,7 @@ bool try_inject_body_nif(float x, float y, float z, void** out_body,
 
         // Log BSModelProcessor state so we can diagnose if POSTPROC
         // is a no-op (null processor) vs actually running.
-        void** bsmp_slot = reinterpret_cast<void**>(g_r.base + 0x030E0290);
+        void** bsmp_slot = reinterpret_cast<void**>(g_r.base + FW_RVA(0x030E0290, 0x030EB390));
         void* bsmp = *bsmp_slot;
         FW_LOG("[native] inject_body_nif: BSModelProcessor slot @%p = %p "
                "(POSTPROC flag 0x08 is %s)",
@@ -4364,10 +4365,10 @@ bool nistream_serialize_subtree(void* root, SerializedNif* out) {
     using saveFn = bool (__fastcall*)(void*, void**, std::size_t*);
     using dtorFn = void (__fastcall*)(void*);
 
-    constexpr std::uintptr_t NISTREAM_CTOR_RVA = 0x016DCB50;
-    constexpr std::uintptr_t NISTREAM_ADD_RVA  = 0x016DCEB0;
-    constexpr std::uintptr_t NISTREAM_SAVE_RVA = 0x016DD3B0;
-    constexpr std::uintptr_t NISTREAM_DTOR_RVA = 0x016DCD80;
+    const std::uintptr_t NISTREAM_CTOR_RVA = FW_RVA(0x016DCB50, 0x016DD070);
+    const std::uintptr_t NISTREAM_ADD_RVA  = FW_RVA(0x016DCEB0, 0x016DD3D0);
+    const std::uintptr_t NISTREAM_SAVE_RVA = FW_RVA(0x016DD3B0, 0x016DD8D0);
+    const std::uintptr_t NISTREAM_DTOR_RVA = FW_RVA(0x016DCD80, 0x016DD2A0);
     // Bump from dossier's 1644 to 4096 for safety margin (alignment +
     // any version drift). NiStream can't realistically be larger.
     constexpr std::size_t    NISTREAM_SIZE     = 4096;
@@ -4399,7 +4400,7 @@ bool nistream_serialize_subtree(void* root, SerializedNif* out) {
         // 1A FC 00 at 0x1416BAA30 → vtable RVA 0x02C7C4B8). Without
         // the swap, base NiStream's Load returns 0 (live test confirmed:
         // sender saves OK 185025 B, receiver Load returned ok=0).
-        constexpr std::uintptr_t DEEPCOPY_VTABLE_RVA = 0x0267C4B8;
+        const std::uintptr_t DEEPCOPY_VTABLE_RVA = FW_RVA(0x0267C4B8, 0x026845E8);
         *reinterpret_cast<void**>(storage) =
             reinterpret_cast<void*>(g_r.base + DEEPCOPY_VTABLE_RVA);
         ctor_ok = true;
@@ -4453,9 +4454,9 @@ void* nistream_deserialize_subtree(const void* buf, std::size_t size) {
     using loadFn = bool (__fastcall*)(void*, const void*, std::size_t);
     using dtorFn = void (__fastcall*)(void*);
 
-    constexpr std::uintptr_t NISTREAM_CTOR_RVA = 0x016DCB50;
-    constexpr std::uintptr_t NISTREAM_LOAD_RVA = 0x016DD370;
-    constexpr std::uintptr_t NISTREAM_DTOR_RVA = 0x016DCD80;
+    const std::uintptr_t NISTREAM_CTOR_RVA = FW_RVA(0x016DCB50, 0x016DD070);
+    const std::uintptr_t NISTREAM_LOAD_RVA = FW_RVA(0x016DD370, 0x016DD890);
+    const std::uintptr_t NISTREAM_DTOR_RVA = FW_RVA(0x016DCD80, 0x016DD2A0);
     constexpr std::size_t    NISTREAM_SIZE     = 4096;
     constexpr std::size_t    ROOTS_DATA_OFF    = 864;
     constexpr std::size_t    ROOTS_COUNT_OFF   = 876;
@@ -4475,7 +4476,7 @@ void* nistream_deserialize_subtree(const void* buf, std::size_t size) {
         NiStream_ctor(storage);
         // PLAN B v3 — swap vtable to DeepCopyStream (see serialize side
         // for rationale).
-        constexpr std::uintptr_t DEEPCOPY_VTABLE_RVA = 0x0267C4B8;
+        const std::uintptr_t DEEPCOPY_VTABLE_RVA = FW_RVA(0x0267C4B8, 0x026845E8);
         *reinterpret_cast<void**>(storage) =
             reinterpret_cast<void*>(g_r.base + DEEPCOPY_VTABLE_RVA);
         ctor_ok = true;
@@ -4525,7 +4526,7 @@ void* nistream_deserialize_subtree(const void* buf, std::size_t size) {
 void nistream_free(void* buf) {
     if (!buf || g_r.base == 0) return;
     using freeFn = void (__fastcall*)(void*);
-    auto bsScrapFree = reinterpret_cast<freeFn>(g_r.base + 0x01677D20);
+    auto bsScrapFree = reinterpret_cast<freeFn>(g_r.base + FW_RVA(0x01677D20, 0x01678140));
     __try {
         bsScrapFree(buf);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -4623,7 +4624,7 @@ void* clone_nif_subtree(void* source) {
     // INSIDE the NiObject (at offset 0xD0, which is just data fields),
     // interpreting as a function pointer → wild call → AV.
     using DeepCloneFn = void* (__fastcall*)(void* self);
-    constexpr std::uintptr_t SUB_DEEPCLONE_RVA = 0x016BA800ULL;
+    const std::uintptr_t SUB_DEEPCLONE_RVA = FW_RVA(0x016BA800ULL, 0x000016BAD20ULL);
 
     DeepCloneFn fn =
         reinterpret_cast<DeepCloneFn>(clone_base + SUB_DEEPCLONE_RVA);
@@ -4787,12 +4788,23 @@ void* clone_nif_subtree_recursive(void* source, int depth, int max_depth) {
     std::size_t alloc_size = 0;
     bool is_node = false;
     bool is_geom = false;
-    switch (vt_rva) {
-        case BSFADENODE_VTABLE_RVA:
+    // The vtable RVAs are per game build (FW_RVA), so the switch runs on a
+    // class tag rather than on the RVA itself.
+    enum class CloneVt { Other, FadeNode, LeafAnimNode, Node, SubIndexTri, DynamicTri };
+    const CloneVt vt_kind =
+        vt_rva == BSFADENODE_VTABLE_RVA             ? CloneVt::FadeNode :
+        vt_rva == BSLEAFANIMNODE_VTABLE_RVA         ? CloneVt::LeafAnimNode :
+        vt_rva == NINODE_VTABLE_RVA                 ? CloneVt::Node :
+        vt_rva == BSSUBINDEXTRISHAPE_VTABLE_RVA     ? CloneVt::SubIndexTri :
+        (vt_rva == BSDYNAMICTRISHAPE_VTABLE_RVA ||
+         vt_rva == BSDYNAMICTRISHAPE_VTABLE_ALT_RVA) ? CloneVt::DynamicTri :
+                                                      CloneVt::Other;
+    switch (vt_kind) {
+        case CloneVt::FadeNode:
             alloc_size = BSFADENODE_SIZEOF; is_node = true; break;
-        case BSLEAFANIMNODE_VTABLE_RVA:
+        case CloneVt::LeafAnimNode:
             alloc_size = BSFADENODE_SIZEOF; is_node = true; break;
-        case NINODE_VTABLE_RVA:
+        case CloneVt::Node:
             alloc_size = NINODE_SIZEOF;     is_node = true; break;
         // BSTriShape NOT cloned — its +0x148 NiSkinPartition / D3D
         // resource ref is set up by engine's clone factory
@@ -4807,7 +4819,7 @@ void* clone_nif_subtree_recursive(void* source, int depth, int max_depth) {
         // mods / hairstyles / atomic armor pieces.
         // case BSTRISHAPE_VTABLE_RVA:
         //     alloc_size = BSTRISHAPE_SIZEOF; is_geom = true; break;
-        case BSSUBINDEXTRISHAPE_VTABLE_RVA:
+        case CloneVt::SubIndexTri:
             alloc_size = BSSUBINDEXTRISHAPE_SIZEOF;
             is_geom = true; break;
         // 2026-08-08 — BSDynamicTriShape IS now cloned, for the FACE only.
@@ -4831,8 +4843,7 @@ void* clone_nif_subtree_recursive(void* source, int depth, int max_depth) {
         // ever deforms in step with the LOCAL player's expression instead of
         // its own, this share is the cause and the buffer must be duplicated
         // (count at +0x178, stride from the BSVertexDesc at +0x150).
-        case BSDYNAMICTRISHAPE_VTABLE_RVA:
-        case BSDYNAMICTRISHAPE_VTABLE_ALT_RVA:
+        case CloneVt::DynamicTri:
             alloc_size = BSDYNAMICTRISHAPE_SIZEOF;
             is_geom = true; break;
         default:
@@ -12625,7 +12636,7 @@ int seh_call_omod_attach(void* omod_form, void* base_node,
                           const char* placeholder, int flags) {
     if (g_r.base == 0 || !omod_form || !base_node) return -1;
     using OmodAttachFn = int (__fastcall*)(void*, void*, const char*, int);
-    constexpr std::uintptr_t OMOD_ATTACH_RVA = 0x00434DA0;
+    const std::uintptr_t OMOD_ATTACH_RVA = FW_RVA(0x00434DA0, 0x004350D0);
     auto fn = reinterpret_cast<OmodAttachFn>(g_r.base + OMOD_ATTACH_RVA);
     __try {
         return fn(omod_form, base_node, placeholder, flags);
@@ -13015,7 +13026,7 @@ bool local_player_in_world() {
     if (!game) return false;
     const auto base = reinterpret_cast<std::uintptr_t>(game);
     __try {
-        void** player_slot = reinterpret_cast<void**>(base + 0x032D2260);
+        void** player_slot = reinterpret_cast<void**>(base + FW_RVA(0x032D2260, 0x032DD370));
         void* player = *player_slot;
         if (!player) return false;
 
@@ -13380,8 +13391,8 @@ static void scan_actor_for_3d_pointers(void* player) {
         const HMODULE game = GetModuleHandleW(L"Fallout4.exe");
         if (!game) return;
         const auto base = reinterpret_cast<std::uintptr_t>(game);
-        const std::uintptr_t BSFADENODE_VT = base + 0x28FA3E8;
-        const std::uintptr_t NINODE_VT     = base + 0x267C888;
+        const std::uintptr_t BSFADENODE_VT = base + FW_RVA(0x28FA3E8, 0x02903BA8);
+        const std::uintptr_t NINODE_VT     = base + FW_RVA(0x267C888, 0x026849B8);
 
         char* pb = reinterpret_cast<char*>(player);
         FW_LOG("[scan_actor] looking for BSFadeNode/NiNode ptrs in Actor "
@@ -16184,7 +16195,7 @@ void on_inject_message(const char* peer_id) {
                body_x, body_y, body_z);
     } else if (game) {
         const auto base = reinterpret_cast<std::uintptr_t>(game);
-        void** player_slot = reinterpret_cast<void**>(base + 0x032D2260);
+        void** player_slot = reinterpret_cast<void**>(base + FW_RVA(0x032D2260, 0x032DD370));
         void* player = *player_slot;
         if (player) {
             const float* player_pos =
@@ -16400,7 +16411,7 @@ void* local_player_cell_or_null() {
     if (!game) return nullptr;
     const auto base = reinterpret_cast<std::uintptr_t>(game);
     __try {
-        void** player_slot = reinterpret_cast<void**>(base + 0x032D2260);
+        void** player_slot = reinterpret_cast<void**>(base + FW_RVA(0x032D2260, 0x032DD370));
         void* player = *player_slot;
         if (!player) return nullptr;
         return *reinterpret_cast<void**>(

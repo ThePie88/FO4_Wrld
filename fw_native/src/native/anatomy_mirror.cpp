@@ -1,3 +1,4 @@
+#include "../game_build.h"
 #include "anatomy_mirror.h"
 
 #include "../render/present_hook.h"
@@ -24,7 +25,7 @@ std::vector<Part> g_parts;
 // a capture tool gated on its own config key and can disappear or change
 // shape freely; this one is (aimed at) shipping. The values are the same
 // 2026-08-06 RE pass either way.
-constexpr std::uintptr_t DATAHANDLER_RVA     = 0x030DC000;
+const std::uintptr_t DATAHANDLER_RVA     = FW_RVA(0x030DC000, 0x030E7100);
 constexpr std::size_t    DH_ARRAYS_OFF       = 0x68;
 constexpr std::size_t    DH_ARRAY_STRIDE     = 0x18;
 constexpr std::uint8_t   FORMTYPE_HDPT       = 15;
@@ -32,8 +33,8 @@ constexpr std::size_t    FORM_ID_OFF         = 0x14;
 constexpr std::size_t    HDPT_MODEL          = 0x38;
 constexpr std::size_t    HDPT_PNAM           = 0x74;
 constexpr std::size_t    HDPT_EDITORID       = 0x170;
-constexpr std::uintptr_t BSFIXEDSTR_CSTR_RVA = 0x0167C070;
-constexpr std::uintptr_t FACEGEN_NODE_VT_RVA = 0x024FF280;  // BSFaceGenNiNodeSkinned
+const std::uintptr_t BSFIXEDSTR_CSTR_RVA = FW_RVA(0x0167C070, 0x0167C490);
+const std::uintptr_t FACEGEN_NODE_VT_RVA = FW_RVA(0x024FF280, 0x025072F0);  // BSFaceGenNiNodeSkinned
 
 using CStrFn = const char*(__fastcall*)(const void*);
 
@@ -308,10 +309,10 @@ namespace {
 constexpr std::size_t    GEOM_SHADER_OFF   = 0x138;  // NiPointer<BSShaderProperty>
 constexpr std::size_t    SHADER_MATERIAL_OFF = 0x58;
 constexpr std::size_t    MAT_PAYLOAD_OFF   = 0xC0;
-constexpr std::uintptr_t MAT_VT_SKIN_TINT  = 0x0290A190;
-constexpr std::uintptr_t MAT_VT_HAIR_TINT  = 0x0290A228;
-constexpr std::uintptr_t MAT_VT_FACE       = 0x0290A0F8;
-constexpr std::uintptr_t MAT_VT_GLOWMAP    = 0x02909E98;  // the MAIN hair uses this
+const std::uintptr_t MAT_VT_SKIN_TINT  = FW_RVA(0x0290A190, 0x02913950);
+const std::uintptr_t MAT_VT_HAIR_TINT  = FW_RVA(0x0290A228, 0x029139E8);
+const std::uintptr_t MAT_VT_FACE       = FW_RVA(0x0290A0F8, 0x029138B8);
+const std::uintptr_t MAT_VT_GLOWMAP    = FW_RVA(0x02909E98, 0x02913658);  // the MAIN hair uses this
 
 bool plausible(const void* p) noexcept {
     const auto v = reinterpret_cast<std::uintptr_t>(p);
@@ -667,8 +668,8 @@ int own_face_composite_walk(std::uintptr_t base, void* node, int depth,
 // Both engine halves, lifted from its update sites (sub_1406E00A0 and
 // sub_1406E2EB0 use exactly this sequence):
 //   float4 = 0; sub_1406555D0(npc, &float4, 0, 1); sub_1406EED30(root, &float4);
-constexpr std::uintptr_t COMPUTE_SKIN_RVA = 0x006555D0;
-constexpr std::uintptr_t PAINT_WALK_RVA   = 0x006EED30;
+const std::uintptr_t COMPUTE_SKIN_RVA = FW_RVA(0x006555D0, 0x00655910);
+const std::uintptr_t PAINT_WALK_RVA   = FW_RVA(0x006EED30, 0x006EF070);
 using ComputeSkinFn = void(__fastcall*)(void*, float*, int, int);
 using PaintWalkFn   = void(__fastcall*)(void*, float*);
 

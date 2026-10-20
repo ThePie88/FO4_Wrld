@@ -1,3 +1,4 @@
+#include "../game_build.h"
 #include "present_hook.h"
 #include "triangle_render.h"
 #include "body_render.h"
@@ -63,8 +64,8 @@ std::atomic<bool> g_thread_reported{false};
 // the DXGI path (CHARGEN_PLAN §23). D is the renderer data block; a pointer to
 // it is also parked at PTR_TO_D, which is what the game's own present wrapper
 // dereferences, so it is the more faithful source of the two.
-constexpr std::uintptr_t RENDERER_D_RVA = 0x03A0F410;
-constexpr std::uintptr_t PTR_TO_D_RVA   = 0x038CAAA0;
+const std::uintptr_t RENDERER_D_RVA = FW_RVA(0x03A0F410, 0x03A25D10);
+const std::uintptr_t PTR_TO_D_RVA   = FW_RVA(0x038CAAA0, 0x038E13A0);
 constexpr std::size_t    D_DEVICE_OFF   = 0x48;
 constexpr std::size_t    D_CONTEXT_OFF  = 0x50;
 constexpr std::size_t    D_HWND_OFF     = 0x58;

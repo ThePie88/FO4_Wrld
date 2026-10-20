@@ -1,3 +1,4 @@
+#include "../game_build.h"
 // ============================================================================
 // DEAD-END / KEPT FOR MEMORY OF HOURS PASSED — M9.w4 RE phase, Apr-May 2026
 // ============================================================================
@@ -69,23 +70,23 @@ namespace {
 // ============================================================================
 
 // Pool allocator (same one scene_inject.cpp uses for NiNode).
-constexpr std::uintptr_t POOL_ALLOC_RVA      = 0x016579C0;
-constexpr std::uintptr_t POOL_DESC_RVA       = 0x03E5E0F0;
-constexpr std::uintptr_t POOL_FREE_RVA       = 0x01657E20;
-constexpr std::uintptr_t POOL_INIT_RVA       = 0x01657F90;
-constexpr std::uintptr_t POOL_INIT_FLAG_RVA  = 0x03E5F2D0;
+const std::uintptr_t POOL_ALLOC_RVA      = FW_RVA(0x016579C0, 0x01657DE0);
+const std::uintptr_t POOL_DESC_RVA       = FW_RVA(0x03E5E0F0, 0x03E74AB0);
+const std::uintptr_t POOL_FREE_RVA       = FW_RVA(0x01657E20, 0x01658240);
+const std::uintptr_t POOL_INIT_RVA       = FW_RVA(0x01657F90, 0x016583B0);
+const std::uintptr_t POOL_INIT_FLAG_RVA  = FW_RVA(0x03E5F2D0, 0x03E75C90);
 
 // Form lookup.
-constexpr std::uintptr_t LOOKUP_FORM_RVA     = fw::offsets::LOOKUP_BY_FORMID_RVA;
+const std::uintptr_t LOOKUP_FORM_RVA         = fw::offsets::LOOKUP_BY_FORMID_RVA;
 
 // BGSObjectInstanceExtra fabrication (path B per
 // re/COLLAB_FOLLOWUP_oie_construction.md).
-constexpr std::uintptr_t OIE_VTABLE_RVA      = 0x02462298;
-constexpr std::uintptr_t OIE_ADD_RECORD_RVA  = 0x002480F0;
+const std::uintptr_t OIE_VTABLE_RVA      = FW_RVA(0x02462298, 0x0246A2F8);
+const std::uintptr_t OIE_ADD_RECORD_RVA  = FW_RVA(0x002480F0, 0x00248410);
 
 // The DIRECT NIF loader candidate (DELTA §8). Signature TBD — current
 // hypothesis from DELTA notes: `sub_1404580C0(path, &out_node, opts, modelExtraData)`.
-constexpr std::uintptr_t SUBLOAD_RVA         = 0x004580C0;
+const std::uintptr_t SUBLOAD_RVA         = FW_RVA(0x004580C0, 0x004583F0);
 
 // OIE layout (40 bytes total).
 constexpr std::size_t OIE_SIZE              = 0x28;

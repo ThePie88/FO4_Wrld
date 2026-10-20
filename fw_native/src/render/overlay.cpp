@@ -1,3 +1,4 @@
+#include "../game_build.h"
 // overlay — implementation. The why is in overlay.h.
 
 #include "overlay.h"
@@ -36,7 +37,7 @@ ImFont* g_tag_font  = nullptr;
 // Utility.IsInMenuMode is sub_14118F210, and its whole body is
 // `return *(u8*)(Main + 464)`. re/B6.5_npc_pipeline_AGENT_A.md had already met
 // the same byte as the process lists' pause gate, without its name.
-constexpr std::uintptr_t MAIN_PTR_RVA          = 0x032D2020;
+const std::uintptr_t MAIN_PTR_RVA          = FW_RVA(0x032D2020, 0x032DD130);
 constexpr std::size_t    MAIN_IN_MENU_MODE_OFF = 0x1D0;
 
 // A font from the Windows font folder, or null when the file is not there.

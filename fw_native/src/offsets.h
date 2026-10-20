@@ -5,6 +5,8 @@
 
 #pragma once
 
+
+#include "game_build.h"
 #include <cstddef>
 #include <cstdint>
 
@@ -13,8 +15,8 @@ namespace fw::offsets {
 // --- Module-relative RVAs ---
 
 // Papyrus-level engine entry points (all take REFR* pointers as first args).
-constexpr std::uintptr_t KILL_ENGINE_RVA       = 0x00C612E0; // sub_140C612E0
-constexpr std::uintptr_t LOOKUP_BY_FORMID_RVA  = 0x00311850; // sub_140311850
+inline const std::uintptr_t KILL_ENGINE_RVA       = FW_RVA(0x00C612E0, 0x00C61800); // sub_140C612E0
+inline const std::uintptr_t LOOKUP_BY_FORMID_RVA  = FW_RVA(0x00311850, 0x00311B80); // sub_140311850
 
 // TESObjectREFR vtable. vt[0x7A] = AddObjectToContainer (converged entry
 // for player-container transfers in both directions).
@@ -41,19 +43,19 @@ constexpr std::uintptr_t LOOKUP_BY_FORMID_RVA  = 0x00311850; // sub_140311850
 // clothes. Only the name was wrong, and the wrong name is what made
 // engine_calls.cpp:699 assert a class relationship that does not exist.
 // ############################################################################
-constexpr std::uintptr_t PLAYERCHARACTER_VTABLE_RVA = 0x02564838;
+inline const std::uintptr_t PLAYERCHARACTER_VTABLE_RVA = FW_RVA(0x02564838, 0x0256C938);
 // Legacy spelling — MISNOMER, still referenced at engine_calls.cpp:803.
 // Same value on purpose; prefer PLAYERCHARACTER_VTABLE_RVA in new code.
-constexpr std::uintptr_t TESOBJECTREFR_VTABLE_RVA = 0x02564838;
+inline const std::uintptr_t TESOBJECTREFR_VTABLE_RVA = FW_RVA(0x02564838, 0x0256C938);
 // The genuine TESObjectREFR primary vtable, for whoever needs REFR slots.
 // Not used yet — defined so the next reader does not repeat the confusion.
-constexpr std::uintptr_t TESOBJECTREFR_REAL_VTABLE_RVA = 0x0249CBC8;
+inline const std::uintptr_t TESOBJECTREFR_REAL_VTABLE_RVA = FW_RVA(0x0249CBC8, 0x024A4C28);
 constexpr std::size_t    TESOBJECTREFR_VT_GET3D_OFF          = 0x460;  // slot 140
 constexpr std::size_t    TESOBJECTREFR_VT_SETPARENTCELL_OFF  = 0x5F8;  // slot 191
 constexpr std::size_t    VT_ADD_TO_CONTAINER_SLOT = 0x7A;
 
 // Player singleton (points to the active PlayerCharacter Actor*).
-constexpr std::uintptr_t PLAYER_SINGLETON_RVA  = 0x032D2260;
+inline const std::uintptr_t PLAYER_SINGLETON_RVA  = FW_RVA(0x032D2260, 0x032DD370);
 
 // --- TESForm / TESObjectREFR struct field offsets ---
 // Layout for 1.11.191 confirmed via Hex-Rays decompile of GetPositionX,
@@ -119,9 +121,9 @@ constexpr std::uint8_t FORMTYPE_NPC           = 0x2D;  // kTESNPC
 constexpr std::uint32_t PLAYERNPC_FORMID      = 0x00000007;
 
 // Engine helpers for inventory iteration.
-constexpr std::uintptr_t INVLIST_MUTEX_LOCK_RVA   = 0x01658FE0; // lock(mtx*)
-constexpr std::uintptr_t INVLIST_MUTEX_UNLOCK_RVA = 0x016592B0; // unlock(mtx*)
-constexpr std::uintptr_t INVITEM_GET_COUNT_RVA    = 0x00349B30; // entry → int count
+inline const std::uintptr_t INVLIST_MUTEX_LOCK_RVA   = FW_RVA(0x01658FE0, 0x01659400); // lock(mtx*)
+inline const std::uintptr_t INVLIST_MUTEX_UNLOCK_RVA = FW_RVA(0x016592B0, 0x016596D0); // unlock(mtx*)
+inline const std::uintptr_t INVITEM_GET_COUNT_RVA    = FW_RVA(0x00349B30, 0x00349E60); // entry → int count
 
 // --- B3.b main menu auto-load hook ---
 // sub_140B01290 is the MainMenu Scaleform registrar: binds AS3 callbacks
@@ -132,7 +134,7 @@ constexpr std::uintptr_t INVITEM_GET_COUNT_RVA    = 0x00349B30; // entry → int
 // Hook point: after g_orig_register returns (main thread, engine ready,
 // save subsystem initialized) we directly call the engine's LoadGame
 // native — bypassing the main menu entirely. Zero keystroke simulation.
-constexpr std::uintptr_t MAIN_MENU_REGISTRAR_RVA  = 0x00B01290;
+inline const std::uintptr_t MAIN_MENU_REGISTRAR_RVA  = FW_RVA(0x00B01290, 0x00B00EB0);
 
 // --- B4 world-state sync (quest stages + global variables) ---
 //
@@ -156,8 +158,8 @@ constexpr std::uintptr_t MAIN_MENU_REGISTRAR_RVA  = 0x00B01290;
 //   (NtCurrentTeb + TlsIndex), so calling them cross-thread is unsafe.
 //   For the receive-side apply we'll route through the main-thread
 //   WndProc dispatcher (the same path B3.b v4 uses for LoadGame).
-constexpr std::uintptr_t PAPYRUS_GLOBALVAR_SETVALUE_RVA = 0x011459E0;
-constexpr std::uintptr_t PAPYRUS_QUEST_SETSTAGE_RVA     = 0x01185DD0;
+inline const std::uintptr_t PAPYRUS_GLOBALVAR_SETVALUE_RVA = FW_RVA(0x011459E0, 0x01145ED0);
+inline const std::uintptr_t PAPYRUS_QUEST_SETSTAGE_RVA     = FW_RVA(0x01185DD0, 0x011862C0);
 
 constexpr std::size_t    TESGLOBAL_VALUE_OFF            = 0x30;
 constexpr std::uint32_t  TESGLOBAL_FLAG_CONST           = 0x40;
@@ -183,8 +185,8 @@ constexpr std::uint32_t  TESGLOBAL_FLAG_CONST           = 0x40;
 //     - returns BGSContainer component from form, or null
 //
 //   'CONT' signature: 0x544E4F43 (little-endian 'C','O','N','T')
-constexpr std::uintptr_t BGS_INV_LIST_MATERIALIZE_RVA  = 0x00511F10;
-constexpr std::uintptr_t TESFORM_GET_COMPONENT_RVA     = 0x00313570;
+inline const std::uintptr_t BGS_INV_LIST_MATERIALIZE_RVA  = FW_RVA(0x00511F10, 0x00512240);
+inline const std::uintptr_t TESFORM_GET_COMPONENT_RVA     = FW_RVA(0x00313570, 0x003138A0);
 // sub_140313570 is a dispatch by formType: it calls the entry of a table
 // filled at runtime (0x1430E03D0, one pointer per formType, the `sig`
 // argument is not read) and returns 0 when the entry is null or returns
@@ -192,7 +194,7 @@ constexpr std::uintptr_t TESFORM_GET_COMPONENT_RVA     = 0x00313570;
 // runtime inventory list. Measured 2026-09-24: 0 for the CONT base 0x913F9,
 // so that container's list is never built from its template; the entry is
 // logged for the next decomp round.
-constexpr std::uintptr_t TESFORM_COMPONENT_TABLE_RVA   = 0x030E03D0;
+inline const std::uintptr_t TESFORM_COMPONENT_TABLE_RVA   = FW_RVA(0x030E03D0, 0x030EB4D0);
 // TESForm::formType values confirmed live 2026-09-24 (put hook classification
 // of the deposited items). Read at FORMTYPE_OFF (0x1A).
 constexpr std::uint8_t   FORMTYPE_ARMO                 = 0x1D;
@@ -279,8 +281,8 @@ constexpr std::uint32_t  TESFORM_SIG_CONT              = 0x544E4343;
 // by a few other inventory-insert paths (sub-ref collection, etc.) per
 // the RE agent summary. We accept that some non-pickup paths may fire
 // and rely on filter (identity check + tls_applying_remote).
-constexpr std::uintptr_t PLAYER_PICKUP_RVA = 0x00D62930;  // sub_140D62930 (kept for reference; NOT hooked)
-constexpr std::uintptr_t INV_ADD_FROM_WORLD_RVA = 0x00500430;  // sub_140500430 — our NEW hook target
+inline const std::uintptr_t PLAYER_PICKUP_RVA = FW_RVA(0x00D62930, 0x00D62E60);  // sub_140D62930 (kept for reference; NOT hooked)
+inline const std::uintptr_t INV_ADD_FROM_WORLD_RVA = FW_RVA(0x00500430, 0x00500760);  // sub_140500430 — our NEW hook target
 
 // --- B1.k.2 ContainerMenu::TransferItem (UI PUT entry point) ---
 //
@@ -330,8 +332,8 @@ constexpr std::uintptr_t INV_ADD_FROM_WORLD_RVA = 0x00500430;  // sub_140500430 
 // That helper takes a handle-slot pointer and writes the resolved
 // TESObjectREFR* (or null if stale) into *out. We expose it as
 // engine::resolve_refhandle().
-constexpr std::uintptr_t CONTAINER_MENU_TRANSFER_ITEM_RVA = 0x0103E950;  // sub_14103E950
-constexpr std::uintptr_t REFHANDLE_RESOLVE_RVA            = 0x0021E230;  // sub_14021E230
+inline const std::uintptr_t CONTAINER_MENU_TRANSFER_ITEM_RVA = FW_RVA(0x0103E950, 0x0103EE80);  // sub_14103E950
+inline const std::uintptr_t REFHANDLE_RESOLVE_RVA            = FW_RVA(0x0021E230, 0x0021E550);  // sub_14021E230
 
 // --- v26 — power armor station edits (workbench_hook.cpp) ---------------
 //
@@ -349,8 +351,8 @@ constexpr std::uintptr_t REFHANDLE_RESOLVE_RVA            = 0x0021E230;  // sub_
 //   void   sub_14098E400(TESObjectREFR* owner, float health)
 //     selected item (sub_14098D270) -> sub_140502230(owner, item, ...,
 //     SetHealthFunctor{health}) — the Repair action.
-constexpr std::uintptr_t EXAMINE_MENU_APPLY_MOD_RVA        = 0x0098AE30;  // sub_14098AE30
-constexpr std::uintptr_t EXAMINE_MENU_SET_ITEM_HEALTH_RVA  = 0x0098E400;  // sub_14098E400
+inline const std::uintptr_t EXAMINE_MENU_APPLY_MOD_RVA        = FW_RVA(0x0098AE30, 0x0098B180);  // sub_14098AE30
+inline const std::uintptr_t EXAMINE_MENU_SET_ITEM_HEALTH_RVA  = FW_RVA(0x0098E400, 0x0098E750);  // sub_14098E400
 //
 // Measured 2026-09-15: neither fires for the power armor station. The
 // station is its own menu class, PowerArmorModMenu: sub_140AF2170 registers
@@ -365,8 +367,8 @@ constexpr std::uintptr_t EXAMINE_MENU_SET_ITEM_HEALTH_RVA  = 0x0098E400;  // sub
 //   void* sub_140AF2310(this, char flags) destructor (slot 0 of the +16
 //                                         vtable is the thunk sub_140AF2300
 //                                         -> this-16 -> here)
-constexpr std::uintptr_t PA_MOD_MENU_CREATE_RVA            = 0x00AF2400;  // sub_140AF2400
-constexpr std::uintptr_t PA_MOD_MENU_DESTROY_RVA           = 0x00AF2310;  // sub_140AF2310
+inline const std::uintptr_t PA_MOD_MENU_CREATE_RVA            = FW_RVA(0x00AF2400, 0x00AF2020);  // sub_140AF2400
+inline const std::uintptr_t PA_MOD_MENU_DESTROY_RVA           = FW_RVA(0x00AF2310, 0x00AF1F30);  // sub_140AF2310
 
 // B1.k.3 CORRECTED (live log 2026-04-21): side=1 is WITHDRAW, not DEPOSIT.
 // Previous agent summary had these swapped. Proof from log: every side=1
@@ -406,15 +408,15 @@ constexpr std::size_t CMENU_CONTAINER_HANDLE_OFF   = 1064;  // BGSObjectRefHandl
 // sub_1410412B0 with the UI): allocates 0x440 bytes, sets the four vtable
 // pointers (+0, +16, +224, +232), returns the object. Hooked to learn the
 // instance the UI is about to show.
-constexpr std::uintptr_t CONTAINER_MENU_FACTORY_RVA = 0x010412B0;
+inline const std::uintptr_t CONTAINER_MENU_FACTORY_RVA = FW_RVA(0x010412B0, 0x010417E0);
 // UI singleton qword_1430DD830 and sub_141A7FD40(ui, const BSFixedString*)
 // -> bool: looks the name up in the menu map at ui+424, tests IMenu flag 0x40,
 // releases the reference. The engine's own "is this menu open" idiom.
-constexpr std::uintptr_t UI_SINGLETON_RVA           = 0x030DD830;
-constexpr std::uintptr_t UI_MENU_IS_OPEN_RVA        = 0x01A7FD40;
+inline const std::uintptr_t UI_SINGLETON_RVA           = FW_RVA(0x030DD830, 0x030E8930);
+inline const std::uintptr_t UI_MENU_IS_OPEN_RVA        = FW_RVA(0x01A7FD40, 0x01A80320);
 // sub_141A85DD0() -> const BSFixedString* "ContainerMenu" (static, interned
 // on first use, the object the engine itself passes to the query above).
-constexpr std::uintptr_t CONTAINER_MENU_NAME_RVA    = 0x01A85DD0;
+inline const std::uintptr_t CONTAINER_MENU_NAME_RVA    = FW_RVA(0x01A85DD0, 0x01A863B0);
 // 2026-10-04 (live test of the death crate) — more of the UI's own idiom.
 // The static name getters of two more menus, the ContainerMenu pattern
 // above: sub_141A86F40() -> "LoadingMenu" (the loading screen of a door, a
@@ -427,13 +429,13 @@ constexpr std::uintptr_t CONTAINER_MENU_NAME_RVA    = 0x01A85DD0;
 // name, u32 type) = AddMessage; type 1 shows, 3 hides (the engine's own
 // show of the power armour HUD at 0x1410512F4-0x14105130C passes 1, its
 // hides of other menus at 0x141041D61 and 0x14104576F pass 3).
-constexpr std::uintptr_t LOADING_MENU_NAME_RVA         = 0x01A86F40;
-constexpr std::uintptr_t POWER_ARMOR_HUD_MENU_NAME_RVA = 0x01A87BA0;
+inline const std::uintptr_t LOADING_MENU_NAME_RVA         = FW_RVA(0x01A86F40, 0x01A87520);
+inline const std::uintptr_t POWER_ARMOR_HUD_MENU_NAME_RVA = FW_RVA(0x01A87BA0, 0x01A88180);
 // L5 realtime D2 (2026-10-15): sub_141A879F0() -> "PipboyMenu", the same
 // idiom; the map's positions are refreshed only while it is open.
-constexpr std::uintptr_t PIPBOY_MENU_NAME_RVA          = 0x01A879F0;
-constexpr std::uintptr_t UI_MESSAGE_QUEUE_PTR_RVA      = 0x030DDA20;
-constexpr std::uintptr_t UI_MESSAGE_QUEUE_ADD_RVA      = 0x01A89050;
+inline const std::uintptr_t PIPBOY_MENU_NAME_RVA          = FW_RVA(0x01A879F0, 0x01A87FD0);
+inline const std::uintptr_t UI_MESSAGE_QUEUE_PTR_RVA      = FW_RVA(0x030DDA20, 0x030E8B20);
+inline const std::uintptr_t UI_MESSAGE_QUEUE_ADD_RVA      = FW_RVA(0x01A89050, 0x01A89630);
 constexpr std::uint32_t  UI_MESSAGE_SHOW               = 1;
 constexpr std::uint32_t  UI_MESSAGE_HIDE               = 3;
 // ContainerMenu primary vtable (RTTI catalog, 33 slots). Slot 21 =
@@ -441,7 +443,7 @@ constexpr std::uint32_t  UI_MESSAGE_HIDE               = 3;
 // UpdateList(bool container_side): rebuilds "containerListArray" (true) or
 // "playerListArray" (false) from the inventory lists, then vt[30] refreshes
 // weight and caps. Slot 0 is the deleting destructor.
-constexpr std::uintptr_t CONTAINER_MENU_VTABLE_RVA  = 0x025A45C8;
+inline const std::uintptr_t CONTAINER_MENU_VTABLE_RVA  = FW_RVA(0x025A45C8, 0x025AC6C8);
 constexpr std::size_t    CMENU_VT_UPDATE_LIST_SLOT  = 32;
 // UpdateList alone refills the arrays and nothing on screen moves (live
 // 2026-09-24 afternoon: thirteen rebuilds on B, rows still stale). The
@@ -450,7 +452,7 @@ constexpr std::size_t    CMENU_VT_UPDATE_LIST_SLOT  = 32;
 // ContainerMenu::ProcessMessage sub_14103C630):
 //   sub_141ACFCC0(*(menu+32), *(menu+48), 0, "InvalidateLists", 0, 0)
 // where menu+32 is the GFx object reference and menu+48 its movie root.
-constexpr std::uintptr_t GFX_INVOKE_RVA             = 0x01ACFCC0;
+inline const std::uintptr_t GFX_INVOKE_RVA             = FW_RVA(0x01ACFCC0, 0x01AD02A0);
 constexpr std::size_t    CMENU_GFX_OBJECT_OFF       = 32;
 constexpr std::size_t    CMENU_GFX_MOVIE_OFF        = 48;
 // The handle the menu stores at CMENU_CONTAINER_HANDLE_OFF is compared with
@@ -465,8 +467,8 @@ constexpr std::uint8_t CMENU_SIDE_WITHDRAW = 1;   // container→player (vt[0x7A
 // sub_1403478E0(form_cache_global_value, entry_ptr) returns the TESForm* or
 // equivalent that underlies the menu row. qword_1430E1370 is the slot that
 // stores the "form cache" global — we read its current value at call time.
-constexpr std::uintptr_t INV_ENTRY_TO_FORM_RVA     = 0x003478E0;   // sub_1403478E0
-constexpr std::uintptr_t FORM_CACHE_SINGLETON_RVA  = 0x030E1370;   // qword_1430E1370
+inline const std::uintptr_t INV_ENTRY_TO_FORM_RVA     = FW_RVA(0x003478E0, 0x00347C10);   // sub_1403478E0
+inline const std::uintptr_t FORM_CACHE_SINGLETON_RVA  = FW_RVA(0x030E1370, 0x030EC470);   // qword_1430E1370
 
 // --- B1.g container apply-to-engine (receiver-side) ---
 //
@@ -511,8 +513,8 @@ constexpr std::uintptr_t FORM_CACHE_SINGLETON_RVA  = 0x030E1370;   // qword_1430
 // flag2=0, dest_refr=nullptr. The item disappears from / appears in the
 // local container, UI refreshes next time the ContainerMenu reads. The loot
 // rework L2 rollback passes the player or the container as dest_refr.
-constexpr std::uintptr_t ENGINE_ADD_ITEM_RVA    = 0x011735A0;
-constexpr std::uintptr_t ENGINE_REMOVE_ITEM_RVA = 0x011825A0;
+inline const std::uintptr_t ENGINE_ADD_ITEM_RVA    = FW_RVA(0x011735A0, 0x01173A90);
+inline const std::uintptr_t ENGINE_REMOVE_ITEM_RVA = FW_RVA(0x011825A0, 0x01182A90);
 
 // 2026-09-29 — the power armour frame's visual sync. A standing frame draws
 // its pieces from an ObjectInstanceExtra that sub_14098C120(frame,
@@ -527,8 +529,8 @@ constexpr std::uintptr_t ENGINE_REMOVE_ITEM_RVA = 0x011825A0;
 // qword_1430DBF78[274672]. sub_140988980 itself is NOT the call to make: a
 // piece put on a frame sends any other piece of its slot to the PLAYER
 // (sub_140992CA0 is a RemoveItem to the player singleton).
-constexpr std::uintptr_t PA_FRAME_SYNC_TASK_RVA  = 0x00C4B370;  // sub_140C4B370
-constexpr std::uintptr_t REFR_TASK_QUEUE_PTR_RVA = 0x032F46F8;  // qword_1430DBF78[274672]
+inline const std::uintptr_t PA_FRAME_SYNC_TASK_RVA  = FW_RVA(0x00C4B370, 0x00C4B890);  // sub_140C4B370
+inline const std::uintptr_t REFR_TASK_QUEUE_PTR_RVA = FW_RVA(0x032F46F8, 0x032FF808);  // qword_1430DBF78[274672]
 
 // --- B6 wedge 1: door open/close ---
 //
@@ -540,7 +542,7 @@ constexpr std::uintptr_t REFR_TASK_QUEUE_PTR_RVA = 0x032F46F8;  // qword_1430DBF
 // not the live mutator. Useful for receiver-side apply (call it directly
 // to set door state to match remote peer), NOT useful for sender-side
 // detection of "player just opened a door".
-constexpr std::uintptr_t ENGINE_SET_OPEN_STATE_RVA = 0x00305760;
+inline const std::uintptr_t ENGINE_SET_OPEN_STATE_RVA = FW_RVA(0x00305760, 0x00305A90);
 //
 // LIVE KEYPRESS TARGET (per Agent A dossier recommendation):
 // sub_140514180 = "Activate worker" (non-virtual). Called by:
@@ -567,7 +569,7 @@ constexpr std::uintptr_t ENGINE_SET_OPEN_STATE_RVA = 0x00305760;
 //
 // Phase 1.b validates: hook here OBSERVE-only, spam E on door, expect
 // 1 fire per E press with refr being the door + identity_ok=1.
-constexpr std::uintptr_t ENGINE_ACTIVATE_WORKER_RVA = 0x00514180;
+inline const std::uintptr_t ENGINE_ACTIVATE_WORKER_RVA = FW_RVA(0x00514180, 0x005144B0);
 
 // --- B6.3 lock state sync ---
 //
@@ -599,10 +601,10 @@ constexpr std::uintptr_t ENGINE_ACTIVATE_WORKER_RVA = 0x00514180;
 //   +0x08  TESForm* required_key
 //   +0x10  u8     flags  (bit 0 = LOCKED — the flag we care about)
 //   +0x14  u32    partial_pick state (cleared on unlock)
-constexpr std::uintptr_t ENGINE_FORCE_UNLOCK_RVA       = 0x00563320;
-constexpr std::uintptr_t ENGINE_FORCE_LOCK_RVA         = 0x00563360;
-constexpr std::uintptr_t ENGINE_LOCK_DATA_GET_RVA      = 0x00563170;
-constexpr std::uintptr_t ENGINE_LOCK_PAPYRUS_APPLY_RVA = 0x01158640;
+inline const std::uintptr_t ENGINE_FORCE_UNLOCK_RVA       = FW_RVA(0x00563320, 0x00563650);
+inline const std::uintptr_t ENGINE_FORCE_LOCK_RVA         = FW_RVA(0x00563360, 0x00563690);
+inline const std::uintptr_t ENGINE_LOCK_DATA_GET_RVA      = FW_RVA(0x00563170, 0x005634A0);
+inline const std::uintptr_t ENGINE_LOCK_PAPYRUS_APPLY_RVA = FW_RVA(0x01158640, 0x01158B30);
 
 constexpr std::size_t  LOCK_DATA_FLAGS_OFF = 0x10;
 constexpr std::uint8_t LOCK_FLAG_LOCKED    = 0x01;
@@ -630,12 +632,12 @@ constexpr std::uint8_t LOCK_FLAG_LOCKED    = 0x01;
 //   3) byte_1432D1FEA = 1                 — set a "load in progress" flag.
 //
 // We replicate this sequence from our hook.
-constexpr std::uintptr_t LOAD_GAME_FN_RVA          = 0x00BF93B0;   // sub_140BF93B0
-constexpr std::uintptr_t SAVE_LOAD_MGR_SINGLETON_RVA = 0x0329D508; // qword_14329D508
-constexpr std::uintptr_t LOAD_PRECOND_FN_RVA       = 0x01084830;   // sub_141084830
-constexpr std::uintptr_t SAVE_DEV_SINGLETON_RVA    = 0x031E5A90;   // qword_1431E5A90
-constexpr std::uintptr_t LOAD_PREP_FN_RVA          = 0x00C37200;   // sub_140C37200
-constexpr std::uintptr_t LOAD_IN_PROGRESS_FLAG_RVA = 0x032D1FEA;   // byte_1432D1FEA
+inline const std::uintptr_t LOAD_GAME_FN_RVA          = FW_RVA(0x00BF93B0, 0x00BF98D0);   // sub_140BF93B0
+inline const std::uintptr_t SAVE_LOAD_MGR_SINGLETON_RVA = FW_RVA(0x0329D508, 0x032A8618); // qword_14329D508
+inline const std::uintptr_t LOAD_PRECOND_FN_RVA       = FW_RVA(0x01084830, 0x01084D20);   // sub_141084830
+inline const std::uintptr_t SAVE_DEV_SINGLETON_RVA    = FW_RVA(0x031E5A90, 0x031F0B90);   // qword_1431E5A90
+inline const std::uintptr_t LOAD_PREP_FN_RVA          = FW_RVA(0x00C37200, 0x00C37720);   // sub_140C37200
+inline const std::uintptr_t LOAD_IN_PROGRESS_FLAG_RVA = FW_RVA(0x032D1FEA, 0x032DD0FA);   // byte_1432D1FEA
 
 // --- β.6 scene render hook (Agent RE, 2026-04-22) ---
 // sub_140C38F80 = 3D scene walker. Called ONCE per frame from
@@ -646,11 +648,11 @@ constexpr std::uintptr_t LOAD_IN_PROGRESS_FLAG_RVA = 0x032D1FEA;   // byte_1432D
 // that matrix eliminates shake because our body's VP matches the
 // scene's VP byte-for-byte.
 // Threading: 100% main thread (verified by RE).
-constexpr std::uintptr_t SCENE_RENDER_RVA            = 0x00C38F80;
+inline const std::uintptr_t SCENE_RENDER_RVA            = FW_RVA(0x00C38F80, 0x00C394A0);
 
 // --- B5 camera capture (Agent 1 RE, 2026-04-22) ---
-constexpr std::uintptr_t PLAYER_CAMERA_SINGLETON_RVA = 0x030DBD58;
-constexpr std::uintptr_t NI_CAMERA_VTABLE_RVA        = 0x0267DD50;
+inline const std::uintptr_t PLAYER_CAMERA_SINGLETON_RVA = FW_RVA(0x030DBD58, 0x030E6E58);
+inline const std::uintptr_t NI_CAMERA_VTABLE_RVA        = FW_RVA(0x0267DD50, 0x02685E80);
 
 // --- Ghost 1P fix (2026-08-04) — PlayerCamera state layout -------------------
 // Decomp-proven by sub_14102B090 (QCameraEquals, size 0x1B):
@@ -662,8 +664,8 @@ constexpr std::uintptr_t NI_CAMERA_VTABLE_RVA        = 0x0267DD50;
 // the CameraState numbering and to state-object reallocation.
 constexpr std::size_t    PLAYER_CAMERA_CURRENT_STATE_OFF = 0x28;
 constexpr std::size_t    PLAYER_CAMERA_STATES_ARRAY_OFF  = 0xE0;
-constexpr std::uintptr_t FIRSTPERSON_STATE_VTABLE_RVA    = 0x025A2A08;
-constexpr std::uintptr_t THIRDPERSON_STATE_VTABLE_RVA    = 0x0251AA18;
+inline const std::uintptr_t FIRSTPERSON_STATE_VTABLE_RVA    = FW_RVA(0x025A2A08, 0x025AAB08);
+inline const std::uintptr_t THIRDPERSON_STATE_VTABLE_RVA    = FW_RVA(0x0251AA18, 0x02522A88);
 // NiCamera layout confirmed via CommonLibF4 (alandtse/master) 2026-04-22:
 //   +0x120  worldToCam[4][4]   (VIEW matrix, row-major, world→camera)
 //   +0x160  viewFrustum = { left, right, top, bottom, near, far, ortho }
@@ -703,9 +705,9 @@ constexpr std::size_t NI_CAMERA_SIZE         = 0x1A0;
 // from the ctor/binder at sub_140C31ED0 lines:
 //   qword_1432D25D0 = vtable_MCC
 //   qword_1432D2590 = &qword_1432D25D0
-constexpr std::uintptr_t MAIN_CULLING_CAMERA_INSTANCE_RVA = 0x032D25D0;
-constexpr std::uintptr_t MAIN_CULLING_CAMERA_PTR_SLOT_RVA = 0x032D2590;
-constexpr std::uintptr_t MAIN_CULLING_CAMERA_VTABLE_RVA   = 0x0255DB08;
+inline const std::uintptr_t MAIN_CULLING_CAMERA_INSTANCE_RVA = FW_RVA(0x032D25D0, 0x032DD6E0);
+inline const std::uintptr_t MAIN_CULLING_CAMERA_PTR_SLOT_RVA = FW_RVA(0x032D2590, 0x032DD6A0);
+inline const std::uintptr_t MAIN_CULLING_CAMERA_VTABLE_RVA   = FW_RVA(0x0255DB08, 0x02565C08);
 // PlayerCamera layout confirmed via IDA decomp of ctor @ 0x1024A50:
 //   +0xE0..+0x158  states array (NiPointer<TESCameraState>[16], slot +0x148 is a gap)
 //   +0x1A0         dword = active state index
@@ -753,7 +755,7 @@ constexpr std::size_t NI_CAMERA_VIEWPROJ_OFF    = 288;
 // Returns raw Actor* (0x490 B). NOT an ObjectRefHandle.
 // THREAD-UNSAFE: reads NtCurrentTeb TLS + takes REFR cell-attach lock.
 // Must be called from the engine's main thread (WndProc dispatch path).
-constexpr std::uintptr_t PLACE_AT_ME_RVA = 0x01159C10;
+inline const std::uintptr_t PLACE_AT_ME_RVA = FW_RVA(0x01159C10, 0x0115A100);
 // B6.14 — the CONSOLE's placement worker: sub_1405E05D0(u32* out_handle,
 // TESObjectREFR* target, TESForm* base, int count, int, int, float scale,
 // char persist) -> writes the new REFR's HANDLE into *out_handle, delegates
@@ -763,7 +765,7 @@ constexpr std::uintptr_t PLACE_AT_ME_RVA = 0x01159C10;
 // the Papyrus native REFUSES some bases the worker places happily — measured
 // live with the power-armor frame 0x0002079E, which the Papyrus path
 // returned null on 240/240 attempts while the console placed it first try.
-constexpr std::uintptr_t CONSOLE_PLACE_WORKER_RVA = 0x005E05D0;
+inline const std::uintptr_t CONSOLE_PLACE_WORKER_RVA = FW_RVA(0x005E05D0, 0x005E0900);
 
 // TEMPORARY flag bit in the Actor/REFR flags field at offset +0x10.
 // PlaceAtMe hardcodes NEW_REFR_DATA flags to 0x1000000 only. To avoid
@@ -810,8 +812,8 @@ constexpr std::uint32_t PA_FRAME_FURNITURE_BASE = 0x0002079E;
 // while the frame's cell is unloaded deletes the frame. TLS memory-context
 // byte saved/restored inside => MAIN THREAD ONLY.
 // ============================================================================
-constexpr std::uintptr_t DESTROY_BY_HANDLE_RVA       = 0x00C23EC0;
-constexpr std::uintptr_t UNPERSIST_PROMOTED_REF_RVA  = 0x003380C0;
+inline const std::uintptr_t DESTROY_BY_HANDLE_RVA       = FW_RVA(0x00C23EC0, 0x00C243E0);
+inline const std::uintptr_t UNPERSIST_PROMOTED_REF_RVA  = FW_RVA(0x003380C0, 0x003383F0);
 
 // ============================================================================
 // Build 70 — REAL REMOVAL primitives (the duplicate-PA fix). The old receiver
@@ -837,8 +839,8 @@ constexpr std::uintptr_t UNPERSIST_PROMOTED_REF_RVA  = 0x003380C0;
 //      (refr+0x28 & 0x3FF)`), else mints/returns the real handle.
 //   4. DestroyByHandle sub_140C23EC0(u32*) — release + deferred free.
 // ============================================================================
-constexpr std::uintptr_t CELL_REMOVE_REFERENCE_RVA   = 0x004CC240;
-constexpr std::uintptr_t REFR_GET_HANDLE_RVA         = 0x00519190;
+inline const std::uintptr_t CELL_REMOVE_REFERENCE_RVA   = FW_RVA(0x004CC240, 0x004CC570);
+inline const std::uintptr_t REFR_GET_HANDLE_RVA         = FW_RVA(0x00519190, 0x005194C0);
 constexpr std::size_t    TESOBJECTREFR_VT_DISABLE_OFF = 0x580;
 
 // ============================================================================
@@ -867,17 +869,17 @@ constexpr std::size_t    TESOBJECTREFR_VT_DISABLE_OFF = 0x580;
 // Exterior cell lookup sub_1402F2320(ws, i16 gx, i16 gy) is pure and may
 // legitimately return null for a cell not brought in.
 // ============================================================================
-constexpr std::uintptr_t BHK_PICK_INIT_FROMTO_RVA    = 0x002DC250;
-constexpr std::uintptr_t BHK_PICK_CAST_CELL_RVA      = 0x004CA830;
-constexpr std::uintptr_t BHK_PICK_HAS_HIT_RVA        = 0x01878670;
+inline const std::uintptr_t BHK_PICK_INIT_FROMTO_RVA    = FW_RVA(0x002DC250, 0x002DC570);
+inline const std::uintptr_t BHK_PICK_CAST_CELL_RVA      = FW_RVA(0x004CA830, 0x004CAB60);
+inline const std::uintptr_t BHK_PICK_HAS_HIT_RVA        = FW_RVA(0x01878670, 0x01878C50);
 constexpr std::size_t    BHK_PICK_HIT_POS_OFF        = 0x60;
 constexpr std::uint32_t  BHK_PICK_FILTER_WORLD       = 0x3002A;
 constexpr float          HAVOK_TO_GAME_UNITS         = 69.991249f;
-constexpr std::uintptr_t TERRAIN_HEIGHT_RVA          = 0x004CA8F0;
-constexpr std::uintptr_t REFILE_BY_POSITION_RVA      = 0x00514C50;
-constexpr std::uintptr_t IS_CELL_ATTACHED_RVA        = 0x002CFA00;
-constexpr std::uintptr_t TES_SINGLETON_RVA           = 0x032D2048;
-constexpr std::uintptr_t EXT_CELL_BY_GRID_RVA        = 0x002F2320;
+inline const std::uintptr_t TERRAIN_HEIGHT_RVA          = FW_RVA(0x004CA8F0, 0x004CAC20);
+inline const std::uintptr_t REFILE_BY_POSITION_RVA      = FW_RVA(0x00514C50, 0x00514F80);
+inline const std::uintptr_t IS_CELL_ATTACHED_RVA        = FW_RVA(0x002CFA00, 0x002CFD20);
+inline const std::uintptr_t TES_SINGLETON_RVA           = FW_RVA(0x032D2048, 0x032DD158);
+inline const std::uintptr_t EXT_CELL_BY_GRID_RVA        = FW_RVA(0x002F2320, 0x002F2640);
 constexpr std::size_t    CELL_FLAGS40_OFF            = 0x40;  // bit0 = interior
 constexpr std::size_t    CELL_WORLDSPACE_OFF         = 0xC8;
 // 2026-10-04 — a cell's reference array: TESObjectREFR* entries, 8 bytes
@@ -919,11 +921,11 @@ constexpr std::size_t    CELL_REFS_COUNT_OFF         = 0x80;
 //                        LOCKED GetByType (the exact call the PA helpers
 //                        make; body of sub_140290560 read this session).
 // ============================================================================
-constexpr std::uintptr_t PA_ENTER_RVA          = 0x00989A40;
-constexpr std::uintptr_t PA_EXIT_REQUEST_RVA   = 0x0098BAF0;
-constexpr std::uintptr_t PA_REPLAY_RVA         = 0x0098C9D0;
-constexpr std::uintptr_t PA_MODEL_RELOAD_A_RVA = 0x00D35EA0;
-constexpr std::uintptr_t PA_MODEL_RELOAD_B_RVA = 0x00D020E0;
+inline const std::uintptr_t PA_ENTER_RVA          = FW_RVA(0x00989A40, 0x00989D90);
+inline const std::uintptr_t PA_EXIT_REQUEST_RVA   = FW_RVA(0x0098BAF0, 0x0098BE40);
+inline const std::uintptr_t PA_REPLAY_RVA         = FW_RVA(0x0098C9D0, 0x0098CD20);
+inline const std::uintptr_t PA_MODEL_RELOAD_A_RVA = FW_RVA(0x00D35EA0, 0x00D363C0);
+inline const std::uintptr_t PA_MODEL_RELOAD_B_RVA = FW_RVA(0x00D020E0, 0x00D02600);
 // 2026-09-15 — what RELOAD-B actually does (sub_140D020E0 decomp): it is the
 // per-frame "update this actor's 3D if anything asked for it" step, called
 // for EVERY loaded actor every frame (73/s per actor measured on both
@@ -938,8 +940,8 @@ constexpr std::uintptr_t PA_MODEL_RELOAD_B_RVA = 0x00D020E0;
 // still held it).
 constexpr std::size_t    AIPROCESS_MIDDLE_HIGH_OFF        = 0x08;
 constexpr std::size_t    MIDDLEHIGH_3D_UPDATE_FLAGS_OFF   = 0x496;   // u16
-constexpr std::uintptr_t AIPROCESS_NEEDS_3D_LOAD_RVA      = 0x00CF0E60; // sub_140CF0E60(proc) -> bool
-constexpr std::uintptr_t PA_RACE_GETTER_RVA    = 0x00374740;
+inline const std::uintptr_t AIPROCESS_NEEDS_3D_LOAD_RVA      = FW_RVA(0x00CF0E60, 0x00CF1380); // sub_140CF0E60(proc) -> bool
+inline const std::uintptr_t PA_RACE_GETTER_RVA    = FW_RVA(0x00374740, 0x00374A70);
 // 2026-10-05 — the stuck power armour race (live tests of 2026-10-04/05: on
 // foot, no power armour extra, the Pip-Boy opens blurred with no device at
 // the wrist, every boot of the same save lineage; entering a frame shows a
@@ -953,9 +955,9 @@ constexpr std::uintptr_t PA_RACE_GETTER_RVA    = 0x00374740;
 // sub_1402C62B0(qword_1430DC0C8, actor, 0, 0) = the 3D reload. The races:
 // HumanRace 0x00013746, PowerArmorRace 0x0001D31E (Fallout4.esm).
 constexpr std::size_t    ACTOR_RACE_OFF               = 0x418;
-constexpr std::uintptr_t ACTOR_SWITCH_RACE_RVA        = 0x00CA4420;
-constexpr std::uintptr_t REFR_3D_RELOAD_QUEUE_PTR_RVA = 0x030DC0C8;
-constexpr std::uintptr_t REFR_3D_RELOAD_QUEUE_RVA     = 0x002C62B0;
+inline const std::uintptr_t ACTOR_SWITCH_RACE_RVA        = FW_RVA(0x00CA4420, 0x00CA4940);
+inline const std::uintptr_t REFR_3D_RELOAD_QUEUE_PTR_RVA = FW_RVA(0x030DC0C8, 0x030E71C8);
+inline const std::uintptr_t REFR_3D_RELOAD_QUEUE_RVA     = FW_RVA(0x002C62B0, 0x002C65D0);
 constexpr std::uint32_t  HUMAN_RACE_FORMID            = 0x00013746;
 constexpr std::uint32_t  POWER_ARMOR_RACE_FORMID      = 0x0001D31E;
 
@@ -994,12 +996,12 @@ constexpr std::size_t    MAPMARKERDATA_FLAGS_OFF        = 16;
 constexpr std::size_t    MAPMARKERDATA_TYPE_OFF         = 18;
 constexpr std::uint8_t   MAPMARKER_FLAG_VISIBLE         = 0x01;
 constexpr std::uint8_t   MAPMARKER_FLAG_CAN_TRAVEL      = 0x02;
-constexpr std::uintptr_t MAPMARKERDATA_CTOR_RVA         = 0x002C0D30;   // sub_1402C0D30(data): TESFullName vtable, name, zeroed flags/type
-constexpr std::uintptr_t MAPMARKERDATA_SET_NAME_RVA     = 0x002C0F30;   // sub_1402C0F30(data, const char*): the name
-constexpr std::uintptr_t MAPMARKERDATA_GET_NAME_RVA     = 0x002C0F20;   // sub_1402C0F20(data): const char* name (TESFullName, via its vtable)
-constexpr std::uintptr_t EXTRALIST_SET_MAPMARKER_RVA    = 0x0027A680;   // sub_14027A680(list, data): make/replace/remove(nullptr) the ExtraMapMarker, under the list's lock
-constexpr std::uintptr_t REFR_GET_MAPMARKER_DATA_RVA    = 0x00562EC0;   // sub_140562EC0(refr): the data, or nullptr
-constexpr std::uintptr_t PAPYRUS_ADD_TO_MAP_RVA         = 0x01152F40;   // sub_141152F40(vm, stack, refr, allow_travel): ObjectReference.AddToMap
+inline const std::uintptr_t MAPMARKERDATA_CTOR_RVA         = FW_RVA(0x002C0D30, 0x002C1050);   // sub_1402C0D30(data): TESFullName vtable, name, zeroed flags/type
+inline const std::uintptr_t MAPMARKERDATA_SET_NAME_RVA     = FW_RVA(0x002C0F30, 0x002C1250);   // sub_1402C0F30(data, const char*): the name
+inline const std::uintptr_t MAPMARKERDATA_GET_NAME_RVA     = FW_RVA(0x002C0F20, 0x002C1240);   // sub_1402C0F20(data): const char* name (TESFullName, via its vtable)
+inline const std::uintptr_t EXTRALIST_SET_MAPMARKER_RVA    = FW_RVA(0x0027A680, 0x0027A9A0);   // sub_14027A680(list, data): make/replace/remove(nullptr) the ExtraMapMarker, under the list's lock
+inline const std::uintptr_t REFR_GET_MAPMARKER_DATA_RVA    = FW_RVA(0x00562EC0, 0x005631F0);   // sub_140562EC0(refr): the data, or nullptr
+inline const std::uintptr_t PAPYRUS_ADD_TO_MAP_RVA         = FW_RVA(0x01152F40, 0x01153430);   // sub_141152F40(vm, stack, refr, allow_travel): ObjectReference.AddToMap
 // Where the map and the compass take the markers from (2026-10-15, the
 // second experiment): ONE array of ObjectRefHandles on the player, at
 // +1848 (BSTArray: data +0, capacity +8, size +16), which the engine refills
@@ -1014,10 +1016,10 @@ constexpr std::size_t    PLAYER_MAPMARKERS_ARR_OFF      = 1848;
 // player's worldspace on every cell change, a difference refills the array
 // from scratch): when it moves, our handles are gone and get pushed again.
 constexpr std::size_t    PLAYER_MAPMARKERS_WS_OFF       = 2224;
-constexpr std::uintptr_t MAPMARKERS_LOCK_RVA            = 0x032F5978;
-constexpr std::uintptr_t SPINLOCK_LOCK_RVA              = 0x0022D3A0;   // sub_14022D3A0(lock): recursive spin lock
-constexpr std::uintptr_t BSTARRAY_PUSH_INDEX_RVA        = 0x01659520;   // sub_141659520(&size, &functor, capacity, elem_size): the index of a new slot, -1 when it cannot grow
-constexpr std::uintptr_t BSTARRAY_HEAP_FUNCTOR_VTABLE_RVA = 0x0245FFB0; // BSTArrayAllocatorFunctor<BSTArrayHeapAllocator>::`vftable'
+inline const std::uintptr_t MAPMARKERS_LOCK_RVA            = FW_RVA(0x032F5978, 0x03300A88);
+inline const std::uintptr_t SPINLOCK_LOCK_RVA              = FW_RVA(0x0022D3A0, 0x0022D6C0);   // sub_14022D3A0(lock): recursive spin lock
+inline const std::uintptr_t BSTARRAY_PUSH_INDEX_RVA        = FW_RVA(0x01659520, 0x01659940);   // sub_141659520(&size, &functor, capacity, elem_size): the index of a new slot, -1 when it cannot grow
+inline const std::uintptr_t BSTARRAY_HEAP_FUNCTOR_VTABLE_RVA = FW_RVA(0x0245FFB0, 0x02468010); // BSTArrayAllocatorFunctor<BSTArrayHeapAllocator>::`vftable'
 // The event the refill fires once the array is full again (2026-10-15, the
 // third experiment): sub_140D515B0(bool root_worldspace_changed) puts the
 // bool through BSTEventSource::Notify (sub_140D8DF80) on the source of
@@ -1032,7 +1034,7 @@ constexpr std::uintptr_t BSTARRAY_HEAP_FUNCTOR_VTABLE_RVA = 0x0245FFB0; // BSTAr
 // rebuilds. The map data singleton is the event's only sink (one call of
 // the register helper sub_140D51550), so true costs one rebuild and nothing
 // else. A handle pushed by hand reaches the map once this is fired with TRUE.
-constexpr std::uintptr_t MAPMARKERS_NOTIFY_RVA            = 0x00D515B0;   // sub_140D515B0(char changed)
+inline const std::uintptr_t MAPMARKERS_NOTIFY_RVA            = FW_RVA(0x00D515B0, 0x00D51AD0);   // sub_140D515B0(char changed)
 // The event's source and the map's sink (2026-10-15, the second live test).
 // The source sub_140D92EF0() is a BSTEventSource: a spin lock at +0, the
 // REGISTERED sinks at +8 (a 24-byte BSTArray: pointers +8, capacity +16,
@@ -1048,7 +1050,7 @@ constexpr std::uintptr_t MAPMARKERS_NOTIFY_RVA            = 0x00D515B0;   // sub
 // own rebuild takes what the array holds at that moment. The map data's
 // marker hash map sits at +240 (capacity +252, free +256): capacity - free
 // = its entries, compared across ticks to notice a rebuild of the engine's.
-constexpr std::uintptr_t MAPMARKERS_EVENT_SOURCE_RVA      = 0x00D92EF0;
+inline const std::uintptr_t MAPMARKERS_EVENT_SOURCE_RVA      = FW_RVA(0x00D92EF0, 0x00D93420);
 constexpr std::size_t    EVENT_SOURCE_SINKS_OFF           = 8;
 constexpr std::size_t    EVENT_SOURCE_SINK_COUNT_OFF      = 24;
 // The engine's own refill of the player's array (the third live test):
@@ -1062,8 +1064,8 @@ constexpr std::size_t    EVENT_SOURCE_SINK_COUNT_OFF      = 24;
 // engine's check keeps the natives out for good ("array 2 (2 resolve)" for
 // a minute in the third test). So an array without a native marker gets
 // our handles taken out and this called, and ours go in after.
-constexpr std::uintptr_t MAPMARKERS_REFILL_RVA            = 0x00D74490;
-constexpr std::uintptr_t REFR_GET_WORLDSPACE_RVA          = 0x00516FB0;   // sub_140516FB0(refr): TESWorldSpace* of its parent cell, or nullptr
+inline const std::uintptr_t MAPMARKERS_REFILL_RVA            = FW_RVA(0x00D74490, 0x00D749C0);
+inline const std::uintptr_t REFR_GET_WORLDSPACE_RVA          = FW_RVA(0x00516FB0, 0x005172E0);   // sub_140516FB0(refr): TESWorldSpace* of its parent cell, or nullptr
 constexpr std::size_t    WORLDSPACE_PERSISTENT_CELL_OFF   = 112;          // TESWorldSpace +112: the persistent cell the refill collects from
 constexpr std::size_t    MAPDATA_SINK_OFF                 = 200;
 constexpr std::size_t    MAPDATA_MAP_CAPACITY_OFF         = 252;
@@ -1078,7 +1080,7 @@ constexpr bool is_pa_frame_wearable(std::uint32_t fid) noexcept {
     }
     return false;
 }
-constexpr std::uintptr_t EXTRA_GET_BY_TYPE_RVA = 0x002A0030;
+inline const std::uintptr_t EXTRA_GET_BY_TYPE_RVA = FW_RVA(0x002A0030, 0x002A0350);
 
 // E0 RE (2026-08-16) — sub_1411735A0(refr, form, count, silent, a5, a6):
 // the GameScript (Papyrus) AddItem worker, traced from the console AddItem
@@ -1088,7 +1090,7 @@ constexpr std::uintptr_t EXTRA_GET_BY_TYPE_RVA = 0x002A0030;
 // to run on the MAIN THREAD (delay-functor worker). a5/a6 feed only the
 // script error report — pass 0. This is the primitive that stocks a
 // replica PA frame with its pieces.
-constexpr std::uintptr_t PAPYRUS_ADDITEM_RVA   = 0x011735A0;
+inline const std::uintptr_t PAPYRUS_ADDITEM_RVA   = FW_RVA(0x011735A0, 0x01173A90);
 
 // v24 RE (2026-08-16) — sub_1411808F0(vm, stackId, refr, item_form,
 // omod_form, attach): the shared worker behind the Papyrus
@@ -1102,7 +1104,7 @@ constexpr std::uintptr_t PAPYRUS_ADDITEM_RVA   = 0x011735A0;
 // 0,0 is safe, same contract as the AddItem worker above. Main thread.
 // This is what makes a replica's piece the SAME Mk level as the original
 // instead of the engine's fresh leveled roll.
-constexpr std::uintptr_t PAPYRUS_ATTACH_MOD_RVA = 0x011808F0;
+inline const std::uintptr_t PAPYRUS_ATTACH_MOD_RVA = FW_RVA(0x011808F0, 0x01180DE0);
 // 2026-09-15 — the worker's own precondition, exposed so we can test it
 // BEFORE calling: sub_140502280(refr, item) = count of `item` in the refr's
 // inventory (BGSInventoryList at +0xF8, else the base object's container).
@@ -1113,7 +1115,7 @@ constexpr std::uintptr_t PAPYRUS_ATTACH_MOD_RVA = 0x011808F0;
 // session, each leaving a half-built CachedErrorMessageImpl and a
 // BSFixedString behind). Checking first keeps the failure in our log and
 // out of the engine.
-constexpr std::uintptr_t REFR_ITEM_COUNT_RVA = 0x00502280;   // sub_140502280(refr, item) -> i64
+inline const std::uintptr_t REFR_ITEM_COUNT_RVA = FW_RVA(0x00502280, 0x005025B0);   // sub_140502280(refr, item) -> i64
 
 // v25 RE (2026-09-14) — the Health extra on an inventory stack: a core's
 // remaining charge and a piece's condition are the SAME datum, BSExtraData
@@ -1130,11 +1132,11 @@ constexpr std::uintptr_t REFR_ITEM_COUNT_RVA = 0x00502280;   // sub_140502280(re
 //   sub_140272380(list+8, extra)          link + presence bitmap (handles the
 //                                         TLS memory context itself)
 //   sub_1416592C0(list+0x20)              unlock
-constexpr std::uintptr_t EXTRA_ALLOC_RVA        = 0x001E0000;
-constexpr std::uintptr_t EXTRAHEALTH_CTOR_RVA   = 0x002A3CC0;
-constexpr std::uintptr_t EXTRALIST_ADD_RVA      = 0x00272380;
-constexpr std::uintptr_t EXTRALIST_WLOCK_RVA    = 0x01659060;
-constexpr std::uintptr_t EXTRALIST_WUNLOCK_RVA  = 0x016592C0;
+inline const std::uintptr_t EXTRA_ALLOC_RVA        = FW_RVA(0x001E0000, 0x001E0320);
+inline const std::uintptr_t EXTRAHEALTH_CTOR_RVA   = FW_RVA(0x002A3CC0, 0x002A3FE0);
+inline const std::uintptr_t EXTRALIST_ADD_RVA      = FW_RVA(0x00272380, 0x002726A0);
+inline const std::uintptr_t EXTRALIST_WLOCK_RVA    = FW_RVA(0x01659060, 0x01659480);
+inline const std::uintptr_t EXTRALIST_WUNLOCK_RVA  = FW_RVA(0x016592C0, 0x016596E0);
 constexpr std::size_t    EXTRAHEALTH_SIZE       = 0x20;
 constexpr std::uint32_t  EXTRA_TYPE_HEALTH      = 0x25;
 constexpr std::size_t    EXTRAHEALTH_VALUE_OFF  = 0x18;
@@ -1208,9 +1210,9 @@ constexpr std::size_t    EXTRALIST_LOCK_OFF     = 0x20;
 // the M9 attempts. It's the start-state armor in our world_base.fos save.
 // If a future save doesn't have it equipped, the unequip is a no-op and
 // the equip might error — currently acceptable; we ignore failure return.
-constexpr std::uintptr_t ENGINE_EQUIP_OBJECT_RVA          = 0x00CE5900;
-constexpr std::uintptr_t ENGINE_UNEQUIP_OBJECT_RVA        = 0x00CE5DA0;
-constexpr std::uintptr_t ACTOR_EQUIP_MGR_SINGLETON_RVA    = 0x031E3328;
+inline const std::uintptr_t ENGINE_EQUIP_OBJECT_RVA          = FW_RVA(0x00CE5900, 0x00CE5E20);
+inline const std::uintptr_t ENGINE_UNEQUIP_OBJECT_RVA        = FW_RVA(0x00CE5DA0, 0x00CE62C0);
+inline const std::uintptr_t ACTOR_EQUIP_MGR_SINGLETON_RVA    = FW_RVA(0x031E3328, 0x031EE428);
 constexpr std::uint32_t  VAULT_SUIT_FORM_ID               = 0x0001EED7;
 
 // --- M9 wedge 2 — armor visual sync via TESObjectARMO/ARMA struct walk ---
@@ -1291,7 +1293,7 @@ constexpr std::size_t TESOBJECTARMO_ADDON_ENTRY_PRIORITY_OFF    = 0x00;   // u16
 // See re/M9_arma_select_AGENT_A_r8_dec_140658DF0.txt for the canonical use
 // pattern. This is the API to use on sender to extract OMOD-effective
 // priority from the equipped item.
-constexpr std::uintptr_t OBJINSTANCE_BUILD_HOLDER_RVA           = 0x436820;
+inline const std::uintptr_t OBJINSTANCE_BUILD_HOLDER_RVA           = FW_RVA(0x436820, 0x00436B50);
 
 // === ARMA TESModel offsets (CORRECTED 2026-05-03) ============================
 // Live data + agent A confirm:
@@ -1499,7 +1501,7 @@ constexpr std::size_t BSEXTRADATA_TYPE_BYTE_OFF           = 0x12;
 constexpr std::uint8_t BGSOBJECTINSTANCEEXTRA_TYPE_BYTE   = 0x35;
 constexpr std::size_t BGSOBJECTINSTANCEEXTRA_SIZE         = 40;
 constexpr std::size_t BGSOBJECTINSTANCEEXTRA_INNER_OFF    = 0x18;
-constexpr std::size_t BGSOBJECTINSTANCEEXTRA_VTABLE_RVA   = 0x2462298;
+inline const std::size_t BGSOBJECTINSTANCEEXTRA_VTABLE_RVA   = FW_RVA(0x2462298, 0x0246A2F8);
 
 // =========================================================================
 // BGSObjectInstanceExtra::Inner (16 B sub-struct at OIE + 0x18)
@@ -1597,10 +1599,10 @@ constexpr std::size_t INV_STACK_EXTRAS_OFF                = 0x18;
 // dispatch — main-thread-only because the manager is rebuilt by
 // scene-graph mutations (cell load, race change, weapon swap, etc).
 constexpr std::size_t    IANIMGRAPHHOLDER_OFF       = 0x48;   // Actor → IAnimationGraphManagerHolder sub-object
-constexpr std::uintptr_t SET_GRAPH_VAR_BOOL_RVA     = 0x00818D60;
-constexpr std::uintptr_t SET_GRAPH_VAR_INT_RVA      = 0x00818D80;
-constexpr std::uintptr_t SET_GRAPH_VAR_FLOAT_RVA    = 0x00818DA0;
-constexpr std::uintptr_t BSFIXEDSTRING_MAKE_RVA     = 0x0167BDC0;
+inline const std::uintptr_t SET_GRAPH_VAR_BOOL_RVA     = FW_RVA(0x00818D60, 0x008190B0);
+inline const std::uintptr_t SET_GRAPH_VAR_INT_RVA      = FW_RVA(0x00818D80, 0x008190D0);
+inline const std::uintptr_t SET_GRAPH_VAR_FLOAT_RVA    = FW_RVA(0x00818DA0, 0x008190F0);
+inline const std::uintptr_t BSFIXEDSTRING_MAKE_RVA     = FW_RVA(0x0167BDC0, 0x0167C1E0);
 
 // =========================================================================
 // B6.5w4 — Per-Actor AI tick (suppression target)
@@ -1630,7 +1632,7 @@ constexpr std::uintptr_t BSFIXEDSTRING_MAKE_RVA     = 0x0167BDC0;
 //   - No gravity/collision check (cosmetic: NPC may float if terrain Z
 //     doesn't match server's waypoint Z; accept for MVP)
 //   - No combat/dialogue logic (good — B6.6 will drive these via server)
-constexpr std::uintptr_t ACTOR_UPDATE_PERFRAME_RVA = 0x00C636A0;
+inline const std::uintptr_t ACTOR_UPDATE_PERFRAME_RVA = FW_RVA(0x00C636A0, 0x00C63BC0);
 
 // =========================================================================
 // B6.5w4 round 3 — Actor → 3D NIF direct write
@@ -1679,7 +1681,7 @@ constexpr std::size_t NI_AV_LOCAL_TRANSLATE_OFF = 0x60;
 // Side effects: resets movement controller (zeros velocity), dispatches
 // re-equip if Get3D() non-null. Call ONCE per NPC at registration time
 // (not every frame) to avoid re-equip storm.
-constexpr std::uintptr_t ENGINE_ENABLE_AI_RVA = 0x00C76590;
+inline const std::uintptr_t ENGINE_ENABLE_AI_RVA = FW_RVA(0x00C76590, 0x00C76AB0);
 
 // =========================================================================
 // B6.5w4 round 7 — Atomic teleport silver bullet (4-agent consensus)
@@ -1711,7 +1713,7 @@ constexpr std::uintptr_t ENGINE_ENABLE_AI_RVA = 0x00C76590;
 //
 // Estimated cost: ~1.4 µs same-cell. At 10 Hz × 2 NPCs = 28 µs/sec.
 // Safe.
-constexpr std::uintptr_t ACTOR_ATOMIC_TELEPORT_RVA = 0x00C60BE0;
+inline const std::uintptr_t ACTOR_ATOMIC_TELEPORT_RVA = FW_RVA(0x00C60BE0, 0x00C61100);
 
 // `NiAVObject::SetMotionType` at RVA 0x018763E0 is the NIF-3D-level
 // worker that walks the NIF subtree finding Havok rigid bodies and
@@ -1731,7 +1733,7 @@ constexpr std::uintptr_t ACTOR_ATOMIC_TELEPORT_RVA = 0x00C60BE0;
 //       char        a3,                 // pass 1
 //       char        a4,                 // pass 0
 //       std::uint8_t activateOnLand);   // pass 0
-constexpr std::uintptr_t NIAV_SET_MOTION_TYPE_RVA = 0x018763E0;
+inline const std::uintptr_t NIAV_SET_MOTION_TYPE_RVA = FW_RVA(0x018763E0, 0x018769C0);
 
 // =========================================================================
 // B6.5w12 — Ghost AI decision-point hook RVAs
@@ -1775,7 +1777,7 @@ constexpr std::uintptr_t NIAV_SET_MOTION_TYPE_RVA = 0x018763E0;
 //       AIProcess* aiproc,
 //       Actor*     actor,
 //       char       force_eval);
-constexpr std::uintptr_t PKG_SELECTOR_RVA = 0x00CEEC30;
+inline const std::uintptr_t PKG_SELECTOR_RVA = FW_RVA(0x00CEEC30, 0x00CEF150);
 
 // HOOK #1 — TESPackage::EvaluateConditions (the MVP "predicate" hook).
 //
@@ -1806,7 +1808,7 @@ constexpr std::uintptr_t PKG_SELECTOR_RVA = 0x00CEEC30;
 //       return pkg_fid == cache[actor_fid].package_form_id;
 //   }
 //   return g_orig(condition_list_head, eval_ctx);
-constexpr std::uintptr_t PKG_EVAL_CONDITIONS_RVA = 0x00768CC0;
+inline const std::uintptr_t PKG_EVAL_CONDITIONS_RVA = FW_RVA(0x00768CC0, 0x00769000);
 
 // HOOK #2 — Actor::SyncCombatTargetFromAIProcess (the combat-target SETTER).
 //
@@ -1843,7 +1845,7 @@ constexpr std::uintptr_t PKG_EVAL_CONDITIONS_RVA = 0x00768CC0;
 //     return 1;                              // skip original
 //   }
 //   else { call_original(); }
-constexpr std::uintptr_t COMBAT_TARGET_SETTER_RVA = 0x00C5CCE0;
+inline const std::uintptr_t COMBAT_TARGET_SETTER_RVA = FW_RVA(0x00C5CCE0, 0x00C5D200);
 
 // Actor field offsets exposed by hook #2 substitution.
 // Build 68.1 — LABEL CORRECTED (decomp-verified): the u32 at Actor+0x380 is an
@@ -1882,7 +1884,7 @@ constexpr std::size_t    ACTOR_FLAGS_720_OFF            = 0x2D0;   // u32 flags,
 //     target_pos->y = cache.aim_y;
 //     target_pos->z = cache.aim_z;
 //   ... then call original so it writes our coords into self+24/28/32.
-constexpr std::uintptr_t AIM_SET_TARGET_RVA = 0x00E65820;
+inline const std::uintptr_t AIM_SET_TARGET_RVA = FW_RVA(0x00E65820, 0x00E65D50);
 
 // ============================================================================
 // PUPPET FIRE PHASE 1 — supervisor-verified offsets (2026-05-17)
@@ -1902,17 +1904,17 @@ constexpr std::uintptr_t AIM_SET_TARGET_RVA = 0x00E65820;
 // Preconditions: Actor+0x300 (primary AIProcess) non-null AND slot record
 // exists for `slot`. Does NOT consult Actor+0x328 — safe on actors WITHOUT
 // HighProcess.
-constexpr std::uintptr_t WEAPON_STATE_CLASS_SETTER_RVA = 0x00CD1830;
+inline const std::uintptr_t WEAPON_STATE_CLASS_SETTER_RVA = FW_RVA(0x00CD1830, 0x00CD1D50);
 
 // Slot resolver — equipment walker for the slot id used by class setter and
 // WeaponFireHandler (Worker A verified — funcs_0307.md:5287, size 0x57).
 //   int* __fastcall(Actor* actor, int* out_slot, int64_t zero_pair[2])
 // Returns pointer (= &out_slot); sets *out_slot to slot id or -1 sentinel.
-constexpr std::uintptr_t ACTOR_RESOLVE_WEAPON_SLOT_RVA = 0x00CD0A60;
+inline const std::uintptr_t ACTOR_RESOLVE_WEAPON_SLOT_RVA = FW_RVA(0x00CD0A60, 0x00CD0F80);
 
 // CombatAimController vtable RVA (Worker B verified — rtti_catalog:5075,
 // confirmed across all 4 ctor callers). 17-slot vtable.
-constexpr std::uintptr_t COMBAT_AIM_CONTROLLER_VTBL_RVA = 0x02578C28;
+inline const std::uintptr_t COMBAT_AIM_CONTROLLER_VTBL_RVA = FW_RVA(0x02578C28, 0x02580D28);
 
 // CombatAimController field offsets (Worker B + supervisor walk verified —
 // ctor sub_140E653D0 funcs_0333.md:14129-14153, SetAimTarget body 14379-14395).
@@ -1958,7 +1960,7 @@ constexpr std::size_t HIGHPROC_LOCK_OFF                   = 0x30;   // recursive
 //    across cells."
 //
 // Cite: funcs_0307.md:4421 (ID 76832/204831 per 05_functions.csv), size 0x51B.
-constexpr std::uintptr_t ENTER_COMBAT_RVA = 0x00CCF810;
+inline const std::uintptr_t ENTER_COMBAT_RVA = FW_RVA(0x00CCF810, 0x00CCFD30);
 // ============================================================================
 
 // ===========================================================================
@@ -1990,7 +1992,7 @@ constexpr std::uintptr_t ENTER_COMBAT_RVA = 0x00CCF810;
 // the same four raiders held theirs for up to 160 ticks (2.7 s).
 //
 // Cite: funcs_0299.md [74838/204831] 0x140C46770, size 0xC2.
-constexpr std::uintptr_t REQUEST_STOP_COMBAT_RVA = 0x00C46770;
+inline const std::uintptr_t REQUEST_STOP_COMBAT_RVA = FW_RVA(0x00C46770, 0x00C46C90);
 
 // Build 69b — Actor::StopCombat itself, Actor vtable slot 256 (+0x800).
 //
@@ -2010,7 +2012,7 @@ constexpr std::uintptr_t REQUEST_STOP_COMBAT_RVA = 0x00C46770;
 // push rdi`, four complete instructions with no RIP-relative operand.
 //
 // Cite: funcs_0307.md [76837/204831] 0x140CCFFC0, size 0x37F.
-constexpr std::uintptr_t ACTOR_STOP_COMBAT_RVA = 0x00CCFFC0;
+inline const std::uintptr_t ACTOR_STOP_COMBAT_RVA = FW_RVA(0x00CCFFC0, 0x00CD04E0);
 // ============================================================================
 
 // ===========================================================================
@@ -2036,14 +2038,14 @@ constexpr std::uintptr_t ACTOR_STOP_COMBAT_RVA = 0x00CCFFC0;
 // (sub_140CCF810:4549 — Actor+0x208+0x1D8 & 2 == 1) that refused 5/5
 // Concord raiders in Build 45 live test. Gate lives in EnterCombat's
 // preamble, not in the orchestrator.
-constexpr std::uintptr_t COMBAT_PROMOTER_FRESH_RVA = 0x00ED2390;  // sub_140ED2390
+inline const std::uintptr_t COMBAT_PROMOTER_FRESH_RVA = FW_RVA(0x00ED2390, 0x00ED28C0);  // sub_140ED2390
 
 // sub_140E653D0 CombatAimController ctor (funcs_0333.md:14129, size 0x8B).
 // Signature: void* __fastcall(self, parent_HighProcess, type_tag).
 // 64-byte object; self-registers to parent+0x98 BSTArray via sub_14087CFA0.
 // Ctor zeroes +0x30 (slot_filter) and +0x34 (flags) — caller MUST write
 // these after ctor returns, else the scanner sub_14087D190 predicate fails.
-constexpr std::uintptr_t COMBAT_AIM_CONTROLLER_CTOR_RVA = 0x00E653D0;  // sub_140E653D0
+inline const std::uintptr_t COMBAT_AIM_CONTROLLER_CTOR_RVA = FW_RVA(0x00E653D0, 0x00E65900);  // sub_140E653D0
 
 // CombatManager singleton bag index. qword_1430DBF78 is the engine's global
 // symbol bag (already resolved as g_procmgr_bag). Bag index 135939 holds
@@ -2097,7 +2099,7 @@ constexpr std::size_t AIM_CTRL_PARENT_OFF          = 0x10;  // HighProcess*
 //       doesn't translate the actor via anim
 //     - Engine's MovementControllerNPC::Tick (via vt[8]) doesn't fire
 //   Otherwise: passthrough.
-constexpr std::uintptr_t MOVEMENT_TICK_RVA = 0x00C65E20;
+inline const std::uintptr_t MOVEMENT_TICK_RVA = FW_RVA(0x00C65E20, 0x00C66340);
 
 // HOOK #5 — TESObjectREFR::SetPosition_NiPoint3 (BELT-AND-BRACES).
 //
@@ -2114,7 +2116,7 @@ constexpr std::uintptr_t MOVEMENT_TICK_RVA = 0x00C65E20;
 // movement_override, BAIL. The actor won't get pos-written via any
 // engine path. Combined with hook #4 wrapper bail, this should yield
 // full freeze for tracked combat raiders.
-constexpr std::uintptr_t SETPOSITION_NIPOINT3_RVA = 0x00513A80;
+inline const std::uintptr_t SETPOSITION_NIPOINT3_RVA = FW_RVA(0x00513A80, 0x00513DB0);
 
 // HOOK #6 — Actor::SetPosition full (vt[202], slot offset 0x650 from Actor
 // vtable base). Per re/B6.5w14_pair_AGENT_1A.md (95% conf): this is the
@@ -2135,7 +2137,7 @@ constexpr std::uintptr_t SETPOSITION_NIPOINT3_RVA = 0x00513A80;
 //
 // Signature:
 //   void __fastcall sub_140C60630(Actor* actor, float pos[3]);
-constexpr std::uintptr_t ACTOR_SETPOS_VT202_RVA = 0x00C60630;
+inline const std::uintptr_t ACTOR_SETPOS_VT202_RVA = FW_RVA(0x00C60630, 0x00C60B50);
 
 // HOOK #7 — bhkCharRigidBodyController FinishPhysicsStep (Havok per-frame).
 //
@@ -2160,7 +2162,7 @@ constexpr std::uintptr_t ACTOR_SETPOS_VT202_RVA = 0x00C60630;
 //
 // Signature (per pair 5A):
 //   void __fastcall sub_1418B9790(bhkCharRigidBodyController* self);
-constexpr std::uintptr_t BHK_CHAR_FINISH_STEP_RVA = 0x018B9790;
+inline const std::uintptr_t BHK_CHAR_FINISH_STEP_RVA = FW_RVA(0x018B9790, 0x018B9D70);
 
 
 // ============================================================================
@@ -2183,7 +2185,7 @@ constexpr std::uintptr_t BHK_CHAR_FINISH_STEP_RVA = 0x018B9790;
 // fid 0x46458 (a single-shot weapon raider); all bailed; raiders
 // shooting auto weapons were untouched. Replaced by ACTOR_FIRE_WEAPON_RVA
 // below (universal funnel).
-constexpr std::uintptr_t COMBAT_GUNFIRE_DECIDE_RVA = 0x0086FCA0;
+inline const std::uintptr_t COMBAT_GUNFIRE_DECIDE_RVA = FW_RVA(0x0086FCA0, 0x0086FFF0);
 
 // Hook #3 v2 (fire weapon) — `Actor::FireWeapon` at RVA 0x479680.
 //
@@ -2219,7 +2221,7 @@ constexpr std::uintptr_t COMBAT_GUNFIRE_DECIDE_RVA = 0x0086FCA0;
 //
 // Confidence: HIGH (signature verified in disasm; Actor* directly in
 // rcx; called for every weapon fire by every actor including player).
-constexpr std::uintptr_t ACTOR_FIRE_WEAPON_RVA = 0x00479680;
+inline const std::uintptr_t ACTOR_FIRE_WEAPON_RVA = FW_RVA(0x00479680, 0x004799B0);
 
 // ============================================================================
 // B6.6w0 "all hooks" batch (2026-05-12 evening) — install everything from
@@ -2238,7 +2240,7 @@ constexpr std::uintptr_t ACTOR_FIRE_WEAPON_RVA = 0x00479680;
 // Substitution strategy: replace rdx (new target Actor*) with server-
 // chosen target. For Phase 1 we DIAGNOSTIC ONLY: log first N fires
 // to confirm hook semantics + fid identification.
-constexpr std::uintptr_t AIPROCESS_SET_COMBAT_TARGET_RVA = 0x0087AB30;
+inline const std::uintptr_t AIPROCESS_SET_COMBAT_TARGET_RVA = FW_RVA(0x0087AB30, 0x0087AE80);
 
 // Hook #2 v2 (movement intent decision funnel) — pair B1 dossier.
 // `AIProcess::ProcessPackages_Movement(AIProcess* rcx, Actor* rdx, char a3)`
@@ -2251,7 +2253,7 @@ constexpr std::uintptr_t AIPROCESS_SET_COMBAT_TARGET_RVA = 0x0087AB30;
 // BAIL strategy: if rdx-Actor is tracked, skip original → no movement
 // decision processed for this actor this frame → pos stays put.
 // Belt-and-braces with our existing pos_belt / actor_setpos hooks.
-constexpr std::uintptr_t AIPROCESS_PROCESS_MOVEMENT_RVA = 0x00CEEC30;
+inline const std::uintptr_t AIPROCESS_PROCESS_MOVEMENT_RVA = FW_RVA(0x00CEEC30, 0x00CEF150);
 
 // Hook #3 alternative (dispatch attack action) — C1 chain @ §3 line 286.
 // `Actor::DispatchAttackAction(Actor* rcx, int action_id rdx, int a3 r8)`
@@ -2275,7 +2277,7 @@ constexpr std::uintptr_t AIPROCESS_PROCESS_MOVEMENT_RVA = 0x00CEEC30;
 //
 // BAIL strategy: if Actor* in rcx is tracked && not player, return 0.
 // Caller treats as "action failed", retries next tick.
-constexpr std::uintptr_t ACTOR_DISPATCH_ATTACK_ACTION_RVA = 0x00E6F830;
+inline const std::uintptr_t ACTOR_DISPATCH_ATTACK_ACTION_RVA = FW_RVA(0x00E6F830, 0x00E6FD60);
 
 // Hook #5 (hit applier orchestrator) — `sub_140CD2780`. Per D2 dossier
 // this is the CENTRAL FUNNEL for projectile + melee + explosion hit
@@ -2308,7 +2310,7 @@ constexpr std::uintptr_t ACTOR_DISPATCH_ATTACK_ACTION_RVA = 0x00E6F830;
 // MEDIUM-HIGH on bail behavior (cleanest place to short-circuit; the
 // caller is the dispatcher case 14 path in sub_140C4CE00 which
 // already handles "case did nothing" gracefully).
-constexpr std::uintptr_t ACTOR_HIT_APPLIER_RVA = 0x00CD2780;
+inline const std::uintptr_t ACTOR_HIT_APPLIER_RVA = FW_RVA(0x00CD2780, 0x00CD2CA0);
 
 // Offset to target Actor within the hit-data struct passed as 1st arg.
 constexpr std::size_t HIT_DATA_TARGET_ACTOR_OFFSET = 0x300;
@@ -2328,7 +2330,7 @@ constexpr std::size_t HIT_DATA_TARGET_ACTOR_OFFSET = 0x300;
 //   Health cell = Actor+0x444 (3×f32 modifier columns; CURRENT Health = their sum).
 //   Death is GATED on Health<=0 (duplicated in >=3 per-frame checkers) — so the
 //   safe shared-HP gate is to CLAMP this write to floor>=1, NOT to gate Actor::Kill.
-constexpr std::uintptr_t ACTOR_HP_FUNNEL_RVA   = 0x00CC9650;  // sub_140CC9650
+inline const std::uintptr_t ACTOR_HP_FUNNEL_RVA   = FW_RVA(0x00CC9650, 0x00CC9B70);  // sub_140CC9650
 constexpr std::size_t    ACTOR_HEALTH_CELL_OFF = 0x444;       // 3×f32, current = sum
 // ActorValueOwner sub-object: its vtable pointer sits at Actor+0x58. Vtable
 // slot +8 = GetActorValue(AVInfo*) → ABSOLUTE current value (permanent base +
@@ -2381,7 +2383,7 @@ constexpr std::size_t    AVOWNER_GET_MAX_VTBL     = 0x10;
 //
 // THIS IS THE NUKE — combined with existing freeze + immortality hooks
 // this should give us totally neutral, non-aggressive tracked NPCs.
-constexpr std::uintptr_t ACTOR_COMBAT_ORCHESTRATOR_RVA = 0x00CCFDF0;
+inline const std::uintptr_t ACTOR_COMBAT_ORCHESTRATOR_RVA = FW_RVA(0x00CCFDF0, 0x00CD0310);
 
 // Build 40 (2026-05-17) — ghost_combat_force hook RVAs.
 //
@@ -2399,10 +2401,10 @@ constexpr std::uintptr_t ACTOR_COMBAT_ORCHESTRATOR_RVA = 0x00CCFDF0;
 // Section 06 §1: sub_1404FB890 cell-loaded (returns 0/1).
 // Section 06 §8: sub_14087A900 post-pick gate (returns 0/1 "re-pick / stay engaged").
 
-constexpr std::uintptr_t HOSTILITY_CORE_RVA    = 0x00C8DFF0; // sub_140C8DFF0
-constexpr std::uintptr_t ALIVE_COUNTER_RVA     = 0x00E9E650; // sub_140E9E650
-constexpr std::uintptr_t CELL_LOADED_RVA       = 0x004FB890; // sub_1404FB890
-constexpr std::uintptr_t POST_PICK_GATE_RVA    = 0x0087A900; // sub_14087A900
+inline const std::uintptr_t HOSTILITY_CORE_RVA    = FW_RVA(0x00C8DFF0, 0x00C8E510); // sub_140C8DFF0
+inline const std::uintptr_t ALIVE_COUNTER_RVA     = FW_RVA(0x00E9E650, 0x00E9EB80); // sub_140E9E650
+inline const std::uintptr_t CELL_LOADED_RVA       = FW_RVA(0x004FB890, 0x004FBBC0); // sub_1404FB890
+inline const std::uintptr_t POST_PICK_GATE_RVA    = FW_RVA(0x0087A900, 0x0087AC50); // sub_14087A900
 
 // Build 44 (2026-05-17) — event dispatch guard for use-after-free
 // crash exposed by Build 43b. Combat orchestrator schedules events
@@ -2410,7 +2412,7 @@ constexpr std::uintptr_t POST_PICK_GATE_RVA    = 0x0087A900; // sub_14087A900
 // lifetime ends; vt[3] dispatch at sub_140DEF780+0x22 reads garbage
 // → EXEC fault. Our detour validates vt[3] is in module .text before
 // passing through.
-constexpr std::uintptr_t EVENT_DISPATCH_RVA    = 0x00DEF780; // sub_140DEF780
+inline const std::uintptr_t EVENT_DISPATCH_RVA    = FW_RVA(0x00DEF780, 0x00DEFCB0); // sub_140DEF780
 
 // Build 38 (2026-05-16) — combat target ENGAGE gate.
 //
@@ -2442,7 +2444,7 @@ constexpr std::uintptr_t EVENT_DISPATCH_RVA    = 0x00DEF780; // sub_140DEF780
 // for the duration of the call, restore on return. Per-tick walkers
 // run between calls and see stale ghost.cell → don't iterate ghost
 // as in-cell → no crash.
-constexpr std::uintptr_t COMBAT_ENGAGE_GATE_RVA = 0x00CF6100;
+inline const std::uintptr_t COMBAT_ENGAGE_GATE_RVA = FW_RVA(0x00CF6100, 0x00CF6620);
 
 // .data slot holding the tlsIndex used by sub_14086FCA0 to find the
 // per-thread CombatBehaviorThread. ABSOLUTE address per dossier:
@@ -2453,7 +2455,7 @@ constexpr std::uintptr_t COMBAT_ENGAGE_GATE_RVA = 0x00CF6100;
 //   u32 idx  = *(u32*)(module_base + 0x03E5C658);
 //   void* p  = ((void**)NtCurrentTeb()->ThreadLocalStoragePointer)[idx];
 //   // p is the CombatBehaviorThread's TLS-resident process-block holder
-constexpr std::uintptr_t BEHAVIOR_THREAD_HOLDER_TLSIDX_RVA = 0x03E5C658;
+inline const std::uintptr_t BEHAVIOR_THREAD_HOLDER_TLSIDX_RVA = FW_RVA(0x03E5C658, 0x03E73018);
 
 // Inner offsets in the TLS-walk chain (constants pulled from the
 // pseudo-code at the head of sub_14086FCA0). Kept as named constants
@@ -2478,24 +2480,24 @@ constexpr std::size_t BEHAVIOR_AIPROCESS_ACTOR_OFFSET   = 0x68;    // 104
 // ============================================================================
 
 // KEEP-ALWAYS callees (12 mandatory).
-constexpr std::uintptr_t PUPPET_DEATH_FADE_RVA           = 0x00C960C0; // sub_140C960C0 — death-fade / deferred death
-constexpr std::uintptr_t PUPPET_MOUNT_SWIM_FLAGS_RVA     = 0x00C5AD90; // sub_140C5AD90 — mount/swim flag sync
-constexpr std::uintptr_t PUPPET_ANIM_EVENT_DRAIN_RVA     = 0x00DA8F60; // sub_140DA8F60 — BSAnimGraphMgr push unprocessed events
-constexpr std::uintptr_t PUPPET_TICK_RENDER_STATE_RVA    = 0x00CE1720; // sub_140CE1720 — Actor::TickRenderState_PerFrame (SyncBehavior + BipedAnim::Update)
-constexpr std::uintptr_t PUPPET_SHUTDOWN_TRANSITION_RVA  = 0x00C9B860; // sub_140C9B860 — Actor::ProcessShutdownTransition
-constexpr std::uintptr_t PUPPET_ANIM_DISPATCH_DELTA_RVA  = 0x00CEEBD0; // sub_140CEEBD0 — AIProcess::AnimGraph TickWithDelta (delta>0)
-constexpr std::uintptr_t PUPPET_ANIM_DISPATCH_IDLE_RVA   = 0x00CEEB90; // sub_140CEEB90 — TickIdle (delta=0)
-constexpr std::uintptr_t PUPPET_BS_TIME_FRAME_COUNT_RVA  = 0x00C1F120; // sub_140C1F120 — BSTime::GetFrameCount (returns u8 parity)
-constexpr std::uintptr_t PUPPET_EXTRADATA_PARITY_TICK_RVA = 0x00280660; // sub_140280660 — ExtraDataList::OnFrameTickWithParity
-constexpr std::uintptr_t PUPPET_AIPROC_POST_EXTRA_RVA    = 0x00CF2290; // sub_140CF2290 — AIProcess::OnTickPostExtra
-constexpr std::uintptr_t PUPPET_STATIC_BLOCK_CHECK_RVA   = 0x00C65F50; // sub_140C65F50 — Actor::OnFrameStaticBlockCheck (water/cell)
+inline const std::uintptr_t PUPPET_DEATH_FADE_RVA           = FW_RVA(0x00C960C0, 0x00C965E0); // sub_140C960C0 — death-fade / deferred death
+inline const std::uintptr_t PUPPET_MOUNT_SWIM_FLAGS_RVA     = FW_RVA(0x00C5AD90, 0x00C5B2B0); // sub_140C5AD90 — mount/swim flag sync
+inline const std::uintptr_t PUPPET_ANIM_EVENT_DRAIN_RVA     = FW_RVA(0x00DA8F60, 0x00DA9490); // sub_140DA8F60 — BSAnimGraphMgr push unprocessed events
+inline const std::uintptr_t PUPPET_TICK_RENDER_STATE_RVA    = FW_RVA(0x00CE1720, 0x00CE1C40); // sub_140CE1720 — Actor::TickRenderState_PerFrame (SyncBehavior + BipedAnim::Update)
+inline const std::uintptr_t PUPPET_SHUTDOWN_TRANSITION_RVA  = FW_RVA(0x00C9B860, 0x00C9BD80); // sub_140C9B860 — Actor::ProcessShutdownTransition
+inline const std::uintptr_t PUPPET_ANIM_DISPATCH_DELTA_RVA  = FW_RVA(0x00CEEBD0, 0x00CEF0F0); // sub_140CEEBD0 — AIProcess::AnimGraph TickWithDelta (delta>0)
+inline const std::uintptr_t PUPPET_ANIM_DISPATCH_IDLE_RVA   = FW_RVA(0x00CEEB90, 0x00CEF0B0); // sub_140CEEB90 — TickIdle (delta=0)
+inline const std::uintptr_t PUPPET_BS_TIME_FRAME_COUNT_RVA  = FW_RVA(0x00C1F120, 0x00C1F640); // sub_140C1F120 — BSTime::GetFrameCount (returns u8 parity)
+inline const std::uintptr_t PUPPET_EXTRADATA_PARITY_TICK_RVA = FW_RVA(0x00280660, 0x00280980); // sub_140280660 — ExtraDataList::OnFrameTickWithParity
+inline const std::uintptr_t PUPPET_AIPROC_POST_EXTRA_RVA    = FW_RVA(0x00CF2290, 0x00CF27B0); // sub_140CF2290 — AIProcess::OnTickPostExtra
+inline const std::uintptr_t PUPPET_STATIC_BLOCK_CHECK_RVA   = FW_RVA(0x00C65F50, 0x00C66470); // sub_140C65F50 — Actor::OnFrameStaticBlockCheck (water/cell)
 
 // Helpers used during graph-mgr / stack-local handling.
-constexpr std::uintptr_t PUPPET_GRAPHMGR_IS_LOADING_RVA  = 0x00DC8170; // sub_140DC8170 — BSAnimGraphMgr::IsLoading predicate
-constexpr std::uintptr_t PUPPET_ACTOR_IS_LOADED3D_RVA    = 0x00516FB0; // sub_140516FB0 — Actor::IsLoaded3DInWorld
-constexpr std::uintptr_t PUPPET_STACK_LOCAL_CTOR_A_RVA   = 0x016597B0; // sub_1416597B0 — stack-local init (BSTArray / NiPointer ctor)
-constexpr std::uintptr_t PUPPET_STACK_LOCAL_CTOR_B_RVA   = 0x01659470; // sub_141659470 — second stack-local init
-constexpr std::uintptr_t PUPPET_STACK_LOCAL_DTOR_RVA     = 0x0029CC10; // sub_14029CC10 — stack-local dtor (pairs to ctor_a/b)
+inline const std::uintptr_t PUPPET_GRAPHMGR_IS_LOADING_RVA  = FW_RVA(0x00DC8170, 0x00DC86A0); // sub_140DC8170 — BSAnimGraphMgr::IsLoading predicate
+inline const std::uintptr_t PUPPET_ACTOR_IS_LOADED3D_RVA    = FW_RVA(0x00516FB0, 0x005172E0); // sub_140516FB0 — Actor::IsLoaded3DInWorld
+inline const std::uintptr_t PUPPET_STACK_LOCAL_CTOR_A_RVA   = FW_RVA(0x016597B0, 0x01659BD0); // sub_1416597B0 — stack-local init (BSTArray / NiPointer ctor)
+inline const std::uintptr_t PUPPET_STACK_LOCAL_CTOR_B_RVA   = FW_RVA(0x01659470, 0x01659890); // sub_141659470 — second stack-local init
+inline const std::uintptr_t PUPPET_STACK_LOCAL_DTOR_RVA     = FW_RVA(0x0029CC10, 0x0029CF30); // sub_14029CC10 — stack-local dtor (pairs to ctor_a/b)
 
 // Field offsets used by the puppet body.
 constexpr std::size_t ACTOR_AIPROCESS_PTR_OFF        = 0x300;   // *(Actor+0x300) = AIProcess*
@@ -2536,11 +2538,11 @@ constexpr std::size_t ACTOR_VT_UPDATELOADEDREF_OFF   = 0x288;
 //
 // We call it as fire(0, actor, nullptr) so the vanilla slot resolver
 // kicks in. Eliminates the dword_142ED4E40 dependency entirely.
-constexpr std::uintptr_t WEAPON_FIRE_HANDLER_RVA = 0x00DFF6B0;
+inline const std::uintptr_t WEAPON_FIRE_HANDLER_RVA = FW_RVA(0x00DFF6B0, 0x00DFFBE0);
 
 // Legacy — kept for compat, no longer used by new fire path.
-constexpr std::uintptr_t ACTOR_RESOLVE_WEAPON_FOR_SLOT_RVA = 0x00CD07F0;
-constexpr std::uintptr_t EQUIP_DEFAULT_SLOT_DWORD_RVA       = 0x02ED4E40;
+inline const std::uintptr_t ACTOR_RESOLVE_WEAPON_FOR_SLOT_RVA = FW_RVA(0x00CD07F0, 0x00CD0D10);
+inline const std::uintptr_t EQUIP_DEFAULT_SLOT_DWORD_RVA       = FW_RVA(0x02ED4E40, 0x02EDFE40);
 
 // ============================================================================
 // B6.6w4 — engine-native movement-controller disable (replaces 4-hook
@@ -2570,7 +2572,7 @@ constexpr std::uintptr_t EQUIP_DEFAULT_SLOT_DWORD_RVA       = 0x02ED4E40;
 // engine vanilla itself uses this path (scene-start, dialog, ~10 call
 // sites — combat / perception / anim are designed to tolerate the
 // disabled state).
-constexpr std::uintptr_t MOVCTRL_SET_DISABLED_RVA = 0x00DC80B0;
+inline const std::uintptr_t MOVCTRL_SET_DISABLED_RVA = FW_RVA(0x00DC80B0, 0x00DC85E0);
 // Offset of the disabled-byte INSIDE MovementControllerNPC.
 constexpr std::size_t    MOVCTRL_DISABLED_BYTE_OFF = 0x1A1;
 // Actor field holding the MovementController pointer.
@@ -2599,8 +2601,8 @@ constexpr std::size_t    ACTOR_MOVCTRL_PTR_OFF     = 0x318;
 //                      vtbl[+416] leaf body (07_vtables.txt empty / XrefsTo bug)
 //                      — its behavior under a live cell-stream is unread, hence
 //                      the call is gated out during cell-stream (!suspended).
-constexpr std::uintptr_t ACTOR_GET_CHARCTRL_RVA = 0x00C5C830;  // sub_140C5C830
-constexpr std::uintptr_t CHARCTRL_SETPOS_RVA    = 0x01894670;  // sub_141894670
+inline const std::uintptr_t ACTOR_GET_CHARCTRL_RVA = FW_RVA(0x00C5C830, 0x00C5CD50);  // sub_140C5C830
+inline const std::uintptr_t CHARCTRL_SETPOS_RVA    = FW_RVA(0x01894670, 0x01894C50);  // sub_141894670
 // Fail-safe vtable assert (Build 66; CORRECTED Build 67 by the decomp swarm).
 // The controller factory sub_140C5F0E0 hands bhkCharProxyController ONLY to
 // the local player / VATS singleton (funcs_0301.md:4941-4944); EVERY ordinary
@@ -2618,8 +2620,8 @@ constexpr std::uintptr_t CHARCTRL_SETPOS_RVA    = 0x01894670;  // sub_141894670
 // shows the interface vtbl) and rigid-body PRIMARY vtbl 0x26AB4C8 (factory
 // stores object+0; ctor disasm `lea rax, ??_7bhkCharRigidBodyController@@6B@`).
 // REJECT: 0x26AAD08 (proxy listener subobject) / 0x26AB738 (rigid subobject).
-constexpr std::uintptr_t CHARPROXY_VTBL_RVA     = 0x026AAD70;  // bhkCharProxyController (interface vtbl at *cc)
-constexpr std::uintptr_t CHARRB_VTBL_RVA        = 0x026AB4C8;  // bhkCharRigidBodyController primary vtbl
+inline const std::uintptr_t CHARPROXY_VTBL_RVA     = FW_RVA(0x026AAD70, 0x026B2E90);  // bhkCharProxyController (interface vtbl at *cc)
+inline const std::uintptr_t CHARRB_VTBL_RVA        = FW_RVA(0x026AB4C8, 0x026B35E8);  // bhkCharRigidBodyController primary vtbl
 
 // ============================================================================
 // B6.6w5 — engine-native PlayerCharacter spawn path (no PlaceAtMe).
@@ -2672,23 +2674,23 @@ constexpr std::uintptr_t CHARRB_VTBL_RVA        = 0x026AB4C8;  // bhkCharRigidBo
 //     We mirror this guard.
 //   - sub_141657F90 is the lazy-init worker.
 
-constexpr std::uintptr_t PLAYER_CTOR_RVA          = 0x00D52350; // sub_140D52350
-constexpr std::uintptr_t MEMMGR_ALLOC_RVA         = 0x016579C0; // sub_1416579C0
-constexpr std::uintptr_t MEMMGR_LAZY_INIT_RVA     = 0x01657F90; // sub_141657F90
-constexpr std::uintptr_t MEMMGR_INSTANCE_RVA      = 0x03E5E0F0; // unk_143E5E0F0
-constexpr std::uintptr_t MEMMGR_INIT_GUARD_RVA    = 0x03E5F2D0; // dword_143E5F2D0
+inline const std::uintptr_t PLAYER_CTOR_RVA          = FW_RVA(0x00D52350, 0x00D52870); // sub_140D52350
+inline const std::uintptr_t MEMMGR_ALLOC_RVA         = FW_RVA(0x016579C0, 0x01657DE0); // sub_1416579C0
+inline const std::uintptr_t MEMMGR_LAZY_INIT_RVA     = FW_RVA(0x01657F90, 0x016583B0); // sub_141657F90
+inline const std::uintptr_t MEMMGR_INSTANCE_RVA      = FW_RVA(0x03E5E0F0, 0x03E74AB0); // unk_143E5E0F0
+inline const std::uintptr_t MEMMGR_INIT_GUARD_RVA    = FW_RVA(0x03E5F2D0, 0x03E75C90); // dword_143E5F2D0
 
 // Secondary player-equality singleton. funcs_0314.md:6224 writes this
 // inside the PlayerCharacter ctor. Used by 30+ engine sites for the
 // `actor == player` check.
-constexpr std::uintptr_t PLAYER_ALT_SINGLETON_RVA = 0x031E2D50; // MEMORY[0x1431E2D50]
+inline const std::uintptr_t PLAYER_ALT_SINGLETON_RVA = FW_RVA(0x031E2D50, 0x031EDE50); // MEMORY[0x1431E2D50]
 
 // Engine "ProcessManager bag" — array of 42+ subsystem pointers keyed
 // by index in qword_1430DBF78. Index 41 (= byte offset 41*8 = 0x148)
 // holds the ProcessLists instance pointer; many engine sites read this
 // as `qword_1430DBF78[41]`. We resolve to module_base + 0x30DBF78 then
 // add 0x148 to reach the ProcessLists* slot.
-constexpr std::uintptr_t PROCMGR_BAG_RVA          = 0x030DBF78; // qword_1430DBF78
+inline const std::uintptr_t PROCMGR_BAG_RVA          = FW_RVA(0x030DBF78, 0x030E7078); // qword_1430DBF78
 constexpr std::size_t    PROCMGR_BAG_PROCESSLISTS_IDX = 41;     // [41] = ProcessLists*
 
 // ProcessLists::AddActor (sub_140DAF6D0 @ funcs_0320.md:7213). Signature:
@@ -2696,7 +2698,7 @@ constexpr std::size_t    PROCMGR_BAG_PROCESSLISTS_IDX = 41;     // [41] = Proces
 // Appends to internal handle list at pl+360 and sets Actor+720 bit 0x200.
 // Idempotent — if actor handle already present, skips append but still
 // sets the +720 bit.
-constexpr std::uintptr_t PROCESSLISTS_ADD_ACTOR_RVA = 0x00DAF6D0;
+inline const std::uintptr_t PROCESSLISTS_ADD_ACTOR_RVA = FW_RVA(0x00DAF6D0, 0x00DAFC00);
 
 // PlayerCharacter sizeof (verified at funcs_0298.md:7767 — caller passes
 // 0xE10 to MemMgr::alloc as the requested size).
@@ -2734,8 +2736,8 @@ constexpr std::uint32_t  GHOST_FORMID_BASE         = 0xFF000001;
 //     — REFR::SetPosition leaf writer. Writes Actor+0xD0/D4/D8 (POS_OFF triplet)
 //     and emits vt[13](2) cell-change broadcast. SEH-safe target.
 
-constexpr std::uintptr_t REFR_SETPARENTCELL_RVA    = 0x00517020; // sub_140517020
-constexpr std::uintptr_t REFR_SETPOSITION_LEAF_RVA = 0x00513A80; // sub_140513A80
+inline const std::uintptr_t REFR_SETPARENTCELL_RVA    = FW_RVA(0x00517020, 0x00517350); // sub_140517020
+inline const std::uintptr_t REFR_SETPOSITION_LEAF_RVA = FW_RVA(0x00513A80, 0x00513DB0); // sub_140513A80
 
 // B6.6w5 Build 12 (Fix 2) — engine handle allocator.
 //
@@ -2753,7 +2755,7 @@ constexpr std::uintptr_t REFR_SETPOSITION_LEAF_RVA = 0x00513A80; // sub_140513A8
 // The "v6 == dword_1430DA180" gate (line 9884) requires v6 = 0; for
 // that, bit 0x400 must be clear and dword_1430DA180 == 0 (which Agent A
 // verified statically in 08_data_section.hex).
-constexpr std::uintptr_t HANDLE_GET_OR_ALLOC_RVA   = 0x0022C8B0; // sub_14022C8B0
+inline const std::uintptr_t HANDLE_GET_OR_ALLOC_RVA   = FW_RVA(0x0022C8B0, 0x0022CBD0); // sub_14022C8B0
 
 // ============================================================================
 // B6.6w5 Build 29 — Engine-native CombatTargetSelectorFixed installation.
@@ -2799,13 +2801,13 @@ constexpr std::uintptr_t HANDLE_GET_OR_ALLOC_RVA   = 0x0022C8B0; // sub_14022C8B
 //
 // Verified RVAs (funcs_0337.md:1818, funcs_0346.md:6441, funcs_0358.md:4906,
 // funcs_0240.md:6180-6241, 11045):
-constexpr std::uintptr_t ADD_COMBAT_TARGET_RVA          = 0x00E91D70; // sub_140E91D70
-constexpr std::uintptr_t FIXED_SELECTOR_CTOR_RVA        = 0x00EE9780; // sub_140EE9780
-constexpr std::uintptr_t ENGINE_HEAP_ALLOC_RVA          = 0x016579C0; // sub_1416579C0
+inline const std::uintptr_t ADD_COMBAT_TARGET_RVA          = FW_RVA(0x00E91D70, 0x00E922A0); // sub_140E91D70
+inline const std::uintptr_t FIXED_SELECTOR_CTOR_RVA        = FW_RVA(0x00EE9780, 0x00EE9CB0); // sub_140EE9780
+inline const std::uintptr_t ENGINE_HEAP_ALLOC_RVA          = FW_RVA(0x016579C0, 0x01657DE0); // sub_1416579C0
 // Static heap descriptor used by the canonical vanilla call site at
 // funcs_0358.md:4906: `sub_1416579C0(&unk_143E5E0F0, 0x28, 0, 0)`.
 // Address 0x143E5E0F0 in the static image (image base 0x140000000).
-constexpr std::uintptr_t ENGINE_HEAP_DESC_RVA           = 0x03E5E0F0; // &unk_143E5E0F0
+inline const std::uintptr_t ENGINE_HEAP_DESC_RVA           = FW_RVA(0x03E5E0F0, 0x03E74AB0); // &unk_143E5E0F0
 
 // Actor + AIProcess + selector structure offsets.
 //
@@ -2869,7 +2871,7 @@ constexpr int            FIXED_SELECTOR_PRIORITY        = 10;
 // matches 0x80000001 (= -2147483647), clears owner TID and exchanges
 // count to 0 atomically. Safe to call when WE own the lock.
 constexpr std::size_t    CONTROLLER_SPINLOCK_OFF        = 0x120;
-constexpr std::uintptr_t LOCK_RELEASE_WRITE_RVA         = 0x016592C0;
+inline const std::uintptr_t LOCK_RELEASE_WRITE_RVA         = FW_RVA(0x016592C0, 0x016596E0);
 
 // Build 30 Fix 3 — Handle table base (unk_1430DA390). Used to inline-
 // resolve a 32-bit handle to its Actor* without refcount mutation.
@@ -2895,7 +2897,7 @@ constexpr std::uintptr_t LOCK_RELEASE_WRITE_RVA         = 0x016592C0;
 // crash when resolved Actor* has stale/freed baseForm. We pre-purge by
 // zeroing entry+0 handle field; the engine's resolve-or-skip logic at
 // validator line 2229 (`!v53[0]`) then skips the entry without faulting.
-constexpr std::uintptr_t HANDLE_TABLE_BASE_RVA          = 0x030DA390;
+inline const std::uintptr_t HANDLE_TABLE_BASE_RVA          = FW_RVA(0x030DA390, 0x030E5490);
 constexpr std::size_t    CONTROLLER_KNOWN_TGT_BASE_OFF  = 0x20;   // = 32
 constexpr std::size_t    CONTROLLER_KNOWN_TGT_COUNT_OFF = 0x30;   // = 48
 constexpr std::size_t    KNOWN_TGT_ENTRY_STRIDE         = 24;     // 24-byte records
@@ -2978,7 +2980,7 @@ constexpr std::size_t    AIPROCESS_TARGET_HANDLE_2_OFF     = 0x6C;
 // and vt[18] dispatch (Build 31.4 crash source sub_140CD68CD) lands
 // in a real function that returns false safely when ghost.AIProcess
 // is null/sanitized.
-constexpr std::uintptr_t ACTOR_IAGMH_VTABLE_RVA           = 0x02560CB0;
+inline const std::uintptr_t ACTOR_IAGMH_VTABLE_RVA           = FW_RVA(0x02560CB0, 0x02568DB0);
 
 // F9: AIProcess scalar zero offsets (post-spawn sanitize block).
 // Agent F9 dossier: zero these to remove residual state inherited
@@ -3033,24 +3035,24 @@ constexpr std::size_t    MAGIC_TARGET_VT_IMMUNITY_SLOT     = 4;   // vt[4]
 //            count at ctrl+0x18. Returns entry ptr or 0.
 // Hook:      pre-check ctrl+0x08 against -1 / 0 / unmapped; if poisoned,
 //            return 0 ("not found") instead of letting the cmp AV.
-constexpr std::uintptr_t COMBATCTRL_FIND_ENTRY_RVA   = 0x00E98820;
+inline const std::uintptr_t COMBATCTRL_FIND_ENTRY_RVA   = FW_RVA(0x00E98820, 0x00E98D50);
 
 // sub_140E988A0 — CombatController housekeeping pass (decay/cull).
 // Sole caller sub_140E918C0:1784. Body 0x862 bytes; reads entries-base
 // and id_list-base in 7+ dispatch sites. Guard: skip when ctrl is
 // ghost-engaged set OR ctrl+0x08 is poisoned.
-constexpr std::uintptr_t COMBATCTRL_HOUSEKEEPING_RVA = 0x00E988A0;
+inline const std::uintptr_t COMBATCTRL_HOUSEKEEPING_RVA = FW_RVA(0x00E988A0, 0x00E98DD0);
 
 // sub_140E918C0 — CombatController::ProcessTick.
 // Per-tick AI processor; iterates entries[], invokes cull predicate
 // sub_140E9E2B0, then iterates secondary id_list at ctrl+0x20.
 // Guard: skip whole tick when ctrl is ghost or entries-base poisoned.
-constexpr std::uintptr_t COMBATCTRL_PROCESS_TICK_RVA = 0x00E918C0;
+inline const std::uintptr_t COMBATCTRL_PROCESS_TICK_RVA = FW_RVA(0x00E918C0, 0x00E91DF0);
 
 // sub_140E91D70 — CombatController::AddKnownTarget.
 // Allocates new 208-byte entry, called from sub_14087A320, sub_14087CAD0,
 // sub_140ED45D0. May AV in BSTArray-Grow if entries_base is poisoned.
-constexpr std::uintptr_t COMBATCTRL_ADD_TARGET_RVA   = 0x00E91D70;
+inline const std::uintptr_t COMBATCTRL_ADD_TARGET_RVA   = FW_RVA(0x00E91D70, 0x00E922A0);
 
 // CombatController struct field offsets (AGENT_D §2.4 verified).
 constexpr std::size_t  COMBATCTRL_ENTRIES_BASE_OFF   = 0x08;  // entries[]* base
@@ -3068,13 +3070,13 @@ constexpr std::size_t  ACTOR_COMBAT_CONTROLLER_OFF   = 0x40;
 // --- AGENT C: known_targets[] / allies[] tier-1 walkers ---
 
 // sub_140E98480 — dispatches vt[256] on each known_target actor.
-constexpr std::uintptr_t COMBATCTRL_TIER1_E98480_RVA = 0x00E98480;
+inline const std::uintptr_t COMBATCTRL_TIER1_E98480_RVA = FW_RVA(0x00E98480, 0x00E989B0);
 
 // sub_140E97D30 — deep sub-object dispatch on actor+0x58.
-constexpr std::uintptr_t COMBATCTRL_TIER1_E97D30_RVA = 0x00E97D30;
+inline const std::uintptr_t COMBATCTRL_TIER1_E97D30_RVA = FW_RVA(0x00E97D30, 0x00E98260);
 
 // sub_140E9D710 — per-frame group-cleanup with 3 nested loops.
-constexpr std::uintptr_t COMBATCTRL_TIER1_E9D710_RVA = 0x00E9D710;
+inline const std::uintptr_t COMBATCTRL_TIER1_E9D710_RVA = FW_RVA(0x00E9D710, 0x00E9DC40);
 
 // --- AGENT A: form table walker (known crash class) ---
 
@@ -3083,7 +3085,7 @@ constexpr std::uintptr_t COMBATCTRL_TIER1_E9D710_RVA = 0x00E9D710;
 // site documented in re/crash_death_vtable_cascade/AGENT_crash_analysis.md.
 // Hook: skip-entry if entry == ghost during iteration. Detour body
 // re-walks the bucket loop with a ghost-skip filter.
-constexpr std::uintptr_t FORM_TABLE_REHYDRATOR_RVA   = 0x00C06AC0;
+inline const std::uintptr_t FORM_TABLE_REHYDRATOR_RVA   = FW_RVA(0x00C06AC0, 0x00C06FE0);
 
 // --- AGENT E: death broadcast + LOS walker ---
 
@@ -3091,28 +3093,28 @@ constexpr std::uintptr_t FORM_TABLE_REHYDRATOR_RVA   = 0x00C06AC0;
 // dispatching sub_140D0B740(actor.AIProcess, actor, dyingActor) per actor.
 // Called from Actor::Kill (sub_140C58150). Guard: when dyingActor maps to
 // any peer/ghost, skip dispatch on entries whose actor == ghost.
-constexpr std::uintptr_t DEATH_BROADCAST_WALKER_RVA  = 0x00C80D70;
+inline const std::uintptr_t DEATH_BROADCAST_WALKER_RVA  = FW_RVA(0x00C80D70, 0x00C81290);
 
 // sub_140DA28A0 — LOS / sight-cone walker. Dispatches vt[140], vt[148],
 // vt[192] per actor in ProcessLists; reads deep into combat extension
 // at actor+0x300. Likely next crash surface if ghost has no extension.
-constexpr std::uintptr_t LOS_SIGHT_CONE_WALKER_RVA   = 0x00DA28A0;
+inline const std::uintptr_t LOS_SIGHT_CONE_WALKER_RVA   = FW_RVA(0x00DA28A0, 0x00DA2DD0);
 
 // --- AGENT F: global per-frame thunks reaching ghost ---
 
 // Master profiler table at 0x142F25B20 holds 70 thunk-descriptor pairs.
 // Of those, the following per-frame walkers REACH the ghost (per AGENT_F):
-constexpr std::uintptr_t ANIMS_AND_EFFECTS_THUNK_RVA = 0x00BD5300;  // → sub_141695CF0
-constexpr std::uintptr_t FOOT_IK_THUNK_RVA           = 0x00BD5720;  // → sub_140DB39A0
-constexpr std::uintptr_t CELL_ATTACH_JOBS_THUNK_RVA  = 0x00BD62A0;  // CellAttachJobs
+inline const std::uintptr_t ANIMS_AND_EFFECTS_THUNK_RVA = FW_RVA(0x00BD5300, 0x00BD5820);  // → sub_141695CF0
+inline const std::uintptr_t FOOT_IK_THUNK_RVA           = FW_RVA(0x00BD5720, 0x00BD5C40);  // → sub_140DB39A0
+inline const std::uintptr_t CELL_ATTACH_JOBS_THUNK_RVA  = FW_RVA(0x00BD62A0, 0x00BD67C0);  // CellAttachJobs
 
 // Per-actor render dispatchers (not yet hooked, predicted next-crash):
-constexpr std::uintptr_t PER_ACTOR_RENDER_RVA        = 0x021BBD20;
+inline const std::uintptr_t PER_ACTOR_RENDER_RVA        = FW_RVA(0x021BBD20, 0x021C3830);
 constexpr std::uintptr_t PER_ACTOR_RENDER_2ND_RVA    = 0x022267A90;
-constexpr std::uintptr_t UPDATE_WORLD_DATA_RVA       = 0x016C85A0;
+inline const std::uintptr_t UPDATE_WORLD_DATA_RVA       = FW_RVA(0x016C85A0, 0x016C8AC0);
 
 // Anim graph manager flush (called from AnimsAndEffects thunk):
-constexpr std::uintptr_t ANIM_GRAPH_FLUSH_RVA        = 0x01695CF0;
+inline const std::uintptr_t ANIM_GRAPH_FLUSH_RVA        = FW_RVA(0x01695CF0, 0x01696130);
 
 // --- Build 59 (2026-05-24) — Lock primitive null-deriv guard ---
 //
@@ -3130,7 +3132,7 @@ constexpr std::uintptr_t ANIM_GRAPH_FLUSH_RVA        = 0x01695CF0;
 // Hooking it with a `rcx < 0x10000` bail kills the null-deriv class
 // without affecting legitimate lock acquisitions (heap pointers always
 // >= 0x10000 = 64 KiB first user page).
-constexpr std::uintptr_t LOCK_PRIMITIVE_GUARD_RVA    = 0x01658FE0;
+inline const std::uintptr_t LOCK_PRIMITIVE_GUARD_RVA    = FW_RVA(0x01658FE0, 0x01659400);
 
 // --- Build 62.1 (2026-05-24) — 2 unguarded CC-walker functions ---
 //
@@ -3150,8 +3152,8 @@ constexpr std::uintptr_t LOCK_PRIMITIVE_GUARD_RVA    = 0x01658FE0;
 // functions (same RVA family) called by DIFFERENT engine paths.
 // The ghost itself isn't the problem; the engine iterates OTHER actors'
 // CombatControllers and one of them has freed-and-reused buffers.
-constexpr std::uintptr_t COMBATCTRL_REMOVE_BY_FID_RVA = 0x00E92260;  // sub_140E92260
-constexpr std::uintptr_t COMBATCTRL_GROUP_GATE_RVA    = 0x00E924A0;  // sub_140E924A0
+inline const std::uintptr_t COMBATCTRL_REMOVE_BY_FID_RVA = FW_RVA(0x00E92260, 0x00E92790);  // sub_140E92260
+inline const std::uintptr_t COMBATCTRL_GROUP_GATE_RVA    = FW_RVA(0x00E924A0, 0x00E929D0);  // sub_140E924A0
 
 // --- Build 62.2 (2026-05-24) — 5 more peer CC walkers ---
 //
@@ -3172,11 +3174,11 @@ constexpr std::uintptr_t COMBATCTRL_GROUP_GATE_RVA    = 0x00E924A0;  // sub_140E
 //
 // Hook 15: sub_140E97D30 — Tier-1 in AGENT_C dossier but hook never
 //   actually installed. Allies health aggregate, reads CC+0x20.
-constexpr std::uintptr_t COMBATCTRL_FIND_IN_RANGE_RVA    = 0x00E96490;  // sub_140E96490
-constexpr std::uintptr_t COMBATCTRL_KNOWN_BY_ACTOR_RVA   = 0x00E92E50;  // sub_140E92E50
-constexpr std::uintptr_t COMBATCTRL_ENSURE_KNOWN_RVA     = 0x00E929C0;  // sub_140E929C0
-constexpr std::uintptr_t COMBATCTRL_UPDATE_POS_RVA       = 0x00E92B90;  // sub_140E92B90
-constexpr std::uintptr_t COMBATCTRL_ALLY_HEALTH_RVA      = 0x00E97D30;  // sub_140E97D30
+inline const std::uintptr_t COMBATCTRL_FIND_IN_RANGE_RVA    = FW_RVA(0x00E96490, 0x00E969C0);  // sub_140E96490
+inline const std::uintptr_t COMBATCTRL_KNOWN_BY_ACTOR_RVA   = FW_RVA(0x00E92E50, 0x00E93380);  // sub_140E92E50
+inline const std::uintptr_t COMBATCTRL_ENSURE_KNOWN_RVA     = FW_RVA(0x00E929C0, 0x00E92EF0);  // sub_140E929C0
+inline const std::uintptr_t COMBATCTRL_UPDATE_POS_RVA       = FW_RVA(0x00E92B90, 0x00E930C0);  // sub_140E92B90
+inline const std::uintptr_t COMBATCTRL_ALLY_HEALTH_RVA      = FW_RVA(0x00E97D30, 0x00E98260);  // sub_140E97D30
 
 // Build 62.5 (2026-05-24) — Hook 16: sub_140E75F30 "BSTHashMap merge walker".
 //
@@ -3195,7 +3197,7 @@ constexpr std::uintptr_t COMBATCTRL_ALLY_HEALTH_RVA      = 0x00E97D30;  // sub_1
 // Hook installs at the AV site; the SEH cage covers the orig call so a
 // stale a1 doesn't crash the process — the merge for this tick is skipped
 // and the engine retries naturally on the next combat tier tick.
-constexpr std::uintptr_t COMBATCTRL_HASHMAP_MERGE_RVA    = 0x00E75F30;  // sub_140E75F30
+inline const std::uintptr_t COMBATCTRL_HASHMAP_MERGE_RVA    = FW_RVA(0x00E75F30, 0x00E76460);  // sub_140E75F30
 
 // Build 62.6 (2026-05-24) — Hooks 17-23: stride-208 CC walkers in the
 // FindEntry / per-tick freshness / per-tick ally-validity family. All read
@@ -3205,21 +3207,21 @@ constexpr std::uintptr_t COMBATCTRL_HASHMAP_MERGE_RVA    = 0x00E75F30;  // sub_1
 // Crash signature Build 62.5 21:51:34 — RVA 0xE98721 (inside sub_140E986C0
 // at +0x61), fault addr 0x1812EC00070 reading [r8+rcx] where rcx = base
 // from a corrupt CombatController.
-constexpr std::uintptr_t COMBATCTRL_FIND_BY_ACTOR_RVA    = 0x00E986C0;  // sub_140E986C0
-constexpr std::uintptr_t COMBATCTRL_FIND_BY_FID_RVA      = 0x00E98760;  // sub_140E98760
-constexpr std::uintptr_t COMBATCTRL_AGGRO_FRESHNESS_RVA  = 0x00E9EC40;  // sub_140E9EC40
-constexpr std::uintptr_t COMBATCTRL_ALLY_VALIDITY1_RVA   = 0x00E9E870;  // sub_140E9E870
-constexpr std::uintptr_t COMBATCTRL_ALLY_VALIDITY2_RVA   = 0x00E9EA40;  // sub_140E9EA40
-constexpr std::uintptr_t COMBATCTRL_COUNT_ENTRIES_RVA    = 0x00E9E760;  // sub_140E9E760
-constexpr std::uintptr_t COMBATCTRL_NOTIFY_SUBS_RVA      = 0x00E98480;  // sub_140E98480
+inline const std::uintptr_t COMBATCTRL_FIND_BY_ACTOR_RVA    = FW_RVA(0x00E986C0, 0x00E98BF0);  // sub_140E986C0
+inline const std::uintptr_t COMBATCTRL_FIND_BY_FID_RVA      = FW_RVA(0x00E98760, 0x00E98C90);  // sub_140E98760
+inline const std::uintptr_t COMBATCTRL_AGGRO_FRESHNESS_RVA  = FW_RVA(0x00E9EC40, 0x00E9F170);  // sub_140E9EC40
+inline const std::uintptr_t COMBATCTRL_ALLY_VALIDITY1_RVA   = FW_RVA(0x00E9E870, 0x00E9EDA0);  // sub_140E9E870
+inline const std::uintptr_t COMBATCTRL_ALLY_VALIDITY2_RVA   = FW_RVA(0x00E9EA40, 0x00E9EF70);  // sub_140E9EA40
+inline const std::uintptr_t COMBATCTRL_COUNT_ENTRIES_RVA    = FW_RVA(0x00E9E760, 0x00E9EC90);  // sub_140E9E760
+inline const std::uintptr_t COMBATCTRL_NOTIFY_SUBS_RVA      = FW_RVA(0x00E98480, 0x00E989B0);  // sub_140E98480
 
 // Build 62.7 (2026-05-24) — Hooks 24-25: id_list walkers in the
 // RemoveAlly family. Crash signature Build 62.6 22:09:36 — RVA 0xE92D2A
 // (inside sub_140E92D00 at +0x2A), fault addr 0xFF reading [r10+r8*8]
 // where r10 = base from [CC+0x20] = 0xFF (tiny garbage). Same id_list
 // layout (CC+0x20 base, CC+0x30 count, stride 24) as Hook 10/14/15.
-constexpr std::uintptr_t COMBATCTRL_REMOVE_ALLY_BY_KEY_RVA = 0x00E92D00;  // sub_140E92D00
-constexpr std::uintptr_t COMBATCTRL_REMOVE_ALLY_BY_IDX_RVA = 0x00E9E0C0;  // sub_140E9E0C0
+inline const std::uintptr_t COMBATCTRL_REMOVE_ALLY_BY_KEY_RVA = FW_RVA(0x00E92D00, 0x00E93230);  // sub_140E92D00
+inline const std::uintptr_t COMBATCTRL_REMOVE_ALLY_BY_IDX_RVA = FW_RVA(0x00E9E0C0, 0x00E9E5F0);  // sub_140E9E0C0
 
 // Build 63 (2026-05-25) — Hook 26: sub_140ED2490 combat-group-membership
 // reconcile (called from sub_140CCF810 with a freshly-realloc'd CC slot
@@ -3234,29 +3236,29 @@ constexpr std::uintptr_t COMBATCTRL_REMOVE_ALLY_BY_IDX_RVA = 0x00E9E0C0;  // sub
 // base not poison) before passing to MERGE. On corruption we null HP+0x40
 // and return 1 so the engine reallocates a fresh CC on next combat-tier
 // transition.
-constexpr std::uintptr_t COMBATCTRL_GROUP_RECONCILE_RVA   = 0x00ED2490;  // sub_140ED2490
+inline const std::uintptr_t COMBATCTRL_GROUP_RECONCILE_RVA   = FW_RVA(0x00ED2490, 0x00ED29C0);  // sub_140ED2490
 
 // Build 65.c.31 — Hook 27: sub_140E959E0 "update combat-target record".
 // Reads rsi = *(ctrl+0x78) (combat-target sub-object holding a BSTScatterTable),
 // then derefs +0x40 (spinlock) and +0x28 (hash base) UNCONDITIONALLY. On owner-
 // side raider death the +0x78 sub-object is NULL → AV at 0xE95A49 (read
 // [ctrl+0x78]+0x28). Guard validates *(ctrl+0x78) before forwarding.
-constexpr std::uintptr_t COMBATCTRL_UPDATE_TARGET_REC_RVA = 0x00E959E0;  // sub_140E959E0
+inline const std::uintptr_t COMBATCTRL_UPDATE_TARGET_REC_RVA = FW_RVA(0x00E959E0, 0x00E95F10);  // sub_140E959E0
 constexpr std::size_t    COMBATCTRL_TARGET_MAP_OFF        = 0x78;        // sub-obj ptr
 
 // Stage 1 of L5 (2026-09-27) — the save/load lifecycle, owned by
 // persist/lifecycle.cpp and by nothing else (MinHook takes one detour per
 // target). All read in the decomp of 1.11.191 the same day; the load request
 // sub_140BF93B0 is LOAD_GAME_FN_RVA above, hooked and called through.
-constexpr std::uintptr_t SAVELOAD_QUEUE_RVA       = 0x00BFE4C0;  // sub_140BFE4C0(mgr, flag): OR into mgr+0x40
-constexpr std::uintptr_t SAVELOAD_PROCESS_RVA     = 0x00BFE820;  // sub_140BFE820(mgr): once per frame from Main::Update (0x140C3394E)
-constexpr std::uintptr_t SAVE_NAMED_RVA           = 0x00BF8E10;  // sub_140BF8E10(mgr, name, -1, 0, zlib): every save path
-constexpr std::uintptr_t SAVE_CORE_RVA            = 0x00BF9010;  // sub_140BF9010: freezes VM + job list, writes, stores mgr+0x60
-constexpr std::uintptr_t LOAD_JOB_RVA             = 0x00C01E80;  // sub_140C01E80(job) on the loader thread -> sub_140BF9460
-constexpr std::uintptr_t DEATH_RELOAD_RVA         = 0x00BFD3C0;  // sub_140BFD3C0(mgr): LoadGame(mgr+0x60) after fPlayerDeathReloadTime
-constexpr std::uintptr_t SAVELOAD_EVENT_POST_RVA  = 0x00C02500;  // sub_140C02500(&{i32 type, u8}): SaveLoadMessageTypeEvent
-constexpr std::uintptr_t SAVELOAD_RENDER_CAPTURE_RVA = 0x00BFE3C0; // sub_140BFE3C0(mgr): the header screenshot, called by the console before a save
-constexpr std::uintptr_t SAVE_GATE_RVA            = 0x00BFAE80;  // bool sub_140BFAE80(mgr): the engine's own "can save now"
+inline const std::uintptr_t SAVELOAD_QUEUE_RVA       = FW_RVA(0x00BFE4C0, 0x00BFE9E0);  // sub_140BFE4C0(mgr, flag): OR into mgr+0x40
+inline const std::uintptr_t SAVELOAD_PROCESS_RVA     = FW_RVA(0x00BFE820, 0x00BFED40);  // sub_140BFE820(mgr): once per frame from Main::Update (0x140C3394E)
+inline const std::uintptr_t SAVE_NAMED_RVA           = FW_RVA(0x00BF8E10, 0x00BF9330);  // sub_140BF8E10(mgr, name, -1, 0, zlib): every save path
+inline const std::uintptr_t SAVE_CORE_RVA            = FW_RVA(0x00BF9010, 0x00BF9530);  // sub_140BF9010: freezes VM + job list, writes, stores mgr+0x60
+inline const std::uintptr_t LOAD_JOB_RVA             = FW_RVA(0x00C01E80, 0x00C023A0);  // sub_140C01E80(job) on the loader thread -> sub_140BF9460
+inline const std::uintptr_t DEATH_RELOAD_RVA         = FW_RVA(0x00BFD3C0, 0x00BFD8E0);  // sub_140BFD3C0(mgr): LoadGame(mgr+0x60) after fPlayerDeathReloadTime
+inline const std::uintptr_t SAVELOAD_EVENT_POST_RVA  = FW_RVA(0x00C02500, 0x00C02A20);  // sub_140C02500(&{i32 type, u8}): SaveLoadMessageTypeEvent
+inline const std::uintptr_t SAVELOAD_RENDER_CAPTURE_RVA = FW_RVA(0x00BFE3C0, 0x00BFE8E0); // sub_140BFE3C0(mgr): the header screenshot, called by the console before a save
+inline const std::uintptr_t SAVE_GATE_RVA            = FW_RVA(0x00BFAE80, 0x00BFB3A0);  // bool sub_140BFAE80(mgr): the engine's own "can save now"
 constexpr std::size_t    SAVELOAD_MGR_PENDING_FLAGS_OFF = 0x40;  // pending request bits (1 autosave, 2 manual, 4 death, 8 quicksave, 0x10 quickload, 0x40 menu load, 0x4000/0x10000 exit)
 constexpr std::size_t    SAVELOAD_MGR_RELOAD_NAME_OFF   = 0x60;  // char*: the last save written or loaded with a5=1
 // The pause menu's Scaleform message handler, sub_140AD2BA0 (a virtual: the
@@ -3265,7 +3267,7 @@ constexpr std::size_t    SAVELOAD_MGR_RELOAD_NAME_OFF   = 0x60;  // char*: the l
 // index (hides the menu, sets a transition flag, then sub_141085130 queues
 // bit 0x40 with the descriptor at mgr+0x48). Read in the decomp 2026-09-27
 // after the first live test left that hidden menu on screen for good.
-constexpr std::uintptr_t PAUSE_MENU_PROCESS_MESSAGE_RVA = 0x00AD2BA0;
+inline const std::uintptr_t PAUSE_MENU_PROCESS_MESSAGE_RVA = FW_RVA(0x00AD2BA0, 0x00AD27B0);
 constexpr std::size_t    UI_MESSAGE_TYPE_OFF             = 0x30;
 constexpr std::uint32_t  PAUSE_MENU_MSG_SAVE_GAME        = 0x9;
 constexpr std::uint32_t  PAUSE_MENU_MSG_LOAD_GAME        = 0xB;
@@ -3276,23 +3278,23 @@ constexpr std::uint32_t  PAUSE_MENU_MSG_LOAD_GAME        = 0xB;
 // the save list to the main list); otherwise the main menu's equivalent.
 // The save-load manager calls it when the missing-content dialog is
 // declined. No arguments, main thread.
-constexpr std::uintptr_t PAUSE_MENU_BACK_OUT_FROM_LOAD_RVA = 0x00C08280;
+inline const std::uintptr_t PAUSE_MENU_BACK_OUT_FROM_LOAD_RVA = FW_RVA(0x00C08280, 0x00C087A0);
 
 // Setting objects are {vtable, value at +8, name at +0x10}: each RVA below
 // is the VALUE, and the name pointer at value+8 is checked against the
 // expected string before the first write (the xrefs of the name strings
 // gave the objects; fPlayerDeathReloadTime at 0x142F033B0 confirmed the
 // layout).
-constexpr std::uintptr_t SETTING_DISABLE_AUTOSAVE_RVA         = 0x02F26998;  // bDisableAutoSave:SaveGame
-constexpr std::uintptr_t SETTING_ALLOW_SCRIPTED_AUTOSAVE_RVA  = 0x02F268A8;  // bAllowScriptedAutosave:SaveGame
-constexpr std::uintptr_t SETTING_ALLOW_SCRIPTED_FORCESAVE_RVA = 0x02F268C0;  // bAllowScriptedForceSave:SaveGame
-constexpr std::uintptr_t SETTING_SAVE_ON_REST_RVA             = 0x02F22E88;  // bSaveOnRest
-constexpr std::uintptr_t SETTING_SAVE_ON_WAIT_RVA             = 0x02F22EA0;  // bSaveOnWait
-constexpr std::uintptr_t SETTING_SAVE_ON_TRAVEL_RVA           = 0x02F22EB8;  // bSaveOnTravel
-constexpr std::uintptr_t SETTING_SAVE_ON_PAUSE_RVA            = 0x02F22ED0;  // bSaveOnPause
-constexpr std::uintptr_t SETTING_SAVE_ON_QUIT_TO_MENU_RVA     = 0x02F22608;  // bSaveGameOnQuitToMainMenu:General
-constexpr std::uintptr_t SETTING_WORKSHOP_AUTOSAVE_EXIT_RVA   = 0x02F23898;  // bWorkshopAutoSaveOnExit:Workshop
-constexpr std::uintptr_t SETTING_PLAYER_DEATH_RELOAD_TIME_RVA = 0x02F033B0;  // fPlayerDeathReloadTime (float, 5.0)
+inline const std::uintptr_t SETTING_DISABLE_AUTOSAVE_RVA         = FW_RVA(0x02F26998, 0x02F319D8);  // bDisableAutoSave:SaveGame
+inline const std::uintptr_t SETTING_ALLOW_SCRIPTED_AUTOSAVE_RVA  = FW_RVA(0x02F268A8, 0x02F318E8);  // bAllowScriptedAutosave:SaveGame
+inline const std::uintptr_t SETTING_ALLOW_SCRIPTED_FORCESAVE_RVA = FW_RVA(0x02F268C0, 0x02F31900);  // bAllowScriptedForceSave:SaveGame
+inline const std::uintptr_t SETTING_SAVE_ON_REST_RVA             = FW_RVA(0x02F22E88, 0x02F2DEC8);  // bSaveOnRest
+inline const std::uintptr_t SETTING_SAVE_ON_WAIT_RVA             = FW_RVA(0x02F22EA0, 0x02F2DEE0);  // bSaveOnWait
+inline const std::uintptr_t SETTING_SAVE_ON_TRAVEL_RVA           = FW_RVA(0x02F22EB8, 0x02F2DEF8);  // bSaveOnTravel
+inline const std::uintptr_t SETTING_SAVE_ON_PAUSE_RVA            = FW_RVA(0x02F22ED0, 0x02F2DF10);  // bSaveOnPause
+inline const std::uintptr_t SETTING_SAVE_ON_QUIT_TO_MENU_RVA     = FW_RVA(0x02F22608, 0x02F2D648);  // bSaveGameOnQuitToMainMenu:General
+inline const std::uintptr_t SETTING_WORKSHOP_AUTOSAVE_EXIT_RVA   = FW_RVA(0x02F23898, 0x02F2E8D8);  // bWorkshopAutoSaveOnExit:Workshop
+inline const std::uintptr_t SETTING_PLAYER_DEATH_RELOAD_TIME_RVA = FW_RVA(0x02F033B0, 0x02F0E400);  // fPlayerDeathReloadTime (float, 5.0)
 
 // L5 stage 3c (2026-09-28) — the death's presentation and the respawn move,
 // all read in the decomp after the first live death:
@@ -3303,28 +3305,28 @@ constexpr std::uintptr_t SETTING_PLAYER_DEATH_RELOAD_TIME_RVA = 0x02F033B0;  // 
 //   with sub_140E59580(vats, 1, 0, 0) + sub_140E57E20(vats, 0) +
 //   sub_14165B6C0(&qword_1430DBF78[356469], 1.0, 1) (the global time
 //   multiplier object, back to 1.0).
-constexpr std::uintptr_t VATS_SINGLETON_RVA     = 0x030EEED0;   // qword_1430DBF78[9707]
+inline const std::uintptr_t VATS_SINGLETON_RVA     = FW_RVA(0x030EEED0, 0x030F9FD0);   // qword_1430DBF78[9707]
 constexpr std::size_t    VATS_MODE_OFF          = 0x40;         // 0 off, 1 the kill-cam / a VATS target queue
-constexpr std::uintptr_t VATS_RESET_TARGETS_RVA = 0x00E59580;   // (vats, char, char, char)
-constexpr std::uintptr_t VATS_SET_MODE_RVA      = 0x00E57E20;   // (vats, int mode)
-constexpr std::uintptr_t TIME_MULT_OBJECT_RVA   = 0x03394320;   // &qword_1430DBF78[356469]
-constexpr std::uintptr_t TIME_MULT_SET_RVA      = 0x0165B6C0;   // (obj, float mult, char immediate)
+inline const std::uintptr_t VATS_RESET_TARGETS_RVA = FW_RVA(0x00E59580, 0x00E59AB0);   // (vats, char, char, char)
+inline const std::uintptr_t VATS_SET_MODE_RVA      = FW_RVA(0x00E57E20, 0x00E58350);   // (vats, int mode)
+inline const std::uintptr_t TIME_MULT_OBJECT_RVA   = FW_RVA(0x03394320, 0x0339F420);   // &qword_1430DBF78[356469]
+inline const std::uintptr_t TIME_MULT_SET_RVA      = FW_RVA(0x0165B6C0, 0x0165BAE0);   // (obj, float mult, char immediate)
 // - The fast travel: Game.FastTravel (sub_1411212A0) -> sub_140D587D0(player,
 //   &markerHandle, 0) builds an 89-byte request {exterior cell, interior
 //   cell, 0, pos[3], rot[3], 0, 0, 0, null handle, marker handle, 0, 1, flag,
 //   0, 0, 1} and hands it to sub_140D574A0(player, &request), which copies it
 //   to player+0x8E8; the player's update then runs it with the loading
 //   screen. The null-handle value is the global dword_1430DA180.
-constexpr std::uintptr_t PLAYER_QUEUE_FAST_TRAVEL_RVA = 0x00D574A0;
+inline const std::uintptr_t PLAYER_QUEUE_FAST_TRAVEL_RVA = FW_RVA(0x00D574A0, 0x00D579C0);
 // - The fast travel's execution (sub_140D57E10) writes into the player's
 //   middle-high AI process unguarded: sub_140C5C830(actor) = the process at
 //   +0x300 -> sub_140D342A0 (its middle-high part), null right after a
 //   Resurrect (the override makes a fresh process). B's first live death:
 //   AV at RVA 0xD57FBF, a write at NULL+0x304, 12 ms after the queue.
-constexpr std::uintptr_t ACTOR_GET_MIDDLE_HIGH_PROCESS_RVA = 0x00C5C830;   // (actor, 0, 0)
+inline const std::uintptr_t ACTOR_GET_MIDDLE_HIGH_PROCESS_RVA = FW_RVA(0x00C5C830, 0x00C5CD50);   // (actor, 0, 0)
 // - IsInCombat on the player: sub_140D8A3B0 = (player+0xDFF & 2) != 0.
 constexpr std::size_t    PLAYER_IN_COMBAT_FLAG_OFF = 0xDFF;
-constexpr std::uintptr_t NULL_HANDLE_VALUE_RVA        = 0x030DA180;
+inline const std::uintptr_t NULL_HANDLE_VALUE_RVA        = FW_RVA(0x030DA180, 0x030E5280);
 constexpr std::uint32_t  XMARKER_HEADING_BASE         = 0x00000034;   // the editor's heading marker (STAT)
 
 // L5 stage 2 (2026-09-27) — the player's inventory, read the way the save
@@ -3340,7 +3342,7 @@ constexpr std::uint32_t  XMARKER_HEADING_BASE         = 0x00000034;   // the edi
 // Stack* head}; an entry's count is the sum of its stacks (sub_140349B30 =
 // INVITEM_GET_COUNT_RVA).
 constexpr std::size_t    INVLIST_LOCK_COUNTER_OFF  = 0x7C;          // u32, bit31 = writer
-constexpr std::uintptr_t INV_STACK_VTABLE_RVA      = 0x02472168;    // BGSInventoryItem::Stack
+inline const std::uintptr_t INV_STACK_VTABLE_RVA      = FW_RVA(0x02472168, 0x0247A1C8);    // BGSInventoryItem::Stack
 constexpr std::size_t    INV_STACK_COUNT_OFF       = 0x20;          // i32
 constexpr std::size_t    INV_STACK_FLAGS_OFF       = 0x24;          // u16 (bits 0-2 equipped, bit 5 transient)
 constexpr std::uint16_t  INV_STACK_FLAG_EQUIPPED   = 0x0007;
@@ -3379,21 +3381,21 @@ constexpr std::uint8_t   EXTRA_TYPE_UNIQUE_ID         = 0x9F;
 constexpr std::uint8_t   EXTRA_TYPE_FLAGS             = 0xA0;
 constexpr std::uint8_t   EXTRA_TYPE_MOD_RANK          = 0xC9;
 constexpr std::uint8_t   EXTRA_TYPE_POWER_ARMOR       = 0xBB;       // on the REFR list, not persisted
-constexpr std::uintptr_t EXTRA_VT_HEALTH_RVA          = 0x02468160; // ExtraHealth: float +0x18 (-1 = full)
-constexpr std::uintptr_t EXTRA_VT_CHARGE_RVA          = 0x024681A0; // ExtraCharge: float +0x18
-constexpr std::uintptr_t EXTRA_VT_OIE_RVA             = 0x02462298; // BGSObjectInstanceExtra: inner +0x18, u16 +0x20
-constexpr std::uintptr_t EXTRA_VT_FAVORITE_RVA        = 0x02468200; // ExtraFavorite: u8 +0x18 (0xFF none)
-constexpr std::uintptr_t EXTRA_VT_TEXT_DISPLAY_RVA    = 0x02468700; // ExtraTextDisplayData: see below
-constexpr std::uintptr_t EXTRA_VT_UNIQUE_ID_RVA       = 0x024687C0; // ExtraUniqueID: u16 +0x18, u32 +0x1C
-constexpr std::uintptr_t EXTRA_VT_ALIAS_INSTANCES_RVA = 0x02469DD8; // ExtraAliasInstanceArray
-constexpr std::uintptr_t EXTRA_VT_ENCHANTMENT_RVA     = 0x024683C0; // ExtraEnchantment: u16 +0x18, form* +0x20
-constexpr std::uintptr_t EXTRA_VT_POISON_RVA          = 0x024683A0;
-constexpr std::uintptr_t EXTRA_VT_OWNERSHIP_RVA       = 0x024680E0;
-constexpr std::uintptr_t EXTRA_VT_COUNT_RVA           = 0x02468140;
-constexpr std::uintptr_t EXTRA_VT_TIME_LEFT_RVA       = 0x02468180;
-constexpr std::uintptr_t EXTRA_VT_FLAGS_RVA           = 0x024687E0;
-constexpr std::uintptr_t EXTRA_VT_CANNOT_WEAR_RVA     = 0x024696B8;
-constexpr std::uintptr_t EXTRA_VT_SCALE_RVA           = 0x024681C0;
+inline const std::uintptr_t EXTRA_VT_HEALTH_RVA          = FW_RVA(0x02468160, 0x024701C0); // ExtraHealth: float +0x18 (-1 = full)
+inline const std::uintptr_t EXTRA_VT_CHARGE_RVA          = FW_RVA(0x024681A0, 0x02470200); // ExtraCharge: float +0x18
+inline const std::uintptr_t EXTRA_VT_OIE_RVA             = FW_RVA(0x02462298, 0x0246A2F8); // BGSObjectInstanceExtra: inner +0x18, u16 +0x20
+inline const std::uintptr_t EXTRA_VT_FAVORITE_RVA        = FW_RVA(0x02468200, 0x02470260); // ExtraFavorite: u8 +0x18 (0xFF none)
+inline const std::uintptr_t EXTRA_VT_TEXT_DISPLAY_RVA    = FW_RVA(0x02468700, 0x02470760); // ExtraTextDisplayData: see below
+inline const std::uintptr_t EXTRA_VT_UNIQUE_ID_RVA       = FW_RVA(0x024687C0, 0x02470820); // ExtraUniqueID: u16 +0x18, u32 +0x1C
+inline const std::uintptr_t EXTRA_VT_ALIAS_INSTANCES_RVA = FW_RVA(0x02469DD8, 0x02471E38); // ExtraAliasInstanceArray
+inline const std::uintptr_t EXTRA_VT_ENCHANTMENT_RVA     = FW_RVA(0x024683C0, 0x02470420); // ExtraEnchantment: u16 +0x18, form* +0x20
+inline const std::uintptr_t EXTRA_VT_POISON_RVA          = FW_RVA(0x024683A0, 0x02470400);
+inline const std::uintptr_t EXTRA_VT_OWNERSHIP_RVA       = FW_RVA(0x024680E0, 0x02470140);
+inline const std::uintptr_t EXTRA_VT_COUNT_RVA           = FW_RVA(0x02468140, 0x024701A0);
+inline const std::uintptr_t EXTRA_VT_TIME_LEFT_RVA       = FW_RVA(0x02468180, 0x024701E0);
+inline const std::uintptr_t EXTRA_VT_FLAGS_RVA           = FW_RVA(0x024687E0, 0x02470840);
+inline const std::uintptr_t EXTRA_VT_CANNOT_WEAR_RVA     = FW_RVA(0x024696B8, 0x02471718);
+inline const std::uintptr_t EXTRA_VT_SCALE_RVA           = FW_RVA(0x024681C0, 0x02470220);
 constexpr std::size_t    EXTRA_PAYLOAD_OFF            = 0x18;       // first field of every decoded extra
 constexpr std::size_t    EXTRA_UNIQUE_ID_OWNER_OFF    = 0x1C;
 constexpr std::size_t    EXTRA_TEXT_NAME_OFF          = 0x18;       // BSFixedString
@@ -3403,11 +3405,11 @@ constexpr std::size_t    EXTRA_TEXT_OWNER_OFF         = 0x30;       // i32, -2 =
 constexpr std::size_t    EXTRA_TEXT_NAME_LEN_OFF      = 0x40;       // u16
 constexpr std::size_t    EXTRA_ENCHANT_FORM_OFF       = 0x20;
 constexpr std::size_t    OIE_TEMPLATE_INDEX_OFF       = 0x20;       // u16, 0xFFFF = none
-constexpr std::uintptr_t XLIST_IS_QUEST_ITEM_RVA      = 0x0028F070; // bool sub_14028F070(list*): follows 0x1C, tests 0x88
-constexpr std::uintptr_t XLIST_GET_HEALTH_RVA         = 0x0027FDA0; // float sub_14027FDA0(list*): 0x25 or -1
-constexpr std::uintptr_t BSFIXEDSTRING_CSTR_RVA       = 0x0167CA00; // const char* sub_14167CA00(BSFixedString* field)
-constexpr std::uintptr_t EXTRALIST_READ_LOCK_RVA      = 0x01658FE0; // same lock class as the inventory list
-constexpr std::uintptr_t EXTRALIST_READ_UNLOCK_RVA    = 0x016592B0;
+inline const std::uintptr_t XLIST_IS_QUEST_ITEM_RVA      = FW_RVA(0x0028F070, 0x0028F390); // bool sub_14028F070(list*): follows 0x1C, tests 0x88
+inline const std::uintptr_t XLIST_GET_HEALTH_RVA         = FW_RVA(0x0027FDA0, 0x002800C0); // float sub_14027FDA0(list*): 0x25 or -1
+inline const std::uintptr_t BSFIXEDSTRING_CSTR_RVA       = FW_RVA(0x0167CA00, 0x0167CE20); // const char* sub_14167CA00(BSFixedString* field)
+inline const std::uintptr_t EXTRALIST_READ_LOCK_RVA      = FW_RVA(0x01658FE0, 0x01659400); // same lock class as the inventory list
+inline const std::uintptr_t EXTRALIST_READ_UNLOCK_RVA    = FW_RVA(0x016592B0, 0x016596D0);
 
 // L5 stage 2 — the two functions every inventory change of a REFR goes
 // through (persist/inventory_tap.cpp observes them for the player only):
@@ -3423,8 +3425,8 @@ constexpr std::uintptr_t EXTRALIST_READ_UNLOCK_RVA    = 0x016592B0;
 //     +0x20 object, +0x28 count, +0x2C reason (0 consume, 1 steal, 2
 //     barter, 3 drop, 4 container, 5 companion), +0x30 otherContainer,
 //     +0x38 drop location.
-constexpr std::uintptr_t INV_ADD_CORE_RVA             = 0x00502940;
-constexpr std::uintptr_t INV_REMOVE_CORE_RVA          = 0x00500870;
+inline const std::uintptr_t INV_ADD_CORE_RVA             = FW_RVA(0x00502940, 0x00502C70);
+inline const std::uintptr_t INV_REMOVE_CORE_RVA          = FW_RVA(0x00500870, 0x00500BA0);
 // The drop worker the remove core calls ONCE PER SOURCE STACK of a drop
 // (measured 2026-09-27: 5 stimpaks dropped from three stacks, x1 unique,
 // x1 unique, x5 plain, became three world REFRs x1, x1, x3, and the core's
@@ -3435,7 +3437,7 @@ constexpr std::uintptr_t INV_REMOVE_CORE_RVA          = 0x00500870;
 //                      int count, ExtraDataList* extra, NiPoint3* dropAt,
 //                      NiPoint3* rotation, BSExtraDataList* refcounted)
 // owner == the player singleton takes the view-based drop position.
-constexpr std::uintptr_t INV_DROP_WORKER_RVA          = 0x00501700;
+inline const std::uintptr_t INV_DROP_WORKER_RVA          = FW_RVA(0x00501700, 0x00501A30);
 constexpr std::size_t    REMOVE_ITEM_DATA_OBJECT_OFF  = 0x20;
 constexpr std::size_t    REMOVE_ITEM_DATA_COUNT_OFF   = 0x28;
 constexpr std::size_t    REMOVE_ITEM_DATA_REASON_OFF  = 0x2C;
@@ -3456,7 +3458,7 @@ constexpr std::size_t    REMOVE_ITEM_DATA_OTHER_OFF   = 0x30;
 // all inside the two cores: sub_140500870 (two sites, a removal clears the
 // uid), sub_140501620 and sub_140502940 (the assignment). The 4a probe
 // (persist/instance_probe.cpp) observes it.
-constexpr std::uintptr_t UNIQUE_ID_CHANGE_EVENT_RVA = 0x0052EB10;
+inline const std::uintptr_t UNIQUE_ID_CHANGE_EVENT_RVA = FW_RVA(0x0052EB10, 0x0052EE40);
 constexpr std::size_t    TESFORM_FLAGS_OFF          = 0x10;   // u32
 constexpr std::uint32_t  TESFORM_FLAG_UNIQUE_IDS    = 0x400000;
 
@@ -3494,12 +3496,12 @@ constexpr std::size_t    REFR_VT_REMOVE_ITEM_SLOT = 0x6D;
 //     reference goes. A list with an OIE present is never rolled (sub_140254DD0
 //     checks the presence bit) and no ammo is dragged in after it.
 constexpr std::size_t    REFR_VT_ADD_OBJECT_SLOT  = 0x7A;
-constexpr std::uintptr_t EXTRA_FREE_RVA           = 0x001E0080;
-constexpr std::uintptr_t EXTRALIST_CTOR_RVA       = 0x00272730;
-constexpr std::uintptr_t EXTRALIST_DTOR_RVA       = 0x00272770;
+inline const std::uintptr_t EXTRA_FREE_RVA           = FW_RVA(0x001E0080, 0x001E03A0);
+inline const std::uintptr_t EXTRALIST_CTOR_RVA       = FW_RVA(0x00272730, 0x00272A50);
+inline const std::uintptr_t EXTRALIST_DTOR_RVA       = FW_RVA(0x00272770, 0x00272A90);
 constexpr std::size_t    EXTRALIST_SIZE           = 0x28;
 constexpr std::size_t    OIE_NODE_SIZE            = 0x28;
-constexpr std::uintptr_t OIE_ADD_RECORD_RVA       = 0x002480F0;
+inline const std::uintptr_t OIE_ADD_RECORD_RVA       = FW_RVA(0x002480F0, 0x00248410);
 constexpr std::uint8_t   FORMTYPE_OMOD            = 0x90;
 //
 // The derived half of an instance (2026-10-03, first 4b live test: every
@@ -3514,7 +3516,7 @@ constexpr std::uint8_t   FORMTYPE_OMOD            = 0x90;
 // instance data (0 when the OIE yields none). The load rebuilds 0xBA with
 // generate_name = 0 (sub_140294440), so a stack saved without the name keeps
 // the base's.
-constexpr std::uintptr_t XLIST_CREATE_INSTANCE_DATA_RVA = 0x0027EB90;
+inline const std::uintptr_t XLIST_CREATE_INSTANCE_DATA_RVA = FW_RVA(0x0027EB90, 0x0027EEB0);
 
 // L5 realtime R4 (2026-10-03) - the character's numbers (RESEARCH_L5.md
 // section 10, R4). Actor values go through the ActorValueOwner interface at
@@ -3532,7 +3534,7 @@ constexpr std::uintptr_t XLIST_CREATE_INSTANCE_DATA_RVA = 0x0027EB90;
 // the rank (0 = none). Every PERK of the game: TESDataHandler (pointer at
 // RVA 0x30DC000) array at +0x950, count at +0x960 (form type 95; the engine
 // walks it so in sub_1406227C0).
-constexpr std::uintptr_t AV_LIST_RVA              = 0x00263120; // void** sub_140263120()
+inline const std::uintptr_t AV_LIST_RVA              = FW_RVA(0x00263120, 0x00263440); // void** sub_140263120()
 constexpr std::size_t    AV_LIST_EXPERIENCE_OFF   = 208;
 constexpr std::size_t    AV_LIST_HEALTH_OFF       = 216;
 constexpr std::size_t    AV_LIST_ACTION_POINTS_OFF = 8;
@@ -3550,11 +3552,11 @@ constexpr std::size_t    AVO_VT_GET_BASE_VALUE    = 3;
 constexpr std::size_t    AVO_VT_MOD_BASE_VALUE    = 5;
 constexpr std::size_t    AVO_VT_SET_VALUE         = 9;
 constexpr std::size_t    PLAYER_PERK_POINTS_OFF   = 0xCF1;      // u8
-constexpr std::uintptr_t PLAYER_SET_PERK_POINTS_RVA = 0x00D75AC0; // (player, u8)
-constexpr std::uintptr_t ACTOR_GET_LEVEL_RVA      = 0x00C62EC0; // u16 (actor)
-constexpr std::uintptr_t ACTOR_ADD_PERK_RVA       = 0x00C91AF0; // (actor, perk, 0)
-constexpr std::uintptr_t ACTOR_HAS_PERK_RVA       = 0x00C91EA0; // u8 rank (actor, perk)
-constexpr std::uintptr_t DATA_HANDLER_PTR_RVA     = 0x030DC000;
+inline const std::uintptr_t PLAYER_SET_PERK_POINTS_RVA = FW_RVA(0x00D75AC0, 0x00D75FF0); // (player, u8)
+inline const std::uintptr_t ACTOR_GET_LEVEL_RVA      = FW_RVA(0x00C62EC0, 0x00C633E0); // u16 (actor)
+inline const std::uintptr_t ACTOR_ADD_PERK_RVA       = FW_RVA(0x00C91AF0, 0x00C92010); // (actor, perk, 0)
+inline const std::uintptr_t ACTOR_HAS_PERK_RVA       = FW_RVA(0x00C91EA0, 0x00C923C0); // u8 rank (actor, perk)
+inline const std::uintptr_t DATA_HANDLER_PTR_RVA     = FW_RVA(0x030DC000, 0x030E7100);
 constexpr std::size_t    DATA_HANDLER_PERKS_OFF   = 0x950;      // TESForm** of type 95
 constexpr std::size_t    DATA_HANDLER_PERKS_COUNT_OFF = 0x960;  // u32
 constexpr std::uint8_t   FORMTYPE_PERK            = 0x5F;
@@ -3580,12 +3582,12 @@ constexpr std::uint8_t   FORMTYPE_AVIF            = 0x62;
 // RELEASES the loaded 3D (vt[136]) and queues the reload (sub_1402C62B0)
 // itself, so the model on the ground shows the mods with no further call.
 // Main thread, like every 3D mutation.
-constexpr std::uintptr_t REFR_ATTACH_MOD_RVA        = 0x00248F40;
+inline const std::uintptr_t REFR_ATTACH_MOD_RVA        = FW_RVA(0x00248F40, 0x00249260);
 // ExtraCount (0x24): the world count of a dropped stack ("Stimpak (5)").
 //   mem = sub_1401E0000(0x20); sub_1402A3B90(mem, i16 count): type byte
 //   0x24, next 0, flags 0, vtable, u16 count at +0x18. Then the same
 //   write-lock / add / unlock as ExtraHealth (EXTRALIST_* above).
-constexpr std::uintptr_t EXTRACOUNT_CTOR_RVA        = 0x002A3B90;
+inline const std::uintptr_t EXTRACOUNT_CTOR_RVA        = FW_RVA(0x002A3B90, 0x002A3EB0);
 constexpr std::size_t    EXTRACOUNT_SIZE            = 0x20;
 constexpr std::size_t    EXTRACOUNT_VALUE_OFF       = 0x18;
 // TESObjectREFR::loaded3D (NiAVObject*): sub_140248F40 tests it before
@@ -3621,11 +3623,11 @@ constexpr std::size_t    REFR_LOADED_3D_OFF         = 0xF0;
 // (= ring+4700). sub_140483760 is BGSCombinedCellGeometryDB::LoadTask
 // vtable slot 11: it queues the task's NIFs to the unpacker thread, on the
 // owner thread only.
-constexpr std::uintptr_t LOADER_SINGLETON_RVA            = 0x0355EB28; // qword_14355EB28
-constexpr std::uintptr_t LOADER_FLUSH_RVA                = 0x017AF2F0; // sub_1417AF2F0(loader, priority)
-constexpr std::uintptr_t LOADER_POST_PROCESS_RVA         = 0x017AF000; // sub_1417AF000(loader): one slice of post-processing under the try-lock, 1 when busy
-constexpr std::uintptr_t LOADER_POST_PROCESS_LOCK_RVA    = 0x0355EB40; // unk_14355EB40: the try-lock word (InterlockedCompareExchange 0 -> 1)
-constexpr std::uintptr_t COMBINED_GEOMETRY_TASK_RUN_RVA  = 0x00483760; // sub_140483760(task): LoadTask slot 11
+inline const std::uintptr_t LOADER_SINGLETON_RVA            = FW_RVA(0x0355EB28, 0x0356F028); // qword_14355EB28
+inline const std::uintptr_t LOADER_FLUSH_RVA                = FW_RVA(0x017AF2F0, 0x017AF820); // sub_1417AF2F0(loader, priority)
+inline const std::uintptr_t LOADER_POST_PROCESS_RVA         = FW_RVA(0x017AF000, 0x017AF530); // sub_1417AF000(loader): one slice of post-processing under the try-lock, 1 when busy
+inline const std::uintptr_t LOADER_POST_PROCESS_LOCK_RVA    = FW_RVA(0x0355EB40, 0x0356F040); // unk_14355EB40: the try-lock word (InterlockedCompareExchange 0 -> 1)
+inline const std::uintptr_t COMBINED_GEOMETRY_TASK_RUN_RVA  = FW_RVA(0x00483760, 0x00483A90); // sub_140483760(task): LoadTask slot 11
 constexpr std::size_t    LOADER_OWNER_TID_OFF            = 5280;       // dword: the owner thread id
 constexpr std::size_t    LOADER_STATE_OFF                = 5284;       // dword: 6 idle, else the priority being flushed
 constexpr std::size_t    LOADER_PENDING_OFF              = 5084;       // dword: requests pushed and not yet popped

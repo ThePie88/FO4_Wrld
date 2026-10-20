@@ -1,3 +1,4 @@
+#include "../game_build.h"
 #include "engine_tracer.h"
 
 #include <windows.h>
@@ -223,12 +224,12 @@ void* __fastcall detour_material_ctor(void* self) {
 }
 
 // ===== RVA constants (match ni_offsets.h) =====
-constexpr std::uintptr_t RVA_NIF_LOAD_BY_PATH   = 0x017B3E90;
-constexpr std::uintptr_t RVA_TEX_LOAD           = 0x0217A910;
-constexpr std::uintptr_t RVA_TEXSET_SETPATH     = 0x021627B0;
-constexpr std::uintptr_t RVA_BIND_MAT_TEXSET    = 0x021C6870;
-constexpr std::uintptr_t RVA_BSLSP_NEW          = 0x02171050;
-constexpr std::uintptr_t RVA_MATERIAL_CTOR      = 0x021C5CE0;
+const std::uintptr_t RVA_NIF_LOAD_BY_PATH   = FW_RVA(0x017B3E90, 0x017B43C0);
+const std::uintptr_t RVA_TEX_LOAD           = FW_RVA(0x0217A910, 0x02182420);
+const std::uintptr_t RVA_TEXSET_SETPATH     = FW_RVA(0x021627B0, 0x0216A2C0);
+const std::uintptr_t RVA_BIND_MAT_TEXSET    = FW_RVA(0x021C6870, 0x021CE380);
+const std::uintptr_t RVA_BSLSP_NEW          = FW_RVA(0x02171050, 0x02178B60);
+const std::uintptr_t RVA_MATERIAL_CTOR      = FW_RVA(0x021C5CE0, 0x021CD7F0);
 
 template <typename OrigFn>
 static bool install_one(

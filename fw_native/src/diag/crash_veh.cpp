@@ -1,3 +1,4 @@
+#include "../game_build.h"
 #include "crash_veh.h"
 
 #include <windows.h>
@@ -340,7 +341,7 @@ void install_crash_veh(std::uintptr_t module_base) {
             reinterpret_cast<LPCWSTR>(&install_crash_veh),
             &self) && self) {
         g_self_base = reinterpret_cast<std::uintptr_t>(self);
-        g_self_end  = g_self_base + 0x00400000;  // 4MB upper bound; our DLL is <2MB
+        g_self_end  = g_self_base + FW_RVA(0x00400000, 0x00400330);  // 4MB upper bound; our DLL is <2MB
     }
 
     AddVectoredExceptionHandler(/*first=*/1, veh_handler);

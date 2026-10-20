@@ -1,3 +1,4 @@
+#include "../game_build.h"
 #include "death.h"
 
 #include <windows.h>
@@ -35,9 +36,9 @@ namespace {
 // engine's own callers, e.g. funcs_0190.md:517, call it as (this, 1,
 // attach)); PlayerCharacter's override takes only `this`.
 constexpr std::size_t    kResurrectSlot      = 0xCC;
-constexpr std::uintptr_t kKillCamRestoreRva  = 0x010265B0;   // sub_1410265B0(PlayerCamera*)
-constexpr std::uintptr_t kCamGetStateRva     = 0x0102B100;   // (cam, index): index 0 = FirstPersonState
-constexpr std::uintptr_t kSetCamStateRva     = 0x00827A80;   // (cam, state)
+const std::uintptr_t kKillCamRestoreRva  = FW_RVA(0x010265B0, 0x01026AE0);   // sub_1410265B0(PlayerCamera*)
+const std::uintptr_t kCamGetStateRva     = FW_RVA(0x0102B100, 0x0102B630);   // (cam, index): index 0 = FirstPersonState
+const std::uintptr_t kSetCamStateRva     = FW_RVA(0x00827A80, 0x00827DD0);   // (cam, state)
 constexpr std::size_t    kCamCurrentStateOff = 0x28;
 constexpr int            kVerifyFrames       = 30;
 constexpr int            kProcessWaitFrames  = 120;     // ~2 s after the in-place re-attach, then the direct move

@@ -1,3 +1,4 @@
+#include "../game_build.h"
 #include "first_person_graph.h"
 
 #include <windows.h>
@@ -16,12 +17,12 @@ namespace fw::hooks {
 namespace {
 
 // --- BSAnimationGraphManager layout (decomp-proven, see header) -------------
-constexpr std::uintptr_t GRAPH_MGR_UPDATE_RVA   = 0x0130E240;  // sub_14130E240
-constexpr std::uintptr_t GRAPH_UPDATE_RVA       = 0x01320530;  // sub_141320530
-constexpr std::uintptr_t GRAPH_EVENT_FLUSH_RVA  = 0x01320EA0;  // sub_141320EA0
+const std::uintptr_t GRAPH_MGR_UPDATE_RVA   = FW_RVA(0x0130E240, 0x0130E630);  // sub_14130E240
+const std::uintptr_t GRAPH_UPDATE_RVA       = FW_RVA(0x01320530, 0x01320920);  // sub_141320530
+const std::uintptr_t GRAPH_EVENT_FLUSH_RVA  = FW_RVA(0x01320EA0, 0x01321290);  // sub_141320EA0
 // 2026-08-05 RE pass 2 — the two pieces that were missing (see header).
-constexpr std::uintptr_t GRAPH_ACTIVATE_RVA     = 0x01320430;  // sub_141320430
-constexpr std::uintptr_t GRAPH_POSE_APPLY_RVA   = 0x01320C40;  // sub_141320C40
+const std::uintptr_t GRAPH_ACTIVATE_RVA     = FW_RVA(0x01320430, 0x01320820);  // sub_141320430
+const std::uintptr_t GRAPH_POSE_APPLY_RVA   = FW_RVA(0x01320C40, 0x01321030);  // sub_141320C40
 
 // BShkbAnimationGraph fields (decomp-proven, see header).
 constexpr std::size_t GRAPH_HKB_WRAPPER_OFF = 0x378;  // hkbBehaviorGraph wrapper
@@ -30,7 +31,7 @@ constexpr std::size_t GRAPH_MUTE_BYTE_OFF   = 0x3C3;  // engine's own "mute outp
 // The bone-write gate (vtbl+0x98 = sub_141327D40, "pose is physics-driven"):
 //   return graph+0x3B8 && sub_1413B90A0(graph+0x210) && vfunc+0x20(graph+0x210);
 // When TRUE the pose is routed to the physics path, NOT the NiNode writer.
-constexpr std::uintptr_t GRAPH_PHYS_PRED_RVA = 0x01327D40;  // sub_141327D40
+const std::uintptr_t GRAPH_PHYS_PRED_RVA = FW_RVA(0x01327D40, 0x01328130);  // sub_141327D40
 constexpr std::size_t GRAPH_PHYS_WORLD_OFF   = 0x3B8;
 constexpr std::size_t GRAPH_RAGDOLL_OBJ_OFF  = 0x210;
 
@@ -64,7 +65,7 @@ constexpr std::size_t GRAPH_RAGDOLL_OBJ_OFF  = 0x210;
 // third-person body is APP_CULLED in first person, so nobody sees it. The
 // copy exists to keep the two skeletons agreeing for shadows and for the
 // bRenderFirstPersonInWorld case; our ghost stream needs the opposite.
-constexpr std::uintptr_t PC_SKELETON_SYNC_RVA = 0x00D7DE50;  // sub_140D7DE50
+const std::uintptr_t PC_SKELETON_SYNC_RVA = FW_RVA(0x00D7DE50, 0x00D7E380);  // sub_140D7DE50
 
 // PlayerCharacter::PopulateGraphVariables (holder vtable slot +0x40 override).
 // It recomputes and writes the actor's whole locomotion snapshot into ONE
@@ -73,12 +74,12 @@ constexpr std::uintptr_t PC_SKELETON_SYNC_RVA = 0x00D7DE50;  // sub_140D7DE50
 // when priming graphs after a reset. Firing it at the camera transition is the
 // "force an update" the ghost needs: without it the third-person graph carries
 // stale locomotion values across the switch and picks the wrong state.
-constexpr std::uintptr_t PC_POPULATE_VARS_RVA = 0x00D7DB10;  // sub_140D7DB10
+const std::uintptr_t PC_POPULATE_VARS_RVA = FW_RVA(0x00D7DB10, 0x00D7E040);  // sub_140D7DB10
 constexpr std::size_t    ACTOR_HOLDER_OFF     = 0x48;
 
 // BSFixedString(const char*) — the engine's own interning ctor, used by the
 // static initialisers that build the graph-variable name table.
-constexpr std::uintptr_t BSFIXEDSTRING_CTOR_RVA = 0x0167BDC0;  // sub_14167BDC0
+const std::uintptr_t BSFIXEDSTRING_CTOR_RVA = FW_RVA(0x0167BDC0, 0x0167C1E0);  // sub_14167BDC0
 
 // The wake-up events, read straight off the live mirror: logging the active-
 // node count around every mirrored event showed which names actually move the
@@ -95,7 +96,7 @@ const char* const kWakeEvents[] = {
 // Per-graph float setter — writes ONE graph, unlike the holder-level setters
 // which broadcast to all of them. Used for the locomotion scalars below so the
 // first-person graph (and the player's own arms) is never touched.
-constexpr std::uintptr_t GRAPH_SET_VAR_FLOAT_RVA = 0x01326590;  // sub_141326590
+const std::uintptr_t GRAPH_SET_VAR_FLOAT_RVA = FW_RVA(0x01326590, 0x01326980);  // sub_141326590
 
 // The two scalars that make a walk cycle match the ground it covers.
 // PopulateGraphVariables writes a variable called "speed", but the behavior
@@ -106,10 +107,10 @@ constexpr std::uintptr_t GRAPH_SET_VAR_FLOAT_RVA = 0x01326590;  // sub_141326590
 // camera round-trip appeared to fix it for a moment.
 const char* const kLocoVars[] = { "SpeedSampled", "Direction" };
 
-constexpr std::uintptr_t HKB_CTX_CTOR_RVA     = 0x013A9A10;  // sub_1413A9A10
-constexpr std::uintptr_t HKB_CTX_DTOR_RVA     = 0x013A9A90;  // sub_1413A9A90
-constexpr std::uintptr_t HKB_UPD_ACTIVE_RVA   = 0x0148EB70;  // sub_14148EB70
-constexpr std::uintptr_t HKB_UPD_SYNC_RVA     = 0x01480720;  // sub_141480720
+const std::uintptr_t HKB_CTX_CTOR_RVA     = FW_RVA(0x013A9A10, 0x013A9E30);  // sub_1413A9A10
+const std::uintptr_t HKB_CTX_DTOR_RVA     = FW_RVA(0x013A9A90, 0x013A9EB0);  // sub_1413A9A90
+const std::uintptr_t HKB_UPD_ACTIVE_RVA   = FW_RVA(0x0148EB70, 0x0148EF90);  // sub_14148EB70
+const std::uintptr_t HKB_UPD_SYNC_RVA     = FW_RVA(0x01480720, 0x01480B40);  // sub_141480720
 constexpr std::size_t GRAPH_HKB_CHARACTER_OFF = 0x1C8;  // inline hkbCharacter
 constexpr std::size_t HKB_ACTIVE_NODES_OFF    = 0xE0;   // m_activeNodes
 constexpr std::size_t HKB_NODES_DIRTY_OFF     = 0x1AC;  // gate for the refresh
@@ -194,10 +195,10 @@ HkbUpdSyncFn   g_hkb_upd_sync    = nullptr;
 // third-person graph generates a real pose but always the SAME one — its hkb
 // state machine never receives moveStart/SprintStart/turn/etc, so it loops
 // whatever state it was parked in. Mirror the event to the parked graph.
-constexpr std::uintptr_t MGR_NOTIFY_RVA       = 0x0130EAE0;  // sub_14130EAE0
-constexpr std::uintptr_t GRAPH_SEND_EVENT_RVA = 0x01320FE0;  // sub_141320FE0
-constexpr std::uintptr_t SET_ACTIVE_GRAPH_RVA = 0x0130EDF0;  // sub_14130EDF0
-constexpr std::uintptr_t GRAPH_DEACTIVATE_RVA = 0x01326370;  // sub_141326370
+const std::uintptr_t MGR_NOTIFY_RVA       = FW_RVA(0x0130EAE0, 0x0130EED0);  // sub_14130EAE0
+const std::uintptr_t GRAPH_SEND_EVENT_RVA = FW_RVA(0x01320FE0, 0x013213D0);  // sub_141320FE0
+const std::uintptr_t SET_ACTIVE_GRAPH_RVA = FW_RVA(0x0130EDF0, 0x0130F1E0);  // sub_14130EDF0
+const std::uintptr_t GRAPH_DEACTIVATE_RVA = FW_RVA(0x01326370, 0x01326760);  // sub_141326370
 
 using MgrNotifyFn      = std::uint8_t(__fastcall*)(void*, const void*);
 using GraphSendEventFn = std::uint8_t(__fastcall*)(void*, const void*, void*);

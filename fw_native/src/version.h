@@ -17,11 +17,12 @@
 
 namespace fw::version {
 
-// Expected binary version. Bump if we revalidate against a new build.
-constexpr const char* EXPECTED = "1.11.191.0";
+// Supported binary versions (see game_build.h for the per-build RVA table).
+// A build is accepted only when its VERSIONINFO and its PE fingerprint agree.
+constexpr const char* EXPECTED = "1.11.191.0 or 1.11.240.0";
 
 enum class Result {
-    Match,        // exact expected version
+    Match,        // a supported version whose PE fingerprint is known
     Mismatch,     // resolvable version, but different from EXPECTED
     Unresolvable, // couldn't read VERSIONINFO — treat as Mismatch
 };

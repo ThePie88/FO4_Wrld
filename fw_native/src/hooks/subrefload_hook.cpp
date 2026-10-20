@@ -1,3 +1,4 @@
+#include "../game_build.h"
 // ============================================================================
 // DEAD-END / KEPT FOR MEMORY OF HOURS PASSED — M9.w4 RE phase, Apr-May 2026
 // ============================================================================
@@ -26,7 +27,7 @@ namespace fw::hooks {
 
 namespace {
 
-constexpr std::uintptr_t SUBLOAD_RVA = 0x004580C0;
+const std::uintptr_t SUBLOAD_RVA = FW_RVA(0x004580C0, 0x004583F0);
 
 // Don't yet know the true signature. We capture the 4 register args
 // (RCX, RDX, R8, R9) PLUS the next 6 stack args (8 bytes each, starting

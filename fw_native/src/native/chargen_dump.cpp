@@ -1,3 +1,4 @@
+#include "../game_build.h"
 #include "chargen_dump.h"
 
 #include <windows.h>
@@ -102,11 +103,11 @@ namespace {
 // --- engine addresses ------------------------------------------------------
 // Deliberately NOT hooked (see install()): 0x6A6D00 resource-DB load,
 // 0x6A83B0 file stream. Both run on boot streaming threads.
-constexpr std::uintptr_t LOOKSMENU_CALL_RVA = 0x00A82490; // every UI callback
-constexpr std::uintptr_t NPC_SETMORPH_RVA   = 0x00654310; // every facial morph
-constexpr std::uintptr_t ADD_HEADPART_RVA   = 0x00655010;
-constexpr std::uintptr_t SET_HAIRCOLOR_RVA  = 0x00654DF0;
-constexpr std::uintptr_t BSFIXEDSTR_CSTR_RVA = 0x0167C070;
+const std::uintptr_t LOOKSMENU_CALL_RVA = FW_RVA(0x00A82490, 0x00A82510); // every UI callback
+const std::uintptr_t NPC_SETMORPH_RVA   = FW_RVA(0x00654310, 0x00654650); // every facial morph
+const std::uintptr_t ADD_HEADPART_RVA   = FW_RVA(0x00655010, 0x00655350);
+const std::uintptr_t SET_HAIRCOLOR_RVA  = FW_RVA(0x00654DF0, 0x00655130);
+const std::uintptr_t BSFIXEDSTR_CSTR_RVA = FW_RVA(0x0167C070, 0x0167C490);
 
 // Blocker #1 observation (2026-08-08). Static RE (CHARGEN_PLAN §13) traced
 // the head rebuild to these two, but left the identity of the first
@@ -119,16 +120,16 @@ constexpr std::uintptr_t BSFIXEDSTR_CSTR_RVA = 0x0167C070;
 //     "FaceGenData\FaceGeom\%s\%08X.NIF" load.
 //   APPEARANCE_TASK(a1, a2, a3, a4): the chargen menu's deferred update —
 //     builds an 0x80-byte record tagged 0x75 and posts it.
-constexpr std::uintptr_t HEAD_BUILD_RVA      = 0x006E03E0;
-constexpr std::uintptr_t APPEARANCE_TASK_RVA = 0x00C4BA90;
+const std::uintptr_t HEAD_BUILD_RVA      = FW_RVA(0x006E03E0, 0x006E0720);
+const std::uintptr_t APPEARANCE_TASK_RVA = FW_RVA(0x00C4BA90, 0x00C4BFB0);
 // 2026-08-08 second pass. Eye colour posts a task; HAIR colour does not —
 // it raises a dirty byte consumed by sub_140BC0690, which calls REFRESH.
 // Two different levers, so instrument both, plus the queue constructor
 // whose caller names what triggers a rebuild in ordinary play.
-constexpr std::uintptr_t REFRESH_RVA         = 0x006DFB00;
-constexpr std::uintptr_t QUEUED_HEAD_CTOR_RVA = 0x002C60B0;
+const std::uintptr_t REFRESH_RVA         = FW_RVA(0x006DFB00, 0x006DFE40);
+const std::uintptr_t QUEUED_HEAD_CTOR_RVA = FW_RVA(0x002C60B0, 0x002C63D0);
 
-constexpr std::uintptr_t DATAHANDLER_RVA    = 0x030DC000;
+const std::uintptr_t DATAHANDLER_RVA    = FW_RVA(0x030DC000, 0x030E7100);
 constexpr std::size_t    DH_ARRAYS_OFF      = 0x68;   // BSTArray<TESForm*>[159]
 constexpr std::size_t    DH_ARRAY_STRIDE    = 0x18;   // data / capacity / size
 
@@ -162,16 +163,16 @@ constexpr std::uint8_t FORMTYPE_CLFM = 137;
 // copy. Rather than guess an offset and get another silent zero, the probe
 // walks the race object and follows pointers until one lands on a known
 // template vtable. Whatever it prints IS the layout.
-constexpr std::uintptr_t VT_TPL_ENTRY   = 0x0247FD08;
-constexpr std::uintptr_t VT_TPL_MASK    = 0x0247FD38;
-constexpr std::uintptr_t VT_TPL_PALETTE = 0x0247FD68;
-constexpr std::uintptr_t VT_TPL_TEXSET  = 0x0247FD98;
+const std::uintptr_t VT_TPL_ENTRY   = FW_RVA(0x0247FD08, 0x02487D68);
+const std::uintptr_t VT_TPL_MASK    = FW_RVA(0x0247FD38, 0x02487D98);
+const std::uintptr_t VT_TPL_PALETTE = FW_RVA(0x0247FD68, 0x02487DC8);
+const std::uintptr_t VT_TPL_TEXSET  = FW_RVA(0x0247FD98, 0x02487DF8);
 // The applied-instance classes, for completeness — an NPC holds these, a race
 // holds the templates above.
-constexpr std::uintptr_t VT_ENTRY       = 0x0247FC08;
-constexpr std::uintptr_t VT_MASK_ENTRY  = 0x0247FC48;
-constexpr std::uintptr_t VT_PAL_ENTRY   = 0x0247FC88;
-constexpr std::uintptr_t VT_TEX_ENTRY   = 0x0247FCC8;
+const std::uintptr_t VT_ENTRY       = FW_RVA(0x0247FC08, 0x02487C68);
+const std::uintptr_t VT_MASK_ENTRY  = FW_RVA(0x0247FC48, 0x02487CA8);
+const std::uintptr_t VT_PAL_ENTRY   = FW_RVA(0x0247FC88, 0x02487CE8);
+const std::uintptr_t VT_TEX_ENTRY   = FW_RVA(0x0247FCC8, 0x02487D28);
 
 constexpr std::uint32_t  HUMAN_RACE_FID = 0x00013746;
 constexpr std::size_t    RACE_SCAN_BYTES   = 0x2000; // first pass said 0x1000
@@ -265,17 +266,17 @@ const char* tint_class_of(std::uintptr_t base, const void* obj) noexcept {
     if (!vt) return nullptr;
     const auto v = reinterpret_cast<std::uintptr_t>(vt);
     if (v <= base) return nullptr;
-    switch (v - base) {
-        case VT_TPL_ENTRY:   return "Template::Entry";
-        case VT_TPL_MASK:    return "Template::Mask";
-        case VT_TPL_PALETTE: return "Template::Palette";
-        case VT_TPL_TEXSET:  return "Template::TextureSet";
-        case VT_ENTRY:       return "Entry";
-        case VT_MASK_ENTRY:  return "MaskEntry";
-        case VT_PAL_ENTRY:   return "PaletteEntry";
-        case VT_TEX_ENTRY:   return "TextureSetEntry";
-        default:             return nullptr;
-    }
+    // An if chain, not a switch: the vtable RVAs are per game build (FW_RVA).
+    const std::uintptr_t r = v - base;
+    if (r == VT_TPL_ENTRY)   return "Template::Entry";
+    if (r == VT_TPL_MASK)    return "Template::Mask";
+    if (r == VT_TPL_PALETTE) return "Template::Palette";
+    if (r == VT_TPL_TEXSET)  return "Template::TextureSet";
+    if (r == VT_ENTRY)       return "Entry";
+    if (r == VT_MASK_ENTRY)  return "MaskEntry";
+    if (r == VT_PAL_ENTRY)   return "PaletteEntry";
+    if (r == VT_TEX_ENTRY)   return "TextureSetEntry";
+    return nullptr;
 }
 
 std::uint32_t seh_read_u32(const void* addr) noexcept {

@@ -1,3 +1,4 @@
+#include "../game_build.h"
 #include "anatomy_probe.h"
 
 #include <windows.h>
@@ -26,15 +27,16 @@ std::uint32_t     g_geom  = 0;
 // the M2.1 walker's, extended with nothing: unknown classes print their RVA
 // so a new one shows up as a number rather than being silently mislabelled.
 struct VtName { std::uintptr_t rva; const char* name; };
-constexpr VtName kVtables[] = {
-    { 0x0267C888, "NiNode"           },
-    { 0x028FA3E8, "BSFadeNode"       },
-    { 0x0267E948, "BSTriShape"       },
-    { 0x0267F948, "BSDynamicTriShape"},
-    { 0x0267E0B8, "BSGeometry"       },
-    { 0x02696D68, "geometry-like"    },
-    { 0x026986C0, "NiNode-derived?"  },
-    { 0x02908F40, "ShadowSceneNode"  },
+// const, not constexpr: the RVAs are per game build (FW_RVA).
+const VtName kVtables[] = {
+    { FW_RVA(0x0267C888, 0x026849B8), "NiNode"           },
+    { FW_RVA(0x028FA3E8, 0x02903BA8), "BSFadeNode"       },
+    { FW_RVA(0x0267E948, 0x02686A78), "BSTriShape"       },
+    { FW_RVA(0x0267F948, 0x02687A78), "BSDynamicTriShape"},
+    { FW_RVA(0x0267E0B8, 0x026861E8), "BSGeometry"       },
+    { FW_RVA(0x02696D68, 0x0269EE88), "geometry-like"    },
+    { FW_RVA(0x026986C0, 0x026A07E0), "NiNode-derived?"  },
+    { FW_RVA(0x02908F40, 0x02912700), "ShadowSceneNode"  },
 };
 
 const char* classify(std::uintptr_t vt_rva) noexcept {
@@ -43,8 +45,8 @@ const char* classify(std::uintptr_t vt_rva) noexcept {
 }
 
 bool is_geometry(std::uintptr_t vt_rva) noexcept {
-    return vt_rva == 0x0267E0B8 || vt_rva == 0x0267E948 ||
-           vt_rva == 0x0267F948 || vt_rva == 0x02696D68;
+    return vt_rva == FW_RVA(0x0267E0B8, 0x026861E8) || vt_rva == FW_RVA(0x0267E948, 0x02686A78) ||
+           vt_rva == FW_RVA(0x0267F948, 0x02687A78) || vt_rva == FW_RVA(0x02696D68, 0x0269EE88);
 }
 
 // NiObjectNET keeps a NiFixedString at +0x10. It is a BSStringPool::Entry*,

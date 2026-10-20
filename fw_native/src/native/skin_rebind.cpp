@@ -1,3 +1,4 @@
+#include "../game_build.h"
 // Skin instance rebind — Step 1: DIAGNOSTIC ONLY (no mutation).
 // =====================================================================
 //
@@ -51,18 +52,18 @@ namespace {
 // ------------------------------------------------------------------
 // vtable RVAs (image-base relative, ImageBase 0x140000000)
 // ------------------------------------------------------------------
-constexpr std::uintptr_t kNiNodeVtRva            = 0x0267C888;
-constexpr std::uintptr_t kBSFadeNodeVtRva        = 0x028FA3E8;
-constexpr std::uintptr_t kBSLeafAnimNodeVtRva    = 0x028FA690;
-constexpr std::uintptr_t kShadowSceneNodeVtRva   = 0x02908F40;
+const std::uintptr_t kNiNodeVtRva            = FW_RVA(0x0267C888, 0x026849B8);
+const std::uintptr_t kBSFadeNodeVtRva        = FW_RVA(0x028FA3E8, 0x02903BA8);
+const std::uintptr_t kBSLeafAnimNodeVtRva    = FW_RVA(0x028FA690, 0x02903E50);
+const std::uintptr_t kShadowSceneNodeVtRva   = FW_RVA(0x02908F40, 0x02912700);
 
-constexpr std::uintptr_t kBSGeometryVtRva        = 0x0267E0B8;
-constexpr std::uintptr_t kBSTriShapeVtRva        = 0x0267E948;
-constexpr std::uintptr_t kBSDynamicTriShapeVtRvaA = 0x0267F758;
-constexpr std::uintptr_t kBSDynamicTriShapeVtRvaB = 0x0267F948;
-constexpr std::uintptr_t kBSSubIndexTriShapeVtRva = 0x02697D40;
+const std::uintptr_t kBSGeometryVtRva        = FW_RVA(0x0267E0B8, 0x026861E8);
+const std::uintptr_t kBSTriShapeVtRva        = FW_RVA(0x0267E948, 0x02686A78);
+const std::uintptr_t kBSDynamicTriShapeVtRvaA = FW_RVA(0x0267F758, 0x02687888);
+const std::uintptr_t kBSDynamicTriShapeVtRvaB = FW_RVA(0x0267F948, 0x02687A78);
+const std::uintptr_t kBSSubIndexTriShapeVtRva = FW_RVA(0x02697D40, 0x0269FE60);
 
-constexpr std::uintptr_t kBSSkinInstanceVtRva    = 0x0267E5C8;
+const std::uintptr_t kBSSkinInstanceVtRva    = FW_RVA(0x0267E5C8, 0x026866F8);
 
 // ------------------------------------------------------------------
 // Struct offsets
@@ -113,7 +114,7 @@ std::uintptr_t read_vt_rva(void* obj) {
 // are not in the ghost's tree collapses, hence a headless ghost.
 // RVA from re/engine_rtti_catalog.md: BSFaceGenNiNode, 68 methods —
 // NiNode-derived, so the standard +0x128/+0x132 children layout applies.
-constexpr std::uintptr_t kBSFaceGenNiNodeVtRva = 0x024FF280;
+const std::uintptr_t kBSFaceGenNiNodeVtRva = FW_RVA(0x024FF280, 0x025072F0);
 
 bool is_node_with_children(std::uintptr_t vt_rva) {
     return vt_rva == kNiNodeVtRva
@@ -1200,7 +1201,7 @@ int find_all_skin_instances(void* root, void** out_array, int max_count) {
 
 namespace {
 
-constexpr std::uintptr_t kUpdateWorldDataRva = 0x16C85A0;
+const std::uintptr_t kUpdateWorldDataRva = FW_RVA(0x16C85A0, 0x016C8AC0);
 constexpr std::size_t kWorldMatrixOff = 0x70;
 constexpr std::size_t kWorldMatrixSize = 64;  // 4x4 col-major = 16 floats
 
@@ -1485,7 +1486,7 @@ namespace {
 // to log when the shields are active.
 std::atomic<std::uint64_t> g_iter_shield_skips_local{0};
 
-constexpr std::uintptr_t kBoneIterRva = 0x16C7510;  // sub_1416C7510
+const std::uintptr_t kBoneIterRva = FW_RVA(0x16C7510, 0x016C7A30);  // sub_1416C7510
 
 using BoneIterFn = void (__fastcall*)(void*, void*);
 BoneIterFn        g_orig_bone_iter         = nullptr;

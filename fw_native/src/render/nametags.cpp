@@ -1,3 +1,4 @@
+#include "../game_build.h"
 // nametags — implementation. The why is in nametags.h.
 
 #include "nametags.h"
@@ -156,7 +157,7 @@ float dot3(const float a[3], const float b[3]) {
 // pass through the tag's anchor. If it does, this file's projection and the
 // engine's agree, and a tag that still looks wrong is a wrong anchor, not a
 // wrong camera.
-constexpr std::uintptr_t NICAMERA_WINDOW_POINT_TO_RAY_RVA = 0x016D0CA0;
+const std::uintptr_t NICAMERA_WINDOW_POINT_TO_RAY_RVA = FW_RVA(0x016D0CA0, 0x016D11C0);
 using WindowPointToRayFn = char(*)(void* cam, int px, int py, float* origin,
                                    float* dir, float width, float height);
 

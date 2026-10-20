@@ -1,3 +1,4 @@
+#include "../game_build.h"
 #include "inventory_tap.h"
 
 #include <windows.h>
@@ -266,15 +267,15 @@ const char* cause_name(std::uint32_t cause) {
     // Callers of the add core, by the function they sit in (the return
     // address is a few bytes past the call).
     struct { std::uint32_t lo, hi; const char* name; } const table[] = {
-        {0x5007B0, 0x5007B0 + 0xB4,  "add: Actor::AddObjectToContainer (transfer/pickup via vt[0x7A])"},
-        {0x500430, 0x500430 + 0x376, "add: pickup from the world"},
-        {0x522B00, 0x522B00 + 0x33A, "add: Papyrus AddItem worker"},
-        {0x509250, 0x509250 + 0x308, "add: REFR::AddObjectToContainer"},
-        {0x988080, 0x988080 + 0x2A8, "add: workbench (mod/craft)"},
-        {0x989A40, 0x989A40 + 0xD77, "add: workbench (examine)"},
-        {0xA57FC0, 0xA57FC0 + 0x237, "add: cooking/crafting result"},
-        {0xA5EF20, 0xA5EF20 + 0x2C3, "add: workshop scrap"},
-        {0xCACB80, 0xCACB80 + 0xDFE, "add: actor equip path"},
+        {static_cast<std::uint32_t>(FW_RVA(0x5007B0u, 0x00500AE0u)), static_cast<std::uint32_t>(FW_RVA(0x5007B0u + 0xB4u, 0x00500AE0u + 0xB4u)),  "add: Actor::AddObjectToContainer (transfer/pickup via vt[0x7A])"},
+        {static_cast<std::uint32_t>(FW_RVA(0x500430u, 0x00500760u)), static_cast<std::uint32_t>(FW_RVA(0x500430u + 0x376u, 0x00500760u + 0x376u)), "add: pickup from the world"},
+        {static_cast<std::uint32_t>(FW_RVA(0x522B00u, 0x00522E30u)), static_cast<std::uint32_t>(FW_RVA(0x522B00u + 0x33Au, 0x00522E30u + 0x33Au)), "add: Papyrus AddItem worker"},
+        {static_cast<std::uint32_t>(FW_RVA(0x509250u, 0x00509580u)), static_cast<std::uint32_t>(FW_RVA(0x509250u + 0x308u, 0x00509580u + 0x308u)), "add: REFR::AddObjectToContainer"},
+        {static_cast<std::uint32_t>(FW_RVA(0x988080u, 0x009883D0u)), static_cast<std::uint32_t>(FW_RVA(0x988080u + 0x2A8u, 0x009883D0u + 0x2A8u)), "add: workbench (mod/craft)"},
+        {static_cast<std::uint32_t>(FW_RVA(0x989A40u, 0x00989D90u)), static_cast<std::uint32_t>(FW_RVA(0x989A40u + 0xD77u, 0x00989D90u + 0xD77u)), "add: workbench (examine)"},
+        {static_cast<std::uint32_t>(FW_RVA(0xA57FC0u, 0x00A58310u)), static_cast<std::uint32_t>(FW_RVA(0xA57FC0u + 0x237u, 0x00A58310u + 0x237u)), "add: cooking/crafting result"},
+        {static_cast<std::uint32_t>(FW_RVA(0xA5EF20u, 0x00A5F270u)), static_cast<std::uint32_t>(FW_RVA(0xA5EF20u + 0x2C3u, 0x00A5F270u + 0x2C3u)), "add: workshop scrap"},
+        {static_cast<std::uint32_t>(FW_RVA(0xCACB80u, 0x00CAD0A0u)), static_cast<std::uint32_t>(FW_RVA(0xCACB80u + 0xDFEu, 0x00CAD0A0u + 0xDFEu)), "add: actor equip path"},
     };
     for (const auto& t : table) if (cause >= t.lo && cause < t.hi) return t.name;
     return nullptr;

@@ -1,3 +1,4 @@
+#include "../game_build.h"
 // ============================================================================
 // LIVE (preventive) — 2026-05-17. Installed at install_all.cpp:174. Detour
 // fires on every BGSActionData::Execute call (universal attack funnel),
@@ -52,7 +53,7 @@ using ActionExecuteFn = std::uint64_t (*)(std::uint64_t target,
                                           int action_id,
                                           int slot);
 
-constexpr std::uintptr_t ACTION_EXECUTE_RVA = 0x00E6F830;
+const std::uintptr_t ACTION_EXECUTE_RVA = FW_RVA(0x00E6F830, 0x00E6FD60);
 
 ActionExecuteFn g_orig_action_execute = nullptr;
 

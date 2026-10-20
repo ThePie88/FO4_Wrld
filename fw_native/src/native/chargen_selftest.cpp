@@ -1,3 +1,4 @@
+#include "../game_build.h"
 #include "chargen_selftest.h"
 
 #include <windows.h>
@@ -26,8 +27,8 @@ DWORD                      g_first_seen = 0;   // main thread only
 using SetHairColorFn = void(__fastcall*)(void*, void*);
 using AddHeadPartFn  = void(__fastcall*)(void*, void*, bool, bool, bool);
 
-constexpr std::uintptr_t SET_HAIRCOLOR_RVA = 0x00654DF0;
-constexpr std::uintptr_t ADD_HEADPART_RVA  = 0x00655010;
+const std::uintptr_t SET_HAIRCOLOR_RVA = FW_RVA(0x00654DF0, 0x00655130);
+const std::uintptr_t ADD_HEADPART_RVA  = FW_RVA(0x00655010, 0x00655350);
 
 constexpr std::size_t  FORM_ID_OFF   = 0x14;
 constexpr std::size_t  FORM_TYPE_OFF = 0x1A;
@@ -90,7 +91,7 @@ void* player_npc(std::uintptr_t base) noexcept {
 //
 // Asynchronous: this kicks a load, and sub_1406E03E0 runs a frame or more
 // later. Do not expect a same-frame change.
-constexpr std::uintptr_t ACTOR_RESET3D_RVA = 0x00C73DD0;
+const std::uintptr_t ACTOR_RESET3D_RVA = FW_RVA(0x00C73DD0, 0x00C742F0);
 
 using ActorReset3DFn = char(__fastcall*)(void*, std::uint8_t, std::uint32_t,
                                         std::uint8_t, std::uint32_t);
@@ -166,12 +167,12 @@ void force_head_rebuild(std::uintptr_t module_base, void* expected_npc) {
 // nothing. Rather than guess again, let the data choose — filter on the race
 // the player actually is, so the subjects are humans that can wear a human
 // face, and log every name so the result is checkable.
-constexpr std::uintptr_t DATAHANDLER_RVA = 0x030DC000;
+const std::uintptr_t DATAHANDLER_RVA = FW_RVA(0x030DC000, 0x030E7100);
 constexpr std::size_t    DH_ARRAYS_OFF   = 0x68;
 constexpr std::size_t    DH_ARRAY_STRIDE = 0x18;
 constexpr std::size_t    NPC_RACE_OFF    = 0x1B8;
 constexpr std::size_t    NPC_FULLNAME    = 0x28;
-constexpr std::uintptr_t BSFIXEDSTR_CSTR_RVA = 0x0167C070;
+const std::uintptr_t BSFIXEDSTR_CSTR_RVA = FW_RVA(0x0167C070, 0x0167C490);
 constexpr std::uint32_t  MAX_DONORS      = 8;
 
 using CStrFn = const char*(__fastcall*)(const void*);

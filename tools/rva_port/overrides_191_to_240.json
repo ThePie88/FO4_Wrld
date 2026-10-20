@@ -1,0 +1,6 @@
+{
+  "0xbd5300": {
+    "new": "0xbd5820",
+    "why": "ANIMS_AND_EFFECTS_THUNK: `mov rcx,[rip+x]; jmp 0xC34D40` in 1.11.191 and `mov rcx,[rip+x]; jmp 0xC35260` in 1.11.240; the jump targets are byte-identical after masking (96 bytes, internal branches all +0x520), and the neighbouring thunks FOOT_IK and CELL_ATTACH_JOBS moved by the same +0x520. The automatic search found 23 same-shape thunks because the target is a leaf with no unwind entry."
+  }
+}

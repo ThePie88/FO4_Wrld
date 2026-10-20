@@ -1,3 +1,4 @@
+#include "../game_build.h"
 #include "ghost_is_attachable.h"
 
 #include <windows.h>
@@ -31,7 +32,7 @@ using AttachRefrFn   = char (*)(std::uint64_t cell_ctx, void* refr, char flag);
 // bail immediately (return 0). Same root-level pattern as
 // npc_ai_suppress Update_PerFrame bail (Build 28k).
 using ActorLockWalkerFn = char (*)(std::uint64_t actor);
-constexpr std::uintptr_t ACTOR_LOCK_WALKER_RVA = 0x004C4DF0;
+const std::uintptr_t ACTOR_LOCK_WALKER_RVA = FW_RVA(0x004C4DF0, 0x004C5120);
 ActorLockWalkerFn g_orig_actor_lock_walker = nullptr;
 
 // `sub_140312690` IsTransientFid — RVA 0x312690 verified
@@ -51,9 +52,9 @@ ActorLockWalkerFn g_orig_actor_lock_walker = nullptr;
 // cell) populates +0x48 with proper lock pointer.
 using IsTransientFidFn = char (*)(std::uint64_t actor);
 
-constexpr std::uintptr_t IS_ATTACHABLE_RVA = 0x003095C0;
-constexpr std::uintptr_t ATTACH_REFR_RVA   = 0x003097E0;
-constexpr std::uintptr_t IS_TRANSIENT_FID_RVA = 0x00312690;
+const std::uintptr_t IS_ATTACHABLE_RVA = FW_RVA(0x003095C0, 0x003098F0);
+const std::uintptr_t ATTACH_REFR_RVA   = FW_RVA(0x003097E0, 0x00309B10);
+const std::uintptr_t IS_TRANSIENT_FID_RVA = FW_RVA(0x00312690, 0x003129C0);
 
 IsAttachableFn   g_orig_is_attachable  = nullptr;
 AttachRefrFn     g_orig_attach_refr    = nullptr;

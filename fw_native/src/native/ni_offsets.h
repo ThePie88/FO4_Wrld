@@ -16,6 +16,8 @@
 
 #pragma once
 
+
+#include "../game_build.h"
 #include <cstddef>
 #include <cstdint>
 
@@ -40,10 +42,10 @@ namespace fw::native {
 // for leak tracking. We can safely write to it from our thread as long as
 // we save/restore around the call (different threads have different TEBs).
 
-constexpr std::uintptr_t MEM_POOL_RVA          = 0x03E5E0F0; // unk_143E5E0F0
-constexpr std::uintptr_t ALLOCATE_FN_RVA       = 0x016579C0; // sub_1416579C0
-constexpr std::uintptr_t POOL_INIT_FN_RVA      = 0x01657F90; // sub_141657F90
-constexpr std::uintptr_t POOL_INIT_FLAG_RVA    = 0x03E5F2D0; // dword_143E5F2D0
+inline const std::uintptr_t MEM_POOL_RVA          = FW_RVA(0x03E5E0F0, 0x03E74AB0); // unk_143E5E0F0
+inline const std::uintptr_t ALLOCATE_FN_RVA       = FW_RVA(0x016579C0, 0x01657DE0); // sub_1416579C0
+inline const std::uintptr_t POOL_INIT_FN_RVA      = FW_RVA(0x01657F90, 0x016583B0); // sub_141657F90
+inline const std::uintptr_t POOL_INIT_FLAG_RVA    = FW_RVA(0x03E5F2D0, 0x03E75C90); // dword_143E5F2D0
 constexpr std::uint32_t  POOL_INIT_FLAG_READY  = 2;          // value when initialized
 
 // ============================================================================
@@ -57,38 +59,38 @@ constexpr std::uint32_t  POOL_INIT_FLAG_READY  = 2;          // value when initi
 // CORRECTION vs memory: the previously recorded NiNode vtable 0x2564838
 // was actually PlayerCharacter. Real NiNode vtable RVA is 0x267C888.
 
-constexpr std::uintptr_t NINODE_VTABLE_RVA     = 0x0267C888;
-constexpr std::uintptr_t NINODE_CTOR_RVA       = 0x016BDFE0; // sub_1416BDFE0
+inline const std::uintptr_t NINODE_VTABLE_RVA     = FW_RVA(0x0267C888, 0x026849B8);
+inline const std::uintptr_t NINODE_CTOR_RVA       = FW_RVA(0x016BDFE0, 0x016BE500); // sub_1416BDFE0
 constexpr std::size_t    NINODE_SIZEOF         = 0x140;      // 320 bytes
 constexpr std::size_t    NINODE_ALIGN          = 0x10;       // 16-byte
 
 // M9.5 — BSFadeNode + BSLeafAnimNode (NIF root types).
 // Sizes from stradaB_nif_loader_api.txt §1: loader allocates 0x1C0 for
 // BSFadeNode wrap path. BSLeafAnimNode shares the layout (extends BSFadeNode).
-constexpr std::uintptr_t BSFADENODE_VTABLE_RVA     = 0x028FA3E8;
-constexpr std::uintptr_t BSLEAFANIMNODE_VTABLE_RVA = 0x028FA690;
+inline const std::uintptr_t BSFADENODE_VTABLE_RVA     = FW_RVA(0x028FA3E8, 0x02903BA8);
+inline const std::uintptr_t BSLEAFANIMNODE_VTABLE_RVA = FW_RVA(0x028FA690, 0x02903E50);
 constexpr std::size_t    BSFADENODE_SIZEOF        = 0x1C0;      // 448 bytes
 
 // BSSubIndexTriShape size (per M9w3 RE).
 constexpr std::size_t    BSSUBINDEXTRISHAPE_SIZEOF = 0x190;
 // BSSkin::Instance size (per M8P3_skin_instance_dossier.txt §1).
 constexpr std::size_t    BSSKIN_INSTANCE_SIZEOF = 0x0C0;
-constexpr std::uintptr_t BSSKIN_INSTANCE_VTABLE_RVA = 0x0267E5C8;
+inline const std::uintptr_t BSSKIN_INSTANCE_VTABLE_RVA = FW_RVA(0x0267E5C8, 0x026866F8);
 // BSSkin::Instance copy ctor (clones from another instance) — per M8P3 §11.
-constexpr std::uintptr_t BSSKIN_INSTANCE_COPY_CTOR_RVA = 0x016D7B30;
+inline const std::uintptr_t BSSKIN_INSTANCE_COPY_CTOR_RVA = FW_RVA(0x016D7B30, 0x016D8050);
 // Geometry skin slot.
 constexpr std::size_t    BSGEOMETRY_SKIN_INSTANCE_OFF = 0x140;
 // (BSTRISHAPE_SIZEOF already defined below at section 5 for M2 ctor work.)
 
 // NiAVObject (base of NiNode) — not allocated directly in M1, but member
 // offsets are inherited and matter for setting the cube's position.
-constexpr std::uintptr_t NIAVOBJECT_VTABLE_RVA = 0x0267D0C0;
-constexpr std::uintptr_t NIAVOBJECT_CTOR_RVA  = 0x016C8CD0; // sub_1416C8CD0
+inline const std::uintptr_t NIAVOBJECT_VTABLE_RVA = FW_RVA(0x0267D0C0, 0x026851F0);
+inline const std::uintptr_t NIAVOBJECT_CTOR_RVA  = FW_RVA(0x016C8CD0, 0x016C91F0); // sub_1416C8CD0
 constexpr std::size_t    NIAVOBJECT_SIZEOF    = 0x120;      // 288 bytes
 
 // NiRefObject — root of the hierarchy. We never allocate one directly,
 // but the refcount discipline applies to every object we create.
-constexpr std::uintptr_t NIREFOBJECT_VTABLE_RVA = 0x02462F88;
+inline const std::uintptr_t NIREFOBJECT_VTABLE_RVA = FW_RVA(0x02462F88, 0x0246AFE8);
 // 2026-09-15 — BSValueNode: the "AddOnNode" marker. Every power armor
 // headlamp mod NIF (PA_X1_HeadLamp.nif and the 36 variants) is a NiNode plus
 // a BSValueNode 'AddOnNode158' and NO geometry: the engine attaches the
@@ -99,7 +101,7 @@ constexpr std::uintptr_t NIREFOBJECT_VTABLE_RVA = 0x02462F88;
 // NiBillboardNode inside the node geometry-list rebuild and the render
 // accumulator, right after our ghost carried such a node. Clones we attach
 // must not carry add-on nodes.
-constexpr std::uintptr_t BSVALUENODE_VTABLE_RVA = 0x02695598;   // engine_rtti_catalog.md
+inline const std::uintptr_t BSVALUENODE_VTABLE_RVA = FW_RVA(0x02695598, 0x0269D6B8);   // engine_rtti_catalog.md
 
 // ============================================================================
 // 3. SCENE ROOT  (dossier §1 — HIGH confidence)
@@ -142,10 +144,10 @@ constexpr std::uintptr_t BSVALUENODE_VTABLE_RVA = 0x02695598;   // engine_rtti_c
 // number stays and only its meaning is corrected — changing it would alter a
 // log line while pretending to be a doc fix. Renamed to say what it is.
 // ############################################################################
-constexpr std::uintptr_t ROOT_CAMERA_SINGLETON_RVA = 0x03E47A10; // qword_143E47A10 = NiCamera
+inline const std::uintptr_t ROOT_CAMERA_SINGLETON_RVA = FW_RVA(0x03E47A10, 0x03E5E3D0); // qword_143E47A10 = NiCamera
 // Legacy spelling kept so nothing silently breaks; do not use in new code.
-constexpr std::uintptr_t SSN_SINGLETON_RVA     = 0x03E47A10; // MISNOMER — see above
-constexpr std::uintptr_t WORLD_SG_SINGLETON_RVA = 0x032D2228; // qword_1432D2228 (SceneGraph)
+inline const std::uintptr_t SSN_SINGLETON_RVA     = FW_RVA(0x03E47A10, 0x03E5E3D0); // MISNOMER — see above
+inline const std::uintptr_t WORLD_SG_SINGLETON_RVA = FW_RVA(0x032D2228, 0x032DD338); // qword_1432D2228 (SceneGraph)
 
 // SceneGraph shortcut to ShadowSceneNode. Dossier M1 §1:
 //   "*(QWORD*)(World + 320) = SSN"
@@ -314,7 +316,7 @@ constexpr std::uint64_t NIAV_FLAG_DYNAMIC      = 0x2000ull;
 // count from base[-8] and frees base-8 through sub_1422B7620 ->
 // sub_141657E20(pool, ptr, /*aligned=*/0) = plain free(). Allocating with the
 // aligned flag set and letting the engine free() it is a heap mismatch.
-constexpr std::uintptr_t NITARRAY_ALLOC_FN_RVA  = 0x016BFA70; // sub_1416BFA70
+inline const std::uintptr_t NITARRAY_ALLOC_FN_RVA  = FW_RVA(0x016BFA70, 0x016BFF90); // sub_1416BFA70
 // The count header sits immediately BEFORE the pointer stored at +0x128.
 constexpr std::ptrdiff_t NITARRAY_COUNT_HDR_OFF = -8;
 
@@ -329,12 +331,12 @@ constexpr std::size_t NINODE_CHILDREN_CNT_OFF  = 0x132;
 // Not used in M1 (empty NiNode), listed here so M2 can lift directly:
 
 // BSGeometry / BSTriShape / BSDynamicTriShape — for the actual cube mesh:
-constexpr std::uintptr_t BSGEOMETRY_VTABLE_RVA       = 0x0267E0B8;
-constexpr std::uintptr_t BSGEOMETRY_CTOR_RVA         = 0x016D4BD0;
+inline const std::uintptr_t BSGEOMETRY_VTABLE_RVA       = FW_RVA(0x0267E0B8, 0x026861E8);
+inline const std::uintptr_t BSGEOMETRY_CTOR_RVA         = FW_RVA(0x016D4BD0, 0x016D50F0);
 constexpr std::size_t    BSGEOMETRY_SIZEOF           = 0x170;
 
-constexpr std::uintptr_t BSTRISHAPE_VTABLE_RVA       = 0x0267E948;
-constexpr std::uintptr_t BSTRISHAPE_CTOR_RVA         = 0x016D99E0;
+inline const std::uintptr_t BSTRISHAPE_VTABLE_RVA       = FW_RVA(0x0267E948, 0x02686A78);
+inline const std::uintptr_t BSTRISHAPE_CTOR_RVA         = FW_RVA(0x016D99E0, 0x016D9F00);
 constexpr std::size_t    BSTRISHAPE_SIZEOF           = 0x170;
 
 // NOTE 2026-04-23 live test: the ctor sub_1416E4090 wires vtable
@@ -348,14 +350,14 @@ constexpr std::size_t    BSTRISHAPE_SIZEOF           = 0x170;
 //
 // We use 0x0267F758 as the expected vtable. If future RE proves the
 // true BSDynamicTriShape vtable is elsewhere, flip this constant.
-constexpr std::uintptr_t BSDYNAMICTRISHAPE_VTABLE_RVA = 0x0267F758;
-constexpr std::uintptr_t BSDYNAMICTRISHAPE_CTOR_RVA   = 0x016E4090;
+inline const std::uintptr_t BSDYNAMICTRISHAPE_VTABLE_RVA = FW_RVA(0x0267F758, 0x02687888);
+inline const std::uintptr_t BSDYNAMICTRISHAPE_CTOR_RVA   = FW_RVA(0x016E4090, 0x016E45B0);
 constexpr std::size_t    BSDYNAMICTRISHAPE_SIZEOF     = 0x190;
 
 // Keep the dossier-claimed RVA around for comparison / diagnostics.
 // If live BSDynamicTriShape objects ever show up with this vtable,
 // we know the other direction was the mis-label.
-constexpr std::uintptr_t BSDYNAMICTRISHAPE_VTABLE_ALT_RVA = 0x0267F948;
+inline const std::uintptr_t BSDYNAMICTRISHAPE_VTABLE_ALT_RVA = FW_RVA(0x0267F948, 0x02687A78);
 
 // BSSubIndexTriShape — multi-segment tri shape used for character bodies
 // (MaleBody.nif's BaseMaleBody:0 etc.). Inherits BSGeometry → BSTriShape →
@@ -373,7 +375,7 @@ constexpr std::uintptr_t BSDYNAMICTRISHAPE_VTABLE_ALT_RVA = 0x0267F948;
 //      BSSubIndexTriShape TD → the answer is unique.
 // Used by skin_rebind locally too (kBSSubIndexTriShapeVtRva) — single source
 // of truth here.
-constexpr std::uintptr_t BSSUBINDEXTRISHAPE_VTABLE_RVA = 0x02697D40;
+inline const std::uintptr_t BSSUBINDEXTRISHAPE_VTABLE_RVA = FW_RVA(0x02697D40, 0x0269FE60);
 
 // ============================================================================
 // 8. BSGeometry property offsets  (dossier M2 §1-§3 — HIGH confidence)
@@ -467,7 +469,7 @@ constexpr std::size_t BSSTREAMDESC_FILLED_FLAG_OFF    = 0x4E; // u8  (1 = data u
 // BSGeometry::vt[42] = SetAlphaProperty (5-instruction refcount-safe setter).
 // Writes to +0x130. Inherited unchanged by BSTriShape / BSDynamicTriShape.
 constexpr std::size_t    BSGEOM_VT_SLOT_SET_ALPHA    = 42;    // offset 0x150 in vtable
-constexpr std::uintptr_t BSGEOM_SET_ALPHA_FN_RVA     = 0x016D5930; // sub_1416D5930
+inline const std::uintptr_t BSGEOM_SET_ALPHA_FN_RVA     = FW_RVA(0x016D5930, 0x016D5E50); // sub_1416D5930
 
 // Other BSGeometry slots (from ctor decomp — semantics low confidence):
 constexpr std::size_t BSGEOM_VERT_DESC_OFF           = 0x120; // u32 vertex-desc flags
@@ -502,7 +504,7 @@ constexpr std::size_t BSDYNAMIC_FLAGS_OFF            = 0x184; // dword
 // UpdateDownwardPass kick (for forcing a transform recompute after
 // changing local.translate mid-frame). Not needed for M1 — engine's
 // normal per-frame walk picks up the change on the next tick.
-constexpr std::uintptr_t UPDATE_DOWNWARD_PASS_RVA    = 0x016C8050; // sub_1416C8050
+inline const std::uintptr_t UPDATE_DOWNWARD_PASS_RVA    = FW_RVA(0x016C8050, 0x016C8570); // sub_1416C8050
 
 // ============================================================================
 // 12. NIF LOADER  (dossier stradaB_nif_loader_api.txt + hang-diagnosis 2026-04-23)
@@ -564,8 +566,8 @@ constexpr std::uintptr_t UPDATE_DOWNWARD_PASS_RVA    = 0x016C8050; // sub_1416C8
 //
 // Threading: main thread only in practice (scene-graph attach rule);
 // loader itself is synchronous (blocking) — ~2-10 ms for a body NIF.
-constexpr std::uintptr_t NIF_LOAD_BY_PATH_RVA        = 0x0017B3E90; // sub_1417B3E90
-constexpr std::uintptr_t NIF_LOAD_RESMGR_SLOT_RVA    = 0x030DD618;  // qword_1430DD618 (diagnostics)
+inline const std::uintptr_t NIF_LOAD_BY_PATH_RVA        = FW_RVA(0x0017B3E90, 0x0017B43C0); // sub_1417B3E90
+inline const std::uintptr_t NIF_LOAD_RESMGR_SLOT_RVA    = FW_RVA(0x030DD618, 0x030E8718);  // qword_1430DD618 (diagnostics)
 
 // === LOWER-LEVEL WORKER (for choke-point hooking) ===
 //
@@ -594,7 +596,7 @@ constexpr std::uintptr_t NIF_LOAD_RESMGR_SLOT_RVA    = 0x030DD618;  // qword_143
 // Return: a TLS scratch DWORD* (irrelevant to caller). Real output is
 // *outNode (refcount already incremented). Caller treats the return as
 // success-by-side-effect.
-constexpr std::uintptr_t NIF_LOAD_WORKER_RVA         = 0x0017B3480; // sub_1417B3480
+inline const std::uintptr_t NIF_LOAD_WORKER_RVA         = FW_RVA(0x0017B3480, 0x0017B39B0); // sub_1417B3480
 
 // === BSResource::EntryDB<BSModelDB::DBTraits> singleton (M9.w4 PROPER) ===
 //
@@ -649,10 +651,10 @@ constexpr std::size_t BSRES_ENTRY_DB_LOCK_OFF         = 0x180;
 constexpr std::size_t BSRES_ENTRY_DB_BUCKETS_OFF      = 0x188;
 constexpr std::size_t BSRES_ENTRY_DB_CAPACITY_OFF     = 0x190;
 constexpr std::size_t BSRES_ENTRY_DB_COUNT_OFF        = 0x198;
-constexpr std::size_t BSRES_ENTRY_DB_TOMBSTONE_RVA    = 0x002ECF980;
+inline const std::size_t BSRES_ENTRY_DB_TOMBSTONE_RVA    = FW_RVA(0x002ECF980, 0x002EDA980);
 constexpr std::size_t BSRES_ENTRY_NODE_OFF            = 0x20;     // 3/4 consensus
 constexpr std::size_t BSRES_ENTRY_SIZEOF              = 0x30;     // 3/4 consensus
-constexpr std::uintptr_t BSRES_ENTRYDB_VTABLE_RVA     = 0x02694C70;
+inline const std::uintptr_t BSRES_ENTRYDB_VTABLE_RVA     = FW_RVA(0x02694C70, 0x0269CDA0);
 
 // === BSGEOMETRY FACTORY (M9.w4 PROPER, v0.4.2+) ===
 //
@@ -694,7 +696,7 @@ constexpr std::uintptr_t BSRES_ENTRYDB_VTABLE_RVA     = 0x02694C70;
 // Open: BSVertexDesc nibble layout MED confidence; donor shader binding
 // required post-call for non-pink rendering (clone shader from base NIF
 // BSTriShape's +0x138/+0x130 + refcount bump).
-constexpr std::uintptr_t WEAPON_GEO_FACTORY_RVA      = 0x000182FFD0; // sub_14182FFD0
+inline const std::uintptr_t WEAPON_GEO_FACTORY_RVA      = FW_RVA(0x000182FFD0, 0x00018305B0); // sub_14182FFD0
 
 // === CACHE RESOLVER (last shot before Path B raw capture) ===
 //
@@ -723,14 +725,14 @@ constexpr std::uintptr_t WEAPON_GEO_FACTORY_RVA      = 0x000182FFD0; // sub_1418
 // We HOOK this with logging-only behavior first to confirm weapon paths
 // flow through it. If they do, a follow-up pass extracts the NiAVObject*
 // from `handle` to populate the cache map for cache-hit lookups.
-constexpr std::uintptr_t NIF_CACHE_RESOLVER_RVA      = 0x0016A6D00; // sub_1416A6D00
+inline const std::uintptr_t NIF_CACHE_RESOLVER_RVA      = FW_RVA(0x0016A6D00, 0x0016A7220); // sub_1416A6D00
 
 // Player singleton + loaded3D offset for M7.b bone-copy approach.
 // See re/_player_copy_m7.log. Player's loaded3D is a direct BSFadeNode*
 // pointer embedded in the Actor struct (inherited from TESObjectREFR).
 // No loadedData indirection. Confirmed via PC vt[140] Get3D decomp
 // which reads *(rbx+0xB78) directly.
-constexpr std::uintptr_t PLAYER_SINGLETON_RVA      = 0x032D2260;  // qword_1432D2260
+inline const std::uintptr_t PLAYER_SINGLETON_RVA      = FW_RVA(0x032D2260, 0x032DD370);  // qword_1432D2260
 constexpr std::size_t    REFR_LOADED_3D_OFF        = 0x0B78;      // BSFadeNode*
 
 // Opts flag bits — read by sub_1417B3480 and acted on in the parse path
@@ -798,13 +800,13 @@ constexpr std::uint32_t  NIF_MODEL_KIND_ACTOR    = 3;
 // History: this cost us ~20 iterations of guessing (cube BSEffectShader,
 // BSLSP by hand, killswitch, POSTPROC flag) before an RE agent traced
 // Actor::Load3D and spotted the missing walker invocation.
-constexpr std::uintptr_t APPLY_MATERIALS_WALKER_RVA = 0x00255BA0; // sub_140255BA0
+inline const std::uintptr_t APPLY_MATERIALS_WALKER_RVA = FW_RVA(0x00255BA0, 0x00255EC0); // sub_140255BA0
 
 // Additional RVAs for manual/targeted use (not needed for the main fix):
-constexpr std::uintptr_t APPLY_MATERIALS_PERNODE_RVA = 0x00256070; // sub_140256070
-constexpr std::uintptr_t BGSM_LOADER_RVA             = 0x017A9620; // sub_1417A9620
-constexpr std::uintptr_t MAT_BIND_TO_GEOM_RVA        = 0x02169AD0; // sub_142169AD0
-constexpr std::uintptr_t BSMATERIAL_DB_SLOT_RVA      = 0x030DC2A8; // qword_1430DC2A8
+inline const std::uintptr_t APPLY_MATERIALS_PERNODE_RVA = FW_RVA(0x00256070, 0x00256390); // sub_140256070
+inline const std::uintptr_t BGSM_LOADER_RVA             = FW_RVA(0x017A9620, 0x017A9B50); // sub_1417A9620
+inline const std::uintptr_t MAT_BIND_TO_GEOM_RVA        = FW_RVA(0x02169AD0, 0x021715E0); // sub_142169AD0
+inline const std::uintptr_t BSMATERIAL_DB_SLOT_RVA      = FW_RVA(0x030DC2A8, 0x030E73A8); // qword_1430DC2A8
 
 // v26 paint — apply ONE BGSMaterialSwap (MSWP) to a loaded subtree.
 // This is the leaf the walker above reaches when it has a swap to apply:
@@ -825,11 +827,11 @@ constexpr std::uintptr_t BSMATERIAL_DB_SLOT_RVA      = 0x030DC2A8; // qword_1430
 // anything: the swap has to come from the item's instance data (the
 // material OMOD's property 13) and the ghost has no instance data.
 // Main thread only (synchronous .bgsm load).
-constexpr std::uintptr_t MATERIAL_SWAP_APPLY_RVA    = 0x00255D40; // sub_140255D40
+inline const std::uintptr_t MATERIAL_SWAP_APPLY_RVA    = FW_RVA(0x00255D40, 0x00256060); // sub_140255D40
 
 // LEGACY — do NOT use. Kept as constant for documentation / historical
 // reference only. Calling this with ResourceManager + NiNode holder hangs.
-constexpr std::uintptr_t NIF_LOAD_WRAPPER_LEGACY_RVA = 0x0026E1C0; // sub_14026E1C0
+inline const std::uintptr_t NIF_LOAD_WRAPPER_LEGACY_RVA = FW_RVA(0x0026E1C0, 0x0026E4E0); // sub_14026E1C0
 constexpr std::size_t    NIF_HOLDER_OUTPUT_OFF       = 0x20;       // was: where wrapper wrote output
 
 // ============================================================================
@@ -857,7 +859,7 @@ constexpr std::size_t    NIF_HOLDER_OUTPUT_OFF       = 0x20;       // was: where
 //   +0x158 material type = 3
 //   +0x160 index_count (u32)
 //   +0x164 vert_count  (u16)
-constexpr std::uintptr_t GEO_BUILDER_FN_RVA = 0x0182FFD0;
+inline const std::uintptr_t GEO_BUILDER_FN_RVA = FW_RVA(0x0182FFD0, 0x018305B0);
 
 // ============================================================================
 // 11. Own shader + alpha allocation  (dossier M2 geometry §4.C — HIGH conf)
@@ -882,13 +884,13 @@ constexpr std::uintptr_t GEO_BUILDER_FN_RVA = 0x0182FFD0;
 //   v51[20] = 236;   *((BYTE*)v51 + 42) = 0;   v51[20] |= 1;
 //   (*geom->vtable[42])(geom, v51);                 // SetAlphaProperty
 
-constexpr std::uintptr_t BSEFFECT_SHADER_CTOR_RVA   = 0x0216F9C0; // sub_14216F9C0
-constexpr std::uintptr_t BSEFFECT_SHADER_SETUP_RVA  = 0x02161B10; // sub_142161B10
-constexpr std::uintptr_t BSEFFECT_SHADER_TEX_HANDLE_RVA = 0x034391A0; // qword_1434391A0
-constexpr std::uintptr_t BSEFFECT_SHADER_TEX_INT_RVA    = 0x034391A8; // dword_1434391A8
+inline const std::uintptr_t BSEFFECT_SHADER_CTOR_RVA   = FW_RVA(0x0216F9C0, 0x021774D0); // sub_14216F9C0
+inline const std::uintptr_t BSEFFECT_SHADER_SETUP_RVA  = FW_RVA(0x02161B10, 0x02169620); // sub_142161B10
+inline const std::uintptr_t BSEFFECT_SHADER_TEX_HANDLE_RVA = FW_RVA(0x034391A0, 0x034496A0); // qword_1434391A0
+inline const std::uintptr_t BSEFFECT_SHADER_TEX_INT_RVA    = FW_RVA(0x034391A8, 0x034496A8); // dword_1434391A8
 constexpr std::size_t    BSEFFECT_SHADER_SIZEOF     = 0x88;
 
-constexpr std::uintptr_t NIALPHAPROP_INIT_RVA       = 0x016BD6F0; // sub_1416BD6F0
+inline const std::uintptr_t NIALPHAPROP_INIT_RVA       = FW_RVA(0x016BD6F0, 0x016BDC10); // sub_1416BD6F0
 constexpr std::size_t    NIALPHAPROP_SIZEOF         = 0x30;
 
 // BSEffectShader vt[42] = "AttachGeometry" — installs shader into geom.
@@ -912,17 +914,17 @@ constexpr std::size_t VT_SLOT_42 = 42;
 //      the resulting NiSourceTexture* handles into the material's tex slots.
 //   5. Install the BSLSP into cube's +0x138 (refcount bump + direct write).
 
-constexpr std::uintptr_t BSLSP_NEW_RVA              = 0x02171050; // sub_142171050 (alloc + ctor wrapper)
-constexpr std::uintptr_t BSLSP_CTOR_RVA             = 0x02171620; // sub_142171620 (in-place ctor, NOT used directly)
+inline const std::uintptr_t BSLSP_NEW_RVA              = FW_RVA(0x02171050, 0x02178B60); // sub_142171050 (alloc + ctor wrapper)
+inline const std::uintptr_t BSLSP_CTOR_RVA             = FW_RVA(0x02171620, 0x02179130); // sub_142171620 (in-place ctor, NOT used directly)
 constexpr std::size_t    BSLSP_SIZEOF               = 0xE8;
 
-constexpr std::uintptr_t BSSHADERTEXSET_CTOR_RVA    = 0x0216ED10; // sub_14216ED10
-constexpr std::uintptr_t BSSHADERTEXSET_SETPATH_RVA = 0x021627B0; // sub_1421627B0 (slot, ANSI path)
+inline const std::uintptr_t BSSHADERTEXSET_CTOR_RVA    = FW_RVA(0x0216ED10, 0x02176820); // sub_14216ED10
+inline const std::uintptr_t BSSHADERTEXSET_SETPATH_RVA = FW_RVA(0x021627B0, 0x0216A2C0); // sub_1421627B0 (slot, ANSI path)
 constexpr std::size_t    BSSHADERTEXSET_SIZEOF      = 0x60;
 
 // Binds material → texture set, resolving all 10 paths to NiSourceTexture*.
 // Args: (material, stream_ctx_ignored, textureSet).
-constexpr std::uintptr_t BSLSP_BIND_MATERIAL_TEXSET_RVA = 0x021C6870; // sub_1421C6870
+inline const std::uintptr_t BSLSP_BIND_MATERIAL_TEXSET_RVA = FW_RVA(0x021C6870, 0x021CE380); // sub_1421C6870
 
 // KILLSWITCH byte — gates the 10-slot texture-resolution loop inside
 // sub_1421C6870 (the bind fn). Xref scan shows ZERO writers in the binary,
@@ -932,7 +934,7 @@ constexpr std::uintptr_t BSLSP_BIND_MATERIAL_TEXSET_RVA = 0x021C6870; // sub_142
 //
 // FIX: write 1 to this byte before calling bind, restore after.
 // (Dossier: re/stradaB_bslsp_activation_systematic.txt §1 + §6 fix #2.)
-constexpr std::uintptr_t BSLSP_BIND_KILLSWITCH_BYTE_RVA = 0x03E488C0; // byte_143E488C0
+inline const std::uintptr_t BSLSP_BIND_KILLSWITCH_BYTE_RVA = FW_RVA(0x03E488C0, 0x03E5F280); // byte_143E488C0
 
 // Offset inside BSLightingShaderProperty.
 constexpr std::size_t BSLSP_MATERIAL_OFF     = 0x58;   // 88, i.e. shader[11]
@@ -968,7 +970,7 @@ constexpr std::size_t BSLSP_DRAWABLE_FLOAT_OFF = 0x64;
 // Reverted to 0xC0 / no zero-fill for stability. Plan C (Triton/angr
 // agents in background) will return the exact field requirements so we
 // can set specific values instead of relying on heap luck.
-constexpr std::uintptr_t BSLIGHTINGMAT_CTOR_RVA      = 0x021C5CE0; // sub_1421C5CE0
+inline const std::uintptr_t BSLIGHTINGMAT_CTOR_RVA      = FW_RVA(0x021C5CE0, 0x021CD7F0); // sub_1421C5CE0
 constexpr std::size_t    BSLIGHTINGMAT_SIZEOF        = 0xC0;
 
 // Body textures — all three are in the BA2 archives. The engine's texture

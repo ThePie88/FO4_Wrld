@@ -1,3 +1,4 @@
+#include "../game_build.h"
 // ============================================================================
 // Build 50 Strada A — Layer-1 IsHostile gateway hook.
 // 2026-05-22.
@@ -57,7 +58,7 @@ namespace {
 using IsHostileMasterFn = bool (__fastcall *)(std::uint64_t a1,
                                               std::uint64_t a2,
                                               std::uint8_t  a3);
-constexpr std::uintptr_t IS_HOSTILE_MASTER_RVA = 0x00C7AD40;
+const std::uintptr_t IS_HOSTILE_MASTER_RVA = FW_RVA(0x00C7AD40, 0x00C7B260);
 IsHostileMasterFn g_orig_is_hostile_master = nullptr;
 
 std::atomic<std::uint64_t> g_force_count{0};

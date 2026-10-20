@@ -1,3 +1,4 @@
+#include "../game_build.h"
 // ============================================================================
 // N3 (shared HP) — HP-funnel hook on sub_140CC9650. See npc_hp_probe.h.
 //
@@ -162,7 +163,7 @@ float safe_avo_max_value(const void* actor) noexcept {
 // hp_probe already learned; fall back to the engine AV registry getter
 // sub_140263120()[27] so the set works even on a client that never dealt Health
 // damage itself (the non-owner "just aiming" case). Cached after first resolve.
-constexpr std::uintptr_t AV_REGISTRY_RVA = 0x00263120;  // sub_140263120 → &AVInfo[125]
+const std::uintptr_t AV_REGISTRY_RVA = FW_RVA(0x00263120, 0x00263440);  // sub_140263120 → &AVInfo[125]
 std::atomic<const void*> g_health_avinfo_cached{nullptr};
 
 const void* resolve_health_avinfo() noexcept {

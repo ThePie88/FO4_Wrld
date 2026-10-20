@@ -1,3 +1,4 @@
+#include "../game_build.h"
 #include "engine_calls.h"
 #include "../audit.h"
 
@@ -934,9 +935,9 @@ bool init(std::uintptr_t module_base) {
     // RVAs from re/reference_fo4_offsets.md (validated via IDA).
     // (DisableEnqueue / EnableCleanup / EnableApply RVAs were already
     // used in the Frida JS era as constants — we're re-using them here.)
-    constexpr std::uintptr_t DISABLE_ENQUEUE_RVA = 0x005B3EE0;
-    constexpr std::uintptr_t ENABLE_CLEANUP_RVA  = 0x005B4430;
-    constexpr std::uintptr_t ENABLE_APPLY_RVA    = 0x005B4140;
+    const std::uintptr_t DISABLE_ENQUEUE_RVA = FW_RVA(0x005B3EE0, 0x005B4210);
+    const std::uintptr_t ENABLE_CLEANUP_RVA  = FW_RVA(0x005B4430, 0x005B4760);
+    const std::uintptr_t ENABLE_APPLY_RVA    = FW_RVA(0x005B4140, 0x005B4470);
 
     g_lookup = reinterpret_cast<LookupByFormIDFn>(
         module_base + offsets::LOOKUP_BY_FORMID_RVA);
@@ -1095,30 +1096,30 @@ bool init(std::uintptr_t module_base) {
     // B6.6w5 Build 27 — AIProcess + handle-sub-buffer constructors for
     // per-ghost re-allocation (Agent 10 recipe Section 4A + 4D).
     g_aiprocess_ctor = reinterpret_cast<AIProcessCtorFn>(
-        module_base + 0xCEEAB0);
+        module_base + FW_RVA(0xCEEAB0, 0x00CEEFD0));
     g_aiprocess_populate = reinterpret_cast<AIProcessPopulateFn>(
-        module_base + 0xCFA450);
+        module_base + FW_RVA(0xCFA450, 0x00CFA970));
     g_handleref_init = reinterpret_cast<HandleRefInitFn>(
-        module_base + 0x272730);
+        module_base + FW_RVA(0x272730, 0x00272A50));
 
     // B6.6w5 Build 28 — engine-native proxy spawn primitives. RVAs
     // manually verified against `D:\falloutworld_decomp\out\05_functions.csv`
     // and decomp file:line citations in AGENT P1A/P1B reports.
     // (g_place_at_me already resolved below at line ~720 from offsets::PLACE_AT_ME_RVA)
     g_set_disabled = reinterpret_cast<SetDisabledFn>(
-        module_base + 0x0519410);            // SetDisabled sub_140519410
+        module_base + FW_RVA(0x0519410, 0x00519740));            // SetDisabled sub_140519410
 
     // Build 56 (Option C) — global form-table deregister primitives.
     g_form_erase = reinterpret_cast<EraseFormFn>(
-        module_base + 0x0315740);            // ERASE sub_140315740
+        module_base + FW_RVA(0x0315740, 0x00315A70));            // ERASE sub_140315740
     g_form_lock_acquire_w = reinterpret_cast<AcquireWriteFn>(
-        module_base + 0x1659060);            // WriteLock acquire sub_141659060
+        module_base + FW_RVA(0x1659060, 0x01659480));            // WriteLock acquire sub_141659060
     g_form_lock_release_w = reinterpret_cast<ReleaseWriteFn>(
-        module_base + 0x16592C0);            // WriteLock release sub_1416592C0
+        module_base + FW_RVA(0x16592C0, 0x016596E0));            // WriteLock release sub_1416592C0
     g_form_table_base_addr = reinterpret_cast<void*>(
-        module_base + 0x030E0DC8);           // qword_1430DBF78[2506]
+        module_base + FW_RVA(0x030E0DC8, 0x030EBEC8));           // qword_1430DBF78[2506]
     g_form_table_lock_addr = reinterpret_cast<void*>(
-        module_base + 0x030E0E18);           // qword_1430DBF78[2516]
+        module_base + FW_RVA(0x030E0E18, 0x030EBF18));           // qword_1430DBF78[2516]
     FW_LOG("[ghost-deregister] form-table primitives resolved: "
            "erase=%p lock_acq_w=%p lock_rel_w=%p table_base=%p table_lock=%p",
            reinterpret_cast<void*>(g_form_erase),
@@ -1127,15 +1128,15 @@ bool init(std::uintptr_t module_base) {
            g_form_table_base_addr,
            g_form_table_lock_addr);
     g_set_ghost = reinterpret_cast<SetGhostFn>(
-        module_base + 0x0C5CE40);            // SetGhost sub_140C5CE40
+        module_base + FW_RVA(0x0C5CE40, 0x00C5D360));            // SetGhost sub_140C5CE40
     g_set_position_engine = reinterpret_cast<SetPositionEngineFn>(
-        module_base + 0x0513A80);            // SetPosition sub_140513A80
+        module_base + FW_RVA(0x0513A80, 0x00513DB0));            // SetPosition sub_140513A80
     g_set_rotation_engine = reinterpret_cast<SetRotationEngineFn>(
-        module_base + 0x0513790);            // SetRotation sub_140513790
+        module_base + FW_RVA(0x0513790, 0x00513AC0));            // SetRotation sub_140513790
     g_create_by_type_code = reinterpret_cast<CreateByTypeCodeFn>(
-        module_base + 0x04F9E60);            // CreateByTypeCode sub_1404F9E60
+        module_base + FW_RVA(0x04F9E60, 0x004FA190));            // CreateByTypeCode sub_1404F9E60
     g_handle_resolve = reinterpret_cast<HandleResolveFn>(
-        module_base + 0x02A0540);            // ObjHandle::TryGetRef sub_1402A0540
+        module_base + FW_RVA(0x02A0540, 0x002A0860));            // ObjHandle::TryGetRef sub_1402A0540
 
     g_player_alt_singleton = reinterpret_cast<void**>(
         module_base + offsets::PLAYER_ALT_SINGLETON_RVA);

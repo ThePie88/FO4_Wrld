@@ -1,3 +1,4 @@
+#include "../game_build.h"
 #include "pa_pipeline_trace.h"
 
 #include <windows.h>
@@ -43,8 +44,8 @@ PaReloadBFn g_orig_reload_b = nullptr;
 // many swaps it holds, and per geometry whether the leaf changed the
 // bound material. Our own apply_materials calls pass through the same
 // walker with instance_data == 0, which tells them apart.
-constexpr std::uintptr_t kMatWalkerRva = 0x00255BA0;   // sub_140255BA0
-constexpr std::uintptr_t kMatLeafRva   = 0x00256070;   // sub_140256070
+const std::uintptr_t kMatWalkerRva = FW_RVA(0x00255BA0, 0x00255EC0);   // sub_140255BA0
+const std::uintptr_t kMatLeafRva   = FW_RVA(0x00256070, 0x00256390);   // sub_140256070
 using MatWalkerFn = void (__fastcall*)(void* node, void* model_swap, void* swap,
                                        void* inst, void* prefetch);
 using MatLeafFn   = std::int64_t (__fastcall*)(void* ctx, void* geom);
@@ -175,7 +176,7 @@ std::int64_t __fastcall detour_mat_leaf(void* ctx, void* geom) {
 // old one). This detour names the caller: for PowerArmor properties it
 // logs old/new material, the new material's .bgsm name and the first
 // game-module return addresses of the call stack.
-constexpr std::uintptr_t kSetMaterialRva = 0x02161B10;   // sub_142161B10
+const std::uintptr_t kSetMaterialRva = FW_RVA(0x02161B10, 0x02169620);   // sub_142161B10
 using SetMaterialFn = std::int64_t (__fastcall*)(void* prop, void* material, char unique);
 SetMaterialFn g_orig_set_material = nullptr;
 

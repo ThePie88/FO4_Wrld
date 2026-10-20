@@ -1,0 +1,7085 @@
+{
+ "65536": {
+  "old": "0x10000",
+  "new": "0x10000",
+  "section": ".text",
+  "method": "mid:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 1064,
+  "new_size": 1064,
+  "uses": [
+   "diag/crash_veh.cpp:65",
+   "engine/engine_calls.cpp:4388",
+   "engine/engine_calls.cpp:4408",
+   "engine/engine_calls.cpp:4448",
+   "engine/engine_calls.cpp:4474",
+   "engine/engine_calls.cpp:9312",
+   "hooks/bsmodelproc_hook.cpp:241",
+   "hooks/bsmodelproc_hook.cpp:299",
+   "hooks/bsmodelproc_hook.cpp:333",
+   "hooks/bsmodelproc_hook.cpp:341",
+   "hooks/ghost_global_walker_guards.cpp:412",
+   "hooks/ghost_global_walker_guards.cpp:557",
+   "hooks/ghost_global_walker_guards.cpp:627",
+   "hooks/ghost_global_walker_guards.cpp:966",
+   "hooks/ghost_global_walker_guards.cpp:1178",
+   "hooks/ghost_global_walker_guards.cpp:1557",
+   "hooks/ghost_global_walker_guards.cpp:1566",
+   "hooks/ghost_global_walker_guards.cpp:1899",
+   "hooks/ghost_global_walker_guards.cpp:2230",
+   "hooks/ghost_global_walker_guards.cpp:2235",
+   "hooks/ghost_hostility_guard.cpp:360",
+   "hooks/hp_bar_hook.cpp:85",
+   "hooks/subrefload_hook.cpp:117",
+   "hooks/subrefload_hook.cpp:239",
+   "hooks/subrefload_hook.cpp:288",
+   "hooks/subrefload_hook.cpp:316",
+   "hooks/subrefload_hook.cpp:322",
+   "native/anatomy_mirror.cpp:124",
+   "native/anatomy_mirror.cpp:318",
+   "native/anatomy_mirror.cpp:353",
+   "native/anatomy_mirror.cpp:419",
+   "native/anatomy_mirror.cpp:446",
+   "native/anatomy_mirror.cpp:480",
+   "native/anatomy_mirror.cpp:503",
+   "native/anatomy_mirror.cpp:658",
+   "native/anatomy_probe.cpp:115",
+   "native/appearance_recipe.cpp:105",
+   "native/bsgeo_input_cache.cpp:98",
+   "native/chargen_dump.cpp:252",
+   "native/chargen_dump.cpp:961",
+   "native/chargen_dump.cpp:1021",
+   "native/scene_inject.cpp:13394",
+   "native/scene_walker.cpp:262",
+   "native/skin_rebind.cpp:1512",
+   "persist/lifecycle.cpp:96"
+  ],
+  "context": "return v >= 0x10000 && v < 0x0000800000000000ULL && (v & 7) == 0;"
+ },
+ "4194304": {
+  "old": "0x400000",
+  "new": "0x400330",
+  "section": ".text",
+  "method": "mid:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 220,
+  "new_size": 220,
+  "uses": [
+   "diag/crash_veh.cpp:343",
+   "offsets.h:3461"
+  ],
+  "context": "g_self_end  = g_self_base + 0x00400000;  // 4MB upper bound; our DLL is <2MB"
+ },
+ "5979872": {
+  "old": "0x5b3ee0",
+  "new": "0x5b4210",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 38,
+  "new_size": 38,
+  "uses": [
+   "engine/engine_calls.cpp:937"
+  ],
+  "context": "constexpr std::uintptr_t DISABLE_ENQUEUE_RVA = 0x005B3EE0;"
+ },
+ "5981232": {
+  "old": "0x5b4430",
+  "new": "0x5b4760",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 17,
+  "new_size": 17,
+  "uses": [
+   "engine/engine_calls.cpp:938"
+  ],
+  "context": "constexpr std::uintptr_t ENABLE_CLEANUP_RVA  = 0x005B4430;"
+ },
+ "5980480": {
+  "old": "0x5b4140",
+  "new": "0x5b4470",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 31,
+  "new_size": 31,
+  "uses": [
+   "engine/engine_calls.cpp:939"
+  ],
+  "context": "constexpr std::uintptr_t ENABLE_APPLY_RVA    = 0x005B4140;"
+ },
+ "13560496": {
+  "old": "0xceeab0",
+  "new": "0xceefd0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 211,
+  "new_size": 211,
+  "uses": [
+   "engine/engine_calls.cpp:1098"
+  ],
+  "context": "module_base + 0xCEEAB0);"
+ },
+ "13608016": {
+  "old": "0xcfa450",
+  "new": "0xcfa970",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 337,
+  "new_size": 337,
+  "uses": [
+   "engine/engine_calls.cpp:1100"
+  ],
+  "context": "module_base + 0xCFA450);"
+ },
+ "2565936": {
+  "old": "0x272730",
+  "new": "0x272a50",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 46,
+  "new_size": 46,
+  "uses": [
+   "engine/engine_calls.cpp:1102",
+   "offsets.h:3498"
+  ],
+  "context": "module_base + 0x272730);"
+ },
+ "5346320": {
+  "old": "0x519410",
+  "new": "0x519740",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 65,
+  "new_size": 65,
+  "uses": [
+   "engine/engine_calls.cpp:1109"
+  ],
+  "context": "module_base + 0x0519410);            // SetDisabled sub_140519410"
+ },
+ "3233600": {
+  "old": "0x315740",
+  "new": "0x315a70",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 258,
+  "new_size": 258,
+  "uses": [
+   "engine/engine_calls.cpp:1113"
+  ],
+  "context": "module_base + 0x0315740);            // ERASE sub_140315740"
+ },
+ "23433312": {
+  "old": "0x1659060",
+  "new": "0x1659480",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 129,
+  "new_size": 129,
+  "uses": [
+   "engine/engine_calls.cpp:1115",
+   "offsets.h:1136"
+  ],
+  "context": "module_base + 0x1659060);            // WriteLock acquire sub_141659060"
+ },
+ "23433920": {
+  "old": "0x16592c0",
+  "new": "0x16596e0",
+  "section": ".text",
+  "method": "leaf:calls 3787/3787",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "engine/engine_calls.cpp:1117",
+   "offsets.h:1137",
+   "offsets.h:2872"
+  ],
+  "context": "module_base + 0x16592C0);            // WriteLock release sub_1416592C0"
+ },
+ "51252680": {
+  "old": "0x30e0dc8",
+  "new": "0x30ebec8",
+  "section": ".data",
+  "method": "data:refs 128/128",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "engine/engine_calls.cpp:1119"
+  ],
+  "context": "module_base + 0x030E0DC8);           // qword_1430DBF78[2506]"
+ },
+ "51252760": {
+  "old": "0x30e0e18",
+  "new": "0x30ebf18",
+  "section": ".data",
+  "method": "data:refs 64/64",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "engine/engine_calls.cpp:1121"
+  ],
+  "context": "module_base + 0x030E0E18);           // qword_1430DBF78[2516]"
+ },
+ "12963392": {
+  "old": "0xc5ce40",
+  "new": "0xc5d360",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 13,
+  "new_size": 13,
+  "uses": [
+   "engine/engine_calls.cpp:1130"
+  ],
+  "context": "module_base + 0x0C5CE40);            // SetGhost sub_140C5CE40"
+ },
+ "5323392": {
+  "old": "0x513a80",
+  "new": "0x513db0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 21,
+  "new_size": 21,
+  "uses": [
+   "engine/engine_calls.cpp:1132",
+   "offsets.h:2117",
+   "offsets.h:2738"
+  ],
+  "context": "module_base + 0x0513A80);            // SetPosition sub_140513A80"
+ },
+ "5322640": {
+  "old": "0x513790",
+  "new": "0x513ac0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 241,
+  "new_size": 241,
+  "uses": [
+   "engine/engine_calls.cpp:1134"
+  ],
+  "context": "module_base + 0x0513790);            // SetRotation sub_140513790"
+ },
+ "5217888": {
+  "old": "0x4f9e60",
+  "new": "0x4fa190",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": 142,
+  "new_size": 142,
+  "uses": [
+   "engine/engine_calls.cpp:1136"
+  ],
+  "context": "module_base + 0x04F9E60);            // CreateByTypeCode sub_1404F9E60"
+ },
+ "2753856": {
+  "old": "0x2a0540",
+  "new": "0x2a0860",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 42,
+  "new_size": 42,
+  "uses": [
+   "engine/engine_calls.cpp:1138"
+  ],
+  "context": "module_base + 0x02A0540);            // ObjHandle::TryGetRef sub_1402A0540"
+ },
+ "67108864": {
+  "old": "0x4000000",
+  "new": null,
+  "section": ".pdata",
+  "method": "data in .pdata, no reference",
+  "confidence": 0.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "engine/engine_calls.cpp:8650",
+   "engine/engine_calls.cpp:8939",
+   "hooks/ghost_combat_force.cpp:206"
+  ],
+  "context": "*flags720 &= ~0x4000000u;   // clear isPlayer"
+ },
+ "2097151": {
+  "old": "0x1fffff",
+  "new": "0x20031f",
+  "section": ".text",
+  "method": "mid:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 194,
+  "new_size": 194,
+  "uses": [
+   "engine/engine_calls.cpp:8933",
+   "hooks/ghost_ai_hit_applier.cpp:95",
+   "hooks/ghost_combat_force.cpp:193"
+  ],
+  "context": "const std::uint32_t idx = handle & 0x1FFFFFu;"
+ },
+ "65011712": {
+  "old": "0x3e00000",
+  "new": "0x3e169c0",
+  "section": ".data",
+  "method": "data:interp 0x3df6b88..0x3e1eb88",
+  "confidence": 0.8,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "engine/engine_calls.cpp:8934",
+   "engine/engine_calls.cpp:8939",
+   "hooks/ghost_combat_force.cpp:194",
+   "hooks/ghost_combat_force.cpp:207"
+  ],
+  "context": "const std::uint32_t gen = handle & 0x3E00000u;"
+ },
+ "69480448": {
+  "old": "0x4243000",
+  "new": null,
+  "section": null,
+  "method": "outside image",
+  "confidence": 0.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "game_build.cpp:17"
+  ],
+  "context": "{Id::V1_11_191, 0x693A1A4C, 0x04243000, \"1.11.191.0\"},"
+ },
+ "69574656": {
+  "old": "0x425a000",
+  "new": null,
+  "section": null,
+  "method": "outside image",
+  "confidence": 0.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "game_build.cpp:18"
+  ],
+  "context": "{Id::V1_11_240, 0x6A727FCC, 0x0425A000, \"1.11.240.0\"},"
+ },
+ "2119999": {
+  "old": "0x20593f",
+  "new": null,
+  "section": ".text",
+  "method": "code, no function and no matched caller",
+  "confidence": 0.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "ghost/actor_hijack.cpp:271"
+  ],
+  "context": "constexpr std::uint32_t kBaseFormId = 0x0020593F;"
+ },
+ "3129568": {
+  "old": "0x2fc0e0",
+  "new": "0x2fc410",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 412,
+  "new_size": 412,
+  "uses": [
+   "hooks/bsmodelproc_hook.cpp:30"
+  ],
+  "context": "constexpr std::uintptr_t BSMODELPROC_RVA = 0x002FC0E0;"
+ },
+ "133022": {
+  "old": "0x2079e",
+  "new": "0x2079e",
+  "section": ".text",
+  "method": "sig:24B near delta",
+  "confidence": 0.9,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "hooks/container_hook.cpp:300",
+   "hooks/container_hook.cpp:627",
+   "hooks/put_hook.cpp:269",
+   "hooks/workbench_hook.cpp:17",
+   "native/world_spawn.cpp:412",
+   "offsets.h:790"
+  ],
+  "context": "if (cid.base_id == 0x0002079Eu) {"
+ },
+ "24854160": {
+  "old": "0x17b3e90",
+  "new": "0x17b43c0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 28,
+  "new_size": 28,
+  "uses": [
+   "hooks/engine_tracer.cpp:226",
+   "native/ni_offsets.h:567"
+  ],
+  "context": "constexpr std::uintptr_t RVA_NIF_LOAD_BY_PATH   = 0x017B3E90;"
+ },
+ "35105040": {
+  "old": "0x217a910",
+  "new": "0x2182420",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 497,
+  "new_size": 497,
+  "uses": [
+   "hooks/engine_tracer.cpp:227",
+   "native/scene_inject.cpp:895"
+  ],
+  "context": "constexpr std::uintptr_t RVA_TEX_LOAD           = 0x0217A910;"
+ },
+ "35006384": {
+  "old": "0x21627b0",
+  "new": "0x216a2c0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 76,
+  "new_size": 76,
+  "uses": [
+   "hooks/engine_tracer.cpp:228",
+   "native/ni_offsets.h:920"
+  ],
+  "context": "constexpr std::uintptr_t RVA_TEXSET_SETPATH     = 0x021627B0;"
+ },
+ "35416176": {
+  "old": "0x21c6870",
+  "new": "0x21ce380",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 402,
+  "new_size": 402,
+  "uses": [
+   "hooks/engine_tracer.cpp:229",
+   "native/ni_offsets.h:925"
+  ],
+  "context": "constexpr std::uintptr_t RVA_BIND_MAT_TEXSET    = 0x021C6870;"
+ },
+ "35065936": {
+  "old": "0x2171050",
+  "new": "0x2178b60",
+  "section": ".text",
+  "method": "func:lea",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 135,
+  "new_size": 135,
+  "uses": [
+   "hooks/engine_tracer.cpp:230",
+   "native/ni_offsets.h:915"
+  ],
+  "context": "constexpr std::uintptr_t RVA_BSLSP_NEW          = 0x02171050;"
+ },
+ "35413216": {
+  "old": "0x21c5ce0",
+  "new": "0x21cd7f0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 317,
+  "new_size": 317,
+  "uses": [
+   "hooks/engine_tracer.cpp:231",
+   "native/ni_offsets.h:971"
+  ],
+  "context": "constexpr std::uintptr_t RVA_MATERIAL_CTOR      = 0x021C5CE0;"
+ },
+ "16777215": {
+  "old": "0xffffff",
+  "new": "0x100061f",
+  "section": ".text",
+  "method": "mid:gap",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 62,
+  "new_size": 62,
+  "uses": [
+   "hooks/equip_hook.cpp:628",
+   "native/scene_inject.cpp:7641",
+   "native/world_spawn.cpp:2611",
+   "net/protocol.h:933",
+   "net/protocol.h:936",
+   "persist/inventory_capture.cpp:475"
+  ],
+  "context": "const std::uint32_t dir_count = (dir_entry & 0xFFFFFFu) >> 3;"
+ },
+ "19980864": {
+  "old": "0x130e240",
+  "new": "0x130e630",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 8,
+  "new_size": 8,
+  "uses": [
+   "hooks/first_person_graph.cpp:19"
+  ],
+  "context": "constexpr std::uintptr_t GRAPH_MGR_UPDATE_RVA   = 0x0130E240;  // sub_14130E240"
+ },
+ "20055344": {
+  "old": "0x1320530",
+  "new": "0x1320920",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 85,
+  "new_size": 85,
+  "uses": [
+   "hooks/first_person_graph.cpp:20"
+  ],
+  "context": "constexpr std::uintptr_t GRAPH_UPDATE_RVA       = 0x01320530;  // sub_141320530"
+ },
+ "20057760": {
+  "old": "0x1320ea0",
+  "new": "0x1321290",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 57,
+  "new_size": 57,
+  "uses": [
+   "hooks/first_person_graph.cpp:21"
+  ],
+  "context": "constexpr std::uintptr_t GRAPH_EVENT_FLUSH_RVA  = 0x01320EA0;  // sub_141320EA0"
+ },
+ "20055088": {
+  "old": "0x1320430",
+  "new": "0x1320820",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 225,
+  "new_size": 225,
+  "uses": [
+   "hooks/first_person_graph.cpp:23"
+  ],
+  "context": "constexpr std::uintptr_t GRAPH_ACTIVATE_RVA     = 0x01320430;  // sub_141320430"
+ },
+ "20057152": {
+  "old": "0x1320c40",
+  "new": "0x1321030",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 122,
+  "new_size": 122,
+  "uses": [
+   "hooks/first_person_graph.cpp:24"
+  ],
+  "context": "constexpr std::uintptr_t GRAPH_POSE_APPLY_RVA   = 0x01320C40;  // sub_141320C40"
+ },
+ "20086080": {
+  "old": "0x1327d40",
+  "new": "0x1328130",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 69,
+  "new_size": 69,
+  "uses": [
+   "hooks/first_person_graph.cpp:33"
+  ],
+  "context": "constexpr std::uintptr_t GRAPH_PHYS_PRED_RVA = 0x01327D40;  // sub_141327D40"
+ },
+ "14147152": {
+  "old": "0xd7de50",
+  "new": "0xd7e380",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 28,
+  "new_size": 28,
+  "uses": [
+   "hooks/first_person_graph.cpp:67"
+  ],
+  "context": "constexpr std::uintptr_t PC_SKELETON_SYNC_RVA = 0x00D7DE50;  // sub_140D7DE50"
+ },
+ "14146320": {
+  "old": "0xd7db10",
+  "new": "0xd7e040",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 360,
+  "new_size": 360,
+  "uses": [
+   "hooks/first_person_graph.cpp:76"
+  ],
+  "context": "constexpr std::uintptr_t PC_POPULATE_VARS_RVA = 0x00D7DB10;  // sub_140D7DB10"
+ },
+ "23576000": {
+  "old": "0x167bdc0",
+  "new": "0x167c1e0",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 38,
+  "new_size": 38,
+  "uses": [
+   "hooks/first_person_graph.cpp:81",
+   "offsets.h:1603"
+  ],
+  "context": "constexpr std::uintptr_t BSFIXEDSTRING_CTOR_RVA = 0x0167BDC0;  // sub_14167BDC0"
+ },
+ "20080016": {
+  "old": "0x1326590",
+  "new": "0x1326980",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 216,
+  "new_size": 216,
+  "uses": [
+   "hooks/first_person_graph.cpp:98"
+  ],
+  "context": "constexpr std::uintptr_t GRAPH_SET_VAR_FLOAT_RVA = 0x01326590;  // sub_141326590"
+ },
+ "20617744": {
+  "old": "0x13a9a10",
+  "new": "0x13a9e30",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 121,
+  "new_size": 121,
+  "uses": [
+   "hooks/first_person_graph.cpp:109"
+  ],
+  "context": "constexpr std::uintptr_t HKB_CTX_CTOR_RVA     = 0x013A9A10;  // sub_1413A9A10"
+ },
+ "20617872": {
+  "old": "0x13a9a90",
+  "new": "0x13a9eb0",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 98,
+  "new_size": 98,
+  "uses": [
+   "hooks/first_person_graph.cpp:110"
+  ],
+  "context": "constexpr std::uintptr_t HKB_CTX_DTOR_RVA     = 0x013A9A90;  // sub_1413A9A90"
+ },
+ "21556080": {
+  "old": "0x148eb70",
+  "new": "0x148ef90",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 42,
+  "new_size": 42,
+  "uses": [
+   "hooks/first_person_graph.cpp:111"
+  ],
+  "context": "constexpr std::uintptr_t HKB_UPD_ACTIVE_RVA   = 0x0148EB70;  // sub_14148EB70"
+ },
+ "21497632": {
+  "old": "0x1480720",
+  "new": "0x1480b40",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 4,
+  "new_size": 4,
+  "uses": [
+   "hooks/first_person_graph.cpp:112"
+  ],
+  "context": "constexpr std::uintptr_t HKB_UPD_SYNC_RVA     = 0x01480720;  // sub_141480720"
+ },
+ "19983072": {
+  "old": "0x130eae0",
+  "new": "0x130eed0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 767,
+  "new_size": 767,
+  "uses": [
+   "hooks/first_person_graph.cpp:197"
+  ],
+  "context": "constexpr std::uintptr_t MGR_NOTIFY_RVA       = 0x0130EAE0;  // sub_14130EAE0"
+ },
+ "20058080": {
+  "old": "0x1320fe0",
+  "new": "0x13213d0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 393,
+  "new_size": 393,
+  "uses": [
+   "hooks/first_person_graph.cpp:198"
+  ],
+  "context": "constexpr std::uintptr_t GRAPH_SEND_EVENT_RVA = 0x01320FE0;  // sub_141320FE0"
+ },
+ "19983856": {
+  "old": "0x130edf0",
+  "new": "0x130f1e0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 13,
+  "new_size": 13,
+  "uses": [
+   "hooks/first_person_graph.cpp:199"
+  ],
+  "context": "constexpr std::uintptr_t SET_ACTIVE_GRAPH_RVA = 0x0130EDF0;  // sub_14130EDF0"
+ },
+ "20079472": {
+  "old": "0x1326370",
+  "new": "0x1326760",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 208,
+  "new_size": 208,
+  "uses": [
+   "hooks/first_person_graph.cpp:200"
+  ],
+  "context": "constexpr std::uintptr_t GRAPH_DEACTIVATE_RVA = 0x01326370;  // sub_141326370"
+ },
+ "15136816": {
+  "old": "0xe6f830",
+  "new": "0xe6fd60",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": 266,
+  "new_size": 266,
+  "uses": [
+   "hooks/ghost_ai_action_execute.cpp:55",
+   "offsets.h:2278"
+  ],
+  "context": "constexpr std::uintptr_t ACTION_EXECUTE_RVA = 0x00E6F830;"
+ },
+ "51225488": {
+  "old": "0x30da390",
+  "new": "0x30e5490",
+  "section": ".data",
+  "method": "data:refs 6545/6545",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "hooks/ghost_ai_hit_applier.cpp:85",
+   "offsets.h:2898"
+  ],
+  "context": "constexpr std::uintptr_t HANDLE_TABLE_PTR_RVA       = 0x30DA390;"
+ },
+ "1048576": {
+  "old": "0x100000",
+  "new": "0x100000",
+  "section": ".text",
+  "method": "func:gap",
+  "confidence": 0.8,
+  "identical_code": true,
+  "old_size": 91,
+  "new_size": 91,
+  "uses": [
+   "hooks/ghost_global_walker_guards.cpp:1172",
+   "native/bsgeo_input_cache.cpp:98",
+   "native/scene_inject.cpp:11338",
+   "native/scene_inject.cpp:11534",
+   "native/weapon_witness.cpp:1320"
+  ],
+  "context": "constexpr std::uint64_t MIN_HEAP   = 0x100000ULL;       // 1 MiB"
+ },
+ "13164528": {
+  "old": "0xc8dff0",
+  "new": "0xc8e510",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 103,
+  "new_size": 103,
+  "uses": [
+   "hooks/ghost_hostility_guard.cpp:73",
+   "offsets.h:2402"
+  ],
+  "context": "constexpr std::uintptr_t HOSTILITY_RANK_RVA = 0x00C8DFF0;"
+ },
+ "3181216": {
+  "old": "0x308aa0",
+  "new": "0x308dd0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 20,
+  "new_size": 20,
+  "uses": [
+   "hooks/ghost_hostility_guard.cpp:237"
+  ],
+  "context": "constexpr std::uintptr_t FACTION_COLLECT_RVA   = 0x00308AA0;"
+ },
+ "5025424": {
+  "old": "0x4cae90",
+  "new": "0x4cb1c0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 275,
+  "new_size": 275,
+  "uses": [
+   "hooks/ghost_hostility_guard.cpp:307"
+  ],
+  "context": "constexpr std::uintptr_t TARGET_RESOLVE_RVA          = 0x004CAE90; // sub_1404CAE90"
+ },
+ "51249680": {
+  "old": "0x30e0210",
+  "new": "0x30eb310",
+  "section": ".data",
+  "method": "data:refs 128/128",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "hooks/ghost_hostility_guard.cpp:308"
+  ],
+  "context": "constexpr std::uintptr_t PLAYER_TARGET_SINGLETON_RVA = 0x030E0210; // qword_1430DBF78[2131]"
+ },
+ "13086016": {
+  "old": "0xc7ad40",
+  "new": "0xc7b260",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 1150,
+  "new_size": 1150,
+  "uses": [
+   "hooks/ghost_hostility_guard_layer1.cpp:60"
+  ],
+  "context": "constexpr std::uintptr_t IS_HOSTILE_MASTER_RVA = 0x00C7AD40;"
+ },
+ "5000688": {
+  "old": "0x4c4df0",
+  "new": "0x4c5120",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 70,
+  "new_size": 70,
+  "uses": [
+   "hooks/ghost_is_attachable.cpp:34"
+  ],
+  "context": "constexpr std::uintptr_t ACTOR_LOCK_WALKER_RVA = 0x004C4DF0;"
+ },
+ "3184064": {
+  "old": "0x3095c0",
+  "new": "0x3098f0",
+  "section": ".text",
+  "method": "leaf:calls 63/63",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "hooks/ghost_is_attachable.cpp:54"
+  ],
+  "context": "constexpr std::uintptr_t IS_ATTACHABLE_RVA = 0x003095C0;"
+ },
+ "3184608": {
+  "old": "0x3097e0",
+  "new": "0x309b10",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 106,
+  "new_size": 106,
+  "uses": [
+   "hooks/ghost_is_attachable.cpp:55"
+  ],
+  "context": "constexpr std::uintptr_t ATTACH_REFR_RVA   = 0x003097E0;"
+ },
+ "3221136": {
+  "old": "0x312690",
+  "new": "0x3129c0",
+  "section": ".text",
+  "method": "leaf:calls 318/318",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "hooks/ghost_is_attachable.cpp:56"
+  ],
+  "context": "constexpr std::uintptr_t IS_TRANSIENT_FID_RVA = 0x00312690;"
+ },
+ "13272512": {
+  "old": "0xca85c0",
+  "new": "0xca8ae0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 146,
+  "new_size": 146,
+  "uses": [
+   "hooks/ghost_vt197_guard.cpp:62"
+  ],
+  "context": "constexpr std::uintptr_t VT197_IS_HOSTILE_TO_RVA = 0x00CA85C0;"
+ },
+ "10698896": {
+  "old": "0xa34090",
+  "new": "0xa343e0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 498,
+  "new_size": 498,
+  "uses": [
+   "hooks/hp_bar_hook.cpp:47"
+  ],
+  "context": "constexpr std::uintptr_t PRODUCER_SHOW_RVA = 0x00A34090;  // sub_140A34090 (G2 show/hide switch)"
+ },
+ "10703344": {
+  "old": "0xa351f0",
+  "new": "0xa35540",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 19,
+  "new_size": 19,
+  "uses": [
+   "hooks/hp_bar_hook.cpp:48"
+  ],
+  "context": "constexpr std::uintptr_t LOOKUP_REF_RVA    = 0x00A351F0;  // sub_140A351F0 (latched handle \u2192 holder)"
+ },
+ "2502944": {
+  "old": "0x263120",
+  "new": "0x263440",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 123,
+  "new_size": 123,
+  "uses": [
+   "hooks/npc_hp_probe.cpp:165",
+   "offsets.h:3535"
+  ],
+  "context": "constexpr std::uintptr_t AV_REGISTRY_RVA = 0x00263120;  // sub_140263120 \u2192 &AVInfo[125]"
+ },
+ "2448288": {
+  "old": "0x255ba0",
+  "new": "0x255ec0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 26,
+  "new_size": 26,
+  "uses": [
+   "hooks/pa_pipeline_trace.cpp:46",
+   "native/ni_offsets.h:801"
+  ],
+  "context": "constexpr std::uintptr_t kMatWalkerRva = 0x00255BA0;   // sub_140255BA0"
+ },
+ "2449520": {
+  "old": "0x256070",
+  "new": "0x256390",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 200,
+  "new_size": 200,
+  "uses": [
+   "hooks/pa_pipeline_trace.cpp:47",
+   "native/ni_offsets.h:804"
+  ],
+  "context": "constexpr std::uintptr_t kMatLeafRva   = 0x00256070;   // sub_140256070"
+ },
+ "35003152": {
+  "old": "0x2161b10",
+  "new": "0x2169620",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 174,
+  "new_size": 174,
+  "uses": [
+   "hooks/pa_pipeline_trace.cpp:178",
+   "native/ni_offsets.h:886"
+  ],
+  "context": "constexpr std::uintptr_t kSetMaterialRva = 0x02161B10;   // sub_142161B10"
+ },
+ "4554944": {
+  "old": "0x4580c0",
+  "new": "0x4583f0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 675,
+  "new_size": 675,
+  "uses": [
+   "hooks/subrefload_hook.cpp:29",
+   "native/synthetic_refr.cpp:88"
+  ],
+  "context": "constexpr std::uintptr_t SUBLOAD_RVA = 0x004580C0;"
+ },
+ "275277": {
+  "old": "0x4334d",
+  "new": "0x4334d",
+  "section": ".text",
+  "method": "mid:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 364,
+  "new_size": 364,
+  "uses": [
+   "main_thread_dispatch.cpp:1309"
+  ],
+  "context": "constexpr std::uint32_t TRANSIENT_SWAP_SLOT = 0x4334D;"
+ },
+ "51232768": {
+  "old": "0x30dc000",
+  "new": "0x30e7100",
+  "section": ".data",
+  "method": "data:refs 2334/2334",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/anatomy_mirror.cpp:27",
+   "native/chargen_catalog.cpp:16",
+   "native/chargen_dump.cpp:131",
+   "native/chargen_selftest.cpp:169",
+   "offsets.h:3557"
+  ],
+  "context": "constexpr std::uintptr_t DATAHANDLER_RVA     = 0x030DC000;"
+ },
+ "23576688": {
+  "old": "0x167c070",
+  "new": "0x167c490",
+  "section": ".text",
+  "method": "leaf:calls 9244/9244",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/anatomy_mirror.cpp:35",
+   "native/chargen_catalog.cpp:85",
+   "native/chargen_dump.cpp:109",
+   "native/chargen_selftest.cpp:174"
+  ],
+  "context": "constexpr std::uintptr_t BSFIXEDSTR_CSTR_RVA = 0x0167C070;"
+ },
+ "38793856": {
+  "old": "0x24ff280",
+  "new": "0x25072f0",
+  "section": ".rdata",
+  "method": "data:refs 15/15",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/anatomy_mirror.cpp:36",
+   "native/skin_rebind.cpp:116"
+  ],
+  "context": "constexpr std::uintptr_t FACEGEN_NODE_VT_RVA = 0x024FF280;  // BSFaceGenNiNodeSkinned"
+ },
+ "43032976": {
+  "old": "0x290a190",
+  "new": "0x2913950",
+  "section": ".rdata",
+  "method": "data:refs 11/11",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/anatomy_mirror.cpp:311"
+  ],
+  "context": "constexpr std::uintptr_t MAT_VT_SKIN_TINT  = 0x0290A190;"
+ },
+ "43033128": {
+  "old": "0x290a228",
+  "new": "0x29139e8",
+  "section": ".rdata",
+  "method": "data:refs 12/12",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/anatomy_mirror.cpp:312"
+  ],
+  "context": "constexpr std::uintptr_t MAT_VT_HAIR_TINT  = 0x0290A228;"
+ },
+ "43032824": {
+  "old": "0x290a0f8",
+  "new": "0x29138b8",
+  "section": ".rdata",
+  "method": "data:refs 14/14",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/anatomy_mirror.cpp:313"
+  ],
+  "context": "constexpr std::uintptr_t MAT_VT_FACE       = 0x0290A0F8;"
+ },
+ "43032216": {
+  "old": "0x2909e98",
+  "new": "0x2913658",
+  "section": ".rdata",
+  "method": "data:refs 14/14",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/anatomy_mirror.cpp:314"
+  ],
+  "context": "constexpr std::uintptr_t MAT_VT_GLOWMAP    = 0x02909E98;  // the MAIN hair uses this"
+ },
+ "6641104": {
+  "old": "0x6555d0",
+  "new": "0x655910",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 607,
+  "new_size": 607,
+  "uses": [
+   "native/anatomy_mirror.cpp:670"
+  ],
+  "context": "constexpr std::uintptr_t COMPUTE_SKIN_RVA = 0x006555D0;"
+ },
+ "7269680": {
+  "old": "0x6eed30",
+  "new": "0x6ef070",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 24,
+  "new_size": 24,
+  "uses": [
+   "native/anatomy_mirror.cpp:671"
+  ],
+  "context": "constexpr std::uintptr_t PAINT_WALK_RVA   = 0x006EED30;"
+ },
+ "40355976": {
+  "old": "0x267c888",
+  "new": "0x26849b8",
+  "section": ".rdata",
+  "method": "data:refs 23/23",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/anatomy_probe.cpp:30",
+   "native/ni_offsets.h:60",
+   "native/scene_inject.cpp:13384",
+   "native/scene_walker.cpp:38",
+   "native/skin_rebind.cpp:54"
+  ],
+  "context": "{ 0x0267C888, \"NiNode\"           },"
+ },
+ "42968040": {
+  "old": "0x28fa3e8",
+  "new": "0x2903ba8",
+  "section": ".rdata",
+  "method": "data:refs 16/16",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/anatomy_probe.cpp:31",
+   "native/ni_offsets.h:68",
+   "native/scene_inject.cpp:13383",
+   "native/scene_walker.cpp:45",
+   "native/skin_rebind.cpp:55"
+  ],
+  "context": "{ 0x028FA3E8, \"BSFadeNode\"       },"
+ },
+ "40364360": {
+  "old": "0x267e948",
+  "new": "0x2686a78",
+  "section": ".rdata",
+  "method": "data:refs 27/27",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/anatomy_probe.cpp:32",
+   "native/anatomy_probe.cpp:46",
+   "native/ni_offsets.h:336",
+   "native/scene_inject.cpp:1749",
+   "native/scene_walker.cpp:43",
+   "native/scene_walker.cpp:236",
+   "native/skin_rebind.cpp:60"
+  ],
+  "context": "{ 0x0267E948, \"BSTriShape\"       },"
+ },
+ "40368456": {
+  "old": "0x267f948",
+  "new": "0x2687a78",
+  "section": ".rdata",
+  "method": "data:refs 16/16",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/anatomy_probe.cpp:33",
+   "native/anatomy_probe.cpp:47",
+   "native/ni_offsets.h:358",
+   "native/scene_inject.cpp:1751",
+   "native/scene_walker.cpp:44",
+   "native/scene_walker.cpp:237",
+   "native/skin_rebind.cpp:62"
+  ],
+  "context": "{ 0x0267F948, \"BSDynamicTriShape\"},"
+ },
+ "40362168": {
+  "old": "0x267e0b8",
+  "new": "0x26861e8",
+  "section": ".rdata",
+  "method": "data:refs 16/16",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/anatomy_probe.cpp:34",
+   "native/anatomy_probe.cpp:46",
+   "native/ni_offsets.h:332",
+   "native/scene_walker.cpp:42",
+   "native/scene_walker.cpp:235",
+   "native/skin_rebind.cpp:59"
+  ],
+  "context": "{ 0x0267E0B8, \"BSGeometry\"       },"
+ },
+ "40463720": {
+  "old": "0x2696d68",
+  "new": "0x269ee88",
+  "section": ".rdata",
+  "method": "data:refs 24/24",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/anatomy_probe.cpp:35",
+   "native/anatomy_probe.cpp:47",
+   "native/scene_walker.cpp:57",
+   "native/scene_walker.cpp:238"
+  ],
+  "context": "{ 0x02696D68, \"geometry-like\"    },"
+ },
+ "40470208": {
+  "old": "0x26986c0",
+  "new": "0x26a07e0",
+  "section": ".rdata",
+  "method": "data:refs 27/27",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/anatomy_probe.cpp:36",
+   "native/scene_walker.cpp:55"
+  ],
+  "context": "{ 0x026986C0, \"NiNode-derived?\"  },"
+ },
+ "43028288": {
+  "old": "0x2908f40",
+  "new": "0x2912700",
+  "section": ".rdata",
+  "method": "data:refs 8/8",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/anatomy_probe.cpp:37",
+   "native/scene_walker.cpp:46",
+   "native/scene_walker.cpp:220",
+   "native/skin_rebind.cpp:57"
+  ],
+  "context": "{ 0x02908F40, \"ShadowSceneNode\"  },"
+ },
+ "38272136": {
+  "old": "0x247fc88",
+  "new": "0x2487ce8",
+  "section": ".rdata",
+  "method": "data:refs 16/16",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/appearance_recipe.cpp:81",
+   "native/chargen_dump.cpp:173"
+  ],
+  "context": "constexpr std::uintptr_t VT_PALETTE_ENTRY = 0x0247FC88;"
+ },
+ "6639088": {
+  "old": "0x654df0",
+  "new": "0x655130",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 132,
+  "new_size": 132,
+  "uses": [
+   "native/appearance_recipe.cpp:118",
+   "native/chargen_dump.cpp:108",
+   "native/chargen_selftest.cpp:29"
+  ],
+  "context": "constexpr std::uintptr_t SET_HAIRCOLOR_RVA    = 0x00654DF0;"
+ },
+ "6639632": {
+  "old": "0x655010",
+  "new": "0x655350",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 32,
+  "new_size": 32,
+  "uses": [
+   "native/appearance_recipe.cpp:119",
+   "native/chargen_dump.cpp:107",
+   "native/chargen_selftest.cpp:30"
+  ],
+  "context": "constexpr std::uintptr_t ADD_HEADPART_RVA     = 0x00655010;"
+ },
+ "6640224": {
+  "old": "0x655260",
+  "new": "0x6555a0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 23,
+  "new_size": 23,
+  "uses": [
+   "native/appearance_recipe.cpp:125"
+  ],
+  "context": "constexpr std::uintptr_t REMOVE_HEADPART_RVA  = 0x00655260;"
+ },
+ "6675120": {
+  "old": "0x65dab0",
+  "new": "0x65ddf0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 73,
+  "new_size": 73,
+  "uses": [
+   "native/appearance_recipe.cpp:153"
+  ],
+  "context": "constexpr std::uintptr_t SET_TINT_RVA         = 0x0065DAB0;"
+ },
+ "14113248": {
+  "old": "0xd759e0",
+  "new": "0xd75f10",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 122,
+  "new_size": 122,
+  "uses": [
+   "native/appearance_recipe.cpp:171"
+  ],
+  "context": "constexpr std::uintptr_t SET_TINT_LIVE_RVA    = 0x00D759E0;"
+ },
+ "4193904": {
+  "old": "0x3ffe70",
+  "new": "0x4001a0",
+  "section": ".text",
+  "method": "leaf:calls 4/4",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/appearance_recipe.cpp:193"
+  ],
+  "context": "constexpr std::uintptr_t FIND_TINT_TEMPLATE_RVA = 0x003FFE70;"
+ },
+ "4195840": {
+  "old": "0x400600",
+  "new": "0x400930",
+  "section": ".text",
+  "method": "leaf:calls 12/12",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/appearance_recipe.cpp:194"
+  ],
+  "context": "constexpr std::uintptr_t PAL_DEFAULT_RGB_RVA    = 0x00400600;"
+ },
+ "13057488": {
+  "old": "0xc73dd0",
+  "new": "0xc742f0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 147,
+  "new_size": 147,
+  "uses": [
+   "native/appearance_recipe.cpp:291",
+   "native/chargen_selftest.cpp:93"
+  ],
+  "context": "constexpr std::uintptr_t ACTOR_RESET3D_RVA = 0x00C73DD0;"
+ },
+ "11019408": {
+  "old": "0xa82490",
+  "new": "0xa82510",
+  "section": ".text",
+  "method": "func:gap",
+  "confidence": 0.8,
+  "identical_code": false,
+  "old_size": 85,
+  "new_size": 85,
+  "uses": [
+   "native/chargen_dump.cpp:105"
+  ],
+  "context": "constexpr std::uintptr_t LOOKSMENU_CALL_RVA = 0x00A82490; // every UI callback"
+ },
+ "6636304": {
+  "old": "0x654310",
+  "new": "0x654650",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 25,
+  "new_size": 25,
+  "uses": [
+   "native/chargen_dump.cpp:106"
+  ],
+  "context": "constexpr std::uintptr_t NPC_SETMORPH_RVA   = 0x00654310; // every facial morph"
+ },
+ "7209952": {
+  "old": "0x6e03e0",
+  "new": "0x6e0720",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 48,
+  "new_size": 48,
+  "uses": [
+   "native/chargen_dump.cpp:122"
+  ],
+  "context": "constexpr std::uintptr_t HEAD_BUILD_RVA      = 0x006E03E0;"
+ },
+ "12892816": {
+  "old": "0xc4ba90",
+  "new": "0xc4bfb0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 212,
+  "new_size": 212,
+  "uses": [
+   "native/chargen_dump.cpp:123"
+  ],
+  "context": "constexpr std::uintptr_t APPEARANCE_TASK_RVA = 0x00C4BA90;"
+ },
+ "7207680": {
+  "old": "0x6dfb00",
+  "new": "0x6dfe40",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 87,
+  "new_size": 87,
+  "uses": [
+   "native/chargen_dump.cpp:128"
+  ],
+  "context": "constexpr std::uintptr_t REFRESH_RVA         = 0x006DFB00;"
+ },
+ "2908336": {
+  "old": "0x2c60b0",
+  "new": "0x2c63d0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 25,
+  "new_size": 25,
+  "uses": [
+   "native/chargen_dump.cpp:129"
+  ],
+  "context": "constexpr std::uintptr_t QUEUED_HEAD_CTOR_RVA = 0x002C60B0;"
+ },
+ "38272264": {
+  "old": "0x247fd08",
+  "new": "0x2487d68",
+  "section": ".rdata",
+  "method": "data:refs 30/30",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/chargen_dump.cpp:165"
+  ],
+  "context": "constexpr std::uintptr_t VT_TPL_ENTRY   = 0x0247FD08;"
+ },
+ "38272312": {
+  "old": "0x247fd38",
+  "new": "0x2487d98",
+  "section": ".rdata",
+  "method": "data:refs 4/4",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/chargen_dump.cpp:166"
+  ],
+  "context": "constexpr std::uintptr_t VT_TPL_MASK    = 0x0247FD38;"
+ },
+ "38272360": {
+  "old": "0x247fd68",
+  "new": "0x2487dc8",
+  "section": ".rdata",
+  "method": "data:refs 4/4",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/chargen_dump.cpp:167"
+  ],
+  "context": "constexpr std::uintptr_t VT_TPL_PALETTE = 0x0247FD68;"
+ },
+ "38272408": {
+  "old": "0x247fd98",
+  "new": "0x2487df8",
+  "section": ".rdata",
+  "method": "data:refs 4/4",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/chargen_dump.cpp:168"
+  ],
+  "context": "constexpr std::uintptr_t VT_TPL_TEXSET  = 0x0247FD98;"
+ },
+ "38272008": {
+  "old": "0x247fc08",
+  "new": "0x2487c68",
+  "section": ".rdata",
+  "method": "data:refs 12/12",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/chargen_dump.cpp:171"
+  ],
+  "context": "constexpr std::uintptr_t VT_ENTRY       = 0x0247FC08;"
+ },
+ "38272072": {
+  "old": "0x247fc48",
+  "new": "0x2487ca8",
+  "section": ".rdata",
+  "method": "data:refs 16/16",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/chargen_dump.cpp:172"
+  ],
+  "context": "constexpr std::uintptr_t VT_MASK_ENTRY  = 0x0247FC48;"
+ },
+ "38272200": {
+  "old": "0x247fcc8",
+  "new": "0x2487d28",
+  "section": ".rdata",
+  "method": "data:refs 16/16",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/chargen_dump.cpp:174"
+  ],
+  "context": "constexpr std::uintptr_t VT_TEX_ENTRY   = 0x0247FCC8;"
+ },
+ "79686": {
+  "old": "0x13746",
+  "new": "0x13746",
+  "section": ".text",
+  "method": "mid:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 1340,
+  "new_size": 1340,
+  "uses": [
+   "native/chargen_dump.cpp:176",
+   "offsets.h:959"
+  ],
+  "context": "constexpr std::uint32_t  HUMAN_RACE_FID = 0x00013746;"
+ },
+ "17996208": {
+  "old": "0x11299b0",
+  "new": "0x1129ea0",
+  "section": ".text",
+  "method": "leaf:refs 4/4",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/chargen_stage.cpp:36"
+  ],
+  "context": "constexpr std::uintptr_t FORCE_THIRD_PERSON_RVA = 0x011299B0;"
+ },
+ "17996192": {
+  "old": "0x11299a0",
+  "new": "0x1129e90",
+  "section": ".text",
+  "method": "leaf:refs 4/4",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/chargen_stage.cpp:37"
+  ],
+  "context": "constexpr std::uintptr_t FORCE_FIRST_PERSON_RVA = 0x011299A0;"
+ },
+ "5193680": {
+  "old": "0x4f3fd0",
+  "new": "0x4f4300",
+  "section": ".text",
+  "method": "leaf:calls 28/28",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/chargen_stage.cpp:65"
+  ],
+  "context": "constexpr std::uintptr_t SET_COLLISION_RVA = 0x004F3FD0;"
+ },
+ "5193744": {
+  "old": "0x4f4010",
+  "new": "0x4f4340",
+  "section": ".text",
+  "method": "leaf:calls 12/12",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/chargen_stage.cpp:66"
+  ],
+  "context": "constexpr std::uintptr_t GET_COLLISION_RVA = 0x004F4010;"
+ },
+ "51232088": {
+  "old": "0x30dbd58",
+  "new": "0x30e6e58",
+  "section": ".data",
+  "method": "data:refs 1573/1573",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/chargen_stage.cpp:110",
+   "offsets.h:652"
+  ],
+  "context": "constexpr std::uintptr_t PLAYER_CAMERA_RVA   = 0x030DBD58;"
+ },
+ "16953600": {
+  "old": "0x102b100",
+  "new": "0x102b630",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 104,
+  "new_size": 104,
+  "uses": [
+   "native/chargen_stage.cpp:112",
+   "persist/death.cpp:39"
+  ],
+  "context": "constexpr std::uintptr_t CAM_GET_STATE_RVA   = 0x0102B100;  // (cam, index)"
+ },
+ "8551040": {
+  "old": "0x827a80",
+  "new": "0x827dd0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 94,
+  "new_size": 94,
+  "uses": [
+   "native/chargen_stage.cpp:113",
+   "persist/death.cpp:40"
+  ],
+  "context": "constexpr std::uintptr_t SET_CAM_STATE_RVA   = 0x00827A80;  // (cam, state)"
+ },
+ "39462488": {
+  "old": "0x25a2658",
+  "new": "0x25aa758",
+  "section": ".rdata",
+  "method": "data:refs 4/4",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/chargen_stage.cpp:117"
+  ],
+  "context": "constexpr std::uintptr_t AUTOVANITY_VTBL_RVA = 0x025A2658;  // re/engine_rtti_catalog"
+ },
+ "49470560": {
+  "old": "0x2f2dc60",
+  "new": "0x2f38ca0",
+  "section": ".data",
+  "method": "data:refs 4/4",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/chargen_stage.cpp:125"
+  ],
+  "context": "constexpr std::uintptr_t AUTOVANITY_ZOOM_RVA = 0x02F2DC60;"
+ },
+ "23960032": {
+  "old": "0x16d99e0",
+  "new": "0x16d9f00",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 331,
+  "new_size": 331,
+  "uses": [
+   "native/clone_factory_tracker.cpp:23",
+   "native/ni_offsets.h:337"
+  ],
+  "context": "constexpr std::uintptr_t CLONE_FACTORY_RVA = 0x0016D99E0;"
+ },
+ "65396976": {
+  "old": "0x3e5e0f0",
+  "new": "0x3e74ab0",
+  "section": ".data",
+  "method": "data:refs 94816/94816",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/ni_offsets.h:43",
+   "native/synthetic_refr.cpp:73",
+   "offsets.h:2678",
+   "offsets.h:2808"
+  ],
+  "context": "constexpr std::uintptr_t MEM_POOL_RVA          = 0x03E5E0F0; // unk_143E5E0F0"
+ },
+ "23427520": {
+  "old": "0x16579c0",
+  "new": "0x1657de0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 587,
+  "new_size": 587,
+  "uses": [
+   "native/ni_offsets.h:44",
+   "native/synthetic_refr.cpp:72",
+   "offsets.h:2676",
+   "offsets.h:2804"
+  ],
+  "context": "constexpr std::uintptr_t ALLOCATE_FN_RVA       = 0x016579C0; // sub_1416579C0"
+ },
+ "23429008": {
+  "old": "0x1657f90",
+  "new": "0x16583b0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 57,
+  "new_size": 57,
+  "uses": [
+   "native/ni_offsets.h:45",
+   "native/synthetic_refr.cpp:75",
+   "offsets.h:2677"
+  ],
+  "context": "constexpr std::uintptr_t POOL_INIT_FN_RVA      = 0x01657F90; // sub_141657F90"
+ },
+ "65401552": {
+  "old": "0x3e5f2d0",
+  "new": "0x3e75c90",
+  "section": ".data",
+  "method": "data:refs 94968/94968",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/ni_offsets.h:46",
+   "native/synthetic_refr.cpp:76",
+   "offsets.h:2679"
+  ],
+  "context": "constexpr std::uintptr_t POOL_INIT_FLAG_RVA    = 0x03E5F2D0; // dword_143E5F2D0"
+ },
+ "23846880": {
+  "old": "0x16bdfe0",
+  "new": "0x16be500",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 140,
+  "new_size": 140,
+  "uses": [
+   "native/ni_offsets.h:61"
+  ],
+  "context": "constexpr std::uintptr_t NINODE_CTOR_RVA       = 0x016BDFE0; // sub_1416BDFE0"
+ },
+ "42968720": {
+  "old": "0x28fa690",
+  "new": "0x2903e50",
+  "section": ".rdata",
+  "method": "data:refs 12/12",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/ni_offsets.h:69",
+   "native/skin_rebind.cpp:56"
+  ],
+  "context": "constexpr std::uintptr_t BSLEAFANIMNODE_VTABLE_RVA = 0x028FA690;"
+ },
+ "40363464": {
+  "old": "0x267e5c8",
+  "new": "0x26866f8",
+  "section": ".rdata",
+  "method": "data:refs 12/12",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/ni_offsets.h:76",
+   "native/skin_rebind.cpp:65"
+  ],
+  "context": "constexpr std::uintptr_t BSSKIN_INSTANCE_VTABLE_RVA = 0x0267E5C8;"
+ },
+ "23952176": {
+  "old": "0x16d7b30",
+  "new": "0x16d8050",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 406,
+  "new_size": 406,
+  "uses": [
+   "native/ni_offsets.h:78"
+  ],
+  "context": "constexpr std::uintptr_t BSSKIN_INSTANCE_COPY_CTOR_RVA = 0x016D7B30;"
+ },
+ "40358080": {
+  "old": "0x267d0c0",
+  "new": "0x26851f0",
+  "section": ".rdata",
+  "method": "data:refs 12/12",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/ni_offsets.h:85",
+   "native/scene_walker.cpp:39"
+  ],
+  "context": "constexpr std::uintptr_t NIAVOBJECT_VTABLE_RVA = 0x0267D0C0;"
+ },
+ "23891152": {
+  "old": "0x16c8cd0",
+  "new": "0x16c91f0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 330,
+  "new_size": 330,
+  "uses": [
+   "native/ni_offsets.h:86"
+  ],
+  "context": "constexpr std::uintptr_t NIAVOBJECT_CTOR_RVA  = 0x016C8CD0; // sub_1416C8CD0"
+ },
+ "38154120": {
+  "old": "0x2462f88",
+  "new": "0x246afe8",
+  "section": ".rdata",
+  "method": "data:refs 1653/1653",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/ni_offsets.h:91",
+   "native/scene_walker.cpp:41"
+  ],
+  "context": "constexpr std::uintptr_t NIREFOBJECT_VTABLE_RVA = 0x02462F88;"
+ },
+ "40457624": {
+  "old": "0x2695598",
+  "new": "0x269d6b8",
+  "section": ".rdata",
+  "method": "data:refs 19/19",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/ni_offsets.h:102"
+  ],
+  "context": "constexpr std::uintptr_t BSVALUENODE_VTABLE_RVA = 0x02695598;   // engine_rtti_catalog.md"
+ },
+ "65305104": {
+  "old": "0x3e47a10",
+  "new": "0x3e5e3d0",
+  "section": ".data",
+  "method": "data:refs 36/36",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/ni_offsets.h:145",
+   "native/ni_offsets.h:147"
+  ],
+  "context": "constexpr std::uintptr_t ROOT_CAMERA_SINGLETON_RVA = 0x03E47A10; // qword_143E47A10 = NiCamera"
+ },
+ "53289512": {
+  "old": "0x32d2228",
+  "new": "0x32dd338",
+  "section": ".data",
+  "method": "data:refs 443/443",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/ni_offsets.h:148"
+  ],
+  "context": "constexpr std::uintptr_t WORLD_SG_SINGLETON_RVA = 0x032D2228; // qword_1432D2228 (SceneGraph)"
+ },
+ "23853680": {
+  "old": "0x16bfa70",
+  "new": "0x16bff90",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 144,
+  "new_size": 144,
+  "uses": [
+   "native/ni_offsets.h:317"
+  ],
+  "context": "constexpr std::uintptr_t NITARRAY_ALLOC_FN_RVA  = 0x016BFA70; // sub_1416BFA70"
+ },
+ "23940048": {
+  "old": "0x16d4bd0",
+  "new": "0x16d50f0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 225,
+  "new_size": 225,
+  "uses": [
+   "native/ni_offsets.h:333"
+  ],
+  "context": "constexpr std::uintptr_t BSGEOMETRY_CTOR_RVA         = 0x016D4BD0;"
+ },
+ "40367960": {
+  "old": "0x267f758",
+  "new": "0x2687888",
+  "section": ".rdata",
+  "method": "data:refs 15/15",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/ni_offsets.h:351",
+   "native/scene_inject.cpp:1750",
+   "native/skin_rebind.cpp:61"
+  ],
+  "context": "constexpr std::uintptr_t BSDYNAMICTRISHAPE_VTABLE_RVA = 0x0267F758;"
+ },
+ "24002704": {
+  "old": "0x16e4090",
+  "new": "0x16e45b0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 65,
+  "new_size": 65,
+  "uses": [
+   "native/ni_offsets.h:352"
+  ],
+  "context": "constexpr std::uintptr_t BSDYNAMICTRISHAPE_CTOR_RVA   = 0x016E4090;"
+ },
+ "40467776": {
+  "old": "0x2697d40",
+  "new": "0x269fe60",
+  "section": ".rdata",
+  "method": "data:refs 31/31",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/ni_offsets.h:376",
+   "native/scene_inject.cpp:1759",
+   "native/skin_rebind.cpp:63"
+  ],
+  "context": "constexpr std::uintptr_t BSSUBINDEXTRISHAPE_VTABLE_RVA = 0x02697D40;"
+ },
+ "23943472": {
+  "old": "0x16d5930",
+  "new": "0x16d5e50",
+  "section": ".text",
+  "method": "sig:24B near delta",
+  "confidence": 0.9,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/ni_offsets.h:470"
+  ],
+  "context": "constexpr std::uintptr_t BSGEOM_SET_ALPHA_FN_RVA     = 0x016D5930; // sub_1416D5930"
+ },
+ "23887952": {
+  "old": "0x16c8050",
+  "new": "0x16c8570",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 79,
+  "new_size": 79,
+  "uses": [
+   "native/ni_offsets.h:505"
+  ],
+  "context": "constexpr std::uintptr_t UPDATE_DOWNWARD_PASS_RVA    = 0x016C8050; // sub_1416C8050"
+ },
+ "51238424": {
+  "old": "0x30dd618",
+  "new": "0x30e8718",
+  "section": ".data",
+  "method": "data:refs 637/637",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/ni_offsets.h:568"
+  ],
+  "context": "constexpr std::uintptr_t NIF_LOAD_RESMGR_SLOT_RVA    = 0x030DD618;  // qword_1430DD618 (diagnostics)"
+ },
+ "24851584": {
+  "old": "0x17b3480",
+  "new": "0x17b39b0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 1236,
+  "new_size": 1236,
+  "uses": [
+   "native/ni_offsets.h:597"
+  ],
+  "context": "constexpr std::uintptr_t NIF_LOAD_WORKER_RVA         = 0x0017B3480; // sub_1417B3480"
+ },
+ "49084800": {
+  "old": "0x2ecf980",
+  "new": "0x2eda980",
+  "section": ".data",
+  "method": "data:refs 70/70",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/ni_offsets.h:652"
+  ],
+  "context": "constexpr std::size_t BSRES_ENTRY_DB_TOMBSTONE_RVA    = 0x002ECF980;"
+ },
+ "40455280": {
+  "old": "0x2694c70",
+  "new": "0x269cda0",
+  "section": ".rdata",
+  "method": "data:refs 8/8",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/ni_offsets.h:655"
+  ],
+  "context": "constexpr std::uintptr_t BSRES_ENTRYDB_VTABLE_RVA     = 0x02694C70;"
+ },
+ "25362384": {
+  "old": "0x182ffd0",
+  "new": "0x18305b0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 976,
+  "new_size": 976,
+  "uses": [
+   "native/ni_offsets.h:697",
+   "native/ni_offsets.h:860"
+  ],
+  "context": "constexpr std::uintptr_t WEAPON_GEO_FACTORY_RVA      = 0x000182FFD0; // sub_14182FFD0"
+ },
+ "23751936": {
+  "old": "0x16a6d00",
+  "new": "0x16a7220",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 685,
+  "new_size": 685,
+  "uses": [
+   "native/ni_offsets.h:726"
+  ],
+  "context": "constexpr std::uintptr_t NIF_CACHE_RESOLVER_RVA      = 0x0016A6D00; // sub_1416A6D00"
+ },
+ "53289568": {
+  "old": "0x32d2260",
+  "new": "0x32dd370",
+  "section": ".data",
+  "method": "data:refs 15525/15525",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/ni_offsets.h:733",
+   "native/scene_inject.cpp:13018",
+   "native/scene_inject.cpp:16187",
+   "native/scene_inject.cpp:16403",
+   "offsets.h:56"
+  ],
+  "context": "constexpr std::uintptr_t PLAYER_SINGLETON_RVA      = 0x032D2260;  // qword_1432D2260"
+ },
+ "24811040": {
+  "old": "0x17a9620",
+  "new": "0x17a9b50",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 41,
+  "new_size": 41,
+  "uses": [
+   "native/ni_offsets.h:805"
+  ],
+  "context": "constexpr std::uintptr_t BGSM_LOADER_RVA             = 0x017A9620; // sub_1417A9620"
+ },
+ "35035856": {
+  "old": "0x2169ad0",
+  "new": "0x21715e0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 20,
+  "new_size": 20,
+  "uses": [
+   "native/ni_offsets.h:806"
+  ],
+  "context": "constexpr std::uintptr_t MAT_BIND_TO_GEOM_RVA        = 0x02169AD0; // sub_142169AD0"
+ },
+ "51233448": {
+  "old": "0x30dc2a8",
+  "new": "0x30e73a8",
+  "section": ".data",
+  "method": "data:refs 154/154",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/ni_offsets.h:807"
+  ],
+  "context": "constexpr std::uintptr_t BSMATERIAL_DB_SLOT_RVA      = 0x030DC2A8; // qword_1430DC2A8"
+ },
+ "2448704": {
+  "old": "0x255d40",
+  "new": "0x256060",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 122,
+  "new_size": 122,
+  "uses": [
+   "native/ni_offsets.h:828"
+  ],
+  "context": "constexpr std::uintptr_t MATERIAL_SWAP_APPLY_RVA    = 0x00255D40; // sub_140255D40"
+ },
+ "2548160": {
+  "old": "0x26e1c0",
+  "new": "0x26e4e0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 308,
+  "new_size": 308,
+  "uses": [
+   "native/ni_offsets.h:832"
+  ],
+  "context": "constexpr std::uintptr_t NIF_LOAD_WRAPPER_LEGACY_RVA = 0x0026E1C0; // sub_14026E1C0"
+ },
+ "35060160": {
+  "old": "0x216f9c0",
+  "new": "0x21774d0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 93,
+  "new_size": 93,
+  "uses": [
+   "native/ni_offsets.h:885"
+  ],
+  "context": "constexpr std::uintptr_t BSEFFECT_SHADER_CTOR_RVA   = 0x0216F9C0; // sub_14216F9C0"
+ },
+ "54759840": {
+  "old": "0x34391a0",
+  "new": "0x34496a0",
+  "section": ".data",
+  "method": "data:refs 172/172",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/ni_offsets.h:887"
+  ],
+  "context": "constexpr std::uintptr_t BSEFFECT_SHADER_TEX_HANDLE_RVA = 0x034391A0; // qword_1434391A0"
+ },
+ "54759848": {
+  "old": "0x34391a8",
+  "new": "0x34496a8",
+  "section": ".data",
+  "method": "data:refs 172/172",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/ni_offsets.h:888"
+  ],
+  "context": "constexpr std::uintptr_t BSEFFECT_SHADER_TEX_INT_RVA    = 0x034391A8; // dword_1434391A8"
+ },
+ "23844592": {
+  "old": "0x16bd6f0",
+  "new": "0x16bdc10",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 52,
+  "new_size": 52,
+  "uses": [
+   "native/ni_offsets.h:891"
+  ],
+  "context": "constexpr std::uintptr_t NIALPHAPROP_INIT_RVA       = 0x016BD6F0; // sub_1416BD6F0"
+ },
+ "35067424": {
+  "old": "0x2171620",
+  "new": "0x2179130",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 344,
+  "new_size": 344,
+  "uses": [
+   "native/ni_offsets.h:916"
+  ],
+  "context": "constexpr std::uintptr_t BSLSP_CTOR_RVA             = 0x02171620; // sub_142171620 (in-place ctor, NOT used directly)"
+ },
+ "35056912": {
+  "old": "0x216ed10",
+  "new": "0x2176820",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 85,
+  "new_size": 85,
+  "uses": [
+   "native/ni_offsets.h:919"
+  ],
+  "context": "constexpr std::uintptr_t BSSHADERTEXSET_CTOR_RVA    = 0x0216ED10; // sub_14216ED10"
+ },
+ "65308864": {
+  "old": "0x3e488c0",
+  "new": "0x3e5f280",
+  "section": ".data",
+  "method": "data:refs 4/4",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/ni_offsets.h:935"
+  ],
+  "context": "constexpr std::uintptr_t BSLSP_BIND_KILLSWITCH_BYTE_RVA = 0x03E488C0; // byte_143E488C0"
+ },
+ "38224896": {
+  "old": "0x2474400",
+  "new": "0x247c460",
+  "section": ".rdata",
+  "method": "data:refs 99/99",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/scene_inject.cpp:889",
+   "native/scene_walker.cpp:53"
+  ],
+  "context": "g_r.nialpha_vftable       = reinterpret_cast<void*>(base + 0x02474400);  // NiAlphaProperty vtable RVA"
+ },
+ "51249808": {
+  "old": "0x30e0290",
+  "new": "0x30eb390",
+  "section": ".data",
+  "method": "data:refs 12/12",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/scene_inject.cpp:2330"
+  ],
+  "context": "void** bsmp_slot = reinterpret_cast<void**>(g_r.base + 0x030E0290);"
+ },
+ "23972688": {
+  "old": "0x16dcb50",
+  "new": "0x16dd070",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 554,
+  "new_size": 554,
+  "uses": [
+   "native/scene_inject.cpp:4367",
+   "native/scene_inject.cpp:4456"
+  ],
+  "context": "constexpr std::uintptr_t NISTREAM_CTOR_RVA = 0x016DCB50;"
+ },
+ "23973552": {
+  "old": "0x16dceb0",
+  "new": "0x16dd3d0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 213,
+  "new_size": 213,
+  "uses": [
+   "native/scene_inject.cpp:4368"
+  ],
+  "context": "constexpr std::uintptr_t NISTREAM_ADD_RVA  = 0x016DCEB0;"
+ },
+ "23974832": {
+  "old": "0x16dd3b0",
+  "new": "0x16dd8d0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 101,
+  "new_size": 101,
+  "uses": [
+   "native/scene_inject.cpp:4369"
+  ],
+  "context": "constexpr std::uintptr_t NISTREAM_SAVE_RVA = 0x016DD3B0;"
+ },
+ "23973248": {
+  "old": "0x16dcd80",
+  "new": "0x16dd2a0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 293,
+  "new_size": 293,
+  "uses": [
+   "native/scene_inject.cpp:4370",
+   "native/scene_inject.cpp:4458"
+  ],
+  "context": "constexpr std::uintptr_t NISTREAM_DTOR_RVA = 0x016DCD80;"
+ },
+ "40355000": {
+  "old": "0x267c4b8",
+  "new": "0x26845e8",
+  "section": ".rdata",
+  "method": "data:refs 4/4",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/scene_inject.cpp:4402",
+   "native/scene_inject.cpp:4478"
+  ],
+  "context": "constexpr std::uintptr_t DEEPCOPY_VTABLE_RVA = 0x0267C4B8;"
+ },
+ "23974768": {
+  "old": "0x16dd370",
+  "new": "0x16dd890",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 55,
+  "new_size": 55,
+  "uses": [
+   "native/scene_inject.cpp:4457"
+  ],
+  "context": "constexpr std::uintptr_t NISTREAM_LOAD_RVA = 0x016DD370;"
+ },
+ "23559456": {
+  "old": "0x1677d20",
+  "new": "0x1678140",
+  "section": ".text",
+  "method": "leaf:calls 1482/1482",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/scene_inject.cpp:4528"
+  ],
+  "context": "auto bsScrapFree = reinterpret_cast<freeFn>(g_r.base + 0x01677D20);"
+ },
+ "23832576": {
+  "old": "0x16ba800",
+  "new": "0x16bad20",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 207,
+  "new_size": 207,
+  "uses": [
+   "native/scene_inject.cpp:4626"
+  ],
+  "context": "constexpr std::uintptr_t SUB_DEEPCLONE_RVA = 0x016BA800ULL;"
+ },
+ "8388608": {
+  "old": "0x800000",
+  "new": "0x800340",
+  "section": ".text",
+  "method": "mid:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 19,
+  "new_size": 19,
+  "uses": [
+   "native/scene_inject.cpp:7280"
+  ],
+  "context": "(flags & 0x800000ull) ? \"SET\" : \"CLEAR\");"
+ },
+ "4410784": {
+  "old": "0x434da0",
+  "new": "0x4350d0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 50,
+  "new_size": 50,
+  "uses": [
+   "native/scene_inject.cpp:12628"
+  ],
+  "context": "constexpr std::uintptr_t OMOD_ATTACH_RVA = 0x00434DA0;"
+ },
+ "40361296": {
+  "old": "0x267dd50",
+  "new": "0x2685e80",
+  "section": ".rdata",
+  "method": "data:refs 8/8",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/scene_walker.cpp:40",
+   "offsets.h:653"
+  ],
+  "context": "{ 0x0267DD50, \"NiCamera\"          },"
+ },
+ "39182720": {
+  "old": "0x255e180",
+  "new": "0x2566280",
+  "section": ".rdata",
+  "method": "data:interp 0x255e178..0x255e198",
+  "confidence": 0.8,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/scene_walker.cpp:47"
+  ],
+  "context": "{ 0x0255E180, \"SceneGraph\"        },"
+ },
+ "39182728": {
+  "old": "0x255e188",
+  "new": "0x2566288",
+  "section": ".rdata",
+  "method": "data:interp 0x255e178..0x255e198",
+  "confidence": 0.8,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/scene_walker.cpp:48"
+  ],
+  "context": "{ 0x0255E188, \"SceneGraph(adj+8)\" },"
+ },
+ "39182736": {
+  "old": "0x255e190",
+  "new": "0x2566290",
+  "section": ".rdata",
+  "method": "data:interp 0x255e178..0x255e198",
+  "confidence": 0.8,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/scene_walker.cpp:49"
+  ],
+  "context": "{ 0x0255E190, \"SceneGraph(adj+10)\"},"
+ },
+ "39182744": {
+  "old": "0x255e198",
+  "new": "0x2566298",
+  "section": ".rdata",
+  "method": "data:refs 7/7",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/scene_walker.cpp:50"
+  ],
+  "context": "{ 0x0255E198, \"SceneGraph(adj+18)\"},"
+ },
+ "39181064": {
+  "old": "0x255db08",
+  "new": "0x2565c08",
+  "section": ".rdata",
+  "method": "data:refs 4/4",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/scene_walker.cpp:51",
+   "offsets.h:708"
+  ],
+  "context": "{ 0x0255DB08, \"MainCullingCamera\" },"
+ },
+ "42967032": {
+  "old": "0x28f9ff8",
+  "new": "0x29037b8",
+  "section": ".rdata",
+  "method": "data:refs 12/12",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/scene_walker.cpp:52"
+  ],
+  "context": "{ 0x028F9FF8, \"BSLightingShaderProperty\" },"
+ },
+ "40463759": {
+  "old": "0x2696d8f",
+  "new": "0x269eeaf",
+  "section": ".rdata",
+  "method": "data:interp 0x2696d68..0x2696fb0",
+  "confidence": 0.8,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/scene_walker.cpp:56"
+  ],
+  "context": "{ 0x02696D8F, \"BSLODTriShape?(0x2696D8F)\"   }, // placeholder"
+ },
+ "38613552": {
+  "old": "0x24d3230",
+  "new": "0x24db2a0",
+  "section": ".rdata",
+  "method": "data:refs 19/19",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/scene_walker.cpp:58"
+  ],
+  "context": "{ 0x024D3230, \"unknown(0x24D3230)\"          },"
+ },
+ "43049072": {
+  "old": "0x290e070",
+  "new": "0x2917830",
+  "section": ".rdata",
+  "method": "data:refs 12/12",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/scene_walker.cpp:59"
+  ],
+  "context": "{ 0x0290E070, \"unknown(0x290E070)\"          },"
+ },
+ "40468696": {
+  "old": "0x26980d8",
+  "new": "0x26a01f8",
+  "section": ".rdata",
+  "method": "data:refs 16/16",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/scene_walker.cpp:60"
+  ],
+  "context": "{ 0x026980D8, \"unknown(0x26980D8)\"          },"
+ },
+ "23889312": {
+  "old": "0x16c85a0",
+  "new": "0x16c8ac0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 852,
+  "new_size": 852,
+  "uses": [
+   "native/skin_rebind.cpp:1203",
+   "offsets.h:3112"
+  ],
+  "context": "constexpr std::uintptr_t kUpdateWorldDataRva = 0x16C85A0;"
+ },
+ "23885072": {
+  "old": "0x16c7510",
+  "new": "0x16c7a30",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 29,
+  "new_size": 29,
+  "uses": [
+   "native/skin_rebind.cpp:1488"
+  ],
+  "context": "constexpr std::uintptr_t kBoneIterRva = 0x16C7510;  // sub_1416C7510"
+ },
+ "23428640": {
+  "old": "0x1657e20",
+  "new": "0x1658240",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 276,
+  "new_size": 276,
+  "uses": [
+   "native/synthetic_refr.cpp:74"
+  ],
+  "context": "constexpr std::uintptr_t POOL_FREE_RVA       = 0x01657E20;"
+ },
+ "38150808": {
+  "old": "0x2462298",
+  "new": "0x246a2f8",
+  "section": ".rdata",
+  "method": "data:refs 46/46",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "native/synthetic_refr.cpp:83",
+   "offsets.h:1502",
+   "offsets.h:3384"
+  ],
+  "context": "constexpr std::uintptr_t OIE_VTABLE_RVA      = 0x02462298;"
+ },
+ "2392304": {
+  "old": "0x2480f0",
+  "new": "0x248410",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 1073,
+  "new_size": 1073,
+  "uses": [
+   "native/synthetic_refr.cpp:84",
+   "offsets.h:3502"
+  ],
+  "context": "constexpr std::uintptr_t OIE_ADD_RECORD_RVA  = 0x002480F0;"
+ },
+ "16777619": {
+  "old": "0x1000193",
+  "new": "0x10007b3",
+  "section": ".text",
+  "method": "mid:gap",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 186,
+  "new_size": 186,
+  "uses": [
+   "net/client.cpp:696"
+  ],
+  "context": "h *= 0x01000193u;"
+ },
+ "12980960": {
+  "old": "0xc612e0",
+  "new": "0xc61800",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 211,
+  "new_size": 211,
+  "uses": [
+   "offsets.h:16"
+  ],
+  "context": "constexpr std::uintptr_t KILL_ENGINE_RVA       = 0x00C612E0; // sub_140C612E0"
+ },
+ "3217488": {
+  "old": "0x311850",
+  "new": "0x311b80",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 154,
+  "new_size": 154,
+  "uses": [
+   "offsets.h:17"
+  ],
+  "context": "constexpr std::uintptr_t LOOKUP_BY_FORMID_RVA  = 0x00311850; // sub_140311850"
+ },
+ "39209016": {
+  "old": "0x2564838",
+  "new": "0x256c938",
+  "section": ".rdata",
+  "method": "data:refs 8/8",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:44",
+   "offsets.h:47"
+  ],
+  "context": "constexpr std::uintptr_t PLAYERCHARACTER_VTABLE_RVA = 0x02564838;"
+ },
+ "38390728": {
+  "old": "0x249cbc8",
+  "new": "0x24a4c28",
+  "section": ".rdata",
+  "method": "data:refs 16/16",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:50"
+  ],
+  "context": "constexpr std::uintptr_t TESOBJECTREFR_REAL_VTABLE_RVA = 0x0249CBC8;"
+ },
+ "23433184": {
+  "old": "0x1658fe0",
+  "new": "0x1659400",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 112,
+  "new_size": 112,
+  "uses": [
+   "offsets.h:122",
+   "offsets.h:3133",
+   "offsets.h:3409"
+  ],
+  "context": "constexpr std::uintptr_t INVLIST_MUTEX_LOCK_RVA   = 0x01658FE0; // lock(mtx*)"
+ },
+ "23433904": {
+  "old": "0x16592b0",
+  "new": "0x16596d0",
+  "section": ".text",
+  "method": "leaf:calls 4634/4634",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:123",
+   "offsets.h:3410"
+  ],
+  "context": "constexpr std::uintptr_t INVLIST_MUTEX_UNLOCK_RVA = 0x016592B0; // unlock(mtx*)"
+ },
+ "3447600": {
+  "old": "0x349b30",
+  "new": "0x349e60",
+  "section": ".text",
+  "method": "leaf:calls 137/137",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:124"
+  ],
+  "context": "constexpr std::uintptr_t INVITEM_GET_COUNT_RVA    = 0x00349B30; // entry \u2192 int count"
+ },
+ "11539088": {
+  "old": "0xb01290",
+  "new": "0xb00eb0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 1129,
+  "new_size": 1129,
+  "uses": [
+   "offsets.h:135"
+  ],
+  "context": "constexpr std::uintptr_t MAIN_MENU_REGISTRAR_RVA  = 0x00B01290;"
+ },
+ "18110944": {
+  "old": "0x11459e0",
+  "new": "0x1145ed0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 144,
+  "new_size": 144,
+  "uses": [
+   "offsets.h:159"
+  ],
+  "context": "constexpr std::uintptr_t PAPYRUS_GLOBALVAR_SETVALUE_RVA = 0x011459E0;"
+ },
+ "18374096": {
+  "old": "0x1185dd0",
+  "new": "0x11862c0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 526,
+  "new_size": 526,
+  "uses": [
+   "offsets.h:160"
+  ],
+  "context": "constexpr std::uintptr_t PAPYRUS_QUEST_SETSTAGE_RVA     = 0x01185DD0;"
+ },
+ "5316368": {
+  "old": "0x511f10",
+  "new": "0x512240",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 185,
+  "new_size": 185,
+  "uses": [
+   "offsets.h:186"
+  ],
+  "context": "constexpr std::uintptr_t BGS_INV_LIST_MATERIALIZE_RVA  = 0x00511F10;"
+ },
+ "3224944": {
+  "old": "0x313570",
+  "new": "0x3138a0",
+  "section": ".text",
+  "method": "leaf:calls 430/430",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:187"
+  ],
+  "context": "constexpr std::uintptr_t TESFORM_GET_COMPONENT_RVA     = 0x00313570;"
+ },
+ "51250128": {
+  "old": "0x30e03d0",
+  "new": "0x30eb4d0",
+  "section": ".data",
+  "method": "data:interp 0x30e03c8..0x30e08c8",
+  "confidence": 0.8,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:195"
+  ],
+  "context": "constexpr std::uintptr_t TESFORM_COMPONENT_TABLE_RVA   = 0x030E03D0;"
+ },
+ "1966080": {
+  "old": "0x1e0000",
+  "new": "0x1e0320",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 63,
+  "new_size": 63,
+  "uses": [
+   "offsets.h:207",
+   "offsets.h:1133"
+  ],
+  "context": "constexpr std::uint32_t  ACTOR_LIFESTATE_MASK          = 0x1E0000;"
+ },
+ "14035248": {
+  "old": "0xd62930",
+  "new": "0xd62e60",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 80,
+  "new_size": 80,
+  "uses": [
+   "offsets.h:282"
+  ],
+  "context": "constexpr std::uintptr_t PLAYER_PICKUP_RVA = 0x00D62930;  // sub_140D62930 (kept for reference; NOT hooked)"
+ },
+ "5243952": {
+  "old": "0x500430",
+  "new": "0x500760",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 76,
+  "new_size": 76,
+  "uses": [
+   "offsets.h:283",
+   "persist/inventory_tap.cpp:270",
+   "persist/inventory_tap.cpp:270"
+  ],
+  "context": "constexpr std::uintptr_t INV_ADD_FROM_WORLD_RVA = 0x00500430;  // sub_140500430 \u2014 our NEW hook target"
+ },
+ "17033552": {
+  "old": "0x103e950",
+  "new": "0x103ee80",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 564,
+  "new_size": 564,
+  "uses": [
+   "offsets.h:333"
+  ],
+  "context": "constexpr std::uintptr_t CONTAINER_MENU_TRANSFER_ITEM_RVA = 0x0103E950;  // sub_14103E950"
+ },
+ "2220592": {
+  "old": "0x21e230",
+  "new": "0x21e550",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 182,
+  "new_size": 182,
+  "uses": [
+   "offsets.h:334"
+  ],
+  "context": "constexpr std::uintptr_t REFHANDLE_RESOLVE_RVA            = 0x0021E230;  // sub_14021E230"
+ },
+ "10006064": {
+  "old": "0x98ae30",
+  "new": "0x98b180",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 222,
+  "new_size": 222,
+  "uses": [
+   "offsets.h:352"
+  ],
+  "context": "constexpr std::uintptr_t EXAMINE_MENU_APPLY_MOD_RVA        = 0x0098AE30;  // sub_14098AE30"
+ },
+ "10019840": {
+  "old": "0x98e400",
+  "new": "0x98e750",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 166,
+  "new_size": 166,
+  "uses": [
+   "offsets.h:353"
+  ],
+  "context": "constexpr std::uintptr_t EXAMINE_MENU_SET_ITEM_HEALTH_RVA  = 0x0098E400;  // sub_14098E400"
+ },
+ "11478016": {
+  "old": "0xaf2400",
+  "new": "0xaf2020",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 179,
+  "new_size": 179,
+  "uses": [
+   "offsets.h:368"
+  ],
+  "context": "constexpr std::uintptr_t PA_MOD_MENU_CREATE_RVA            = 0x00AF2400;  // sub_140AF2400"
+ },
+ "11477776": {
+  "old": "0xaf2310",
+  "new": "0xaf1f30",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 184,
+  "new_size": 184,
+  "uses": [
+   "offsets.h:369"
+  ],
+  "context": "constexpr std::uintptr_t PA_MOD_MENU_DESTROY_RVA           = 0x00AF2310;  // sub_140AF2310"
+ },
+ "17044144": {
+  "old": "0x10412b0",
+  "new": "0x10417e0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 90,
+  "new_size": 90,
+  "uses": [
+   "offsets.h:409"
+  ],
+  "context": "constexpr std::uintptr_t CONTAINER_MENU_FACTORY_RVA = 0x010412B0;"
+ },
+ "51238960": {
+  "old": "0x30dd830",
+  "new": "0x30e8930",
+  "section": ".data",
+  "method": "data:refs 2160/2160",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:413"
+  ],
+  "context": "constexpr std::uintptr_t UI_SINGLETON_RVA           = 0x030DD830;"
+ },
+ "27786560": {
+  "old": "0x1a7fd40",
+  "new": "0x1a80320",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 123,
+  "new_size": 123,
+  "uses": [
+   "offsets.h:414"
+  ],
+  "context": "constexpr std::uintptr_t UI_MENU_IS_OPEN_RVA        = 0x01A7FD40;"
+ },
+ "27811280": {
+  "old": "0x1a85dd0",
+  "new": "0x1a863b0",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 130,
+  "new_size": 130,
+  "uses": [
+   "offsets.h:417"
+  ],
+  "context": "constexpr std::uintptr_t CONTAINER_MENU_NAME_RVA    = 0x01A85DD0;"
+ },
+ "27815744": {
+  "old": "0x1a86f40",
+  "new": "0x1a87520",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 130,
+  "new_size": 130,
+  "uses": [
+   "offsets.h:430"
+  ],
+  "context": "constexpr std::uintptr_t LOADING_MENU_NAME_RVA         = 0x01A86F40;"
+ },
+ "27818912": {
+  "old": "0x1a87ba0",
+  "new": "0x1a88180",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 130,
+  "new_size": 130,
+  "uses": [
+   "offsets.h:431"
+  ],
+  "context": "constexpr std::uintptr_t POWER_ARMOR_HUD_MENU_NAME_RVA = 0x01A87BA0;"
+ },
+ "27818480": {
+  "old": "0x1a879f0",
+  "new": "0x1a87fd0",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 130,
+  "new_size": 130,
+  "uses": [
+   "offsets.h:434"
+  ],
+  "context": "constexpr std::uintptr_t PIPBOY_MENU_NAME_RVA          = 0x01A879F0;"
+ },
+ "51239456": {
+  "old": "0x30dda20",
+  "new": "0x30e8b20",
+  "section": ".data",
+  "method": "data:refs 1035/1035",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:435"
+  ],
+  "context": "constexpr std::uintptr_t UI_MESSAGE_QUEUE_PTR_RVA      = 0x030DDA20;"
+ },
+ "27824208": {
+  "old": "0x1a89050",
+  "new": "0x1a89630",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 402,
+  "new_size": 402,
+  "uses": [
+   "offsets.h:436"
+  ],
+  "context": "constexpr std::uintptr_t UI_MESSAGE_QUEUE_ADD_RVA      = 0x01A89050;"
+ },
+ "39470536": {
+  "old": "0x25a45c8",
+  "new": "0x25ac6c8",
+  "section": ".rdata",
+  "method": "data:refs 16/16",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:444"
+  ],
+  "context": "constexpr std::uintptr_t CONTAINER_MENU_VTABLE_RVA  = 0x025A45C8;"
+ },
+ "28114112": {
+  "old": "0x1acfcc0",
+  "new": "0x1ad02a0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 20,
+  "new_size": 20,
+  "uses": [
+   "offsets.h:453"
+  ],
+  "context": "constexpr std::uintptr_t GFX_INVOKE_RVA             = 0x01ACFCC0;"
+ },
+ "3438816": {
+  "old": "0x3478e0",
+  "new": "0x347c10",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 40,
+  "new_size": 40,
+  "uses": [
+   "offsets.h:468"
+  ],
+  "context": "constexpr std::uintptr_t INV_ENTRY_TO_FORM_RVA     = 0x003478E0;   // sub_1403478E0"
+ },
+ "51254128": {
+  "old": "0x30e1370",
+  "new": "0x30ec470",
+  "section": ".data",
+  "method": "data:refs 788/788",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:469"
+  ],
+  "context": "constexpr std::uintptr_t FORM_CACHE_SINGLETON_RVA  = 0x030E1370;   // qword_1430E1370"
+ },
+ "18298272": {
+  "old": "0x11735a0",
+  "new": "0x1173a90",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 860,
+  "new_size": 860,
+  "uses": [
+   "offsets.h:514",
+   "offsets.h:1091"
+  ],
+  "context": "constexpr std::uintptr_t ENGINE_ADD_ITEM_RVA    = 0x011735A0;"
+ },
+ "18359712": {
+  "old": "0x11825a0",
+  "new": "0x1182a90",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 25,
+  "new_size": 25,
+  "uses": [
+   "offsets.h:515"
+  ],
+  "context": "constexpr std::uintptr_t ENGINE_REMOVE_ITEM_RVA = 0x011825A0;"
+ },
+ "12890992": {
+  "old": "0xc4b370",
+  "new": "0xc4b890",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 244,
+  "new_size": 244,
+  "uses": [
+   "offsets.h:530"
+  ],
+  "context": "constexpr std::uintptr_t PA_FRAME_SYNC_TASK_RVA  = 0x00C4B370;  // sub_140C4B370"
+ },
+ "53430008": {
+  "old": "0x32f46f8",
+  "new": "0x32ff808",
+  "section": ".data",
+  "method": "data:refs 1453/1453",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:531"
+  ],
+  "context": "constexpr std::uintptr_t REFR_TASK_QUEUE_PTR_RVA = 0x032F46F8;  // qword_1430DBF78[274672]"
+ },
+ "3168096": {
+  "old": "0x305760",
+  "new": "0x305a90",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 69,
+  "new_size": 69,
+  "uses": [
+   "offsets.h:543"
+  ],
+  "context": "constexpr std::uintptr_t ENGINE_SET_OPEN_STATE_RVA = 0x00305760;"
+ },
+ "5325184": {
+  "old": "0x514180",
+  "new": "0x5144b0",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": 2131,
+  "new_size": 2131,
+  "uses": [
+   "offsets.h:570"
+  ],
+  "context": "constexpr std::uintptr_t ENGINE_ACTIVATE_WORKER_RVA = 0x00514180;"
+ },
+ "5649184": {
+  "old": "0x563320",
+  "new": "0x563650",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 49,
+  "new_size": 49,
+  "uses": [
+   "offsets.h:602"
+  ],
+  "context": "constexpr std::uintptr_t ENGINE_FORCE_UNLOCK_RVA       = 0x00563320;"
+ },
+ "5649248": {
+  "old": "0x563360",
+  "new": "0x563690",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 49,
+  "new_size": 49,
+  "uses": [
+   "offsets.h:603"
+  ],
+  "context": "constexpr std::uintptr_t ENGINE_FORCE_LOCK_RVA         = 0x00563360;"
+ },
+ "5648752": {
+  "old": "0x563170",
+  "new": "0x5634a0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 41,
+  "new_size": 41,
+  "uses": [
+   "offsets.h:604"
+  ],
+  "context": "constexpr std::uintptr_t ENGINE_LOCK_DATA_GET_RVA      = 0x00563170;"
+ },
+ "18187840": {
+  "old": "0x1158640",
+  "new": "0x1158b30",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 167,
+  "new_size": 167,
+  "uses": [
+   "offsets.h:605"
+  ],
+  "context": "constexpr std::uintptr_t ENGINE_LOCK_PAPYRUS_APPLY_RVA = 0x01158640;"
+ },
+ "12555184": {
+  "old": "0xbf93b0",
+  "new": "0xbf98d0",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 155,
+  "new_size": 155,
+  "uses": [
+   "offsets.h:633"
+  ],
+  "context": "constexpr std::uintptr_t LOAD_GAME_FN_RVA          = 0x00BF93B0;   // sub_140BF93B0"
+ },
+ "53073160": {
+  "old": "0x329d508",
+  "new": "0x32a8618",
+  "section": ".data",
+  "method": "data:refs 764/764",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:634"
+  ],
+  "context": "constexpr std::uintptr_t SAVE_LOAD_MGR_SINGLETON_RVA = 0x0329D508; // qword_14329D508"
+ },
+ "17319984": {
+  "old": "0x1084830",
+  "new": "0x1084d20",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 18,
+  "new_size": 18,
+  "uses": [
+   "offsets.h:635"
+  ],
+  "context": "constexpr std::uintptr_t LOAD_PRECOND_FN_RVA       = 0x01084830;   // sub_141084830"
+ },
+ "52320912": {
+  "old": "0x31e5a90",
+  "new": "0x31f0b90",
+  "section": ".data",
+  "method": "data:refs 109/109",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:636"
+  ],
+  "context": "constexpr std::uintptr_t SAVE_DEV_SINGLETON_RVA    = 0x031E5A90;   // qword_1431E5A90"
+ },
+ "12808704": {
+  "old": "0xc37200",
+  "new": "0xc37720",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 17,
+  "new_size": 17,
+  "uses": [
+   "offsets.h:637"
+  ],
+  "context": "constexpr std::uintptr_t LOAD_PREP_FN_RVA          = 0x00C37200;   // sub_140C37200"
+ },
+ "53288938": {
+  "old": "0x32d1fea",
+  "new": "0x32dd0fa",
+  "section": ".data",
+  "method": "data:refs 108/108",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:638"
+  ],
+  "context": "constexpr std::uintptr_t LOAD_IN_PROGRESS_FLAG_RVA = 0x032D1FEA;   // byte_1432D1FEA"
+ },
+ "12816256": {
+  "old": "0xc38f80",
+  "new": "0xc394a0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 19,
+  "new_size": 19,
+  "uses": [
+   "offsets.h:649"
+  ],
+  "context": "constexpr std::uintptr_t SCENE_RENDER_RVA            = 0x00C38F80;"
+ },
+ "39463432": {
+  "old": "0x25a2a08",
+  "new": "0x25aab08",
+  "section": ".rdata",
+  "method": "data:refs 4/4",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:665"
+  ],
+  "context": "constexpr std::uintptr_t FIRSTPERSON_STATE_VTABLE_RVA    = 0x025A2A08;"
+ },
+ "38906392": {
+  "old": "0x251aa18",
+  "new": "0x2522a88",
+  "section": ".rdata",
+  "method": "data:refs 33/33",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:666"
+  ],
+  "context": "constexpr std::uintptr_t THIRDPERSON_STATE_VTABLE_RVA    = 0x0251AA18;"
+ },
+ "53290448": {
+  "old": "0x32d25d0",
+  "new": "0x32dd6e0",
+  "section": ".data",
+  "method": "data:refs 8/8",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:706"
+  ],
+  "context": "constexpr std::uintptr_t MAIN_CULLING_CAMERA_INSTANCE_RVA = 0x032D25D0;"
+ },
+ "53290384": {
+  "old": "0x32d2590",
+  "new": "0x32dd6a0",
+  "section": ".data",
+  "method": "data:refs 23/23",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:707"
+  ],
+  "context": "constexpr std::uintptr_t MAIN_CULLING_CAMERA_PTR_SLOT_RVA = 0x032D2590;"
+ },
+ "18193424": {
+  "old": "0x1159c10",
+  "new": "0x115a100",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 915,
+  "new_size": 915,
+  "uses": [
+   "offsets.h:756"
+  ],
+  "context": "constexpr std::uintptr_t PLACE_AT_ME_RVA = 0x01159C10;"
+ },
+ "6161872": {
+  "old": "0x5e05d0",
+  "new": "0x5e0900",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 67,
+  "new_size": 67,
+  "uses": [
+   "offsets.h:766"
+  ],
+  "context": "constexpr std::uintptr_t CONSOLE_PLACE_WORKER_RVA = 0x005E05D0;"
+ },
+ "12730048": {
+  "old": "0xc23ec0",
+  "new": "0xc243e0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 63,
+  "new_size": 63,
+  "uses": [
+   "offsets.h:813"
+  ],
+  "context": "constexpr std::uintptr_t DESTROY_BY_HANDLE_RVA       = 0x00C23EC0;"
+ },
+ "3375296": {
+  "old": "0x3380c0",
+  "new": "0x3383f0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 62,
+  "new_size": 62,
+  "uses": [
+   "offsets.h:814"
+  ],
+  "context": "constexpr std::uintptr_t UNPERSIST_PROMOTED_REF_RVA  = 0x003380C0;"
+ },
+ "5030464": {
+  "old": "0x4cc240",
+  "new": "0x4cc570",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 23,
+  "new_size": 23,
+  "uses": [
+   "offsets.h:840"
+  ],
+  "context": "constexpr std::uintptr_t CELL_REMOVE_REFERENCE_RVA   = 0x004CC240;"
+ },
+ "5345680": {
+  "old": "0x519190",
+  "new": "0x5194c0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 60,
+  "new_size": 60,
+  "uses": [
+   "offsets.h:841"
+  ],
+  "context": "constexpr std::uintptr_t REFR_GET_HANDLE_RVA         = 0x00519190;"
+ },
+ "2998864": {
+  "old": "0x2dc250",
+  "new": "0x2dc570",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 507,
+  "new_size": 507,
+  "uses": [
+   "offsets.h:870"
+  ],
+  "context": "constexpr std::uintptr_t BHK_PICK_INIT_FROMTO_RVA    = 0x002DC250;"
+ },
+ "5023792": {
+  "old": "0x4ca830",
+  "new": "0x4cab60",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 180,
+  "new_size": 180,
+  "uses": [
+   "offsets.h:871"
+  ],
+  "context": "constexpr std::uintptr_t BHK_PICK_CAST_CELL_RVA      = 0x004CA830;"
+ },
+ "25658992": {
+  "old": "0x1878670",
+  "new": "0x1878c50",
+  "section": ".text",
+  "method": "leaf:calls 72/72",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:872"
+  ],
+  "context": "constexpr std::uintptr_t BHK_PICK_HAS_HIT_RVA        = 0x01878670;"
+ },
+ "196650": {
+  "old": "0x3002a",
+  "new": "0x3002a",
+  "section": ".text",
+  "method": "mid:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 346,
+  "new_size": 346,
+  "uses": [
+   "offsets.h:874"
+  ],
+  "context": "constexpr std::uint32_t  BHK_PICK_FILTER_WORLD       = 0x3002A;"
+ },
+ "5023984": {
+  "old": "0x4ca8f0",
+  "new": "0x4cac20",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 69,
+  "new_size": 69,
+  "uses": [
+   "offsets.h:876"
+  ],
+  "context": "constexpr std::uintptr_t TERRAIN_HEIGHT_RVA          = 0x004CA8F0;"
+ },
+ "5327952": {
+  "old": "0x514c50",
+  "new": "0x514f80",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 21,
+  "new_size": 21,
+  "uses": [
+   "offsets.h:877"
+  ],
+  "context": "constexpr std::uintptr_t REFILE_BY_POSITION_RVA      = 0x00514C50;"
+ },
+ "2947584": {
+  "old": "0x2cfa00",
+  "new": "0x2cfd20",
+  "section": ".text",
+  "method": "leaf:calls 504/504",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:878"
+  ],
+  "context": "constexpr std::uintptr_t IS_CELL_ATTACHED_RVA        = 0x002CFA00;"
+ },
+ "53289032": {
+  "old": "0x32d2048",
+  "new": "0x32dd158",
+  "section": ".data",
+  "method": "data:refs 3256/3256",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:879"
+  ],
+  "context": "constexpr std::uintptr_t TES_SINGLETON_RVA           = 0x032D2048;"
+ },
+ "3089184": {
+  "old": "0x2f2320",
+  "new": "0x2f2640",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 198,
+  "new_size": 198,
+  "uses": [
+   "offsets.h:880"
+  ],
+  "context": "constexpr std::uintptr_t EXT_CELL_BY_GRID_RVA        = 0x002F2320;"
+ },
+ "10000960": {
+  "old": "0x989a40",
+  "new": "0x989d90",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 40,
+  "new_size": 40,
+  "uses": [
+   "offsets.h:922",
+   "persist/inventory_tap.cpp:274",
+   "persist/inventory_tap.cpp:274"
+  ],
+  "context": "constexpr std::uintptr_t PA_ENTER_RVA          = 0x00989A40;"
+ },
+ "10009328": {
+  "old": "0x98baf0",
+  "new": "0x98be40",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 18,
+  "new_size": 18,
+  "uses": [
+   "offsets.h:923"
+  ],
+  "context": "constexpr std::uintptr_t PA_EXIT_REQUEST_RVA   = 0x0098BAF0;"
+ },
+ "10013136": {
+  "old": "0x98c9d0",
+  "new": "0x98cd20",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 8,
+  "new_size": 8,
+  "uses": [
+   "offsets.h:924"
+  ],
+  "context": "constexpr std::uintptr_t PA_REPLAY_RVA         = 0x0098C9D0;"
+ },
+ "13852320": {
+  "old": "0xd35ea0",
+  "new": "0xd363c0",
+  "section": ".text",
+  "method": "leaf:calls 132/132",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:925"
+  ],
+  "context": "constexpr std::uintptr_t PA_MODEL_RELOAD_A_RVA = 0x00D35EA0;"
+ },
+ "13639904": {
+  "old": "0xd020e0",
+  "new": "0xd02600",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 113,
+  "new_size": 113,
+  "uses": [
+   "offsets.h:926"
+  ],
+  "context": "constexpr std::uintptr_t PA_MODEL_RELOAD_B_RVA = 0x00D020E0;"
+ },
+ "13569632": {
+  "old": "0xcf0e60",
+  "new": "0xcf1380",
+  "section": ".text",
+  "method": "leaf:calls 32/32",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:941"
+  ],
+  "context": "constexpr std::uintptr_t AIPROCESS_NEEDS_3D_LOAD_RVA      = 0x00CF0E60; // sub_140CF0E60(proc) -> bool"
+ },
+ "3622720": {
+  "old": "0x374740",
+  "new": "0x374a70",
+  "section": ".text",
+  "method": "leaf:calls 84/84",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:942"
+  ],
+  "context": "constexpr std::uintptr_t PA_RACE_GETTER_RVA    = 0x00374740;"
+ },
+ "13255712": {
+  "old": "0xca4420",
+  "new": "0xca4940",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 100,
+  "new_size": 100,
+  "uses": [
+   "offsets.h:956"
+  ],
+  "context": "constexpr std::uintptr_t ACTOR_SWITCH_RACE_RVA        = 0x00CA4420;"
+ },
+ "51232968": {
+  "old": "0x30dc0c8",
+  "new": "0x30e71c8",
+  "section": ".data",
+  "method": "data:refs 383/383",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:957"
+  ],
+  "context": "constexpr std::uintptr_t REFR_3D_RELOAD_QUEUE_PTR_RVA = 0x030DC0C8;"
+ },
+ "2908848": {
+  "old": "0x2c62b0",
+  "new": "0x2c65d0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 101,
+  "new_size": 101,
+  "uses": [
+   "offsets.h:958"
+  ],
+  "context": "constexpr std::uintptr_t REFR_3D_RELOAD_QUEUE_RVA     = 0x002C62B0;"
+ },
+ "119582": {
+  "old": "0x1d31e",
+  "new": "0x1d31e",
+  "section": ".text",
+  "method": "mid:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 590,
+  "new_size": 590,
+  "uses": [
+   "offsets.h:960"
+  ],
+  "context": "constexpr std::uint32_t  POWER_ARMOR_RACE_FORMID      = 0x0001D31E;"
+ },
+ "255351": {
+  "old": "0x3e577",
+  "new": "0x3e577",
+  "section": ".text",
+  "method": "mid:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 344,
+  "new_size": 344,
+  "uses": [
+   "offsets.h:973"
+  ],
+  "context": "0x0003E577,   // ArmorPoweredFrame"
+ },
+ "1640918": {
+  "old": "0x1909d6",
+  "new": "0x190a36",
+  "section": ".text",
+  "method": "mid:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 95,
+  "new_size": 95,
+  "uses": [
+   "offsets.h:974"
+  ],
+  "context": "0x001909D6,   // ArmorPoweredFrameRaider"
+ },
+ "1640917": {
+  "old": "0x1909d5",
+  "new": "0x190a35",
+  "section": ".text",
+  "method": "mid:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 95,
+  "new_size": 95,
+  "uses": [
+   "offsets.h:975"
+  ],
+  "context": "0x001909D5,   // ArmorPoweredFrameWastelander"
+ },
+ "1640913": {
+  "old": "0x1909d1",
+  "new": "0x190a31",
+  "section": ".text",
+  "method": "mid:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 95,
+  "new_size": 95,
+  "uses": [
+   "offsets.h:976"
+  ],
+  "context": "0x001909D1,   // ArmorPoweredFrameAtomCat"
+ },
+ "1674003": {
+  "old": "0x198b13",
+  "new": "0x198b73",
+  "section": ".text",
+  "method": "mid:gap",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 97,
+  "new_size": 97,
+  "uses": [
+   "offsets.h:977"
+  ],
+  "context": "0x00198B13,   // ArmorPoweredFrameBOS"
+ },
+ "1314171": {
+  "old": "0x140d7b",
+  "new": "0x140ddb",
+  "section": ".text",
+  "method": "mid:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 1189,
+  "new_size": 1189,
+  "uses": [
+   "offsets.h:978"
+  ],
+  "context": "0x00140D7B,   // ArmorPoweredFrameIngram"
+ },
+ "728073": {
+  "old": "0xb1c09",
+  "new": "0xb1c09",
+  "section": ".text",
+  "method": "mid:gap",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 101,
+  "new_size": 101,
+  "uses": [
+   "offsets.h:979"
+  ],
+  "context": "0x000B1C09,   // ArmorPoweredFrameWithModsNoHelmet"
+ },
+ "138043": {
+  "old": "0x21b3b",
+  "new": "0x21b3b",
+  "section": ".text",
+  "method": "mid:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 396,
+  "new_size": 396,
+  "uses": [
+   "offsets.h:983"
+  ],
+  "context": "constexpr std::uint32_t PIPBOY_FORM_ID = 0x00021B3B;"
+ },
+ "2886960": {
+  "old": "0x2c0d30",
+  "new": "0x2c1050",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 44,
+  "new_size": 44,
+  "uses": [
+   "offsets.h:997"
+  ],
+  "context": "constexpr std::uintptr_t MAPMARKERDATA_CTOR_RVA         = 0x002C0D30;   // sub_1402C0D30(data): TESFullName vtable, name, zeroed flags/type"
+ },
+ "2887472": {
+  "old": "0x2c0f30",
+  "new": "0x2c1250",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 69,
+  "new_size": 69,
+  "uses": [
+   "offsets.h:998"
+  ],
+  "context": "constexpr std::uintptr_t MAPMARKERDATA_SET_NAME_RVA     = 0x002C0F30;   // sub_1402C0F30(data, const char*): the name"
+ },
+ "2887456": {
+  "old": "0x2c0f20",
+  "new": "0x2c1240",
+  "section": ".text",
+  "method": "leaf:calls 23/23",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:999"
+  ],
+  "context": "constexpr std::uintptr_t MAPMARKERDATA_GET_NAME_RVA     = 0x002C0F20;   // sub_1402C0F20(data): const char* name (TESFullName, via its vtable)"
+ },
+ "2598528": {
+  "old": "0x27a680",
+  "new": "0x27a9a0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 290,
+  "new_size": 290,
+  "uses": [
+   "offsets.h:1000"
+  ],
+  "context": "constexpr std::uintptr_t EXTRALIST_SET_MAPMARKER_RVA    = 0x0027A680;   // sub_14027A680(list, data): make/replace/remove(nullptr) the ExtraMapMarker, under the"
+ },
+ "5648064": {
+  "old": "0x562ec0",
+  "new": "0x5631f0",
+  "section": ".text",
+  "method": "leaf:calls 115/115",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:1001"
+  ],
+  "context": "constexpr std::uintptr_t REFR_GET_MAPMARKER_DATA_RVA    = 0x00562EC0;   // sub_140562EC0(refr): the data, or nullptr"
+ },
+ "18165568": {
+  "old": "0x1152f40",
+  "new": "0x1153430",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 56,
+  "new_size": 56,
+  "uses": [
+   "offsets.h:1002"
+  ],
+  "context": "constexpr std::uintptr_t PAPYRUS_ADD_TO_MAP_RVA         = 0x01152F40;   // sub_141152F40(vm, stack, refr, allow_travel): ObjectReference.AddToMap"
+ },
+ "53434744": {
+  "old": "0x32f5978",
+  "new": "0x3300a88",
+  "section": ".data",
+  "method": "data:refs 40/40",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:1017"
+  ],
+  "context": "constexpr std::uintptr_t MAPMARKERS_LOCK_RVA            = 0x032F5978;"
+ },
+ "2282400": {
+  "old": "0x22d3a0",
+  "new": "0x22d6c0",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 123,
+  "new_size": 123,
+  "uses": [
+   "offsets.h:1018"
+  ],
+  "context": "constexpr std::uintptr_t SPINLOCK_LOCK_RVA              = 0x0022D3A0;   // sub_14022D3A0(lock): recursive spin lock"
+ },
+ "23434528": {
+  "old": "0x1659520",
+  "new": "0x1659940",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 129,
+  "new_size": 129,
+  "uses": [
+   "offsets.h:1019"
+  ],
+  "context": "constexpr std::uintptr_t BSTARRAY_PUSH_INDEX_RVA        = 0x01659520;   // sub_141659520(&size, &functor, capacity, elem_size): the index of a new slot, -1 when"
+ },
+ "38141872": {
+  "old": "0x245ffb0",
+  "new": "0x2468010",
+  "section": ".rdata",
+  "method": "data:refs 17219/17219",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:1020"
+  ],
+  "context": "constexpr std::uintptr_t BSTARRAY_HEAP_FUNCTOR_VTABLE_RVA = 0x0245FFB0; // BSTArrayAllocatorFunctor<BSTArrayHeapAllocator>::`vftable'"
+ },
+ "13964720": {
+  "old": "0xd515b0",
+  "new": "0xd51ad0",
+  "section": ".text",
+  "method": "func:gap",
+  "confidence": 0.8,
+  "identical_code": true,
+  "old_size": 31,
+  "new_size": 31,
+  "uses": [
+   "offsets.h:1035"
+  ],
+  "context": "constexpr std::uintptr_t MAPMARKERS_NOTIFY_RVA            = 0x00D515B0;   // sub_140D515B0(char changed)"
+ },
+ "14233328": {
+  "old": "0xd92ef0",
+  "new": "0xd93420",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 187,
+  "new_size": 187,
+  "uses": [
+   "offsets.h:1051"
+  ],
+  "context": "constexpr std::uintptr_t MAPMARKERS_EVENT_SOURCE_RVA      = 0x00D92EF0;"
+ },
+ "14107792": {
+  "old": "0xd74490",
+  "new": "0xd749c0",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 4,
+  "new_size": 4,
+  "uses": [
+   "offsets.h:1065"
+  ],
+  "context": "constexpr std::uintptr_t MAPMARKERS_REFILL_RVA            = 0x00D74490;"
+ },
+ "5337008": {
+  "old": "0x516fb0",
+  "new": "0x5172e0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 55,
+  "new_size": 55,
+  "uses": [
+   "offsets.h:1066",
+   "offsets.h:2495"
+  ],
+  "context": "constexpr std::uintptr_t REFR_GET_WORLDSPACE_RVA          = 0x00516FB0;   // sub_140516FB0(refr): TESWorldSpace* of its parent cell, or nullptr"
+ },
+ "2752560": {
+  "old": "0x2a0030",
+  "new": "0x2a0350",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 165,
+  "new_size": 165,
+  "uses": [
+   "offsets.h:1081"
+  ],
+  "context": "constexpr std::uintptr_t EXTRA_GET_BY_TYPE_RVA = 0x002A0030;"
+ },
+ "18352368": {
+  "old": "0x11808f0",
+  "new": "0x1180de0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 432,
+  "new_size": 432,
+  "uses": [
+   "offsets.h:1105"
+  ],
+  "context": "constexpr std::uintptr_t PAPYRUS_ATTACH_MOD_RVA = 0x011808F0;"
+ },
+ "5251712": {
+  "old": "0x502280",
+  "new": "0x5025b0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 90,
+  "new_size": 90,
+  "uses": [
+   "offsets.h:1116"
+  ],
+  "context": "constexpr std::uintptr_t REFR_ITEM_COUNT_RVA = 0x00502280;   // sub_140502280(refr, item) -> i64"
+ },
+ "2768064": {
+  "old": "0x2a3cc0",
+  "new": "0x2a3fe0",
+  "section": ".text",
+  "method": "leaf:calls 4/4",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:1134"
+  ],
+  "context": "constexpr std::uintptr_t EXTRAHEALTH_CTOR_RVA   = 0x002A3CC0;"
+ },
+ "2564992": {
+  "old": "0x272380",
+  "new": "0x2726a0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 272,
+  "new_size": 272,
+  "uses": [
+   "offsets.h:1135"
+  ],
+  "context": "constexpr std::uintptr_t EXTRALIST_ADD_RVA      = 0x00272380;"
+ },
+ "13523200": {
+  "old": "0xce5900",
+  "new": "0xce5e20",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 66,
+  "new_size": 66,
+  "uses": [
+   "offsets.h:1211"
+  ],
+  "context": "constexpr std::uintptr_t ENGINE_EQUIP_OBJECT_RVA          = 0x00CE5900;"
+ },
+ "13524384": {
+  "old": "0xce5da0",
+  "new": "0xce62c0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 46,
+  "new_size": 46,
+  "uses": [
+   "offsets.h:1212"
+  ],
+  "context": "constexpr std::uintptr_t ENGINE_UNEQUIP_OBJECT_RVA        = 0x00CE5DA0;"
+ },
+ "52310824": {
+  "old": "0x31e3328",
+  "new": "0x31ee428",
+  "section": ".data",
+  "method": "data:refs 446/446",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:1213"
+  ],
+  "context": "constexpr std::uintptr_t ACTOR_EQUIP_MGR_SINGLETON_RVA    = 0x031E3328;"
+ },
+ "126679": {
+  "old": "0x1eed7",
+  "new": "0x1eed7",
+  "section": ".text",
+  "method": "mid:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 461,
+  "new_size": 461,
+  "uses": [
+   "offsets.h:1214"
+  ],
+  "context": "constexpr std::uint32_t  VAULT_SUIT_FORM_ID               = 0x0001EED7;"
+ },
+ "4417568": {
+  "old": "0x436820",
+  "new": "0x436b50",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 163,
+  "new_size": 163,
+  "uses": [
+   "offsets.h:1294"
+  ],
+  "context": "constexpr std::uintptr_t OBJINSTANCE_BUILD_HOLDER_RVA           = 0x436820;"
+ },
+ "117373": {
+  "old": "0x1ca7d",
+  "new": "0x1ca7d",
+  "section": ".text",
+  "method": "mid:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 95,
+  "new_size": 95,
+  "uses": [
+   "offsets.h:1390"
+  ],
+  "context": "constexpr std::uint32_t GHOST_TEMPLATE_FORM_ID = 0x0001CA7D;"
+ },
+ "8490336": {
+  "old": "0x818d60",
+  "new": "0x8190b0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 24,
+  "new_size": 24,
+  "uses": [
+   "offsets.h:1600"
+  ],
+  "context": "constexpr std::uintptr_t SET_GRAPH_VAR_BOOL_RVA     = 0x00818D60;"
+ },
+ "8490368": {
+  "old": "0x818d80",
+  "new": "0x8190d0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 24,
+  "new_size": 24,
+  "uses": [
+   "offsets.h:1601"
+  ],
+  "context": "constexpr std::uintptr_t SET_GRAPH_VAR_INT_RVA      = 0x00818D80;"
+ },
+ "8490400": {
+  "old": "0x818da0",
+  "new": "0x8190f0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 25,
+  "new_size": 25,
+  "uses": [
+   "offsets.h:1602"
+  ],
+  "context": "constexpr std::uintptr_t SET_GRAPH_VAR_FLOAT_RVA    = 0x00818DA0;"
+ },
+ "12990112": {
+  "old": "0xc636a0",
+  "new": "0xc63bc0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 94,
+  "new_size": 94,
+  "uses": [
+   "offsets.h:1633"
+  ],
+  "context": "constexpr std::uintptr_t ACTOR_UPDATE_PERFRAME_RVA = 0x00C636A0;"
+ },
+ "13067664": {
+  "old": "0xc76590",
+  "new": "0xc76ab0",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 9,
+  "new_size": 9,
+  "uses": [
+   "offsets.h:1682"
+  ],
+  "context": "constexpr std::uintptr_t ENGINE_ENABLE_AI_RVA = 0x00C76590;"
+ },
+ "12979168": {
+  "old": "0xc60be0",
+  "new": "0xc61100",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 189,
+  "new_size": 189,
+  "uses": [
+   "offsets.h:1714"
+  ],
+  "context": "constexpr std::uintptr_t ACTOR_ATOMIC_TELEPORT_RVA = 0x00C60BE0;"
+ },
+ "25650144": {
+  "old": "0x18763e0",
+  "new": "0x18769c0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 149,
+  "new_size": 149,
+  "uses": [
+   "offsets.h:1734"
+  ],
+  "context": "constexpr std::uintptr_t NIAV_SET_MOTION_TYPE_RVA = 0x018763E0;"
+ },
+ "13560880": {
+  "old": "0xceec30",
+  "new": "0xcef150",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 104,
+  "new_size": 104,
+  "uses": [
+   "offsets.h:1778",
+   "offsets.h:2254"
+  ],
+  "context": "constexpr std::uintptr_t PKG_SELECTOR_RVA = 0x00CEEC30;"
+ },
+ "7769280": {
+  "old": "0x768cc0",
+  "new": "0x769000",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 45,
+  "new_size": 45,
+  "uses": [
+   "offsets.h:1809"
+  ],
+  "context": "constexpr std::uintptr_t PKG_EVAL_CONDITIONS_RVA = 0x00768CC0;"
+ },
+ "12963040": {
+  "old": "0xc5cce0",
+  "new": "0xc5d200",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 116,
+  "new_size": 116,
+  "uses": [
+   "offsets.h:1846"
+  ],
+  "context": "constexpr std::uintptr_t COMBAT_TARGET_SETTER_RVA = 0x00C5CCE0;"
+ },
+ "15095840": {
+  "old": "0xe65820",
+  "new": "0xe65d50",
+  "section": ".text",
+  "method": "leaf:calls 16/16",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:1885"
+  ],
+  "context": "constexpr std::uintptr_t AIM_SET_TARGET_RVA = 0x00E65820;"
+ },
+ "13441072": {
+  "old": "0xcd1830",
+  "new": "0xcd1d50",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 624,
+  "new_size": 624,
+  "uses": [
+   "offsets.h:1905"
+  ],
+  "context": "constexpr std::uintptr_t WEAPON_STATE_CLASS_SETTER_RVA = 0x00CD1830;"
+ },
+ "13437536": {
+  "old": "0xcd0a60",
+  "new": "0xcd0f80",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 60,
+  "new_size": 60,
+  "uses": [
+   "offsets.h:1911"
+  ],
+  "context": "constexpr std::uintptr_t ACTOR_RESOLVE_WEAPON_SLOT_RVA = 0x00CD0A60;"
+ },
+ "39291944": {
+  "old": "0x2578c28",
+  "new": "0x2580d28",
+  "section": ".rdata",
+  "method": "data:refs 58/58",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:1915"
+  ],
+  "context": "constexpr std::uintptr_t COMBAT_AIM_CONTROLLER_VTBL_RVA = 0x02578C28;"
+ },
+ "13432848": {
+  "old": "0xccf810",
+  "new": "0xccfd30",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 219,
+  "new_size": 219,
+  "uses": [
+   "offsets.h:1961"
+  ],
+  "context": "constexpr std::uintptr_t ENTER_COMBAT_RVA = 0x00CCF810;"
+ },
+ "12871536": {
+  "old": "0xc46770",
+  "new": "0xc46c90",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 194,
+  "new_size": 194,
+  "uses": [
+   "offsets.h:1993"
+  ],
+  "context": "constexpr std::uintptr_t REQUEST_STOP_COMBAT_RVA = 0x00C46770;"
+ },
+ "13434816": {
+  "old": "0xccffc0",
+  "new": "0xcd04e0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 895,
+  "new_size": 895,
+  "uses": [
+   "offsets.h:2013"
+  ],
+  "context": "constexpr std::uintptr_t ACTOR_STOP_COMBAT_RVA = 0x00CCFFC0;"
+ },
+ "15541136": {
+  "old": "0xed2390",
+  "new": "0xed28c0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 240,
+  "new_size": 240,
+  "uses": [
+   "offsets.h:2039"
+  ],
+  "context": "constexpr std::uintptr_t COMBAT_PROMOTER_FRESH_RVA = 0x00ED2390;  // sub_140ED2390"
+ },
+ "15094736": {
+  "old": "0xe653d0",
+  "new": "0xe65900",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 139,
+  "new_size": 139,
+  "uses": [
+   "offsets.h:2046"
+  ],
+  "context": "constexpr std::uintptr_t COMBAT_AIM_CONTROLLER_CTOR_RVA = 0x00E653D0;  // sub_140E653D0"
+ },
+ "13000224": {
+  "old": "0xc65e20",
+  "new": "0xc66340",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 107,
+  "new_size": 107,
+  "uses": [
+   "offsets.h:2100"
+  ],
+  "context": "constexpr std::uintptr_t MOVEMENT_TICK_RVA = 0x00C65E20;"
+ },
+ "12977712": {
+  "old": "0xc60630",
+  "new": "0xc60b50",
+  "section": ".text",
+  "method": "func:gap",
+  "confidence": 0.8,
+  "identical_code": true,
+  "old_size": 7,
+  "new_size": 7,
+  "uses": [
+   "offsets.h:2138"
+  ],
+  "context": "constexpr std::uintptr_t ACTOR_SETPOS_VT202_RVA = 0x00C60630;"
+ },
+ "25925520": {
+  "old": "0x18b9790",
+  "new": "0x18b9d70",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 8,
+  "new_size": 8,
+  "uses": [
+   "offsets.h:2163"
+  ],
+  "context": "constexpr std::uintptr_t BHK_CHAR_FINISH_STEP_RVA = 0x018B9790;"
+ },
+ "8846496": {
+  "old": "0x86fca0",
+  "new": "0x86fff0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 445,
+  "new_size": 445,
+  "uses": [
+   "offsets.h:2186"
+  ],
+  "context": "constexpr std::uintptr_t COMBAT_GUNFIRE_DECIDE_RVA = 0x0086FCA0;"
+ },
+ "4691584": {
+  "old": "0x479680",
+  "new": "0x4799b0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 109,
+  "new_size": 109,
+  "uses": [
+   "offsets.h:2222"
+  ],
+  "context": "constexpr std::uintptr_t ACTOR_FIRE_WEAPON_RVA = 0x00479680;"
+ },
+ "8891184": {
+  "old": "0x87ab30",
+  "new": "0x87ae80",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 829,
+  "new_size": 829,
+  "uses": [
+   "offsets.h:2241"
+  ],
+  "context": "constexpr std::uintptr_t AIPROCESS_SET_COMBAT_TARGET_RVA = 0x0087AB30;"
+ },
+ "13444992": {
+  "old": "0xcd2780",
+  "new": "0xcd2ca0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 64,
+  "new_size": 64,
+  "uses": [
+   "offsets.h:2311"
+  ],
+  "context": "constexpr std::uintptr_t ACTOR_HIT_APPLIER_RVA = 0x00CD2780;"
+ },
+ "13407824": {
+  "old": "0xcc9650",
+  "new": "0xcc9b70",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 141,
+  "new_size": 141,
+  "uses": [
+   "offsets.h:2331"
+  ],
+  "context": "constexpr std::uintptr_t ACTOR_HP_FUNNEL_RVA   = 0x00CC9650;  // sub_140CC9650"
+ },
+ "13434352": {
+  "old": "0xccfdf0",
+  "new": "0xcd0310",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 28,
+  "new_size": 28,
+  "uses": [
+   "offsets.h:2384"
+  ],
+  "context": "constexpr std::uintptr_t ACTOR_COMBAT_ORCHESTRATOR_RVA = 0x00CCFDF0;"
+ },
+ "15328848": {
+  "old": "0xe9e650",
+  "new": "0xe9eb80",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 42,
+  "new_size": 42,
+  "uses": [
+   "offsets.h:2403"
+  ],
+  "context": "constexpr std::uintptr_t ALIVE_COUNTER_RVA     = 0x00E9E650; // sub_140E9E650"
+ },
+ "5224592": {
+  "old": "0x4fb890",
+  "new": "0x4fbbc0",
+  "section": ".text",
+  "method": "leaf:calls 216/216",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:2404"
+  ],
+  "context": "constexpr std::uintptr_t CELL_LOADED_RVA       = 0x004FB890; // sub_1404FB890"
+ },
+ "8890624": {
+  "old": "0x87a900",
+  "new": "0x87ac50",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 49,
+  "new_size": 49,
+  "uses": [
+   "offsets.h:2405"
+  ],
+  "context": "constexpr std::uintptr_t POST_PICK_GATE_RVA    = 0x0087A900; // sub_14087A900"
+ },
+ "14612352": {
+  "old": "0xdef780",
+  "new": "0xdefcb0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 232,
+  "new_size": 232,
+  "uses": [
+   "offsets.h:2413"
+  ],
+  "context": "constexpr std::uintptr_t EVENT_DISPATCH_RVA    = 0x00DEF780; // sub_140DEF780"
+ },
+ "13590784": {
+  "old": "0xcf6100",
+  "new": "0xcf6620",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 1958,
+  "new_size": 1958,
+  "uses": [
+   "offsets.h:2445"
+  ],
+  "context": "constexpr std::uintptr_t COMBAT_ENGAGE_GATE_RVA = 0x00CF6100;"
+ },
+ "65390168": {
+  "old": "0x3e5c658",
+  "new": "0x3e73018",
+  "section": ".data",
+  "method": "data:refs 54478/54478",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:2456"
+  ],
+  "context": "constexpr std::uintptr_t BEHAVIOR_THREAD_HOLDER_TLSIDX_RVA = 0x03E5C658;"
+ },
+ "13197504": {
+  "old": "0xc960c0",
+  "new": "0xc965e0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 97,
+  "new_size": 97,
+  "uses": [
+   "offsets.h:2481"
+  ],
+  "context": "constexpr std::uintptr_t PUPPET_DEATH_FADE_RVA           = 0x00C960C0; // sub_140C960C0 \u2014 death-fade / deferred death"
+ },
+ "12955024": {
+  "old": "0xc5ad90",
+  "new": "0xc5b2b0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 53,
+  "new_size": 53,
+  "uses": [
+   "offsets.h:2482"
+  ],
+  "context": "constexpr std::uintptr_t PUPPET_MOUNT_SWIM_FLAGS_RVA     = 0x00C5AD90; // sub_140C5AD90 \u2014 mount/swim flag sync"
+ },
+ "14323552": {
+  "old": "0xda8f60",
+  "new": "0xda9490",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 117,
+  "new_size": 117,
+  "uses": [
+   "offsets.h:2483"
+  ],
+  "context": "constexpr std::uintptr_t PUPPET_ANIM_EVENT_DRAIN_RVA     = 0x00DA8F60; // sub_140DA8F60 \u2014 BSAnimGraphMgr push unprocessed events"
+ },
+ "13506336": {
+  "old": "0xce1720",
+  "new": "0xce1c40",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 56,
+  "new_size": 56,
+  "uses": [
+   "offsets.h:2484"
+  ],
+  "context": "constexpr std::uintptr_t PUPPET_TICK_RENDER_STATE_RVA    = 0x00CE1720; // sub_140CE1720 \u2014 Actor::TickRenderState_PerFrame (SyncBehavior + BipedAnim::Update)"
+ },
+ "13219936": {
+  "old": "0xc9b860",
+  "new": "0xc9bd80",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 103,
+  "new_size": 103,
+  "uses": [
+   "offsets.h:2485"
+  ],
+  "context": "constexpr std::uintptr_t PUPPET_SHUTDOWN_TRANSITION_RVA  = 0x00C9B860; // sub_140C9B860 \u2014 Actor::ProcessShutdownTransition"
+ },
+ "13560784": {
+  "old": "0xceebd0",
+  "new": "0xcef0f0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 88,
+  "new_size": 88,
+  "uses": [
+   "offsets.h:2486"
+  ],
+  "context": "constexpr std::uintptr_t PUPPET_ANIM_DISPATCH_DELTA_RVA  = 0x00CEEBD0; // sub_140CEEBD0 \u2014 AIProcess::AnimGraph TickWithDelta (delta>0)"
+ },
+ "13560720": {
+  "old": "0xceeb90",
+  "new": "0xcef0b0",
+  "section": ".text",
+  "method": "leaf:calls 8/8",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:2487"
+  ],
+  "context": "constexpr std::uintptr_t PUPPET_ANIM_DISPATCH_IDLE_RVA   = 0x00CEEB90; // sub_140CEEB90 \u2014 TickIdle (delta=0)"
+ },
+ "12710176": {
+  "old": "0xc1f120",
+  "new": "0xc1f640",
+  "section": ".text",
+  "method": "leaf:calls 118/118",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:2488"
+  ],
+  "context": "constexpr std::uintptr_t PUPPET_BS_TIME_FRAME_COUNT_RVA  = 0x00C1F120; // sub_140C1F120 \u2014 BSTime::GetFrameCount (returns u8 parity)"
+ },
+ "2623072": {
+  "old": "0x280660",
+  "new": "0x280980",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 47,
+  "new_size": 47,
+  "uses": [
+   "offsets.h:2489"
+  ],
+  "context": "constexpr std::uintptr_t PUPPET_EXTRADATA_PARITY_TICK_RVA = 0x00280660; // sub_140280660 \u2014 ExtraDataList::OnFrameTickWithParity"
+ },
+ "13574800": {
+  "old": "0xcf2290",
+  "new": "0xcf27b0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 54,
+  "new_size": 54,
+  "uses": [
+   "offsets.h:2490"
+  ],
+  "context": "constexpr std::uintptr_t PUPPET_AIPROC_POST_EXTRA_RVA    = 0x00CF2290; // sub_140CF2290 \u2014 AIProcess::OnTickPostExtra"
+ },
+ "13000528": {
+  "old": "0xc65f50",
+  "new": "0xc66470",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 342,
+  "new_size": 342,
+  "uses": [
+   "offsets.h:2491"
+  ],
+  "context": "constexpr std::uintptr_t PUPPET_STATIC_BLOCK_CHECK_RVA   = 0x00C65F50; // sub_140C65F50 \u2014 Actor::OnFrameStaticBlockCheck (water/cell)"
+ },
+ "14451056": {
+  "old": "0xdc8170",
+  "new": "0xdc86a0",
+  "section": ".text",
+  "method": "leaf:calls 32/32",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:2494"
+  ],
+  "context": "constexpr std::uintptr_t PUPPET_GRAPHMGR_IS_LOADING_RVA  = 0x00DC8170; // sub_140DC8170 \u2014 BSAnimGraphMgr::IsLoading predicate"
+ },
+ "23435184": {
+  "old": "0x16597b0",
+  "new": "0x1659bd0",
+  "section": ".text",
+  "method": "leaf:calls 14568/14568",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:2496"
+  ],
+  "context": "constexpr std::uintptr_t PUPPET_STACK_LOCAL_CTOR_A_RVA   = 0x016597B0; // sub_1416597B0 \u2014 stack-local init (BSTArray / NiPointer ctor)"
+ },
+ "23434352": {
+  "old": "0x1659470",
+  "new": "0x1659890",
+  "section": ".text",
+  "method": "leaf:calls 23908/23908",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:2497"
+  ],
+  "context": "constexpr std::uintptr_t PUPPET_STACK_LOCAL_CTOR_B_RVA   = 0x01659470; // sub_141659470 \u2014 second stack-local init"
+ },
+ "2739216": {
+  "old": "0x29cc10",
+  "new": "0x29cf30",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 34,
+  "new_size": 34,
+  "uses": [
+   "offsets.h:2498"
+  ],
+  "context": "constexpr std::uintptr_t PUPPET_STACK_LOCAL_DTOR_RVA     = 0x0029CC10; // sub_14029CC10 \u2014 stack-local dtor (pairs to ctor_a/b)"
+ },
+ "14677680": {
+  "old": "0xdff6b0",
+  "new": "0xdffbe0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 369,
+  "new_size": 369,
+  "uses": [
+   "offsets.h:2539"
+  ],
+  "context": "constexpr std::uintptr_t WEAPON_FIRE_HANDLER_RVA = 0x00DFF6B0;"
+ },
+ "13436912": {
+  "old": "0xcd07f0",
+  "new": "0xcd0d10",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 240,
+  "new_size": 240,
+  "uses": [
+   "offsets.h:2542"
+  ],
+  "context": "constexpr std::uintptr_t ACTOR_RESOLVE_WEAPON_FOR_SLOT_RVA = 0x00CD07F0;"
+ },
+ "49106496": {
+  "old": "0x2ed4e40",
+  "new": "0x2edfe40",
+  "section": ".data",
+  "method": "data:refs 188/188",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:2543"
+  ],
+  "context": "constexpr std::uintptr_t EQUIP_DEFAULT_SLOT_DWORD_RVA       = 0x02ED4E40;"
+ },
+ "14450864": {
+  "old": "0xdc80b0",
+  "new": "0xdc85e0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 150,
+  "new_size": 150,
+  "uses": [
+   "offsets.h:2573"
+  ],
+  "context": "constexpr std::uintptr_t MOVCTRL_SET_DISABLED_RVA = 0x00DC80B0;"
+ },
+ "12961840": {
+  "old": "0xc5c830",
+  "new": "0xc5cd50",
+  "section": ".text",
+  "method": "leaf:calls 431/431",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:2602",
+   "offsets.h:3324"
+  ],
+  "context": "constexpr std::uintptr_t ACTOR_GET_CHARCTRL_RVA = 0x00C5C830;  // sub_140C5C830"
+ },
+ "25773680": {
+  "old": "0x1894670",
+  "new": "0x1894c50",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 91,
+  "new_size": 91,
+  "uses": [
+   "offsets.h:2603"
+  ],
+  "context": "constexpr std::uintptr_t CHARCTRL_SETPOS_RVA    = 0x01894670;  // sub_141894670"
+ },
+ "40545648": {
+  "old": "0x26aad70",
+  "new": "0x26b2e90",
+  "section": ".rdata",
+  "method": "data:refs 8/8",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:2621"
+  ],
+  "context": "constexpr std::uintptr_t CHARPROXY_VTBL_RVA     = 0x026AAD70;  // bhkCharProxyController (interface vtbl at *cc)"
+ },
+ "40547528": {
+  "old": "0x26ab4c8",
+  "new": "0x26b35e8",
+  "section": ".rdata",
+  "method": "data:refs 12/12",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:2622"
+  ],
+  "context": "constexpr std::uintptr_t CHARRB_VTBL_RVA        = 0x026AB4C8;  // bhkCharRigidBodyController primary vtbl"
+ },
+ "13968208": {
+  "old": "0xd52350",
+  "new": "0xd52870",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 5383,
+  "new_size": 5383,
+  "uses": [
+   "offsets.h:2675"
+  ],
+  "context": "constexpr std::uintptr_t PLAYER_CTOR_RVA          = 0x00D52350; // sub_140D52350"
+ },
+ "52309328": {
+  "old": "0x31e2d50",
+  "new": "0x31ede50",
+  "section": ".data",
+  "method": "data:refs 3108/3108",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:2684"
+  ],
+  "context": "constexpr std::uintptr_t PLAYER_ALT_SINGLETON_RVA = 0x031E2D50; // MEMORY[0x1431E2D50]"
+ },
+ "51232632": {
+  "old": "0x30dbf78",
+  "new": "0x30e7078",
+  "section": ".data",
+  "method": "data:refs 7/7",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:2691"
+  ],
+  "context": "constexpr std::uintptr_t PROCMGR_BAG_RVA          = 0x030DBF78; // qword_1430DBF78"
+ },
+ "14350032": {
+  "old": "0xdaf6d0",
+  "new": "0xdafc00",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 6,
+  "new_size": 6,
+  "uses": [
+   "offsets.h:2699"
+  ],
+  "context": "constexpr std::uintptr_t PROCESSLISTS_ADD_ACTOR_RVA = 0x00DAF6D0;"
+ },
+ "5337120": {
+  "old": "0x517020",
+  "new": "0x517350",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 333,
+  "new_size": 333,
+  "uses": [
+   "offsets.h:2737"
+  ],
+  "context": "constexpr std::uintptr_t REFR_SETPARENTCELL_RVA    = 0x00517020; // sub_140517020"
+ },
+ "2279600": {
+  "old": "0x22c8b0",
+  "new": "0x22cbd0",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 397,
+  "new_size": 397,
+  "uses": [
+   "offsets.h:2756"
+  ],
+  "context": "constexpr std::uintptr_t HANDLE_GET_OR_ALLOC_RVA   = 0x0022C8B0; // sub_14022C8B0"
+ },
+ "15277424": {
+  "old": "0xe91d70",
+  "new": "0xe922a0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 170,
+  "new_size": 170,
+  "uses": [
+   "offsets.h:2802",
+   "offsets.h:3053"
+  ],
+  "context": "constexpr std::uintptr_t ADD_COMBAT_TARGET_RVA          = 0x00E91D70; // sub_140E91D70"
+ },
+ "15636352": {
+  "old": "0xee9780",
+  "new": "0xee9cb0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 120,
+  "new_size": 120,
+  "uses": [
+   "offsets.h:2803"
+  ],
+  "context": "constexpr std::uintptr_t FIXED_SELECTOR_CTOR_RVA        = 0x00EE9780; // sub_140EE9780"
+ },
+ "39193776": {
+  "old": "0x2560cb0",
+  "new": "0x2568db0",
+  "section": ".rdata",
+  "method": "data:refs 12/12",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:2981"
+  ],
+  "context": "constexpr std::uintptr_t ACTOR_IAGMH_VTABLE_RVA           = 0x02560CB0;"
+ },
+ "15304736": {
+  "old": "0xe98820",
+  "new": "0xe98d50",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 118,
+  "new_size": 118,
+  "uses": [
+   "offsets.h:3036"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_FIND_ENTRY_RVA   = 0x00E98820;"
+ },
+ "15304864": {
+  "old": "0xe988a0",
+  "new": "0xe98dd0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 526,
+  "new_size": 526,
+  "uses": [
+   "offsets.h:3042"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_HOUSEKEEPING_RVA = 0x00E988A0;"
+ },
+ "15276224": {
+  "old": "0xe918c0",
+  "new": "0xe91df0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 17,
+  "new_size": 17,
+  "uses": [
+   "offsets.h:3048"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_PROCESS_TICK_RVA = 0x00E918C0;"
+ },
+ "15303808": {
+  "old": "0xe98480",
+  "new": "0xe989b0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 30,
+  "new_size": 30,
+  "uses": [
+   "offsets.h:3071",
+   "offsets.h:3214"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_TIER1_E98480_RVA = 0x00E98480;"
+ },
+ "15301936": {
+  "old": "0xe97d30",
+  "new": "0xe98260",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 36,
+  "new_size": 36,
+  "uses": [
+   "offsets.h:3074",
+   "offsets.h:3179"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_TIER1_E97D30_RVA = 0x00E97D30;"
+ },
+ "15324944": {
+  "old": "0xe9d710",
+  "new": "0xe9dc40",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 947,
+  "new_size": 947,
+  "uses": [
+   "offsets.h:3077"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_TIER1_E9D710_RVA = 0x00E9D710;"
+ },
+ "12610240": {
+  "old": "0xc06ac0",
+  "new": "0xc06fe0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 20,
+  "new_size": 20,
+  "uses": [
+   "offsets.h:3086"
+  ],
+  "context": "constexpr std::uintptr_t FORM_TABLE_REHYDRATOR_RVA   = 0x00C06AC0;"
+ },
+ "13110640": {
+  "old": "0xc80d70",
+  "new": "0xc81290",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 18,
+  "new_size": 18,
+  "uses": [
+   "offsets.h:3094"
+  ],
+  "context": "constexpr std::uintptr_t DEATH_BROADCAST_WALKER_RVA  = 0x00C80D70;"
+ },
+ "14297248": {
+  "old": "0xda28a0",
+  "new": "0xda2dd0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 83,
+  "new_size": 83,
+  "uses": [
+   "offsets.h:3099"
+  ],
+  "context": "constexpr std::uintptr_t LOS_SIGHT_CONE_WALKER_RVA   = 0x00DA28A0;"
+ },
+ "12407552": {
+  "old": "0xbd5300",
+  "new": null,
+  "section": ".text",
+  "method": "code, no function and no matched caller",
+  "confidence": 0.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3105"
+  ],
+  "context": "constexpr std::uintptr_t ANIMS_AND_EFFECTS_THUNK_RVA = 0x00BD5300;  // \u2192 sub_141695CF0"
+ },
+ "12408608": {
+  "old": "0xbd5720",
+  "new": "0xbd5c40",
+  "section": ".text",
+  "method": "sig:24B near delta",
+  "confidence": 0.9,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3106"
+  ],
+  "context": "constexpr std::uintptr_t FOOT_IK_THUNK_RVA           = 0x00BD5720;  // \u2192 sub_140DB39A0"
+ },
+ "12411552": {
+  "old": "0xbd62a0",
+  "new": "0xbd67c0",
+  "section": ".text",
+  "method": "sig:24B near delta",
+  "confidence": 0.9,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3107"
+  ],
+  "context": "constexpr std::uintptr_t CELL_ATTACH_JOBS_THUNK_RVA  = 0x00BD62A0;  // CellAttachJobs"
+ },
+ "35372320": {
+  "old": "0x21bbd20",
+  "new": "0x21c3830",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 119,
+  "new_size": 119,
+  "uses": [
+   "offsets.h:3110"
+  ],
+  "context": "constexpr std::uintptr_t PER_ACTOR_RENDER_RVA        = 0x021BBD20;"
+ },
+ "23682288": {
+  "old": "0x1695cf0",
+  "new": "0x1696130",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 36,
+  "new_size": 36,
+  "uses": [
+   "offsets.h:3115"
+  ],
+  "context": "constexpr std::uintptr_t ANIM_GRAPH_FLUSH_RVA        = 0x01695CF0;"
+ },
+ "15278688": {
+  "old": "0xe92260",
+  "new": "0xe92790",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 95,
+  "new_size": 95,
+  "uses": [
+   "offsets.h:3153"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_REMOVE_BY_FID_RVA = 0x00E92260;  // sub_140E92260"
+ },
+ "15279264": {
+  "old": "0xe924a0",
+  "new": "0xe929d0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 1171,
+  "new_size": 1171,
+  "uses": [
+   "offsets.h:3154"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_GROUP_GATE_RVA    = 0x00E924A0;  // sub_140E924A0"
+ },
+ "15295632": {
+  "old": "0xe96490",
+  "new": "0xe969c0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 278,
+  "new_size": 278,
+  "uses": [
+   "offsets.h:3175"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_FIND_IN_RANGE_RVA    = 0x00E96490;  // sub_140E96490"
+ },
+ "15281744": {
+  "old": "0xe92e50",
+  "new": "0xe93380",
+  "section": ".text",
+  "method": "func:gap",
+  "confidence": 0.8,
+  "identical_code": true,
+  "old_size": 7,
+  "new_size": 7,
+  "uses": [
+   "offsets.h:3176"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_KNOWN_BY_ACTOR_RVA   = 0x00E92E50;  // sub_140E92E50"
+ },
+ "15280576": {
+  "old": "0xe929c0",
+  "new": "0xe92ef0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 452,
+  "new_size": 452,
+  "uses": [
+   "offsets.h:3177"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_ENSURE_KNOWN_RVA     = 0x00E929C0;  // sub_140E929C0"
+ },
+ "15281040": {
+  "old": "0xe92b90",
+  "new": "0xe930c0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 66,
+  "new_size": 66,
+  "uses": [
+   "offsets.h:3178"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_UPDATE_POS_RVA       = 0x00E92B90;  // sub_140E92B90"
+ },
+ "15163184": {
+  "old": "0xe75f30",
+  "new": "0xe76460",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 116,
+  "new_size": 116,
+  "uses": [
+   "offsets.h:3198"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_HASHMAP_MERGE_RVA    = 0x00E75F30;  // sub_140E75F30"
+ },
+ "15304384": {
+  "old": "0xe986c0",
+  "new": "0xe98bf0",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 17,
+  "new_size": 17,
+  "uses": [
+   "offsets.h:3208"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_FIND_BY_ACTOR_RVA    = 0x00E986C0;  // sub_140E986C0"
+ },
+ "15304544": {
+  "old": "0xe98760",
+  "new": "0xe98c90",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 118,
+  "new_size": 118,
+  "uses": [
+   "offsets.h:3209"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_FIND_BY_FID_RVA      = 0x00E98760;  // sub_140E98760"
+ },
+ "15330368": {
+  "old": "0xe9ec40",
+  "new": "0xe9f170",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 44,
+  "new_size": 44,
+  "uses": [
+   "offsets.h:3210"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_AGGRO_FRESHNESS_RVA  = 0x00E9EC40;  // sub_140E9EC40"
+ },
+ "15329392": {
+  "old": "0xe9e870",
+  "new": "0xe9eda0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 39,
+  "new_size": 39,
+  "uses": [
+   "offsets.h:3211"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_ALLY_VALIDITY1_RVA   = 0x00E9E870;  // sub_140E9E870"
+ },
+ "15329856": {
+  "old": "0xe9ea40",
+  "new": "0xe9ef70",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 34,
+  "new_size": 34,
+  "uses": [
+   "offsets.h:3212"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_ALLY_VALIDITY2_RVA   = 0x00E9EA40;  // sub_140E9EA40"
+ },
+ "15329120": {
+  "old": "0xe9e760",
+  "new": "0xe9ec90",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 26,
+  "new_size": 26,
+  "uses": [
+   "offsets.h:3213"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_COUNT_ENTRIES_RVA    = 0x00E9E760;  // sub_140E9E760"
+ },
+ "15281408": {
+  "old": "0xe92d00",
+  "new": "0xe93230",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 80,
+  "new_size": 80,
+  "uses": [
+   "offsets.h:3221"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_REMOVE_ALLY_BY_KEY_RVA = 0x00E92D00;  // sub_140E92D00"
+ },
+ "15327424": {
+  "old": "0xe9e0c0",
+  "new": "0xe9e5f0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 263,
+  "new_size": 263,
+  "uses": [
+   "offsets.h:3222"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_REMOVE_ALLY_BY_IDX_RVA = 0x00E9E0C0;  // sub_140E9E0C0"
+ },
+ "15541392": {
+  "old": "0xed2490",
+  "new": "0xed29c0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 236,
+  "new_size": 236,
+  "uses": [
+   "offsets.h:3237"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_GROUP_RECONCILE_RVA   = 0x00ED2490;  // sub_140ED2490"
+ },
+ "15292896": {
+  "old": "0xe959e0",
+  "new": "0xe95f10",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 665,
+  "new_size": 665,
+  "uses": [
+   "offsets.h:3244"
+  ],
+  "context": "constexpr std::uintptr_t COMBATCTRL_UPDATE_TARGET_REC_RVA = 0x00E959E0;  // sub_140E959E0"
+ },
+ "12575936": {
+  "old": "0xbfe4c0",
+  "new": "0xbfe9e0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 65,
+  "new_size": 65,
+  "uses": [
+   "offsets.h:3251"
+  ],
+  "context": "constexpr std::uintptr_t SAVELOAD_QUEUE_RVA       = 0x00BFE4C0;  // sub_140BFE4C0(mgr, flag): OR into mgr+0x40"
+ },
+ "12576800": {
+  "old": "0xbfe820",
+  "new": "0xbfed40",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 109,
+  "new_size": 109,
+  "uses": [
+   "offsets.h:3252"
+  ],
+  "context": "constexpr std::uintptr_t SAVELOAD_PROCESS_RVA     = 0x00BFE820;  // sub_140BFE820(mgr): once per frame from Main::Update (0x140C3394E)"
+ },
+ "12553744": {
+  "old": "0xbf8e10",
+  "new": "0xbf9330",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 50,
+  "new_size": 50,
+  "uses": [
+   "offsets.h:3253"
+  ],
+  "context": "constexpr std::uintptr_t SAVE_NAMED_RVA           = 0x00BF8E10;  // sub_140BF8E10(mgr, name, -1, 0, zlib): every save path"
+ },
+ "12554256": {
+  "old": "0xbf9010",
+  "new": "0xbf9530",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 862,
+  "new_size": 862,
+  "uses": [
+   "offsets.h:3254"
+  ],
+  "context": "constexpr std::uintptr_t SAVE_CORE_RVA            = 0x00BF9010;  // sub_140BF9010: freezes VM + job list, writes, stores mgr+0x60"
+ },
+ "12590720": {
+  "old": "0xc01e80",
+  "new": "0xc023a0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 54,
+  "new_size": 54,
+  "uses": [
+   "offsets.h:3255"
+  ],
+  "context": "constexpr std::uintptr_t LOAD_JOB_RVA             = 0x00C01E80;  // sub_140C01E80(job) on the loader thread -> sub_140BF9460"
+ },
+ "12571584": {
+  "old": "0xbfd3c0",
+  "new": "0xbfd8e0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 47,
+  "new_size": 47,
+  "uses": [
+   "offsets.h:3256"
+  ],
+  "context": "constexpr std::uintptr_t DEATH_RELOAD_RVA         = 0x00BFD3C0;  // sub_140BFD3C0(mgr): LoadGame(mgr+0x60) after fPlayerDeathReloadTime"
+ },
+ "12592384": {
+  "old": "0xc02500",
+  "new": "0xc02a20",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 36,
+  "new_size": 36,
+  "uses": [
+   "offsets.h:3257"
+  ],
+  "context": "constexpr std::uintptr_t SAVELOAD_EVENT_POST_RVA  = 0x00C02500;  // sub_140C02500(&{i32 type, u8}): SaveLoadMessageTypeEvent"
+ },
+ "12575680": {
+  "old": "0xbfe3c0",
+  "new": "0xbfe8e0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 240,
+  "new_size": 240,
+  "uses": [
+   "offsets.h:3258"
+  ],
+  "context": "constexpr std::uintptr_t SAVELOAD_RENDER_CAPTURE_RVA = 0x00BFE3C0; // sub_140BFE3C0(mgr): the header screenshot, called by the console before a save"
+ },
+ "12562048": {
+  "old": "0xbfae80",
+  "new": "0xbfb3a0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 297,
+  "new_size": 297,
+  "uses": [
+   "offsets.h:3259"
+  ],
+  "context": "constexpr std::uintptr_t SAVE_GATE_RVA            = 0x00BFAE80;  // bool sub_140BFAE80(mgr): the engine's own \"can save now\""
+ },
+ "11348896": {
+  "old": "0xad2ba0",
+  "new": "0xad27b0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 51,
+  "new_size": 51,
+  "uses": [
+   "offsets.h:3268"
+  ],
+  "context": "constexpr std::uintptr_t PAUSE_MENU_PROCESS_MESSAGE_RVA = 0x00AD2BA0;"
+ },
+ "12616320": {
+  "old": "0xc08280",
+  "new": "0xc087a0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 139,
+  "new_size": 139,
+  "uses": [
+   "offsets.h:3279"
+  ],
+  "context": "constexpr std::uintptr_t PAUSE_MENU_BACK_OUT_FROM_LOAD_RVA = 0x00C08280;"
+ },
+ "49441176": {
+  "old": "0x2f26998",
+  "new": "0x2f319d8",
+  "section": ".data",
+  "method": "data:refs 8/8",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3286"
+  ],
+  "context": "constexpr std::uintptr_t SETTING_DISABLE_AUTOSAVE_RVA         = 0x02F26998;  // bDisableAutoSave:SaveGame"
+ },
+ "49440936": {
+  "old": "0x2f268a8",
+  "new": "0x2f318e8",
+  "section": ".data",
+  "method": "data:refs 4/4",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3287"
+  ],
+  "context": "constexpr std::uintptr_t SETTING_ALLOW_SCRIPTED_AUTOSAVE_RVA  = 0x02F268A8;  // bAllowScriptedAutosave:SaveGame"
+ },
+ "49440960": {
+  "old": "0x2f268c0",
+  "new": "0x2f31900",
+  "section": ".data",
+  "method": "data:refs 4/4",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3288"
+  ],
+  "context": "constexpr std::uintptr_t SETTING_ALLOW_SCRIPTED_FORCESAVE_RVA = 0x02F268C0;  // bAllowScriptedForceSave:SaveGame"
+ },
+ "49426056": {
+  "old": "0x2f22e88",
+  "new": "0x2f2dec8",
+  "section": ".data",
+  "method": "data:refs 31/31",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3289"
+  ],
+  "context": "constexpr std::uintptr_t SETTING_SAVE_ON_REST_RVA             = 0x02F22E88;  // bSaveOnRest"
+ },
+ "49426080": {
+  "old": "0x2f22ea0",
+  "new": "0x2f2dee0",
+  "section": ".data",
+  "method": "data:refs 31/31",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3290"
+  ],
+  "context": "constexpr std::uintptr_t SETTING_SAVE_ON_WAIT_RVA             = 0x02F22EA0;  // bSaveOnWait"
+ },
+ "49426104": {
+  "old": "0x2f22eb8",
+  "new": "0x2f2def8",
+  "section": ".data",
+  "method": "data:refs 11/11",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3291"
+  ],
+  "context": "constexpr std::uintptr_t SETTING_SAVE_ON_TRAVEL_RVA           = 0x02F22EB8;  // bSaveOnTravel"
+ },
+ "49426128": {
+  "old": "0x2f22ed0",
+  "new": "0x2f2df10",
+  "section": ".data",
+  "method": "data:refs 11/11",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3292"
+  ],
+  "context": "constexpr std::uintptr_t SETTING_SAVE_ON_PAUSE_RVA            = 0x02F22ED0;  // bSaveOnPause"
+ },
+ "49423880": {
+  "old": "0x2f22608",
+  "new": "0x2f2d648",
+  "section": ".data",
+  "method": "data:refs 24/24",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3293"
+  ],
+  "context": "constexpr std::uintptr_t SETTING_SAVE_ON_QUIT_TO_MENU_RVA     = 0x02F22608;  // bSaveGameOnQuitToMainMenu:General"
+ },
+ "49428632": {
+  "old": "0x2f23898",
+  "new": "0x2f2e8d8",
+  "section": ".data",
+  "method": "data:refs 4/4",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3294"
+  ],
+  "context": "constexpr std::uintptr_t SETTING_WORKSHOP_AUTOSAVE_EXIT_RVA   = 0x02F23898;  // bWorkshopAutoSaveOnExit:Workshop"
+ },
+ "49296304": {
+  "old": "0x2f033b0",
+  "new": "0x2f0e400",
+  "section": ".data",
+  "method": "data:refs 4/4",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3295"
+  ],
+  "context": "constexpr std::uintptr_t SETTING_PLAYER_DEATH_RELOAD_TIME_RVA = 0x02F033B0;  // fPlayerDeathReloadTime (float, 5.0)"
+ },
+ "51310288": {
+  "old": "0x30eeed0",
+  "new": "0x30f9fd0",
+  "section": ".data",
+  "method": "data:refs 790/790",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3306"
+  ],
+  "context": "constexpr std::uintptr_t VATS_SINGLETON_RVA     = 0x030EEED0;   // qword_1430DBF78[9707]"
+ },
+ "15046016": {
+  "old": "0xe59580",
+  "new": "0xe59ab0",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 8,
+  "new_size": 8,
+  "uses": [
+   "offsets.h:3308"
+  ],
+  "context": "constexpr std::uintptr_t VATS_RESET_TARGETS_RVA = 0x00E59580;   // (vats, char, char, char)"
+ },
+ "15040032": {
+  "old": "0xe57e20",
+  "new": "0xe58350",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 12,
+  "new_size": 12,
+  "uses": [
+   "offsets.h:3309"
+  ],
+  "context": "constexpr std::uintptr_t VATS_SET_MODE_RVA      = 0x00E57E20;   // (vats, int mode)"
+ },
+ "54084384": {
+  "old": "0x3394320",
+  "new": "0x339f420",
+  "section": ".data",
+  "method": "data:refs 157/157",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3310"
+  ],
+  "context": "constexpr std::uintptr_t TIME_MULT_OBJECT_RVA   = 0x03394320;   // &qword_1430DBF78[356469]"
+ },
+ "23443136": {
+  "old": "0x165b6c0",
+  "new": "0x165bae0",
+  "section": ".text",
+  "method": "leaf:calls 56/56",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3311"
+  ],
+  "context": "constexpr std::uintptr_t TIME_MULT_SET_RVA      = 0x0165B6C0;   // (obj, float mult, char immediate)"
+ },
+ "13989024": {
+  "old": "0xd574a0",
+  "new": "0xd579c0",
+  "section": ".text",
+  "method": "leaf:calls 36/36",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3318"
+  ],
+  "context": "constexpr std::uintptr_t PLAYER_QUEUE_FAST_TRAVEL_RVA = 0x00D574A0;"
+ },
+ "51224960": {
+  "old": "0x30da180",
+  "new": "0x30e5280",
+  "section": ".data",
+  "method": "data:refs 8036/8036",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3327"
+  ],
+  "context": "constexpr std::uintptr_t NULL_HANDLE_VALUE_RVA        = 0x030DA180;"
+ },
+ "38216040": {
+  "old": "0x2472168",
+  "new": "0x247a1c8",
+  "section": ".rdata",
+  "method": "data:refs 36/36",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3343"
+  ],
+  "context": "constexpr std::uintptr_t INV_STACK_VTABLE_RVA      = 0x02472168;    // BGSInventoryItem::Stack"
+ },
+ "38175072": {
+  "old": "0x2468160",
+  "new": "0x24701c0",
+  "section": ".rdata",
+  "method": "data:refs 3/3",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3382"
+  ],
+  "context": "constexpr std::uintptr_t EXTRA_VT_HEALTH_RVA          = 0x02468160; // ExtraHealth: float +0x18 (-1 = full)"
+ },
+ "38175136": {
+  "old": "0x24681a0",
+  "new": "0x2470200",
+  "section": ".rdata",
+  "method": "data:refs 3/3",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3383"
+  ],
+  "context": "constexpr std::uintptr_t EXTRA_VT_CHARGE_RVA          = 0x024681A0; // ExtraCharge: float +0x18"
+ },
+ "38175232": {
+  "old": "0x2468200",
+  "new": "0x2470260",
+  "section": ".rdata",
+  "method": "data:refs 10/10",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3385"
+  ],
+  "context": "constexpr std::uintptr_t EXTRA_VT_FAVORITE_RVA        = 0x02468200; // ExtraFavorite: u8 +0x18 (0xFF none)"
+ },
+ "38176512": {
+  "old": "0x2468700",
+  "new": "0x2470760",
+  "section": ".rdata",
+  "method": "data:refs 18/18",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3386"
+  ],
+  "context": "constexpr std::uintptr_t EXTRA_VT_TEXT_DISPLAY_RVA    = 0x02468700; // ExtraTextDisplayData: see below"
+ },
+ "38176704": {
+  "old": "0x24687c0",
+  "new": "0x2470820",
+  "section": ".rdata",
+  "method": "data:refs 10/10",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3387"
+  ],
+  "context": "constexpr std::uintptr_t EXTRA_VT_UNIQUE_ID_RVA       = 0x024687C0; // ExtraUniqueID: u16 +0x18, u32 +0x1C"
+ },
+ "38182360": {
+  "old": "0x2469dd8",
+  "new": "0x2471e38",
+  "section": ".rdata",
+  "method": "data:refs 12/12",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3388"
+  ],
+  "context": "constexpr std::uintptr_t EXTRA_VT_ALIAS_INSTANCES_RVA = 0x02469DD8; // ExtraAliasInstanceArray"
+ },
+ "38175680": {
+  "old": "0x24683c0",
+  "new": "0x2470420",
+  "section": ".rdata",
+  "method": "data:refs 10/10",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3389"
+  ],
+  "context": "constexpr std::uintptr_t EXTRA_VT_ENCHANTMENT_RVA     = 0x024683C0; // ExtraEnchantment: u16 +0x18, form* +0x20"
+ },
+ "38175648": {
+  "old": "0x24683a0",
+  "new": "0x2470400",
+  "section": ".rdata",
+  "method": "data:refs 11/11",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3390"
+  ],
+  "context": "constexpr std::uintptr_t EXTRA_VT_POISON_RVA          = 0x024683A0;"
+ },
+ "38174944": {
+  "old": "0x24680e0",
+  "new": "0x2470140",
+  "section": ".rdata",
+  "method": "data:refs 22/22",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3391"
+  ],
+  "context": "constexpr std::uintptr_t EXTRA_VT_OWNERSHIP_RVA       = 0x024680E0;"
+ },
+ "38175040": {
+  "old": "0x2468140",
+  "new": "0x24701a0",
+  "section": ".rdata",
+  "method": "data:refs 3/3",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3392"
+  ],
+  "context": "constexpr std::uintptr_t EXTRA_VT_COUNT_RVA           = 0x02468140;"
+ },
+ "38175104": {
+  "old": "0x2468180",
+  "new": "0x24701e0",
+  "section": ".rdata",
+  "method": "data:refs 3/3",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3393"
+  ],
+  "context": "constexpr std::uintptr_t EXTRA_VT_TIME_LEFT_RVA       = 0x02468180;"
+ },
+ "38176736": {
+  "old": "0x24687e0",
+  "new": "0x2470840",
+  "section": ".rdata",
+  "method": "data:refs 10/10",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3394"
+  ],
+  "context": "constexpr std::uintptr_t EXTRA_VT_FLAGS_RVA           = 0x024687E0;"
+ },
+ "38180536": {
+  "old": "0x24696b8",
+  "new": "0x2471718",
+  "section": ".rdata",
+  "method": "data:rtti",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3395"
+  ],
+  "context": "constexpr std::uintptr_t EXTRA_VT_CANNOT_WEAR_RVA     = 0x024696B8;"
+ },
+ "38175168": {
+  "old": "0x24681c0",
+  "new": "0x2470220",
+  "section": ".rdata",
+  "method": "data:refs 10/10",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3396"
+  ],
+  "context": "constexpr std::uintptr_t EXTRA_VT_SCALE_RVA           = 0x024681C0;"
+ },
+ "2682992": {
+  "old": "0x28f070",
+  "new": "0x28f390",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 291,
+  "new_size": 291,
+  "uses": [
+   "offsets.h:3406"
+  ],
+  "context": "constexpr std::uintptr_t XLIST_IS_QUEST_ITEM_RVA      = 0x0028F070; // bool sub_14028F070(list*): follows 0x1C, tests 0x88"
+ },
+ "2620832": {
+  "old": "0x27fda0",
+  "new": "0x2800c0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 39,
+  "new_size": 39,
+  "uses": [
+   "offsets.h:3407"
+  ],
+  "context": "constexpr std::uintptr_t XLIST_GET_HEALTH_RVA         = 0x0027FDA0; // float sub_14027FDA0(list*): 0x25 or -1"
+ },
+ "23579136": {
+  "old": "0x167ca00",
+  "new": "0x167ce20",
+  "section": ".text",
+  "method": "leaf:calls 924/924",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3408"
+  ],
+  "context": "constexpr std::uintptr_t BSFIXEDSTRING_CSTR_RVA       = 0x0167CA00; // const char* sub_14167CA00(BSFixedString* field)"
+ },
+ "5253440": {
+  "old": "0x502940",
+  "new": "0x502c70",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 50,
+  "new_size": 50,
+  "uses": [
+   "offsets.h:3426"
+  ],
+  "context": "constexpr std::uintptr_t INV_ADD_CORE_RVA             = 0x00502940;"
+ },
+ "5245040": {
+  "old": "0x500870",
+  "new": "0x500ba0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 147,
+  "new_size": 147,
+  "uses": [
+   "offsets.h:3427"
+  ],
+  "context": "constexpr std::uintptr_t INV_REMOVE_CORE_RVA          = 0x00500870;"
+ },
+ "5248768": {
+  "old": "0x501700",
+  "new": "0x501a30",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 777,
+  "new_size": 777,
+  "uses": [
+   "offsets.h:3438"
+  ],
+  "context": "constexpr std::uintptr_t INV_DROP_WORKER_RVA          = 0x00501700;"
+ },
+ "5434128": {
+  "old": "0x52eb10",
+  "new": "0x52ee40",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 55,
+  "new_size": 55,
+  "uses": [
+   "offsets.h:3459"
+  ],
+  "context": "constexpr std::uintptr_t UNIQUE_ID_CHANGE_EVENT_RVA = 0x0052EB10;"
+ },
+ "1966208": {
+  "old": "0x1e0080",
+  "new": "0x1e03a0",
+  "section": ".text",
+  "method": "func:lea",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 72,
+  "new_size": 72,
+  "uses": [
+   "offsets.h:3497"
+  ],
+  "context": "constexpr std::uintptr_t EXTRA_FREE_RVA           = 0x001E0080;"
+ },
+ "2566000": {
+  "old": "0x272770",
+  "new": "0x272a90",
+  "section": ".text",
+  "method": "leaf:calls 576/576",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3499"
+  ],
+  "context": "constexpr std::uintptr_t EXTRALIST_DTOR_RVA       = 0x00272770;"
+ },
+ "2616208": {
+  "old": "0x27eb90",
+  "new": "0x27eeb0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 36,
+  "new_size": 36,
+  "uses": [
+   "offsets.h:3517"
+  ],
+  "context": "constexpr std::uintptr_t XLIST_CREATE_INSTANCE_DATA_RVA = 0x0027EB90;"
+ },
+ "14113472": {
+  "old": "0xd75ac0",
+  "new": "0xd75ff0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 39,
+  "new_size": 39,
+  "uses": [
+   "offsets.h:3553"
+  ],
+  "context": "constexpr std::uintptr_t PLAYER_SET_PERK_POINTS_RVA = 0x00D75AC0; // (player, u8)"
+ },
+ "12988096": {
+  "old": "0xc62ec0",
+  "new": "0xc633e0",
+  "section": ".text",
+  "method": "leaf:calls 263/263",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3554"
+  ],
+  "context": "constexpr std::uintptr_t ACTOR_GET_LEVEL_RVA      = 0x00C62EC0; // u16 (actor)"
+ },
+ "13179632": {
+  "old": "0xc91af0",
+  "new": "0xc92010",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 240,
+  "new_size": 240,
+  "uses": [
+   "offsets.h:3555"
+  ],
+  "context": "constexpr std::uintptr_t ACTOR_ADD_PERK_RVA       = 0x00C91AF0; // (actor, perk, 0)"
+ },
+ "13180576": {
+  "old": "0xc91ea0",
+  "new": "0xc923c0",
+  "section": ".text",
+  "method": "leaf:calls 75/75",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3556"
+  ],
+  "context": "constexpr std::uintptr_t ACTOR_HAS_PERK_RVA       = 0x00C91EA0; // u8 rank (actor, perk)"
+ },
+ "2395968": {
+  "old": "0x248f40",
+  "new": "0x249260",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 803,
+  "new_size": 803,
+  "uses": [
+   "offsets.h:3583"
+  ],
+  "context": "constexpr std::uintptr_t REFR_ATTACH_MOD_RVA        = 0x00248F40;"
+ },
+ "2767760": {
+  "old": "0x2a3b90",
+  "new": "0x2a3eb0",
+  "section": ".text",
+  "method": "leaf:calls 4/4",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3588"
+  ],
+  "context": "constexpr std::uintptr_t EXTRACOUNT_CTOR_RVA        = 0x002A3B90;"
+ },
+ "55962408": {
+  "old": "0x355eb28",
+  "new": "0x356f028",
+  "section": ".data",
+  "method": "data:refs 744/744",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3624"
+  ],
+  "context": "constexpr std::uintptr_t LOADER_SINGLETON_RVA            = 0x0355EB28; // qword_14355EB28"
+ },
+ "24834800": {
+  "old": "0x17af2f0",
+  "new": "0x17af820",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 183,
+  "new_size": 183,
+  "uses": [
+   "offsets.h:3625"
+  ],
+  "context": "constexpr std::uintptr_t LOADER_FLUSH_RVA                = 0x017AF2F0; // sub_1417AF2F0(loader, priority)"
+ },
+ "24834048": {
+  "old": "0x17af000",
+  "new": "0x17af530",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 82,
+  "new_size": 82,
+  "uses": [
+   "offsets.h:3626"
+  ],
+  "context": "constexpr std::uintptr_t LOADER_POST_PROCESS_RVA         = 0x017AF000; // sub_1417AF000(loader): one slice of post-processing under the try-lock, 1 when busy"
+ },
+ "55962432": {
+  "old": "0x355eb40",
+  "new": "0x356f040",
+  "section": ".data",
+  "method": "data:refs 8/8",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "offsets.h:3627"
+  ],
+  "context": "constexpr std::uintptr_t LOADER_POST_PROCESS_LOCK_RVA    = 0x0355EB40; // unk_14355EB40: the try-lock word (InterlockedCompareExchange 0 -> 1)"
+ },
+ "4732768": {
+  "old": "0x483760",
+  "new": "0x483a90",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 53,
+  "new_size": 53,
+  "uses": [
+   "offsets.h:3628"
+  ],
+  "context": "constexpr std::uintptr_t COMBINED_GEOMETRY_TASK_RUN_RVA  = 0x00483760; // sub_140483760(task): LoadTask slot 11"
+ },
+ "16934320": {
+  "old": "0x10265b0",
+  "new": "0x1026ae0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 134,
+  "new_size": 134,
+  "uses": [
+   "persist/death.cpp:38"
+  ],
+  "context": "constexpr std::uintptr_t kKillCamRestoreRva  = 0x010265B0;   // sub_1410265B0(PlayerCamera*)"
+ },
+ "597956": {
+  "old": "0x91fc4",
+  "new": "0x91fc4",
+  "section": ".text",
+  "method": "mid:gap",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 101,
+  "new_size": 101,
+  "uses": [
+   "persist/instance_fp.cpp:123"
+  ],
+  "context": "const std::uint32_t mods[6] = {0x91FC4, 0x231AB, 0x100E27, 0x91FC2, 0x148409, 0x4F21D};"
+ },
+ "143787": {
+  "old": "0x231ab",
+  "new": "0x231ab",
+  "section": ".text",
+  "method": "mid:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 331,
+  "new_size": 331,
+  "uses": [
+   "persist/instance_fp.cpp:123"
+  ],
+  "context": "const std::uint32_t mods[6] = {0x91FC4, 0x231AB, 0x100E27, 0x91FC2, 0x148409, 0x4F21D};"
+ },
+ "1052199": {
+  "old": "0x100e27",
+  "new": "0x100e27",
+  "section": ".text",
+  "method": "mid:gap",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 91,
+  "new_size": 91,
+  "uses": [
+   "persist/instance_fp.cpp:123"
+  ],
+  "context": "const std::uint32_t mods[6] = {0x91FC4, 0x231AB, 0x100E27, 0x91FC2, 0x148409, 0x4F21D};"
+ },
+ "597954": {
+  "old": "0x91fc2",
+  "new": "0x91fc2",
+  "section": ".text",
+  "method": "mid:gap",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 101,
+  "new_size": 101,
+  "uses": [
+   "persist/instance_fp.cpp:123"
+  ],
+  "context": "const std::uint32_t mods[6] = {0x91FC4, 0x231AB, 0x100E27, 0x91FC2, 0x148409, 0x4F21D};"
+ },
+ "1344521": {
+  "old": "0x148409",
+  "new": null,
+  "section": ".text",
+  "method": "code, no function and no matched caller",
+  "confidence": 0.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "persist/instance_fp.cpp:123"
+  ],
+  "context": "const std::uint32_t mods[6] = {0x91FC4, 0x231AB, 0x100E27, 0x91FC2, 0x148409, 0x4F21D};"
+ },
+ "324125": {
+  "old": "0x4f21d",
+  "new": "0x4f21d",
+  "section": ".text",
+  "method": "mid:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 356,
+  "new_size": 356,
+  "uses": [
+   "persist/instance_fp.cpp:123"
+  ],
+  "context": "const std::uint32_t mods[6] = {0x91FC4, 0x231AB, 0x100E27, 0x91FC2, 0x148409, 0x4F21D};"
+ },
+ "5244848": {
+  "old": "0x5007b0",
+  "new": "0x500ae0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 180,
+  "new_size": 180,
+  "uses": [
+   "persist/inventory_tap.cpp:269",
+   "persist/inventory_tap.cpp:269"
+  ],
+  "context": "{0x5007B0, 0x5007B0 + 0xB4,  \"add: Actor::AddObjectToContainer (transfer/pickup via vt[0x7A])\"},"
+ },
+ "5384960": {
+  "old": "0x522b00",
+  "new": "0x522e30",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 58,
+  "new_size": 58,
+  "uses": [
+   "persist/inventory_tap.cpp:271",
+   "persist/inventory_tap.cpp:271"
+  ],
+  "context": "{0x522B00, 0x522B00 + 0x33A, \"add: Papyrus AddItem worker\"},"
+ },
+ "5280336": {
+  "old": "0x509250",
+  "new": "0x509580",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 776,
+  "new_size": 776,
+  "uses": [
+   "persist/inventory_tap.cpp:272",
+   "persist/inventory_tap.cpp:272"
+  ],
+  "context": "{0x509250, 0x509250 + 0x308, \"add: REFR::AddObjectToContainer\"},"
+ },
+ "9994368": {
+  "old": "0x988080",
+  "new": "0x9883d0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 78,
+  "new_size": 78,
+  "uses": [
+   "persist/inventory_tap.cpp:273",
+   "persist/inventory_tap.cpp:273"
+  ],
+  "context": "{0x988080, 0x988080 + 0x2A8, \"add: workbench (mod/craft)\"},"
+ },
+ "10846144": {
+  "old": "0xa57fc0",
+  "new": "0xa58310",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 59,
+  "new_size": 59,
+  "uses": [
+   "persist/inventory_tap.cpp:275",
+   "persist/inventory_tap.cpp:275"
+  ],
+  "context": "{0xA57FC0, 0xA57FC0 + 0x237, \"add: cooking/crafting result\"},"
+ },
+ "10874656": {
+  "old": "0xa5ef20",
+  "new": "0xa5f270",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 707,
+  "new_size": 707,
+  "uses": [
+   "persist/inventory_tap.cpp:276",
+   "persist/inventory_tap.cpp:276"
+  ],
+  "context": "{0xA5EF20, 0xA5EF20 + 0x2C3, \"add: workshop scrap\"},"
+ },
+ "13290368": {
+  "old": "0xcacb80",
+  "new": "0xcad0a0",
+  "section": ".text",
+  "method": "func:callgraph",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": 1340,
+  "new_size": 1340,
+  "uses": [
+   "persist/inventory_tap.cpp:277",
+   "persist/inventory_tap.cpp:277"
+  ],
+  "context": "{0xCACB80, 0xCACB80 + 0xDFE, \"add: actor equip path\"},"
+ },
+ "49442380": {
+  "old": "0x2f26e4c",
+  "new": "0x2f31e8c",
+  "section": ".data",
+  "method": "data:refs 28/28",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "render/editor_overlay.cpp:417"
+  ],
+  "context": "constexpr std::uintptr_t INPUT_DISPATCH_OK_RVA = 0x02F26E4C;"
+ },
+ "49471856": {
+  "old": "0x2f2e170",
+  "new": "0x2f391b0",
+  "section": ".data",
+  "method": "data:refs 40/40",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "render/editor_overlay.cpp:441"
+  ],
+  "context": "[[maybe_unused]] constexpr std::uintptr_t DISABLE_AUTOVANITY_RVA = 0x02F2E170;"
+ },
+ "52884568": {
+  "old": "0x326f458",
+  "new": "0x327a568",
+  "section": ".data",
+  "method": "data:refs 227/227",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "render/editor_overlay.cpp:443"
+  ],
+  "context": "constexpr std::uintptr_t MENUCURSOR_PTR_RVA = 0x0326F458;"
+ },
+ "28431792": {
+  "old": "0x1b1d5b0",
+  "new": "0x1b1db90",
+  "section": ".text",
+  "method": "leaf:calls 12/12",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "render/editor_overlay.cpp:444"
+  ],
+  "context": "constexpr std::uintptr_t CURSOR_ACQUIRE_RVA = 0x01B1D5B0;   // ++refcount"
+ },
+ "28431808": {
+  "old": "0x1b1d5c0",
+  "new": "0x1b1dba0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 52,
+  "new_size": 52,
+  "uses": [
+   "render/editor_overlay.cpp:445"
+  ],
+  "context": "constexpr std::uintptr_t CURSOR_RELEASE_RVA = 0x01B1D5C0;   // --refcount"
+ },
+ "23923872": {
+  "old": "0x16d0ca0",
+  "new": "0x16d11c0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 197,
+  "new_size": 197,
+  "uses": [
+   "render/nametags.cpp:159"
+  ],
+  "context": "constexpr std::uintptr_t NICAMERA_WINDOW_POINT_TO_RAY_RVA = 0x016D0CA0;"
+ },
+ "53288992": {
+  "old": "0x32d2020",
+  "new": "0x32dd130",
+  "section": ".data",
+  "method": "data:refs 447/447",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "render/overlay.cpp:39"
+  ],
+  "context": "constexpr std::uintptr_t MAIN_PTR_RVA          = 0x032D2020;"
+ },
+ "60879888": {
+  "old": "0x3a0f410",
+  "new": "0x3a25d10",
+  "section": ".data",
+  "method": "data:refs 8/8",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "render/present_hook.cpp:66"
+  ],
+  "context": "constexpr std::uintptr_t RENDERER_D_RVA = 0x03A0F410;"
+ },
+ "59550368": {
+  "old": "0x38caaa0",
+  "new": "0x38e13a0",
+  "section": ".data",
+  "method": "data:refs 507/507",
+  "confidence": 1.0,
+  "identical_code": false,
+  "old_size": null,
+  "new_size": null,
+  "uses": [
+   "render/present_hook.cpp:67"
+  ],
+  "context": "constexpr std::uintptr_t PTR_TO_D_RVA   = 0x038CAAA0;"
+ },
+ "35776160": {
+  "old": "0x221e6a0",
+  "new": "0x22261b0",
+  "section": ".text",
+  "method": "func:hash",
+  "confidence": 1.0,
+  "identical_code": true,
+  "old_size": 55,
+  "new_size": 55,
+  "uses": [
+   "render/vp_capture.cpp:32"
+  ],
+  "context": "constexpr std::uintptr_t CONSUMER_RVA          = 0x221E6A0;"
+ }
+}

@@ -1,3 +1,4 @@
+#include "../game_build.h"
 #include "scene_walker.h"
 #include "ni_offsets.h"
 
@@ -34,30 +35,31 @@ struct VTableName {
     std::uintptr_t rva;
     const char*    name;
 };
-constexpr VTableName kKnownVTables[] = {
-    { 0x0267C888, "NiNode"            },
-    { 0x0267D0C0, "NiAVObject"        },
-    { 0x0267DD50, "NiCamera"          },
-    { 0x02462F88, "NiRefObject"       },
-    { 0x0267E0B8, "BSGeometry"        },
-    { 0x0267E948, "BSTriShape"        },
-    { 0x0267F948, "BSDynamicTriShape" },
-    { 0x028FA3E8, "BSFadeNode"        },
-    { 0x02908F40, "ShadowSceneNode"   },
-    { 0x0255E180, "SceneGraph"        },
-    { 0x0255E188, "SceneGraph(adj+8)" },
-    { 0x0255E190, "SceneGraph(adj+10)"},
-    { 0x0255E198, "SceneGraph(adj+18)"},
-    { 0x0255DB08, "MainCullingCamera" },
-    { 0x028F9FF8, "BSLightingShaderProperty" },
-    { 0x02474400, "NiAlphaProperty"   },
+// const, not constexpr: the RVAs are per game build (FW_RVA).
+const VTableName kKnownVTables[] = {
+    { FW_RVA(0x0267C888, 0x026849B8), "NiNode"            },
+    { FW_RVA(0x0267D0C0, 0x026851F0), "NiAVObject"        },
+    { FW_RVA(0x0267DD50, 0x02685E80), "NiCamera"          },
+    { FW_RVA(0x02462F88, 0x0246AFE8), "NiRefObject"       },
+    { FW_RVA(0x0267E0B8, 0x026861E8), "BSGeometry"        },
+    { FW_RVA(0x0267E948, 0x02686A78), "BSTriShape"        },
+    { FW_RVA(0x0267F948, 0x02687A78), "BSDynamicTriShape" },
+    { FW_RVA(0x028FA3E8, 0x02903BA8), "BSFadeNode"        },
+    { FW_RVA(0x02908F40, 0x02912700), "ShadowSceneNode"   },
+    { FW_RVA(0x0255E180, 0x02566280), "SceneGraph"        },
+    { FW_RVA(0x0255E188, 0x02566288), "SceneGraph(adj+8)" },
+    { FW_RVA(0x0255E190, 0x02566290), "SceneGraph(adj+10)"},
+    { FW_RVA(0x0255E198, 0x02566298), "SceneGraph(adj+18)"},
+    { FW_RVA(0x0255DB08, 0x02565C08), "MainCullingCamera" },
+    { FW_RVA(0x028F9FF8, 0x029037B8), "BSLightingShaderProperty" },
+    { FW_RVA(0x02474400, 0x0247C460), "NiAlphaProperty"   },
     // Observed in live walk 2026-04-23 — classes TBC but harmless to label:
-    { 0x026986C0, "NiNode-derived?(0x26986C0)"  }, // 10+ occurrences w/ children
-    { 0x02696D8F, "BSLODTriShape?(0x2696D8F)"   }, // placeholder
-    { 0x02696D68, "BSLeaf/Geom?(0x2696D68)"     }, // 30+ occurrences, geometry-like
-    { 0x024D3230, "unknown(0x24D3230)"          },
-    { 0x0290E070, "unknown(0x290E070)"          },
-    { 0x026980D8, "unknown(0x26980D8)"          },
+    { FW_RVA(0x026986C0, 0x026A07E0), "NiNode-derived?(0x26986C0)"  }, // 10+ occurrences w/ children
+    { FW_RVA(0x02696D8F, 0x0269EEAF), "BSLODTriShape?(0x2696D8F)"   }, // placeholder
+    { FW_RVA(0x02696D68, 0x0269EE88), "BSLeaf/Geom?(0x2696D68)"     }, // 30+ occurrences, geometry-like
+    { FW_RVA(0x024D3230, 0x024DB2A0), "unknown(0x24D3230)"          },
+    { FW_RVA(0x0290E070, 0x02917830), "unknown(0x290E070)"          },
+    { FW_RVA(0x026980D8, 0x026A01F8), "unknown(0x26980D8)"          },
 };
 
 const char* classify_vtable(std::uintptr_t vt_rva) {
@@ -217,7 +219,7 @@ void walk_one(void* node, int depth, int max_depth, std::uintptr_t base) {
         // NiCamera. Walking the tree and vtable-matching is the only
         // reliable way we have. There should be exactly one SSN in the
         // scene — take the first one and lock it in.
-        constexpr std::uintptr_t kSSNVtRVA = 0x02908F40;
+        const std::uintptr_t kSSNVtRVA = FW_RVA(0x02908F40, 0x02912700);
         if (vt_rva == kSSNVtRVA) {
             void* expected = nullptr;
             if (g_shadow_scene_node.compare_exchange_strong(
@@ -232,10 +234,10 @@ void walk_one(void* node, int depth, int max_depth, std::uintptr_t base) {
         // we'll need for M2.3. Harmless on other classes too but we
         // only bother for the geometry-probable ones.
         const bool is_geometry_probable =
-            vt_rva == 0x0267E0B8 || // BSGeometry
-            vt_rva == 0x0267E948 || // BSTriShape
-            vt_rva == 0x0267F948 || // BSDynamicTriShape
-            vt_rva == 0x02696D68;   // observed unknown — geometry-like
+            vt_rva == FW_RVA(0x0267E0B8, 0x026861E8) || // BSGeometry
+            vt_rva == FW_RVA(0x0267E948, 0x02686A78) || // BSTriShape
+            vt_rva == FW_RVA(0x0267F948, 0x02687A78) || // BSDynamicTriShape
+            vt_rva == FW_RVA(0x02696D68, 0x0269EE88);   // observed unknown — geometry-like
         if (is_geometry_probable) {
             char hex[256];
             int w = std::snprintf(hex, sizeof(hex), "[walk]%s  +0x120..180: ", ind);

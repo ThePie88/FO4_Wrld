@@ -1,3 +1,4 @@
+#include "../game_build.h"
 // ============================================================================
 // DEAD-END / KEPT FOR MEMORY OF HOURS PASSED — M9.w4 RE phase, Apr-May 2026
 // ============================================================================
@@ -27,7 +28,7 @@ namespace fw::hooks {
 
 namespace {
 
-constexpr std::uintptr_t BSMODELPROC_RVA = 0x002FC0E0;
+const std::uintptr_t BSMODELPROC_RVA = FW_RVA(0x002FC0E0, 0x002FC410);
 
 // 4 register args + 6 stack args (we don't know the true arity, so we
 // over-capture). The fastcall ABI passes the first 4 in RCX/RDX/R8/R9

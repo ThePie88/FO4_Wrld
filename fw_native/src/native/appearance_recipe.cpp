@@ -1,3 +1,4 @@
+#include "../game_build.h"
 #include "appearance_recipe.h"
 
 #include "scene_inject.h"  // ghost_note_local_3d_reset
@@ -78,7 +79,7 @@ constexpr std::size_t TINTENT_INTENSITY  = 0x12;  // uint8, 0..100
 // So the discriminator is the entry's own vtable, the same one chargen_dump uses
 // to name these classes.
 constexpr std::size_t TINTENT_RGB        = 0x18;  // uint32, 0x00BBGGRR
-constexpr std::uintptr_t VT_PALETTE_ENTRY = 0x0247FC88;
+const std::uintptr_t VT_PALETTE_ENTRY = FW_RVA(0x0247FC88, 0x02487CE8);
 // Vanilla offers ~150 tint templates per sex; the cap is a runaway guard.
 constexpr std::uint32_t MAX_TINTS        = 256;
 
@@ -115,14 +116,14 @@ std::uint32_t form_id_of(const void* form) noexcept {
 // across several sessions without a fault — not read off a prototype. A
 // wrong arity crashed New Game on 2026-08-08, so arity is treated as a
 // safety property here.
-constexpr std::uintptr_t SET_HAIRCOLOR_RVA    = 0x00654DF0;
-constexpr std::uintptr_t ADD_HEADPART_RVA     = 0x00655010;
+const std::uintptr_t SET_HAIRCOLOR_RVA    = FW_RVA(0x00654DF0, 0x00655130);
+const std::uintptr_t ADD_HEADPART_RVA     = FW_RVA(0x00655010, 0x00655350);
 // sub_140655260(npc, part, removeExtras) — THREE arguments, per its
 // pseudo-C declaration. It rebuilds the part array excluding `part`
 // ("if (a2 != *v11)") and writes the new count back. Needed because
 // add-headpart only replaces EXCLUSIVE types: re-applying a Misc part
 // appends a duplicate, so a read/write round-trip grew 12 parts into 17.
-constexpr std::uintptr_t REMOVE_HEADPART_RVA  = 0x00655260;
+const std::uintptr_t REMOVE_HEADPART_RVA  = FW_RVA(0x00655260, 0x006555A0);
 constexpr std::size_t    FORM_TYPE_OFF     = 0x1A;
 constexpr std::uint8_t   FORMTYPE_HDPT     = 15;
 constexpr std::uint8_t   FORMTYPE_CLFM     = 137;
@@ -150,7 +151,7 @@ constexpr std::size_t    HDPT_EXTRAS_COUNT = 0x88;
 // arguments, read off the function itself: it takes npc+0x1B8 (the race), walks
 // race + 0x698 + 8*sex, and lazily allocates the 0x18-byte array into
 // *(npc + 0x300). Intensity is 0..1; the engine stores it as a 0..100 byte.
-constexpr std::uintptr_t SET_TINT_RVA         = 0x0065DAB0;
+const std::uintptr_t SET_TINT_RVA         = FW_RVA(0x0065DAB0, 0x0065DDF0);
 
 // THE SECOND CALL, without which a tint changes nothing on screen.
 //
@@ -168,7 +169,7 @@ constexpr std::uintptr_t SET_TINT_RVA         = 0x0065DAB0;
 // the first attempt's tint writes and not one of them appeared, because rebuilding
 // the head re-reads a record whose tints were already correct while the composited
 // result was never regenerated.
-constexpr std::uintptr_t SET_TINT_LIVE_RVA    = 0x00D759E0;
+const std::uintptr_t SET_TINT_LIVE_RVA    = FW_RVA(0x00D759E0, 0x00D75F10);
 using SetTintLiveFn = void(__fastcall*)(void*, std::uint16_t, float,
                                         std::uint32_t);
 
@@ -190,8 +191,8 @@ using SetTintLiveFn = void(__fastcall*)(void*, std::uint16_t, float,
 // functions are the engine's own: sub_1403FFE70(container, id) is the exact
 // lookup sub_1403FE900 itself uses, and sub_140400600 is the palette
 // default-colour reader its delete rule compares against.
-constexpr std::uintptr_t FIND_TINT_TEMPLATE_RVA = 0x003FFE70;
-constexpr std::uintptr_t PAL_DEFAULT_RGB_RVA    = 0x00400600;
+const std::uintptr_t FIND_TINT_TEMPLATE_RVA = FW_RVA(0x003FFE70, 0x004001A0);
+const std::uintptr_t PAL_DEFAULT_RGB_RVA    = FW_RVA(0x00400600, 0x00400930);
 constexpr std::size_t    RACE_TINT_SLOT         = 0x698;   // + 8*sex, two derefs
 constexpr std::size_t    TPL_TYPE_OFF           = 0x18;    // 7..20 = palette
 using FindTintTemplateFn = void*(__fastcall*)(void*, std::uint16_t);
@@ -288,7 +289,7 @@ void* resolve_typed(std::uint32_t form_id, std::uint8_t want_type) noexcept {
 //
 // The same function also reads *(u8*)(npc+744) = npc+0x2E8 as the part count,
 // independently confirming the offset found by byte-diffing.
-constexpr std::uintptr_t ACTOR_RESET3D_RVA = 0x00C73DD0;
+const std::uintptr_t ACTOR_RESET3D_RVA = FW_RVA(0x00C73DD0, 0x00C742F0);
 
 using ActorReset3DFn = char(__fastcall*)(void*, std::uint8_t, std::uint32_t,
                                         std::uint8_t, std::uint32_t);

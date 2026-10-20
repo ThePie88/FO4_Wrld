@@ -1,3 +1,4 @@
+#include "../game_build.h"
 #include "editor_overlay.h"
 
 #include <cstring>
@@ -414,7 +415,7 @@ namespace {
 // procedure checks it before handling WM_INPUT, WM_MOUSEMOVE and WM_CHAR.
 // Verified: seven references in .text, three reads at those three messages and
 // four writes, all from those pumps.
-constexpr std::uintptr_t INPUT_DISPATCH_OK_RVA = 0x02F26E4C;
+const std::uintptr_t INPUT_DISPATCH_OK_RVA = FW_RVA(0x02F26E4C, 0x02F31E8C);
 
 // MenuCursor. The frame pump at RVA 0xC33190 reads the request refcount at +0x50
 // and skips ClipCursor/SetCursorPos while it is non-zero — which is how a menu
@@ -438,11 +439,11 @@ constexpr std::uintptr_t INPUT_DISPATCH_OK_RVA = 0x02F26E4C;
 // setting's name string (0x1425A2220), and the Setting object is 0x10 below it
 // with its value at +0x08. That lands on byte_142F2E170, RVA 0x2F2E170, which
 // holds 0 in a vanilla session.
-[[maybe_unused]] constexpr std::uintptr_t DISABLE_AUTOVANITY_RVA = 0x02F2E170;
+[[maybe_unused]] const std::uintptr_t DISABLE_AUTOVANITY_RVA = FW_RVA(0x02F2E170, 0x02F391B0);
 
-constexpr std::uintptr_t MENUCURSOR_PTR_RVA = 0x0326F458;
-constexpr std::uintptr_t CURSOR_ACQUIRE_RVA = 0x01B1D5B0;   // ++refcount
-constexpr std::uintptr_t CURSOR_RELEASE_RVA = 0x01B1D5C0;   // --refcount
+const std::uintptr_t MENUCURSOR_PTR_RVA = FW_RVA(0x0326F458, 0x0327A568);
+const std::uintptr_t CURSOR_ACQUIRE_RVA = FW_RVA(0x01B1D5B0, 0x01B1DB90);   // ++refcount
+const std::uintptr_t CURSOR_RELEASE_RVA = FW_RVA(0x01B1D5C0, 0x01B1DBA0);   // --refcount
 using CursorRefFn = void(__fastcall*)(void*);
 
 std::atomic<bool> g_captured{false};

@@ -1,3 +1,4 @@
+#include "../game_build.h"
 #include "chargen_stage.h"
 
 #include "appearance_recipe.h"
@@ -33,8 +34,8 @@ namespace {
 //
 // WATCH: the worker consults UI::IsMenuOpen before switching. Force the camera
 // BEFORE any menu of ours is open, never after.
-constexpr std::uintptr_t FORCE_THIRD_PERSON_RVA = 0x011299B0;
-constexpr std::uintptr_t FORCE_FIRST_PERSON_RVA = 0x011299A0;
+const std::uintptr_t FORCE_THIRD_PERSON_RVA = FW_RVA(0x011299B0, 0x01129EA0);
+const std::uintptr_t FORCE_FIRST_PERSON_RVA = FW_RVA(0x011299A0, 0x01129E90);
 using ForcePovFn = char(__fastcall*)(void*, void*);
 
 // COLLISION — the `tcl` console command's own get/set pair, which is what makes
@@ -62,8 +63,8 @@ using ForcePovFn = char(__fastcall*)(void*, void*);
 // FinishPhysicsStep, of which I had applied only one. Actor::MoveTo also
 // "atomically updates ... Havok body", so it very likely reset the motion type
 // that had just been set.
-constexpr std::uintptr_t SET_COLLISION_RVA = 0x004F3FD0;
-constexpr std::uintptr_t GET_COLLISION_RVA = 0x004F4010;
+const std::uintptr_t SET_COLLISION_RVA = FW_RVA(0x004F3FD0, 0x004F4300);
+const std::uintptr_t GET_COLLISION_RVA = FW_RVA(0x004F4010, 0x004F4340);
 using SetCollisionFn = void(__fastcall*)(void*, char);
 using GetCollisionFn = char(__fastcall*)(void*);
 
@@ -107,14 +108,14 @@ using GetCollisionFn = char(__fastcall*)(void*);
 // at cam+0xE0 - the same array whose index 0 ForceFirstPerson switches to and
 // whose index 8 ForceThirdPerson switches to. The vtable is checked at runtime on
 // top of that, so a wrong index is reported instead of scribbling on a stranger.
-constexpr std::uintptr_t PLAYER_CAMERA_RVA   = 0x030DBD58;
+const std::uintptr_t PLAYER_CAMERA_RVA   = FW_RVA(0x030DBD58, 0x030E6E58);
 constexpr std::size_t    CAM_CURRENT_STATE   = 0x28;
-constexpr std::uintptr_t CAM_GET_STATE_RVA   = 0x0102B100;  // (cam, index)
-constexpr std::uintptr_t SET_CAM_STATE_RVA   = 0x00827A80;  // (cam, state)
+const std::uintptr_t CAM_GET_STATE_RVA   = FW_RVA(0x0102B100, 0x0102B630);  // (cam, index)
+const std::uintptr_t SET_CAM_STATE_RVA   = FW_RVA(0x00827A80, 0x00827DD0);  // (cam, state)
 
 constexpr unsigned int   STATE_AUTOVANITY    = 1;
 constexpr unsigned int   STATE_THIRDPERSON   = 8;
-constexpr std::uintptr_t AUTOVANITY_VTBL_RVA = 0x025A2658;  // re/engine_rtti_catalog
+const std::uintptr_t AUTOVANITY_VTBL_RVA = FW_RVA(0x025A2658, 0x025AA758);  // re/engine_rtti_catalog
 constexpr std::size_t    AV_GATE             = 0x24;  // u8: Update returns if 0
 constexpr std::size_t    AV_ANGLE            = 0x28;  // float: the orbit angle
 
@@ -122,7 +123,7 @@ constexpr std::size_t    AV_ANGLE            = 0x28;  // float: the orbit angle
 // position using the value of fDefaultAutoVanityZoom, so this is the dial that
 // brings the face close. Restored on unstage - it is a global game setting, and
 // leaving it changed would quietly alter the player's idle camera forever.
-constexpr std::uintptr_t AUTOVANITY_ZOOM_RVA = 0x02F2DC60;
+const std::uintptr_t AUTOVANITY_ZOOM_RVA = FW_RVA(0x02F2DC60, 0x02F38CA0);
 
 // The framing, settled by measurement.
 //

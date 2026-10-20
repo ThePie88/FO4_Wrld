@@ -43,6 +43,7 @@ add_library(fw_native SHARED
     src/log.cpp
     src/audit.cpp
     src/version.cpp
+    src/game_build.cpp
     src/hook_manager.cpp
     src/main_thread_dispatch.cpp
     src/ref_identity.cpp

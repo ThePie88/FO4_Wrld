@@ -1,3 +1,4 @@
+#include "../game_build.h"
 // M9 wedge 4 — clone factory tracker. See header for design.
 
 #include "clone_factory_tracker.h"
@@ -20,7 +21,7 @@ namespace fw::native::clone_factory_tracker {
 namespace {
 
 // sub_1416D99E0 — _BYTE* __fastcall sub_1416D99E0(__int64 a1, __int64 a2)
-constexpr std::uintptr_t CLONE_FACTORY_RVA = 0x0016D99E0;
+const std::uintptr_t CLONE_FACTORY_RVA = FW_RVA(0x0016D99E0, 0x0016D9F00);
 
 using CloneFactoryFn = void* (__fastcall*)(void*, void*);
 CloneFactoryFn g_orig = nullptr;

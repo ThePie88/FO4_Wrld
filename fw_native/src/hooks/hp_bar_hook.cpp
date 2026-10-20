@@ -1,3 +1,4 @@
+#include "../game_build.h"
 // ============================================================================
 // HP-bar sync (vita-locale-dal-pool). The enemy-health bar value comes from the
 // crosshair/auto-aim target's LOCAL Health AV (sub_140C63130 = GetCurrent/GetMax).
@@ -44,8 +45,8 @@ using ProducerShowFn = bool (__fastcall*)(std::uint64_t* a1);
 ProducerShowFn             g_orig_g2 = nullptr;
 std::atomic<std::uint64_t> g_g2_forces{0};
 
-constexpr std::uintptr_t PRODUCER_SHOW_RVA = 0x00A34090;  // sub_140A34090 (G2 show/hide switch)
-constexpr std::uintptr_t LOOKUP_REF_RVA    = 0x00A351F0;  // sub_140A351F0 (latched handle → holder)
+const std::uintptr_t PRODUCER_SHOW_RVA = FW_RVA(0x00A34090, 0x00A343E0);  // sub_140A34090 (G2 show/hide switch)
+const std::uintptr_t LOOKUP_REF_RVA    = FW_RVA(0x00A351F0, 0x00A35540);  // sub_140A351F0 (latched handle → holder)
 
 // SEH-caged: the FormID of the producer's currently-latched bar target, exactly
 // as G2 resolves it — *(QWORD*)sub_140A351F0(a1[1]) = actor, +0x14 = fid.

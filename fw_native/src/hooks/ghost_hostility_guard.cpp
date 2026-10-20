@@ -1,3 +1,4 @@
+#include "../game_build.h"
 // ============================================================================
 // LIVE (preventive) — 2026-05-17 log evidence: BYPASS path catches stale
 // baseForms 0..2 times per session (rare; only when AddTarget validator
@@ -70,7 +71,7 @@ namespace {
 using HostilityRankFn = std::uint64_t (*)(std::uint64_t a1,
                                           std::uint64_t a2,
                                           char a3);
-constexpr std::uintptr_t HOSTILITY_RANK_RVA = 0x00C8DFF0;
+const std::uintptr_t HOSTILITY_RANK_RVA = FW_RVA(0x00C8DFF0, 0x00C8E510);
 HostilityRankFn g_orig_hostility_rank = nullptr;
 
 std::atomic<std::uint64_t> g_bypass_count{0};
@@ -234,7 +235,7 @@ std::uint64_t __fastcall detour_hostility_rank(std::uint64_t a1,
 // A briefly-neutral hostility verdict during a cell teardown is invisible;
 // a hard AV is not.
 using FactionCollectFn = std::uint64_t (*)(void* a1, void* a2);
-constexpr std::uintptr_t FACTION_COLLECT_RVA   = 0x00308AA0;
+const std::uintptr_t FACTION_COLLECT_RVA   = FW_RVA(0x00308AA0, 0x00308DD0);
 constexpr std::uint32_t  FACTION_COUNT_SANE_MAX = 4096;
 FactionCollectFn           g_orig_faction_collect = nullptr;
 std::atomic<std::uint64_t> g_collect_bail_count{0};
@@ -304,8 +305,8 @@ std::uint64_t __fastcall detour_faction_collect(void* a1, void* a2) {
 // vs H2 music-changer in sub_140D4CAE0) — same fix covers both. NOT a hot path
 // (callers fire only on cell unload / player cell-change / death events).
 using TargetResolveFn = std::uint64_t (*)(std::uint64_t a1);
-constexpr std::uintptr_t TARGET_RESOLVE_RVA          = 0x004CAE90; // sub_1404CAE90
-constexpr std::uintptr_t PLAYER_TARGET_SINGLETON_RVA = 0x030E0210; // qword_1430DBF78[2131]
+const std::uintptr_t TARGET_RESOLVE_RVA          = FW_RVA(0x004CAE90, 0x004CB1C0); // sub_1404CAE90
+const std::uintptr_t PLAYER_TARGET_SINGLETON_RVA = FW_RVA(0x030E0210, 0x030EB310); // qword_1430DBF78[2131]
 TargetResolveFn            g_orig_target_resolve = nullptr;
 std::uintptr_t             g_module_base_for_resolve = 0;
 std::uintptr_t             g_player_target_singleton_addr = 0;

@@ -1,3 +1,4 @@
+#include "../game_build.h"
 #include "vp_capture.h"
 
 #include <windows.h>
@@ -29,7 +30,7 @@ namespace {
 // First 5 bytes at RVA 0x221E6A0 should be: 48 8B C4 48 89 (MinHook-safe).
 using ConsumeVPFn = __int64 (__fastcall*)(void* a1, void* a2);
 
-constexpr std::uintptr_t CONSUMER_RVA          = 0x221E6A0;
+const std::uintptr_t CONSUMER_RVA          = FW_RVA(0x221E6A0, 0x022261B0);
 constexpr std::size_t    ACCUM_PTR_OFFSET      = 0x18;   // a2 + 0x18 = BSShaderAccum*
 // Live memory dump (2026-04-22): matrix at +0x17C is garbage, actual
 // identity-looking 4x4 matrix lives at +0x1A0 (cols 0..3 at +0x1A0,

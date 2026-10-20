@@ -1,3 +1,4 @@
+#include "../game_build.h"
 #include "chargen_catalog.h"
 
 #include <windows.h>
@@ -13,7 +14,7 @@ namespace fw::native::catalog {
 namespace {
 
 // TESDataHandler, and the form arrays. Same constants chargen_dump walks with.
-constexpr std::uintptr_t DATAHANDLER_RVA = 0x030DC000;
+const std::uintptr_t DATAHANDLER_RVA = FW_RVA(0x030DC000, 0x030E7100);
 constexpr std::size_t    DH_ARRAYS_OFF   = 0x68;
 constexpr std::size_t    DH_ARRAY_STRIDE = 0x18;   // {data, capacity, size}
 constexpr std::size_t    DH_SIZE_OFF     = 0x10;
@@ -82,7 +83,7 @@ std::uint32_t seh_u32(const void* at) noexcept {
 // The working reader in chargen_dump had used the engine accessor all along,
 // which is the whole reason its catalogue came out with names like "Anchorage"
 // and "The Hornet's Nest".
-constexpr std::uintptr_t BSFIXEDSTR_CSTR_RVA = 0x0167C070;
+const std::uintptr_t BSFIXEDSTR_CSTR_RVA = FW_RVA(0x0167C070, 0x0167C490);
 using CStrFn = const char*(__fastcall*)(const void*);
 CStrFn g_cstr = nullptr;
 

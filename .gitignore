@@ -317,3 +317,6 @@ tools/steam_pin_fo4.py
 
 # local Frida freeze probe (machine-specific paths, attaches by PID)
 tools/freeze_probe.py
+
+# rva_port: local index caches live in %TEMP%; generated report is committed
+tools/rva_port/__pycache__/
