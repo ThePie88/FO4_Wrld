@@ -416,6 +416,9 @@ LRESULT CALLBACK fw_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (tick_guard.taken && !fw::persist::exiting()) {
         static const std::uintptr_t s_base = reinterpret_cast<std::uintptr_t>(
             GetModuleHandleW(L"Fallout4.exe"));
+        // The anim graph setters' BSFixedString cache, if the registrar's
+        // attempt did not take. One atomic load once it is minted.
+        fw::engine::ensure_bsfs_minted();
         fw::native::chargen_dump::maybe_dump_catalogue(s_base);
         // 2026-08-07 — the anatomy probe MUST run here and nowhere else:
         // it reads the live scene graph, which is main-thread-only. The
@@ -957,6 +960,12 @@ void* __fastcall detour_main_menu_register(void* menu_obj) {
     // Let the original registrar complete first — AS3 bindings must be in
     // place or the menu breaks.
     void* rv = g_orig_main_menu_register(menu_obj);
+
+    // The engine's string pool is up by the time the main menu is built,
+    // and this is the main thread: the first good moment for the anim
+    // graph setters' BSFixedString cache. Idempotent, so submenu
+    // re-entries cost an atomic load.
+    fw::engine::ensure_bsfs_minted();
 
     // One-shot detection. MinHook invokes the detour on the caller's
     // thread, so this runs on the engine's main UI thread.

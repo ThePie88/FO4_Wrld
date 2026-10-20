@@ -161,7 +161,8 @@ void**           g_player_singleton_slot = nullptr;   // deref → Actor*
 // B6.5w3.b — anim graph variable setters + BSFixedString minter.
 // `BSFixedString` is internally an 8-byte struct holding a pointer to
 // a refcount-managed pool entry. We pre-mint the names we care about
-// (SpeedSampled, Direction) ONCE at init so the refcount stays at +1
+// (SpeedSampled, Direction) ONCE (ensure_bsfs_minted, on first need
+// after the string pool is up) so the refcount stays at +1
 // for the lifetime of the DLL; setter calls re-use the same cached
 // pointer and don't leak per-call.
 struct BSFixedString {
@@ -661,9 +662,9 @@ void**                 g_player_alt_singleton    = nullptr;
 // by other engine paths.
 void**                 g_procmgr_bag             = nullptr;
 
-BSFixedString g_bs_speed_sampled{};   // pre-minted at init for hot-path WALKING/RUNNING
-BSFixedString g_bs_direction{};       // pre-minted at init
-BSFixedString g_bs_anim_driven{};     // pre-minted at init for round 3 — kills root motion
+BSFixedString g_bs_speed_sampled{};   // minted by ensure_bsfs_minted() for hot-path WALKING/RUNNING
+BSFixedString g_bs_direction{};       // minted by ensure_bsfs_minted()
+BSFixedString g_bs_anim_driven{};     // minted by ensure_bsfs_minted(), round 3 — kills root motion
 // B6.5w4 round 8 — humanoid anim graph state suite. Written every frame
 // for tracked NPCs to override vanilla AI's local decisions and sync
 // anim state across clients.
@@ -1187,66 +1188,10 @@ bool init(std::uintptr_t module_base) {
     // installs the cloned vtable on the duplicate.
     init_duplicate_vtable(module_base);
 
-    // Mint cached BSFixedStrings for the hot anim variables we drive in
-    // w3.b. Wrapped in SEH because BSFixedString minter touches the pool
-    // global allocator — pre-engine-init call would crash. By the time
-    // engine::init() runs the player singleton is populated, so the pool
-    // is alive; still defensive.
-    __try {
-        g_bsfs_make(&g_bs_speed_sampled, "SpeedSampled");
-        g_bsfs_make(&g_bs_direction,     "Direction");
-        g_bsfs_make(&g_bs_anim_driven,   "bAnimationDriven");
-        // Build 62 (2026-05-24) — CANONICAL anim graph names.
-        //
-        // Per re/arena_synthesis/SUPERVISOR_SYNTHESIS.md §4 (Agent C-BETA
-        // discovery, judge verified): the previous names `bIsRunning`,
-        // `bIsSprinting`, `bIsAttacking`, `bIsAimingGun`, `bIsBlocking`,
-        // `bIsSneaking`, `bIsDead` are HALLUCINATED — zero matches in
-        // strings.csv. Every SetGraphVariableBool call against these names
-        // was a silent no-op since Build 23. Canonical names verified
-        // against decomp + pool registration sites:
-        //   - iIsInSneak    INT, pool 2992       (funcs_0008.md:1478)
-        //   - IsRunning     bool, HKX-loaded     (strings.csv 0x1424C38E8)
-        //   - IsSprinting   bool, pool 282690    (funcs_0059.md:587)
-        //   - IsBlocking    bool, pool 282691    (funcs_0059.md:588)
-        //   - bAimActive    bool, pool 282710    (funcs_0059.md:607)
-        //   - IsDead        bool, Papyrus-only   (strings.csv 0x1425B63AC)
-        //
-        // NOTE: `IsAttacking` has only data-section xrefs (no code-side
-        // registration). Driving attack animations via SetGraphVariable
-        // by name may NOT propagate to transitions. Reserved for future
-        // research; for now we mint it but don't rely on its effect.
-        //
-        // CRITICAL: `iIsInSneak` is INT (0/1), use SetGraphVariableInt,
-        // NOT SetGraphVariableBool. Callers must dispatch correctly.
-        g_bsfs_make(&g_bs_is_running,    "IsRunning");
-        g_bsfs_make(&g_bs_is_sprinting,  "IsSprinting");
-        g_bsfs_make(&g_bs_is_attacking,  "IsAttacking");   // see NOTE above
-        g_bsfs_make(&g_bs_is_aiming_gun, "bAimActive");    // canonical aim-active
-        g_bsfs_make(&g_bs_is_blocking,   "IsBlocking");
-        g_bsfs_make(&g_bs_is_sneaking,   "iIsInSneak");    // INT, NOT bool
-        g_bsfs_make(&g_bs_is_dead,       "IsDead");
-        FW_LOG("engine: BSFixedString cache minted (Build 62 canonical names): "
-               "SpeedSampled=%p Direction=%p bAnimationDriven=%p "
-               "IsRunning=%p IsAttacking=%p bAimActive=%p iIsInSneak=%p",
-               g_bs_speed_sampled.pool_entry, g_bs_direction.pool_entry,
-               g_bs_anim_driven.pool_entry, g_bs_is_running.pool_entry,
-               g_bs_is_attacking.pool_entry, g_bs_is_aiming_gun.pool_entry,
-               g_bs_is_sneaking.pool_entry);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        FW_WRN("engine: BSFixedString mint SEH-faulted — w3.b/w4 setter calls "
-               "will short-circuit until next init");
-        g_bs_speed_sampled.pool_entry = nullptr;
-        g_bs_direction.pool_entry     = nullptr;
-        g_bs_anim_driven.pool_entry   = nullptr;
-        g_bs_is_running.pool_entry    = nullptr;
-        g_bs_is_sprinting.pool_entry  = nullptr;
-        g_bs_is_attacking.pool_entry  = nullptr;
-        g_bs_is_aiming_gun.pool_entry = nullptr;
-        g_bs_is_blocking.pool_entry   = nullptr;
-        g_bs_is_sneaking.pool_entry   = nullptr;
-        g_bs_is_dead.pool_entry       = nullptr;
-    }
+    // The BSFixedString cache for the anim graph setters is NOT minted here:
+    // init() runs at DLL load, before the engine's string pool exists, and
+    // the mint SEH-faulted on every boot, leaving the setters inert for the
+    // whole session. See ensure_bsfs_minted() below.
 
     // B1.k.2: BGSObjectRefHandle resolver — for ContainerMenu::TransferItem
     // we need to reach the container REFR from `this+1064` (a handle slot).
@@ -1298,6 +1243,134 @@ bool init(std::uintptr_t module_base) {
            g_inv_entry_to_form, g_form_cache_slot,
            g_load_game, g_load_precond, g_load_prep,
            g_save_load_mgr_slot, g_save_dev_slot, g_load_in_progress);
+    return true;
+}
+
+// The BSFixedString cache, minted on first need instead of at init().
+//
+// init() runs at DLL load (dxgi.dll is an import of the exe), long before
+// the engine has built its string pool, so a mint there always faulted and
+// nothing ever minted again. Here the mint happens on the first call after
+// the pool is up: the MainMenu registrar (main thread, menu built, pool
+// alive), with the main-thread tick and the setters themselves as backstops.
+//
+// The SEH guard stays: an attempt that faults is dropped and retried on a
+// later call, at most once per kBsfsRetryMs so a pool that is not up yet
+// does not cost a fault per tick. The strings are minted into locals and
+// published only when all of them made it, so a reader never sees half a
+// cache. A faulted attempt may leave a +1 ref on the names minted before
+// the fault; the pool dedups, so that is a few bytes, once.
+namespace {
+
+// 0 = not minted, 1 = an attempt in progress, 2 = minted.
+std::atomic<int>   g_bsfs_state{0};
+std::atomic<DWORD> g_bsfs_last_try_ms{0};
+std::uint32_t      g_bsfs_attempts = 0;   // touched only by the state-1 holder
+constexpr DWORD    kBsfsRetryMs = 1000;
+
+// Build 62 (2026-05-24) — CANONICAL anim graph names.
+//
+// Per re/arena_synthesis/SUPERVISOR_SYNTHESIS.md §4 (Agent C-BETA
+// discovery, judge verified): the previous names `bIsRunning`,
+// `bIsSprinting`, `bIsAttacking`, `bIsAimingGun`, `bIsBlocking`,
+// `bIsSneaking`, `bIsDead` are HALLUCINATED — zero matches in
+// strings.csv. Every SetGraphVariableBool call against these names
+// was a silent no-op since Build 23. Canonical names verified
+// against decomp + pool registration sites:
+//   - iIsInSneak    INT, pool 2992       (funcs_0008.md:1478)
+//   - IsRunning     bool, HKX-loaded     (strings.csv 0x1424C38E8)
+//   - IsSprinting   bool, pool 282690    (funcs_0059.md:587)
+//   - IsBlocking    bool, pool 282691    (funcs_0059.md:588)
+//   - bAimActive    bool, pool 282710    (funcs_0059.md:607)
+//   - IsDead        bool, Papyrus-only   (strings.csv 0x1425B63AC)
+//
+// NOTE: `IsAttacking` has only data-section xrefs (no code-side
+// registration). Driving attack animations via SetGraphVariable
+// by name may NOT propagate to transitions. Reserved for future
+// research; for now we mint it but don't rely on its effect.
+//
+// CRITICAL: `iIsInSneak` is INT (0/1), use SetGraphVariableInt,
+// NOT SetGraphVariableBool. Callers must dispatch correctly.
+constexpr const char* kBsfsNames[] = {
+    "SpeedSampled",
+    "Direction",
+    "bAnimationDriven",
+    "IsRunning",
+    "IsSprinting",
+    "IsAttacking",   // see NOTE above
+    "bAimActive",    // canonical aim-active
+    "IsBlocking",
+    "iIsInSneak",    // INT, NOT bool
+    "IsDead",
+};
+constexpr std::size_t kBsfsCount = sizeof(kBsfsNames) / sizeof(kBsfsNames[0]);
+
+// SEH only, no C++ unwinding in here (C2712).
+bool bsfs_mint_all_seh(BSFixedString* out) noexcept {
+    __try {
+        for (std::size_t i = 0; i < kBsfsCount; ++i) {
+            g_bsfs_make(&out[i], kBsfsNames[i]);
+            if (!out[i].pool_entry) return false;
+        }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+}  // namespace
+
+bool ensure_bsfs_minted() noexcept {
+    if (g_bsfs_state.load(std::memory_order_acquire) == 2) return true;
+    if (!g_bsfs_make) return false;   // init() has not resolved the minter
+
+    const DWORD now = GetTickCount();
+    const DWORD last = g_bsfs_last_try_ms.load(std::memory_order_relaxed);
+    if (last != 0 && now - last < kBsfsRetryMs) return false;
+
+    int expected = 0;
+    if (!g_bsfs_state.compare_exchange_strong(expected, 1,
+                                              std::memory_order_acq_rel)) {
+        return expected == 2;   // 1: another thread is minting right now
+    }
+    g_bsfs_last_try_ms.store(now ? now : 1, std::memory_order_relaxed);
+    ++g_bsfs_attempts;
+
+    BSFixedString minted[kBsfsCount]{};
+    if (!bsfs_mint_all_seh(minted)) {
+        // Loud once, then quiet: retries before the pool is up are expected.
+        if (g_bsfs_attempts == 1) {
+            FW_WRN("engine: BSFixedString mint SEH-faulted (string pool not "
+                   "up yet?) — anim graph setters wait, retrying every %u ms",
+                   unsigned(kBsfsRetryMs));
+        } else {
+            FW_DBG("engine: BSFixedString mint attempt %u faulted, retrying",
+                   g_bsfs_attempts);
+        }
+        g_bsfs_state.store(0, std::memory_order_release);
+        return false;
+    }
+
+    BSFixedString* const slots[kBsfsCount] = {
+        &g_bs_speed_sampled, &g_bs_direction,     &g_bs_anim_driven,
+        &g_bs_is_running,    &g_bs_is_sprinting,  &g_bs_is_attacking,
+        &g_bs_is_aiming_gun, &g_bs_is_blocking,   &g_bs_is_sneaking,
+        &g_bs_is_dead,
+    };
+    for (std::size_t i = 0; i < kBsfsCount; ++i) {
+        slots[i]->pool_entry = minted[i].pool_entry;
+    }
+    g_bsfs_state.store(2, std::memory_order_release);
+
+    FW_LOG("engine: BSFixedString cache minted (Build 62 canonical names, "
+           "attempt %u): "
+           "SpeedSampled=%p Direction=%p bAnimationDriven=%p "
+           "IsRunning=%p IsAttacking=%p bAimActive=%p iIsInSneak=%p",
+           g_bsfs_attempts,
+           g_bs_speed_sampled.pool_entry, g_bs_direction.pool_entry,
+           g_bs_anim_driven.pool_entry, g_bs_is_running.pool_entry,
+           g_bs_is_attacking.pool_entry, g_bs_is_aiming_gun.pool_entry,
+           g_bs_is_sneaking.pool_entry);
     return true;
 }
 
@@ -5504,6 +5577,7 @@ bool apply_npc_state_to_actor(
     // pass skip_anim_graph=true when invoking from off-main-thread.
     if (!skip_anim_graph &&
         g_set_graph_var_float &&
+        ensure_bsfs_minted() &&
         g_bs_speed_sampled.pool_entry &&
         g_bs_direction.pool_entry)
     {
@@ -5781,7 +5855,8 @@ bool kill_actor(void* victim, void* killer) noexcept {
 bool set_actor_anim_driven(void* actor, bool value) {
     if (!actor) return false;
     if (!g_ready.load(std::memory_order_acquire)) return false;
-    if (!g_set_graph_var_bool || !g_bs_anim_driven.pool_entry) return false;
+    if (!g_set_graph_var_bool || !ensure_bsfs_minted()
+        || !g_bs_anim_driven.pool_entry) return false;
 
     // Anim graph holder = Actor + 0x48 (IANIMGRAPHHOLDER_OFF).
     void* holder = reinterpret_cast<void*>(
@@ -7259,7 +7334,8 @@ bool aim_actor_at_target(void* raider_actor,
 
     // Set anim graph variables to drive aim pose + fire layer.
     // Holder = Actor + 0x48 (IAnimationGraphManagerHolder sub-object).
-    if (g_set_graph_var_bool && g_bs_is_aiming_gun.pool_entry) {
+    if (g_set_graph_var_bool && ensure_bsfs_minted()
+        && g_bs_is_aiming_gun.pool_entry) {
         auto* holder = reinterpret_cast<std::uint8_t*>(raider_actor) +
                        offsets::IANIMGRAPHHOLDER_OFF;
         __try {
@@ -9021,6 +9097,7 @@ bool apply_npc_locomotion(void* actor, std::uint8_t anim_state) noexcept {
     if (!g_ready.load(std::memory_order_acquire)) return false;
     if (!actor) return false;
     if (!g_set_graph_var_float
+        || !ensure_bsfs_minted()
         || !g_bs_speed_sampled.pool_entry
         || !g_bs_direction.pool_entry) {
         return false;

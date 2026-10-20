@@ -30,6 +30,15 @@ namespace fw::engine {
 // before any function in this namespace is invoked.
 bool init(std::uintptr_t module_base);
 
+// Mints the cached BSFixedStrings the anim graph setters use (SpeedSampled,
+// Direction, IsRunning, ...). init() runs at DLL load, before the engine's
+// string pool exists, so the mint cannot happen there: it is done here, on
+// the first call after the pool is up. Idempotent and cheap once it has
+// succeeded; a faulting attempt is caught and retried on a later call.
+// Called from the MainMenu registrar, from the main-thread tick, and on
+// first use by the setters. Returns true when the cache is ready.
+bool ensure_bsfs_minted() noexcept;
+
 // Returns the REFR* for `form_id`, or nullptr if not found in the engine's
 // form table (already despawned, unloaded cell, wrong id, etc).
 void* lookup_by_form_id(std::uint32_t form_id);
